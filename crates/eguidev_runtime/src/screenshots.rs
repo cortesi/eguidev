@@ -113,6 +113,7 @@ pub struct ScreenshotDebugSnapshot {
     pub debug: ScreenshotDebugState,
 }
 
+#[derive(Debug)]
 pub struct ScreenshotManager {
     screenshots: Mutex<HashMap<u64, ScreenshotState>>,
     screenshot_debug: Mutex<ScreenshotDebugState>,

@@ -7,8 +7,9 @@ matching `mcp.json` configurations under `docs/examples/mcp/`.
 
 - Build or install the `edev` launcher (`cargo build -p edev` or
   `cargo install --path crates/edev`).
-- The demo's dev-capable build uses `--features devtools` and calls
-  `eguidev::runtime::attach()` when launched with `--dev-mcp`.
+- The demo's dev-capable build uses the app-local `devtools` feature, which
+  enables the optional `eguidev_runtime` dependency and calls
+  `eguidev_runtime::attach()` when launched with `--dev-mcp`.
 - This repository checks in a root `.edev.toml`, so `edev mcp` and `edev smoke`
   work without repeating the demo command line.
 
@@ -70,8 +71,8 @@ stack, so this is not a headless smoke path.
 
 Record manual verification runs here when needed.
 
-- 2026-01-23: Launched the demo app via `cargo run --features devtools` with `--dev-mcp`
-  using the glow renderer. The process was manually
+- 2026-01-23: Launched the demo app via
+  `cargo run -p eguidev_demo --features devtools -- --dev-mcp` using the glow renderer. The process was manually
   interrupted because this environment does not support interactive GUI verification.
 - 2026-01-25: Used `script_eval` against the demo app to call
   `secondary:set_inner_size()` (640x480 then 900x700). `secondary:wait_for()` matched and

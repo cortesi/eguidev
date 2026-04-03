@@ -11,6 +11,7 @@ use std::{
 };
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
+use eguidev_runtime::script_definitions;
 use luau_analyze::Checker;
 use serde_json::{Value, json};
 use tmcp::{Client, schema::CallToolResult};
@@ -102,13 +103,25 @@ fn test() -> Result<(), Box<dyn Error>> {
     run_command("cargo", &["nextest", "run", "--all"], "cargo nextest")?;
     run_command(
         "cargo",
-        &["test", "-q", "-p", "eguidev", "--features", "devtools"],
-        "cargo test -p eguidev --features devtools",
+        &["test", "-q", "-p", "eguidev_runtime"],
+        "cargo test -p eguidev_runtime",
     )?;
     run_command(
         "cargo",
         &["test", "-q", "-p", "eguidev_demo", "--features", "devtools"],
         "cargo test -p eguidev_demo --features devtools",
+    )?;
+    run_command(
+        "cargo",
+        &[
+            "check",
+            "-q",
+            "-p",
+            "eguidev",
+            "--target",
+            "wasm32-unknown-unknown",
+        ],
+        "cargo check -p eguidev --target wasm32-unknown-unknown",
     )?;
     check_luau_definitions()?;
     check_default_eguidev_dependency_surface()?;
@@ -143,7 +156,7 @@ fn smoke_edev(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
 
 /// Type-check checked-in Luau definitions and shipped script sources.
 fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
-    let definitions_path = Path::new("crates/eguidev/luau/eguidev.d.luau");
+    let definitions_path = Path::new("crates/eguidev_runtime/luau/eguidev.d.luau");
     let definitions = fs::read_to_string(definitions_path)?;
     let mut checker = Checker::new()?;
     checker.add_definitions_with_name(&definitions, "eguidev.d.luau")?;
@@ -263,7 +276,7 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
         let script_api = script_api_result
             .text()
             .ok_or("script_api response did not include text content")?;
-        if script_api != eguidev::script_definitions() {
+        if script_api != script_definitions() {
             return Err("script_api payload did not match checked-in definitions".into());
         }
 
@@ -415,7 +428,7 @@ fn run_prepared_command_with_timeout(
     Ok(())
 }
 
-/// Ensure the default `eguidev` build stays free of devtools crates.
+/// Ensure the default `eguidev` build stays free of native runtime crates.
 fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
     let output = Command::new("cargo")
         .args(["tree", "-e", "normal", "-p", "eguidev"])

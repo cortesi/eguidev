@@ -14,8 +14,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use eguidev::{
-    ScriptEvalOutcome, ScriptEvalRequest, script_definitions,
+use eguidev_runtime::{
+    ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, run_suite_with},
 };
 use instance_registry::InstanceRegistry;
@@ -253,10 +253,7 @@ fn parse_fixture_list(outcome: ScriptEvalOutcome) -> Result<Vec<FixtureInfo>, Ed
 }
 
 /// Prefer the runtime's script error text and fall back to a caller-provided message.
-fn script_eval_error_message(
-    error: Option<&eguidev::ScriptErrorInfo>,
-    fallback_message: &str,
-) -> String {
+fn script_eval_error_message(error: Option<&ScriptErrorInfo>, fallback_message: &str) -> String {
     error
         .map(|error| error.message.as_str())
         .unwrap_or(fallback_message)
@@ -1161,7 +1158,7 @@ async fn run_smoke_suite(
             let payload = script_eval_request_value(ScriptEvalRequest {
                 script: request.source,
                 timeout_ms: request.timeout_ms,
-                options: Some(eguidev::ScriptEvalOptions {
+                options: Some(ScriptEvalOptions {
                     source_name: Some(request.path),
                     args: request.args,
                 }),
@@ -1488,7 +1485,7 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use eguidev::ScriptErrorInfo;
+    use eguidev_runtime::ScriptErrorInfo;
     use tempfile::TempDir;
     use tmcp::{
         Client, Server, ServerCtx, ServerHandle, ServerHandler,

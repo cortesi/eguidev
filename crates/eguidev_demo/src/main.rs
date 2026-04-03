@@ -4,12 +4,12 @@ use std::{env, error::Error, io, path::PathBuf};
 
 use eframe::{App, egui};
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::ScrollBarVisibility};
-#[cfg(feature = "devtools")]
-use eguidev::runtime;
 use eguidev::{
     ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureSpec, FrameGuard,
     ProgressBarOptions, ScrollAreaState, TextEditOptions, WidgetRole,
 };
+#[cfg(feature = "devtools")]
+use eguidev_runtime::attach as attach_runtime;
 
 /// Shared result type for the demo binary entry point.
 type MainResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -50,7 +50,7 @@ fn build_devmcp(config: AppConfig) -> MainResult<DevMcp> {
     #[cfg(feature = "devtools")]
     {
         if config.enable_mcp {
-            return Ok(runtime::attach(devmcp));
+            return Ok(attach_runtime(devmcp));
         }
         Ok(devmcp)
     }

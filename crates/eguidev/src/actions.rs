@@ -1,4 +1,5 @@
 //! Input actions for injecting into egui.
+#![allow(missing_docs)]
 
 use std::{array, collections::HashMap, sync::Mutex};
 
@@ -36,7 +37,7 @@ pub enum InputAction {
 }
 
 impl InputAction {
-    pub(crate) fn apply(self, raw_input: &mut egui::RawInput) {
+    pub fn apply(self, raw_input: &mut egui::RawInput) {
         match self {
             Self::PointerMove { pos } => {
                 raw_input.events.push(egui::Event::PointerMoved(pos.into()));
@@ -119,15 +120,21 @@ pub struct ActionQueue {
     commands: Mutex<HashMap<egui::ViewportId, Vec<egui::ViewportCommand>>>,
 }
 
+impl Default for ActionQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActionQueue {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             staged_actions: array::from_fn(|_| Mutex::new(HashMap::new())),
             commands: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn queue_action_with_timing(
+    pub fn queue_action_with_timing(
         &self,
         viewport_id: egui::ViewportId,
         timing: ActionTiming,
@@ -137,27 +144,23 @@ impl ActionQueue {
         queue_to_map(queue, timing.label(), viewport_id, action);
     }
 
-    pub(crate) fn queue_command(
-        &self,
-        viewport_id: egui::ViewportId,
-        command: egui::ViewportCommand,
-    ) {
+    pub fn queue_command(&self, viewport_id: egui::ViewportId, command: egui::ViewportCommand) {
         queue_to_map(&self.commands, "commands lock", viewport_id, command);
     }
 
-    pub(crate) fn drain_actions(&self, viewport_id: egui::ViewportId) -> Vec<InputAction> {
+    pub fn drain_actions(&self, viewport_id: egui::ViewportId) -> Vec<InputAction> {
         let current = self.take_staged_actions(ActionTiming::Current, viewport_id);
         self.promote_staged_actions(ActionTiming::Current, ActionTiming::Next, viewport_id);
         self.promote_staged_actions(ActionTiming::Next, ActionTiming::AfterNext, viewport_id);
         current
     }
 
-    pub(crate) fn drain_all_commands(&self) -> Vec<(egui::ViewportId, Vec<egui::ViewportCommand>)> {
+    pub fn drain_all_commands(&self) -> Vec<(egui::ViewportId, Vec<egui::ViewportCommand>)> {
         let mut commands = lock(&self.commands, "commands lock");
         commands.drain().collect()
     }
 
-    pub(crate) fn clear_all(&self) {
+    pub fn clear_all(&self) {
         for timing in [
             ActionTiming::Current,
             ActionTiming::Next,
@@ -168,7 +171,7 @@ impl ActionQueue {
         lock(&self.commands, "commands lock").clear();
     }
 
-    pub(crate) fn has_pending_actions(&self, viewport_id: egui::ViewportId) -> bool {
+    pub fn has_pending_actions(&self, viewport_id: egui::ViewportId) -> bool {
         [
             ActionTiming::Current,
             ActionTiming::Next,
@@ -184,7 +187,7 @@ impl ActionQueue {
         })
     }
 
-    pub(crate) fn has_pending_commands(&self, viewport_id: egui::ViewportId) -> bool {
+    pub fn has_pending_commands(&self, viewport_id: egui::ViewportId) -> bool {
         has_pending(&self.commands, "commands lock", viewport_id)
     }
 

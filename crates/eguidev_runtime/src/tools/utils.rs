@@ -12,6 +12,7 @@ use crate::{
     error::{ErrorCode, ToolError},
     overlay::{OverlayDebugOptions, parse_color},
     registry::{Inner, viewport_id_to_string},
+    runtime::Runtime,
     tools::types::OverlayDebugOptionsInput,
     types::{
         Modifiers, Pos2, Rect, RoleState, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole,
@@ -40,7 +41,7 @@ pub fn resolve_widget_and_viewport(
 
 pub fn ensure_automation_ready(inner: &Inner) -> Result<(), ToolError> {
     if let Some(error) = inner.widgets.duplicate_explicit_id_error() {
-        return Err(error);
+        return Err(error.into());
     }
     Ok(())
 }
@@ -377,6 +378,8 @@ pub async fn wait_for_frames(
     timeout_ms: u64,
 ) -> Result<(), ToolError> {
     let mut completed = 0u64;
+    let runtime =
+        Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
     while completed < frames {
         let elapsed_ms = start.elapsed().as_millis() as u64;
         if elapsed_ms >= timeout_ms {
@@ -388,7 +391,7 @@ pub async fn wait_for_frames(
         // Request a repaint and wait for the frame to complete. Use a short
         // poll interval so we re-request repaint if the event loop stalls
         // (e.g. macOS throttles a background window).
-        let notified = inner.frame_notify().notified();
+        let notified = runtime.frame_notify().notified();
         inner.request_repaint();
         let remaining = timeout_ms.saturating_sub(elapsed_ms).max(1);
         let poll = Duration::from_millis(FRAME_DURATION_MS).min(Duration::from_millis(remaining));
@@ -424,6 +427,8 @@ where
     let poll_interval_ms = poll_interval_ms.max(1);
     let start = Instant::now();
     let mut last_state = None;
+    let runtime =
+        Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
 
     loop {
         if let Some(dl) = deadline
@@ -465,7 +470,7 @@ where
                 return Ok((false, last_state, elapsed_ms));
             }
 
-            let notified = inner.frame_notify().notified();
+            let notified = runtime.frame_notify().notified();
             inner.request_repaint();
 
             let remaining_poll = poll_deadline.saturating_duration_since(Instant::now());

@@ -341,19 +341,35 @@ fn visible_fraction(rect: egui::Rect, clip_rect: egui::Rect) -> f32 {
     (intersection.area() / area).clamp(0.0, 1.0)
 }
 
-#[cfg(all(test, feature = "devtools"))]
+#[cfg(test)]
 #[allow(deprecated)]
 #[allow(clippy::tests_outside_test_module)]
 mod tests {
+    use std::{any::Any, sync::Arc};
+
     use egui::{Color32, ColorImage, Context, TextureOptions};
 
     use super::*;
     use crate::{
-        WidgetState,
-        devmcp::tests::devmcp_enabled,
+        DevMcp, WidgetState,
+        devmcp::RuntimeHooks,
+        registry::Inner,
         types::WidgetRegistryEntry,
         ui_ext::{ButtonOptions, CheckboxOptions, DevUiExt, ProgressBarOptions, TextEditOptions},
     };
+
+    #[derive(Debug)]
+    struct NoopRuntimeHooks;
+
+    impl RuntimeHooks for NoopRuntimeHooks {
+        fn as_any(&self) -> &(dyn Any + Send + Sync) {
+            self
+        }
+    }
+
+    fn devmcp_enabled() -> DevMcp {
+        DevMcp::new().activate_runtime(Arc::new(Inner::new()), Arc::new(NoopRuntimeHooks))
+    }
 
     fn widget_by_id<'a>(widgets: &'a [WidgetRegistryEntry], id: &str) -> &'a WidgetRegistryEntry {
         widgets

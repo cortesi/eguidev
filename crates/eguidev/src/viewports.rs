@@ -1,4 +1,5 @@
 //! Viewport and input snapshot state.
+#![allow(missing_docs)]
 
 use std::{collections::HashMap, sync::Mutex};
 
@@ -14,22 +15,22 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct InputSnapshot {
-    pub(crate) pixels_per_point: f32,
-    pub(crate) pointer_pos: Option<Pos2>,
+    pub pixels_per_point: f32,
+    pub pointer_pos: Option<Pos2>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ViewportSnapshot {
-    pub(crate) viewport_id: String,
-    pub(crate) inner_size: Vec2,
-    pub(crate) outer_size: Option<Vec2>,
-    pub(crate) pixels_per_point: f32,
-    pub(crate) focused: bool,
-    pub(crate) title: Option<String>,
-    pub(crate) parent_viewport_id: Option<String>,
-    pub(crate) minimized: Option<bool>,
-    pub(crate) maximized: Option<bool>,
-    pub(crate) fullscreen: Option<bool>,
+    pub viewport_id: String,
+    pub inner_size: Vec2,
+    pub outer_size: Option<Vec2>,
+    pub pixels_per_point: f32,
+    pub focused: bool,
+    pub title: Option<String>,
+    pub parent_viewport_id: Option<String>,
+    pub minimized: Option<bool>,
+    pub maximized: Option<bool>,
+    pub fullscreen: Option<bool>,
 }
 
 pub struct ViewportState {
@@ -38,8 +39,14 @@ pub struct ViewportState {
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
 }
 
+impl Default for ViewportState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ViewportState {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             viewports_snapshot: Mutex::new(Vec::new()),
             viewport_lookup: Mutex::new(HashMap::new()),
@@ -47,7 +54,7 @@ impl ViewportState {
         }
     }
 
-    pub(crate) fn update_viewports(&self, ctx: &Context) {
+    pub fn update_viewports(&self, ctx: &Context) {
         let (viewports, pixels_per_point, focused) =
             ctx.input(|i| (i.raw.viewports.clone(), i.pixels_per_point(), i.focused));
         let mut stored = lock(&self.viewports_snapshot, "viewports snapshot lock");
@@ -88,7 +95,7 @@ impl ViewportState {
         *stored = ordered;
     }
 
-    pub(crate) fn capture_input_snapshot(&self, ctx: &Context) {
+    pub fn capture_input_snapshot(&self, ctx: &Context) {
         let viewport_id = ctx.viewport_id();
         let snapshot = ctx.input(|i| InputSnapshot {
             pixels_per_point: i.pixels_per_point(),
@@ -98,24 +105,24 @@ impl ViewportState {
         map.insert(viewport_id, snapshot);
     }
 
-    pub(crate) fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {
+    pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {
         lock(&self.viewports_snapshot, "viewports snapshot lock").clone()
     }
 
-    pub(crate) fn has_viewport_snapshot(&self, viewport_id: egui::ViewportId) -> bool {
+    pub fn has_viewport_snapshot(&self, viewport_id: egui::ViewportId) -> bool {
         let id = viewport_id_to_string(viewport_id);
         lock(&self.viewports_snapshot, "viewports snapshot lock")
             .iter()
             .any(|snapshot| snapshot.viewport_id == id)
     }
 
-    pub(crate) fn input_snapshot(&self, viewport_id: egui::ViewportId) -> Option<InputSnapshot> {
+    pub fn input_snapshot(&self, viewport_id: egui::ViewportId) -> Option<InputSnapshot> {
         lock(&self.input_snapshot, "input snapshot lock")
             .get(&viewport_id)
             .cloned()
     }
 
-    pub(crate) fn resolve_viewport_id(
+    pub fn resolve_viewport_id(
         &self,
         viewport_id: Option<String>,
     ) -> Result<egui::ViewportId, ToolError> {

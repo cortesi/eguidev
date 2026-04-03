@@ -1013,6 +1013,7 @@ fn widget_range_from_i32(range: &RangeInclusive<i32>) -> WidgetRange {
     }
 }
 
+/// Parse a CSS-style `#RRGGBB` or `#RRGGBBAA` color literal.
 pub fn parse_color_hex(value: &str) -> Option<egui::Color32> {
     let hex = value.strip_prefix('#')?;
     if hex.len() != 8 {

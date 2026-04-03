@@ -72,8 +72,8 @@ pub struct Rect {
 }
 
 impl Rect {
-    #[cfg_attr(not(feature = "devtools"), allow(dead_code))]
-    pub(crate) fn center(self) -> Pos2 {
+    /// Return the center point of the rectangle in egui coordinates.
+    pub fn center(self) -> Pos2 {
         Pos2 {
             x: (self.min.x + self.max.x) * 0.5,
             y: (self.min.y + self.max.y) * 0.5,

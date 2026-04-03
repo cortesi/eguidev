@@ -16,9 +16,10 @@ workspace = true
 
 [features]
 default = []
-devtools = ["eguidev/devtools"]
+devtools = ["dep:eguidev_runtime"]
 
 [dependencies]
 eframe.workspace = true
 eguidev = { path = "../eguidev" }
+eguidev_runtime = { path = "../eguidev_runtime", optional = true }
 serde_json.workspace = true

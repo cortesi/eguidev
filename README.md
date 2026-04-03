@@ -6,8 +6,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 AI-assisted development tooling for [egui](https://github.com/emilk/egui).
-Coding agents drive your app through Luau scripts while `edev` manages
-lifecycle and hosts the MCP tool surface.
+`eguidev` handles cross-target instrumentation inside your app,
+`eguidev_runtime` adds the native-only embedded automation runtime, and `edev`
+manages lifecycle plus the external MCP tool surface.
 
 Join the [Discord server](https://discord.gg/fHmRmuBDxF) for discussion and
 release updates.
@@ -16,24 +17,34 @@ release updates.
 
 eguidev instruments your app from inside the process. It captures widget state
 at frame boundaries and injects input through egui's `raw_input_hook` before
-events are consumed. Automation stays aligned with the real event loop -- no
-pixel guessing, no sleeps.
+events are consumed. Automation stays aligned with the real event loop without
+pixel guessing.
 
-The agent-facing surface is Luau, not fine-grained RPC. `script_eval` runs
-inside the app process against the latest captured frame, so one script can
-inspect widgets, queue input, wait for state changes, and return structured
-results in a single round trip.
+The agent-facing surface is Luau, not fine-grained RPC. On native builds,
+`eguidev_runtime` runs scripts inside the app process against the latest
+captured frame, so one script can inspect widgets, queue input, wait for state
+changes, and return structured results in a single round trip.
 
 ## Structure
 
 - **`eguidev` crate** -- instrument your egui app. Tag widgets with `dev_*`
-  helpers, wrap frames with `FrameGuard`, forward raw input. In default builds
-  the instrumentation compiles but stays inert.
+  helpers, wrap frames with `FrameGuard`, forward raw input. This is the
+  cross-target instrumentation layer and remains valid for `wasm32`.
+- **`eguidev_runtime` crate** -- native-only embedded runtime. Attach it once
+  in app bootstrap code to enable script evaluation, screenshots, smoketests,
+  and the in-process MCP server.
 - **`edev` binary** -- the MCP launcher. Starts and stops the app, proxies
   `script_eval`, serves the Luau API definition. Run it with
   `edev mcp -- <cargo args>`.
-- **`devtools` feature** -- gates the embedded runtime (tokio, MCP server,
-  Luau VM). Enable it in one app-local feature; keep widget code unconditional.
+
+## Build modes
+
+- **Instrumentation only**: depend on `eguidev` alone. This works for native
+  and `wasm32` targets.
+- **Native embedded runtime**: add an app-local feature such as
+  `devtools = ["dep:eguidev_runtime"]`, then call
+  `eguidev_runtime::attach(devmcp)` in one bootstrap location. Keep widget code
+  unconditional.
 
 ## Configuration
 
@@ -82,9 +93,9 @@ scripting surface.
 ## API Reference
 
 The canonical scripting reference is
-[`eguidev.d.luau`](./crates/eguidev/luau/eguidev.d.luau) -- a strict Luau type
-definition covering viewports, widgets, actions, waits, fixtures, and
-assertions. Fetch it at any time with `script_api` or `edev --script-docs`.
+[`eguidev.d.luau`](./crates/eguidev_runtime/luau/eguidev.d.luau) -- a strict
+Luau type definition covering viewports, widgets, actions, waits, fixtures,
+and assertions. Fetch it at any time with `script_api` or `edev --script-docs`.
 
 For the Rust API, run `ruskel eguidev` or see the crate-level doc comments.
 

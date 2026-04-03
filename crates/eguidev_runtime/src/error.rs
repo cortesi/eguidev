@@ -1,3 +1,4 @@
+use eguidev::internal::error as base_error;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -40,6 +41,17 @@ impl ToolError {
     }
 }
 
+impl From<base_error::ToolError> for ToolError {
+    fn from(error: base_error::ToolError) -> Self {
+        let (code, message, details) = error.into_parts();
+        Self {
+            code: code.into(),
+            message,
+            details,
+        }
+    }
+}
+
 impl From<ToolError> for tmcp::ToolError {
     fn from(error: ToolError) -> Self {
         error.into_tmcp()
@@ -71,6 +83,22 @@ impl ErrorCode {
             Self::DuplicateWidgetId => "duplicate_widget_id",
             Self::Timeout => "timeout",
             Self::Internal => "internal",
+        }
+    }
+}
+
+impl From<base_error::ErrorCode> for ErrorCode {
+    fn from(code: base_error::ErrorCode) -> Self {
+        match code {
+            base_error::ErrorCode::NotFound => Self::NotFound,
+            base_error::ErrorCode::Ambiguous => Self::Ambiguous,
+            base_error::ErrorCode::InvalidRef => Self::InvalidRef,
+            base_error::ErrorCode::TargetNotFocusable => Self::TargetNotFocusable,
+            base_error::ErrorCode::FocusNotAcquired => Self::FocusNotAcquired,
+            base_error::ErrorCode::TargetDetached => Self::TargetDetached,
+            base_error::ErrorCode::DuplicateWidgetId => Self::DuplicateWidgetId,
+            base_error::ErrorCode::Timeout => Self::Timeout,
+            base_error::ErrorCode::Internal => Self::Internal,
         }
     }
 }

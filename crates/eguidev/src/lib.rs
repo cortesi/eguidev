@@ -1,18 +1,17 @@
-//! Instrumentation for AI-assisted egui development.
+//! Cross-target instrumentation for AI-assisted egui development.
 //!
-//! eguidev captures widget state at frame boundaries and injects input through
-//! egui's `raw_input_hook`, keeping automation aligned with the app's real event
-//! loop. Coding agents drive the app through Luau scripts executed by
-//! [`script_eval`](crate::tools::ScriptEvalRequest); a single script can
-//! inspect widgets, queue input, wait for state changes, and return structured
-//! results in one round trip.
+//! `eguidev` captures widget state at frame boundaries and injects input
+//! through egui's `raw_input_hook`, keeping automation aligned with the app's
+//! real event loop. This crate is the instrumentation half of the automation
+//! stack: it is valid for native and `wasm32` builds, and it intentionally does
+//! not ship the embedded script runtime, MCP server, or screenshot machinery.
 //!
 //! # Quick start
 //!
 //! Add a [`DevMcp`] handle to your app state, wrap each frame with
-//! [`FrameGuard`], and forward raw input to [`raw_input_hook`]. In default
-//! builds the handle is inert; enable the `devtools` feature and call
-//! [`runtime::attach`] in one bootstrap location for the embedded MCP runtime.
+//! [`FrameGuard`], and forward raw input to [`raw_input_hook`]. The handle
+//! stays inert until a native app opts into `eguidev_runtime` and attaches the
+//! embedded runtime in one bootstrap location.
 //!
 //! ```rust
 //! use eframe::{App, egui};
@@ -52,14 +51,13 @@
 //!
 //! # Build modes
 //!
-//! - **Default build**: depend on `eguidev` without `devtools`. [`DevMcp`],
+//! - **Cross-target instrumentation**: depend on `eguidev` only. [`DevMcp`],
 //!   [`FrameGuard`], [`raw_input_hook`], widget tagging, and fixtures all
-//!   compile and stay inert. The dependency tree excludes tokio, mlua, tmcp,
-//!   image, base64, and glob.
-//! - **Dev-capable build**: add an app feature like
-//!   `devtools = ["eguidev/devtools"]` and call [`runtime::attach`] in one
-//!   bootstrap location. The same binary serves both release and dev runs; the
-//!   only `#[cfg]` boundary belongs in that bootstrap path, not in widget code.
+//!   compile for native and `wasm32` targets.
+//! - **Native embedded runtime**: add an app-local feature that enables the
+//!   optional `eguidev_runtime` dependency, then call
+//!   `eguidev_runtime::attach(devmcp)` in one bootstrap location. Keep that
+//!   branch local to startup code instead of pushing `#[cfg]` into widget code.
 //!
 //! # Instrumenting widgets
 //!
@@ -90,59 +88,25 @@
 //! its declared baseline. Scripts call `fixture("name")` to reset before
 //! interacting with the UI.
 //!
-//! # Smoketests
-//!
-//! The [`smoke`] module provides a built-in suite runner. A suite is a
-//! directory of self-contained `.luau` scripts, executed in lexicographic
-//! order by relative path. Each script establishes its own state via
-//! `fixture()`, exercises the UI, and asserts outcomes. Run with `edev smoke`.
-//!
 //! # Scripting reference
 //!
-//! The canonical Luau API is defined in `eguidev.d.luau`, retrievable at
-//! runtime via `script_api` or `edev --script-docs`. It covers viewports,
-//! widgets, actions, waits, fixtures, and assertions.
+//! The canonical Luau API, direct script evaluation helpers, and the smoketest
+//! runner all live in `eguidev_runtime`. `edev` serves those checked-in
+//! definitions through `script_api` and `edev --script-docs`.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-// In the default build (no devtools), most internal modules are structurally
-// dead: `Inner` has no constructor, so nothing that exists only to serve `Inner` can
-// run. Suppress dead-code warnings on those internal modules; the devtools CI
-// build still catches genuinely unused code.
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod actions;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod devmcp;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod error;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod fixtures;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod instrument;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod overlay;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod registry;
-#[cfg(feature = "devtools")]
-pub mod runtime;
-#[cfg(feature = "devtools")]
-mod screenshots;
-#[cfg(feature = "devtools")]
-mod script_docs;
-#[cfg(feature = "devtools")]
-mod server;
-#[cfg(feature = "devtools")]
-pub mod smoke;
-#[cfg(feature = "devtools")]
-mod tools;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod tree;
 pub(crate) mod types;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod ui_ext;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod viewports;
-#[cfg_attr(not(feature = "devtools"), allow(dead_code))]
 mod widget_registry;
 
 pub use crate::{
@@ -161,11 +125,51 @@ pub use crate::{
     },
     widget_registry::WidgetMeta,
 };
-#[cfg(feature = "devtools")]
-pub use crate::{
-    script_docs::{render_script_docs_markdown, script_definitions},
-    tools::{
-        ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo, ScriptEvalOptions,
-        ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation, ScriptTiming,
-    },
-};
+#[doc(hidden)]
+pub mod internal {
+    pub mod actions {
+        pub use crate::actions::{ActionQueue, ActionTiming, InputAction};
+    }
+
+    pub mod devmcp {
+        pub use crate::devmcp::RuntimeHooks;
+    }
+
+    pub mod error {
+        pub use crate::error::{ErrorCode, ToolError};
+    }
+
+    pub mod overlay {
+        pub use crate::overlay::{
+            OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry,
+            OverlayManager, parse_color, rect_intersection, rect_size,
+        };
+    }
+
+    pub mod registry {
+        pub use crate::registry::{Inner, lock, viewport_id_to_string};
+    }
+
+    pub mod tree {
+        pub use crate::tree::collect_subtree;
+    }
+
+    pub mod types {
+        pub use crate::types::{
+            Modifiers, Pos2, Rect, RoleState, ScrollAreaMeta, Vec2, WidgetLayout, WidgetRange,
+            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
+        };
+    }
+
+    pub mod ui_ext {
+        pub use crate::ui_ext::parse_color_hex;
+    }
+
+    pub mod viewports {
+        pub use crate::viewports::{InputSnapshot, ViewportSnapshot, ViewportState};
+    }
+
+    pub mod widget_registry {
+        pub use crate::widget_registry::{WidgetMeta, WidgetRegistry, record_widget};
+    }
+}

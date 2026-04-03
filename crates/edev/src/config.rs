@@ -13,7 +13,7 @@ use std::{
 };
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use eguidev::{ScriptArgValue, ScriptArgs, smoke::SuiteConfig};
+use eguidev_runtime::{ScriptArgValue, ScriptArgs, smoke::SuiteConfig};
 use serde::Deserialize;
 use tokio::process::Command;
 

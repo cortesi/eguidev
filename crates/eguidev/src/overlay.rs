@@ -1,4 +1,5 @@
 //! Overlay rendering helpers.
+#![allow(missing_docs)]
 
 use std::{collections::HashMap, sync::Mutex};
 
@@ -14,9 +15,9 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct OverlayEntry {
-    pub(crate) rect: EguiRect,
-    pub(crate) color: Color32,
-    pub(crate) stroke_width: f32,
+    pub rect: EguiRect,
+    pub color: Color32,
+    pub stroke_width: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,12 +33,12 @@ pub enum OverlayDebugMode {
 
 #[derive(Debug, Clone)]
 pub struct OverlayDebugOptions {
-    pub(crate) show_labels: bool,
-    pub(crate) show_sizes: bool,
-    pub(crate) label_font_size: f32,
-    pub(crate) bounds_color: Color32,
-    pub(crate) clip_color: Color32,
-    pub(crate) overlap_color: Color32,
+    pub show_labels: bool,
+    pub show_sizes: bool,
+    pub label_font_size: f32,
+    pub bounds_color: Color32,
+    pub clip_color: Color32,
+    pub overlap_color: Color32,
 }
 
 impl Default for OverlayDebugOptions {
@@ -55,10 +56,10 @@ impl Default for OverlayDebugOptions {
 
 #[derive(Debug, Clone)]
 pub struct OverlayDebugConfig {
-    pub(crate) enabled: bool,
-    pub(crate) mode: OverlayDebugMode,
-    pub(crate) scope: Option<WidgetRef>,
-    pub(crate) options: OverlayDebugOptions,
+    pub enabled: bool,
+    pub mode: OverlayDebugMode,
+    pub scope: Option<WidgetRef>,
+    pub options: OverlayDebugOptions,
 }
 
 impl Default for OverlayDebugConfig {
@@ -92,44 +93,50 @@ pub struct OverlayManager {
     overlay_debug: Mutex<OverlayDebugConfig>,
 }
 
+impl Default for OverlayManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OverlayManager {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             overlays: Mutex::new(HashMap::new()),
             overlay_debug: Mutex::new(OverlayDebugConfig::default()),
         }
     }
 
-    pub(crate) fn overlay_debug_config(&self) -> OverlayDebugConfig {
+    pub fn overlay_debug_config(&self) -> OverlayDebugConfig {
         lock(&self.overlay_debug, "overlay debug lock").clone()
     }
 
-    pub(crate) fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
+    pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
         let mut stored = lock(&self.overlay_debug, "overlay debug lock");
         *stored = config;
     }
 
-    pub(crate) fn set_overlay(&self, key: String, overlay: OverlayEntry) {
+    pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {
         let mut overlays = lock(&self.overlays, "overlay lock");
         overlays.insert(key, overlay);
     }
 
-    pub(crate) fn remove_overlay(&self, key: &str) {
+    pub fn remove_overlay(&self, key: &str) {
         let mut overlays = lock(&self.overlays, "overlay lock");
         overlays.remove(key);
     }
 
-    pub(crate) fn clear_overlays(&self) {
+    pub fn clear_overlays(&self) {
         lock(&self.overlays, "overlay lock").clear();
     }
 
-    pub(crate) fn clear_transient_state(&self) {
+    pub fn clear_transient_state(&self) {
         self.clear_overlays();
         let mut debug = lock(&self.overlay_debug, "overlay debug lock");
         *debug = OverlayDebugConfig::default();
     }
 
-    pub(crate) fn paint_overlays(
+    pub fn paint_overlays(
         &self,
         ctx: &Context,
         widgets: &WidgetRegistry,

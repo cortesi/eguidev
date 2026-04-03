@@ -1,4 +1,5 @@
 //! Widget registry for tracking egui widgets across frames.
+#![allow(missing_docs)]
 
 use std::{collections::HashMap, sync::Mutex};
 
@@ -52,8 +53,14 @@ pub struct WidgetRegistry {
     container_stack: Mutex<HashMap<egui::ViewportId, Vec<String>>>,
 }
 
+impl Default for WidgetRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WidgetRegistry {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             registry_current: Mutex::new(HashMap::new()),
             registry_snapshot: Mutex::new(HashMap::new()),
@@ -62,14 +69,14 @@ impl WidgetRegistry {
         }
     }
 
-    pub(crate) fn clear_registry(&self, viewport_id: egui::ViewportId) {
+    pub fn clear_registry(&self, viewport_id: egui::ViewportId) {
         let mut registry = lock(&self.registry_current, "registry lock");
         registry.insert(viewport_id, Vec::new());
         let mut containers = lock(&self.container_stack, "container stack lock");
         containers.insert(viewport_id, Vec::new());
     }
 
-    pub(crate) fn finalize_registry(&self, viewport_id: egui::ViewportId) {
+    pub fn finalize_registry(&self, viewport_id: egui::ViewportId) {
         let mut current = lock(&self.registry_current, "registry lock");
         let mut snapshot = lock(&self.registry_snapshot, "registry snapshot lock");
         if let Some(entries) = current.remove(&viewport_id) {
@@ -82,38 +89,38 @@ impl WidgetRegistry {
         ) = fault;
     }
 
-    pub(crate) fn record_widget(&self, viewport_id: egui::ViewportId, entry: WidgetRegistryEntry) {
+    pub fn record_widget(&self, viewport_id: egui::ViewportId, entry: WidgetRegistryEntry) {
         let mut registry = lock(&self.registry_current, "registry lock");
         registry.entry(viewport_id).or_default().push(entry);
     }
 
-    pub(crate) fn push_container(&self, viewport_id: egui::ViewportId, id: String) {
+    pub fn push_container(&self, viewport_id: egui::ViewportId, id: String) {
         let mut stack = lock(&self.container_stack, "container stack lock");
         stack.entry(viewport_id).or_default().push(id);
     }
 
-    pub(crate) fn pop_container(&self, viewport_id: egui::ViewportId) {
+    pub fn pop_container(&self, viewport_id: egui::ViewportId) {
         let mut stack = lock(&self.container_stack, "container stack lock");
         if let Some(stack) = stack.get_mut(&viewport_id) {
             stack.pop();
         }
     }
 
-    pub(crate) fn current_container(&self, viewport_id: egui::ViewportId) -> Option<String> {
+    pub fn current_container(&self, viewport_id: egui::ViewportId) -> Option<String> {
         let stack = lock(&self.container_stack, "container stack lock");
         stack
             .get(&viewport_id)
             .and_then(|stack| stack.last().cloned())
     }
 
-    pub(crate) fn widget_list(&self, viewport_id: egui::ViewportId) -> Vec<WidgetRegistryEntry> {
+    pub fn widget_list(&self, viewport_id: egui::ViewportId) -> Vec<WidgetRegistryEntry> {
         lock(&self.registry_snapshot, "registry snapshot lock")
             .get(&viewport_id)
             .cloned()
             .unwrap_or_default()
     }
 
-    pub(crate) fn duplicate_explicit_id_error(&self) -> Option<ToolError> {
+    pub fn duplicate_explicit_id_error(&self) -> Option<ToolError> {
         lock(
             &self.duplicate_explicit_id_fault,
             "duplicate explicit id fault lock",
@@ -122,7 +129,7 @@ impl WidgetRegistry {
         .map(|fault| fault.into_tool_error())
     }
 
-    pub(crate) fn resolve_widget(
+    pub fn resolve_widget(
         &self,
         viewports: &ViewportState,
         viewport_id: Option<&str>,

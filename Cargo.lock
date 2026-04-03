@@ -728,6 +728,7 @@ dependencies = [
  "async-trait",
  "clap",
  "eguidev",
+ "eguidev_runtime",
  "libc",
  "schemars",
  "serde",
@@ -833,10 +834,33 @@ dependencies = [
 name = "eguidev"
 version = "0.0.1"
 dependencies = [
+ "eframe",
+ "egui",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "eguidev_demo"
+version = "0.0.1"
+dependencies = [
+ "eframe",
+ "eguidev",
+ "eguidev_runtime",
+ "serde_json",
+]
+
+[[package]]
+name = "eguidev_runtime"
+version = "0.0.1"
+dependencies = [
  "async-trait",
  "base64",
  "eframe",
  "egui",
+ "eguidev",
  "glob",
  "image",
  "mlua",
@@ -846,15 +870,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tmcp",
  "tokio",
-]
-
-[[package]]
-name = "eguidev_demo"
-version = "0.0.1"
-dependencies = [
- "eframe",
- "eguidev",
- "serde_json",
 ]
 
 [[package]]
@@ -4895,6 +4910,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "eguidev",
+ "eguidev_runtime",
  "luau-analyze",
  "serde_json",
  "tmcp",

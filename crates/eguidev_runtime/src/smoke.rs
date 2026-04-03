@@ -8,7 +8,7 @@ use std::{
 
 use tokio::runtime::Handle;
 
-use crate::{DevMcp, ScriptArgs, ScriptEvalOptions, ScriptEvalOutcome};
+use crate::{DevMcp, ScriptArgs, ScriptEvalOptions, ScriptEvalOutcome, runtime};
 
 const SUITE_RESULT_PATH: &str = "<suite>";
 
@@ -197,7 +197,8 @@ struct SuiteScript {
 /// Run a smoketest suite against a live `DevMcp` instance.
 pub fn run_suite(devmcp: &DevMcp, handle: &Handle, config: &SuiteConfig) -> SuiteResult {
     run_suite_with(config, |request| {
-        Ok(devmcp.eval_script(
+        Ok(runtime::eval_script(
+            devmcp,
             handle.clone(),
             &request.source,
             request.timeout_ms,

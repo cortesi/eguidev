@@ -31,6 +31,7 @@ use crate::{
         OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry, parse_color,
     },
     registry::{Inner, viewport_id_to_string},
+    runtime::Runtime,
     screenshots::{ScreenshotKind, ScreenshotState},
     script_definitions,
     tree::collect_subtree,
@@ -112,6 +113,27 @@ fn scroll_area_target_offset(
     })
 }
 
+fn resolve_viewport_id(
+    inner: &Inner,
+    viewport_id: Option<String>,
+) -> Result<egui::ViewportId, ToolError> {
+    inner
+        .viewports
+        .resolve_viewport_id(viewport_id)
+        .map_err(Into::into)
+}
+
+fn resolve_widget(
+    inner: &Inner,
+    viewport_id: Option<&str>,
+    target: &WidgetRef,
+) -> Result<WidgetRegistryEntry, ToolError> {
+    inner
+        .widgets
+        .resolve_widget(&inner.viewports, viewport_id, target)
+        .map_err(Into::into)
+}
+
 /// Await a oneshot fixture response while actively keeping the event loop alive.
 ///
 /// The app processes fixture requests during its frame update cycle. If the
@@ -159,6 +181,7 @@ async fn await_with_repaint(
 
 pub struct DevMcpServer {
     inner: Arc<Inner>,
+    runtime: Arc<Runtime>,
 }
 
 pub fn collect_widget_list(
@@ -169,7 +192,7 @@ pub fn collect_widget_list(
     id_prefix: Option<&str>,
 ) -> ToolResult<Vec<WidgetRegistryEntry>> {
     ensure_automation_ready(inner)?;
-    let viewport_id = inner.viewports.resolve_viewport_id(viewport_id)?;
+    let viewport_id = resolve_viewport_id(inner, viewport_id)?;
     let mut widgets = inner.widgets.widget_list(viewport_id);
     let include_invisible = include_invisible.unwrap_or(false);
     if !include_invisible {
@@ -188,8 +211,14 @@ pub fn collect_widget_list(
 
 #[mcp_server(initialize_fn = initialize)]
 impl DevMcpServer {
+    #[cfg(test)]
     pub(crate) fn new(inner: Arc<Inner>) -> Self {
-        Self { inner }
+        let runtime = Runtime::ensure_for_inner(&inner);
+        Self { inner, runtime }
+    }
+
+    pub(crate) fn with_runtime(inner: Arc<Inner>, runtime: Arc<Runtime>) -> Self {
+        Self { inner, runtime }
     }
 
     async fn resolve_widget_for_pointer(
@@ -252,7 +281,7 @@ impl DevMcpServer {
 
     /// Inject a pointer move event (positions are in egui points).
     async fn input_pointer_move(&self, viewport_id: Option<String>, pos: Pos2) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
         Ok(())
@@ -272,7 +301,7 @@ impl DevMcpServer {
         pressed: bool,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let pointer_button = button
             .to_pointer_button()
             .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Invalid pointer button"))?;
@@ -297,7 +326,7 @@ impl DevMcpServer {
         pressed: bool,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let parsed_key = resolve_key_name(&key)
             .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, format!("Unknown key: {key}")))?;
         let modifiers = modifiers.unwrap_or_default();
@@ -324,7 +353,7 @@ impl DevMcpServer {
         key_name: &str,
         repeat: Option<u32>,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let repeat = repeat.unwrap_or(1);
         if repeat == 0 {
             return Err(ToolError::new(ErrorCode::InvalidRef, "Repeat must be at least 1").into());
@@ -397,11 +426,7 @@ impl DevMcpServer {
         )
         .await
         .map_err(|error| ToolError::new(ErrorCode::FocusNotAcquired, error.message))?;
-        match self.inner.widgets.resolve_widget(
-            &self.inner.viewports,
-            Some(viewport_id_str.as_str()),
-            target,
-        ) {
+        match resolve_widget(&self.inner, Some(viewport_id_str.as_str()), target) {
             Ok(focused_widget) if focused_widget.focused => Ok((focused_widget, viewport_id)),
             Ok(_) => Err(ToolError::new(
                 ErrorCode::FocusNotAcquired,
@@ -417,7 +442,7 @@ impl DevMcpServer {
 
     /// Inject a text event.
     async fn input_text(&self, viewport_id: Option<String>, text: String) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         self.inner
             .queue_action(viewport_id, InputAction::Text { text });
         Ok(())
@@ -425,7 +450,7 @@ impl DevMcpServer {
 
     /// Paste text into the focused widget.
     async fn action_paste(&self, viewport_id: Option<String>, text: String) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         self.inner
             .queue_action(viewport_id, InputAction::Paste { text });
         Ok(())
@@ -438,7 +463,7 @@ impl DevMcpServer {
         delta: Vec2,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let modifiers = modifiers.unwrap_or_default();
         self.inner
             .queue_action(viewport_id, InputAction::Scroll { delta, modifiers });
@@ -458,7 +483,8 @@ impl DevMcpServer {
         let viewport_id = self
             .inner
             .viewports
-            .resolve_viewport_id(Some(viewport_id))?;
+            .resolve_viewport_id(Some(viewport_id))
+            .map_err(ToolError::from)?;
         self.inner
             .queue_command(viewport_id, egui::ViewportCommand::Focus);
         Ok(())
@@ -470,7 +496,7 @@ impl DevMcpServer {
         viewport_id: Option<String>,
         inner_size: Vec2,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         ensure_positive_vec2(inner_size, "inner_size")?;
         self.inner.queue_command(
             viewport_id,
@@ -488,7 +514,7 @@ impl DevMcpServer {
         increments: Option<Vec2>,
         resizable: Option<bool>,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         if let Some(min_size) = min_size {
             ensure_positive_vec2(min_size, "min_size")?;
             self.inner.queue_command(
@@ -567,7 +593,7 @@ impl DevMcpServer {
         timeout_ms: Option<u64>,
         poll_interval_ms: Option<u64>,
     ) -> ToolResult<()> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
         let start_frame = self.inner.frame_count();
@@ -625,11 +651,7 @@ impl DevMcpServer {
 
         let (matched, widget, elapsed_ms) =
             wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || {
-                let result = match self.inner.widgets.resolve_widget(
-                    &self.inner.viewports,
-                    viewport_id.as_deref(),
-                    &target,
-                ) {
+                let result = match resolve_widget(&self.inner, viewport_id.as_deref(), &target) {
                     Ok(widget) => {
                         let matched = predicate(Some(&widget));
                         Ok::<_, ToolError>((matched, Some(widget)))
@@ -697,11 +719,7 @@ impl DevMcpServer {
         viewport_id: Option<String>,
         target: WidgetRef,
     ) -> ToolResult<WidgetGetResult> {
-        let widget = self.inner.widgets.resolve_widget(
-            &self.inner.viewports,
-            viewport_id.as_deref(),
-            &target,
-        )?;
+        let widget = resolve_widget(&self.inner, viewport_id.as_deref(), &target)?;
         Ok(WidgetGetResult { widget })
     }
 
@@ -712,11 +730,7 @@ impl DevMcpServer {
         target: WidgetRef,
         value: WidgetValue,
     ) -> ToolResult<()> {
-        let widget = self.inner.widgets.resolve_widget(
-            &self.inner.viewports,
-            viewport_id.as_deref(),
-            &target,
-        )?;
+        let widget = resolve_widget(&self.inner, viewport_id.as_deref(), &target)?;
         validate_widget_value(&widget, &value)?;
         let WidgetRegistryEntry {
             id: widget_id,
@@ -726,7 +740,8 @@ impl DevMcpServer {
         let viewport_id = self
             .inner
             .viewports
-            .resolve_viewport_id(Some(widget_viewport_id))?;
+            .resolve_viewport_id(Some(widget_viewport_id))
+            .map_err(ToolError::from)?;
         self.inner
             .queue_widget_value_update(viewport_id, widget_id, value);
         Ok(())
@@ -1085,11 +1100,7 @@ impl DevMcpServer {
         let mut widgets = self.inner.widgets.widget_list(viewport_id);
         let viewport_id_str = viewport_id_to_string(viewport_id);
         if let Some(root) = root.as_ref() {
-            let root = self.inner.widgets.resolve_widget(
-                &self.inner.viewports,
-                Some(viewport_id_str.as_str()),
-                root,
-            )?;
+            let root = resolve_widget(&self.inner, Some(viewport_id_str.as_str()), root)?;
             widgets = collect_subtree(&widgets, &root);
         }
 
@@ -1127,7 +1138,7 @@ impl DevMcpServer {
         all_layers: Option<bool>,
         viewport_id: Option<String>,
     ) -> ToolResult<WidgetAtPointResult> {
-        let viewport_id = self.inner.viewports.resolve_viewport_id(viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let widgets = self.inner.widgets.widget_list(viewport_id);
         let mut hits: Vec<WidgetRegistryEntry> = widgets
             .iter()
@@ -1151,11 +1162,7 @@ impl DevMcpServer {
         color: String,
     ) -> ToolResult<OverlayHighlightResult> {
         let (rect, key) = if let Some(ref target) = target {
-            let widget = self.inner.widgets.resolve_widget(
-                &self.inner.viewports,
-                viewport_id.as_deref(),
-                target,
-            )?;
+            let widget = resolve_widget(&self.inner, viewport_id.as_deref(), target)?;
             (widget.interact_rect, format!("widget:{}", widget.id))
         } else if let Some(rect) = rect {
             let key = format!(
@@ -1188,11 +1195,7 @@ impl DevMcpServer {
         target: Option<WidgetRef>,
     ) -> ToolResult<()> {
         if let Some(ref target) = target {
-            let widget = self.inner.widgets.resolve_widget(
-                &self.inner.viewports,
-                viewport_id.as_deref(),
-                target,
-            )?;
+            let widget = resolve_widget(&self.inner, viewport_id.as_deref(), target)?;
             self.inner.remove_overlay(&format!("widget:{}", widget.id));
         } else {
             self.inner.clear_overlays();
@@ -1242,10 +1245,12 @@ impl DevMcpServer {
             .source_name
             .unwrap_or_else(|| "script.luau".to_string());
         let inner = Arc::clone(&self.inner);
+        let runtime = Arc::clone(&self.runtime);
         let handle = Handle::current();
         let eval = spawn_blocking(move || {
             script::run_script_eval(
                 inner,
+                runtime,
                 handle,
                 &script,
                 timeout_ms,
@@ -1266,17 +1271,10 @@ impl DevMcpServer {
         scope: Option<&WidgetRef>,
     ) -> Result<egui::ViewportId, ToolError> {
         if let Some(scope) = scope {
-            let widget = self.inner.widgets.resolve_widget(
-                &self.inner.viewports,
-                viewport_id.as_deref(),
-                scope,
-            )?;
-            return self
-                .inner
-                .viewports
-                .resolve_viewport_id(Some(widget.viewport_id));
+            let widget = resolve_widget(&self.inner, viewport_id.as_deref(), scope)?;
+            return resolve_viewport_id(&self.inner, Some(widget.viewport_id));
         }
-        self.inner.viewports.resolve_viewport_id(viewport_id)
+        resolve_viewport_id(&self.inner, viewport_id)
     }
 
     #[tool]
@@ -1299,7 +1297,9 @@ impl DevMcpServer {
         self.inner.clear_all();
         self.inner.reset_fixture_transient_state();
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_FIXTURE_TIMEOUT_MS);
-        let receiver = self.inner.enqueue_fixture_request(name.clone());
+        let receiver = self
+            .runtime
+            .enqueue_fixture_request(&self.inner, name.clone());
         // Actively drive the event loop while awaiting the fixture response.
         // The app processes fixture requests in its update() method, which only
         // runs during a frame. Rather than passively waiting on the oneshot
@@ -1323,20 +1323,21 @@ fn resolve_screenshot_viewport(
     viewport_id: Option<String>,
 ) -> Result<egui::ViewportId, ToolError> {
     if let Some(viewport_id) = viewport_id {
-        return inner.viewports.resolve_viewport_id(Some(viewport_id));
+        return resolve_viewport_id(inner, Some(viewport_id));
     }
     Ok(egui::ViewportId::ROOT)
 }
 
 async fn capture_screenshot(
     inner: &Inner,
+    runtime: &Runtime,
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
 ) -> Result<String, ToolError> {
     // Best-effort wake-up before sending the screenshot command. Some idle windows won't
     // produce a frame until a command is queued, so only treat this as fatal if context
     // capture is not ready yet.
-    let event_loop_ready = ensure_event_loop_active(inner, viewport_id).await;
+    let event_loop_ready = ensure_event_loop_active(inner, runtime, viewport_id).await;
     let has_snapshot = inner.viewports.has_viewport_snapshot(viewport_id);
     if !inner.has_context() {
         if let Err(error) = event_loop_ready {
@@ -1346,35 +1347,41 @@ async fn capture_screenshot(
             ErrorCode::InvalidRef,
             "Viewport context not ready for screenshots",
         )
-        .with_details(screenshot_error_details(inner, viewport_id)));
+        .with_details(screenshot_error_details(inner, runtime, viewport_id)));
     }
     if !has_snapshot {
         event_loop_ready?;
         return Err(
             ToolError::new(ErrorCode::InvalidRef, "Viewport not ready for screenshots")
-                .with_details(screenshot_error_details(inner, viewport_id)),
+                .with_details(screenshot_error_details(inner, runtime, viewport_id)),
         );
     }
 
     let start_frame = inner.frame_count();
     let request_id = inner.next_request_id();
     let kind_snapshot = kind.clone();
-    inner
-        .screenshots
-        .insert_screenshot(request_id, ScreenshotState::pending(kind));
+    runtime.insert_screenshot(request_id, ScreenshotState::pending(kind));
     inner.queue_command(
         viewport_id,
         egui::ViewportCommand::Screenshot(egui::UserData::new(request_id)),
     );
-    inner.record_screenshot_request(request_id, viewport_id, &kind_snapshot);
+    runtime.record_screenshot_request(inner, request_id, viewport_id, &kind_snapshot);
     inner.request_repaint_of(viewport_id);
-    let state =
-        await_screenshot(inner, request_id, viewport_id, &kind_snapshot, start_frame).await?;
+    let state = await_screenshot(
+        inner,
+        runtime,
+        request_id,
+        viewport_id,
+        &kind_snapshot,
+        start_frame,
+    )
+    .await?;
     build_screenshot_data(&state)
 }
 
 async fn ensure_event_loop_active(
     inner: &Inner,
+    runtime: &Runtime,
     viewport_id: egui::ViewportId,
 ) -> Result<(), ToolError> {
     let initial_frame = inner.frame_count();
@@ -1386,7 +1393,7 @@ async fn ensure_event_loop_active(
             if inner.frame_count() > initial_frame {
                 return;
             }
-            let notified = inner.frame_notify().notified();
+            let notified = runtime.frame_notify().notified();
             inner.request_repaint_of(viewport_id);
             let poll = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
             drop(timeout(poll, notified).await);
@@ -1398,7 +1405,7 @@ async fn ensure_event_loop_active(
             ErrorCode::Internal,
             "Window event loop not responding. The window may be minimized or hidden.",
         )
-        .with_details(screenshot_error_details(inner, viewport_id)));
+        .with_details(screenshot_error_details(inner, runtime, viewport_id)));
     }
 
     Ok(())
@@ -1406,17 +1413,18 @@ async fn ensure_event_loop_active(
 
 async fn await_screenshot(
     inner: &Inner,
+    runtime: &Runtime,
     request_id: u64,
     viewport_id: egui::ViewportId,
     kind: &ScreenshotKind,
     start_frame: u64,
 ) -> Result<ScreenshotState, ToolError> {
-    let notify = match inner.screenshots.screenshot_state(request_id) {
+    let notify = match runtime.screenshot_state(request_id) {
         Some(state) => state.notify(),
         None => {
             return Err(
                 ToolError::new(ErrorCode::InvalidRef, "Unknown request id").with_details(
-                    screenshot_request_details(inner, request_id, viewport_id, kind),
+                    screenshot_request_details(inner, runtime, request_id, viewport_id, kind),
                 ),
             );
         }
@@ -1426,7 +1434,7 @@ async fn await_screenshot(
         let mut requested_followup = false;
         loop {
             let notified = notify.notified();
-            if let Some(state) = inner.screenshots.screenshot_state(request_id) {
+            if let Some(state) = runtime.screenshot_state(request_id) {
                 if state.is_ready() {
                     break;
                 }
@@ -1434,6 +1442,7 @@ async fn await_screenshot(
                 return Err(ToolError::new(ErrorCode::InvalidRef, "Unknown request id")
                     .with_details(screenshot_request_details(
                         inner,
+                        runtime,
                         request_id,
                         viewport_id,
                         kind,
@@ -1450,10 +1459,8 @@ async fn await_screenshot(
 
     timeout(SCREENSHOT_TIMEOUT, wait_loop).await.map_err(|_| {
         // Clean up the pending screenshot request.
-        inner.screenshots.take_screenshot(request_id);
-        inner
-            .screenshots
-            .log_screenshot(inner.verbose_logging(), format!(
+        runtime.take_screenshot(request_id);
+        runtime.log_screenshot(inner, format!(
             "timeout request_id={request_id} viewport={} start_frame={start_frame} end_frame={}",
             viewport_id_to_string(viewport_id),
             inner.frame_count(),
@@ -1466,6 +1473,7 @@ async fn await_screenshot(
         )
         .with_details(screenshot_request_details_with_frames(
             inner,
+            runtime,
             request_id,
             viewport_id,
             kind,
@@ -1474,21 +1482,19 @@ async fn await_screenshot(
         ))
     })??;
 
-    inner
-        .screenshots
-        .take_screenshot(request_id)
-        .ok_or_else(|| {
-            ToolError::new(ErrorCode::InvalidRef, "Unknown request id").with_details(
-                screenshot_request_details_with_frames(
-                    inner,
-                    request_id,
-                    viewport_id,
-                    kind,
-                    start_frame,
-                    inner.frame_count(),
-                ),
-            )
-        })
+    runtime.take_screenshot(request_id).ok_or_else(|| {
+        ToolError::new(ErrorCode::InvalidRef, "Unknown request id").with_details(
+            screenshot_request_details_with_frames(
+                inner,
+                runtime,
+                request_id,
+                viewport_id,
+                kind,
+                start_frame,
+                inner.frame_count(),
+            ),
+        )
+    })
 }
 
 fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
@@ -1508,7 +1514,11 @@ fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
     encode_jpeg(&image)
 }
 
-fn screenshot_error_details(inner: &Inner, viewport_id: egui::ViewportId) -> Value {
+fn screenshot_error_details(
+    inner: &Inner,
+    runtime: &Runtime,
+    viewport_id: egui::ViewportId,
+) -> Value {
     let snapshots = inner.viewports.viewports_snapshot();
     let known_viewports = snapshots
         .iter()
@@ -1520,21 +1530,23 @@ fn screenshot_error_details(inner: &Inner, viewport_id: egui::ViewportId) -> Val
         "known_viewports": known_viewports,
         "frame_count": inner.frame_count(),
         "has_snapshot": inner.viewports.has_viewport_snapshot(viewport_id),
-        "debug": inner.screenshot_debug_snapshot(),
+        "debug": runtime.screenshot_debug_snapshot(inner),
     })
 }
 
 fn screenshot_request_details(
     inner: &Inner,
+    runtime: &Runtime,
     request_id: u64,
     viewport_id: egui::ViewportId,
     kind: &ScreenshotKind,
 ) -> Value {
-    screenshot_request_details_with_frames(inner, request_id, viewport_id, kind, 0, 0)
+    screenshot_request_details_with_frames(inner, runtime, request_id, viewport_id, kind, 0, 0)
 }
 
 fn screenshot_request_details_with_frames(
     inner: &Inner,
+    runtime: &Runtime,
     request_id: u64,
     viewport_id: egui::ViewportId,
     kind: &ScreenshotKind,
@@ -1558,7 +1570,7 @@ fn screenshot_request_details_with_frames(
         "kind": kind_details,
         "start_frame": start_frame,
         "end_frame": end_frame,
-        "debug": inner.screenshot_debug_snapshot(),
+        "debug": runtime.screenshot_debug_snapshot(inner),
     })
 }
 
@@ -1640,6 +1652,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use eguidev::FixtureSpec;
     use serde_json::Value;
     use tmcp::schema::ContentBlock;
     use tokio::task::yield_now;
@@ -1649,13 +1662,24 @@ mod tests {
         actions::InputAction,
         overlay::{OverlayDebugConfig, OverlayDebugMode},
         registry::{Inner, viewport_id_to_string},
+        runtime::Runtime,
         tools::types::LayoutIssueKind,
         types::{
-            FixtureSpec, Modifiers, Pos2, Rect, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole,
-            WidgetValue,
+            Modifiers, Pos2, Rect, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetValue,
         },
         widget_registry::{WidgetMeta, record_widget},
     };
+
+    trait InnerFixtureWaitExt {
+        async fn wait_for_fixture_request(&self);
+    }
+
+    impl InnerFixtureWaitExt for Arc<Inner> {
+        async fn wait_for_fixture_request(&self) {
+            let runtime = Runtime::ensure_for_inner(self);
+            runtime.wait_for_fixture_request(self).await;
+        }
+    }
 
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
         let viewport_id = raw_input.viewport_id;
@@ -2330,10 +2354,12 @@ return widget:wait_for_visible()"#
         let request = requests.pop().expect("fixture request");
         assert_eq!(request.name, "test_fixture");
         let inner_for_frame = Arc::clone(&inner);
+        let runtime_for_frame = Runtime::ensure_for_inner(&inner);
         tokio::spawn(async move {
             for _ in 0..4 {
                 yield_now().await;
-                inner_for_frame.notify_frame_end();
+                inner_for_frame.advance_frame();
+                runtime_for_frame.frame_notify().notify_waiters();
             }
         });
         assert!(request.respond(Ok(())));
@@ -2513,10 +2539,12 @@ return widget:wait_for_visible()"#
         let mut requests = inner.fixtures.collect_fixture_requests();
         let request = requests.pop().expect("fixture request");
         let inner_for_frame = Arc::clone(&inner);
+        let runtime_for_frame = Runtime::ensure_for_inner(&inner);
         tokio::spawn(async move {
             for _ in 0..4 {
                 yield_now().await;
-                inner_for_frame.notify_frame_end();
+                inner_for_frame.advance_frame();
+                runtime_for_frame.frame_notify().notify_waiters();
             }
         });
         assert!(request.respond(Ok(())));
@@ -3629,10 +3657,11 @@ return widget:wait_for_visible()"#
         drop(ctx.run(raw_input, |_| {}));
         inner.capture_context(viewport_id, &ctx);
         inner.viewports.capture_input_snapshot(&ctx);
-        let inner_for_frame = Arc::clone(&inner);
+        let runtime_for_frame = Runtime::ensure_for_inner(&inner);
         tokio::spawn(async move {
             yield_now().await;
-            inner_for_frame.notify_frame_end();
+            inner.advance_frame();
+            runtime_for_frame.frame_notify().notify_waiters();
         });
 
         server

@@ -10,15 +10,16 @@ The automation stack now has three explicit layers:
 1. App instrumentation: always-available `eguidev` APIs such as `DevMcp`,
    `FrameGuard`, `raw_input_hook`, `DevUiExt`, widget metadata types, and
    fixture registration/collection.
-2. Optional embedded runtime: enabled only with
-   `eguidev/devtools`, attached once through
-   `eguidev::runtime::attach()`, and responsible for the in-process MCP server,
+2. Optional embedded runtime: provided by the native-only
+   `eguidev_runtime` crate, attached once through
+   `eguidev_runtime::attach()`, and responsible for the in-process MCP server,
    script evaluation, screenshots, and async automation waits.
 3. `edev` launcher: external process lifecycle and stable host tool surface
    (`start`, `stop`, `restart`, `status`, `script_eval`, `script_api`).
 
 Default and release builds keep layer 1 only. Dev-capable builds add layer 2
-behind one app-local feature boundary, and `edev` sits entirely outside the app
+behind one app-local feature boundary such as
+`devtools = ["dep:eguidev_runtime"]`, and `edev` sits entirely outside the app
 binary.
 
 ## Lifecycle and fixture flow (`edev`)
@@ -58,7 +59,8 @@ Failure points:
 1. Tool calls enqueue `InputAction` and `ViewportCommand` events into `ActionQueue`.
 2. `raw_input_hook` drains queued actions for the current viewport and appends egui events.
 3. Frame processing consumes injected egui events.
-4. `end_frame` captures widget/input snapshots, applies viewport commands, and notifies waiters.
+4. `end_frame` captures widget/input snapshots, applies viewport commands, and invokes the
+   attached runtime hooks for frame waiters, screenshot capture, and fixture wakeups.
 
 Keyboard delivery modes:
 - Ambient (`key`, `input_key`): routed through normal focus state.

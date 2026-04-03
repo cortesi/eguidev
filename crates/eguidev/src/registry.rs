@@ -1,30 +1,25 @@
 //! Internal state and registry capture.
+#![allow(missing_docs)]
 
 use std::{
     collections::HashMap,
     fmt,
     sync::{
-        Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
 use egui::{Context, Vec2 as EguiVec2};
-#[cfg(feature = "devtools")]
-use tokio::sync::{Notify, oneshot};
 
 use crate::{
     actions::{ActionQueue, ActionTiming, InputAction},
+    devmcp::RuntimeHooks,
     fixtures::FixtureManager,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
     types::WidgetValue,
     viewports::ViewportState,
     widget_registry::WidgetRegistry,
-};
-#[cfg(feature = "devtools")]
-use crate::{
-    fixtures::FixtureRuntime,
-    screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager},
 };
 
 pub fn lock<'a, T>(mutex: &'a Mutex<T>, label: &'static str) -> MutexGuard<'a, T> {
@@ -38,24 +33,25 @@ pub fn lock<'a, T>(mutex: &'a Mutex<T>, label: &'static str) -> MutexGuard<'a, T
 }
 
 pub struct Inner {
-    pub(crate) actions: ActionQueue,
-    pub(crate) viewports: ViewportState,
-    pub(crate) widgets: WidgetRegistry,
-    pub(crate) overlays: OverlayManager,
+    pub actions: ActionQueue,
+    pub viewports: ViewportState,
+    pub widgets: WidgetRegistry,
+    pub overlays: OverlayManager,
     contexts: Mutex<HashMap<egui::ViewportId, Context>>,
     widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValue>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     next_request_id: AtomicU64,
     frame_count: AtomicU64,
-    pub(crate) last_action_frame: AtomicU64,
+    pub last_action_frame: AtomicU64,
     verbose_logging: AtomicBool,
-    pub(crate) fixtures: FixtureManager,
-    #[cfg(feature = "devtools")]
-    frame_notify: Notify,
-    #[cfg(feature = "devtools")]
-    fixture_runtime: FixtureRuntime,
-    #[cfg(feature = "devtools")]
-    pub(crate) screenshots: ScreenshotManager,
+    pub fixtures: FixtureManager,
+    runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl fmt::Debug for Inner {
@@ -97,12 +93,10 @@ impl ScrollAreaKey {
 }
 
 impl Inner {
-    #[cfg(feature = "devtools")]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             actions: ActionQueue::new(),
             viewports: ViewportState::new(),
-            screenshots: ScreenshotManager::new(),
             widgets: WidgetRegistry::new(),
             overlays: OverlayManager::new(),
             contexts: Mutex::new(HashMap::new()),
@@ -113,26 +107,31 @@ impl Inner {
             last_action_frame: AtomicU64::new(0),
             verbose_logging: AtomicBool::new(false),
             fixtures: FixtureManager::new(),
-            frame_notify: Notify::new(),
-            fixture_runtime: FixtureRuntime::new(),
+            runtime_hooks: Mutex::new(None),
         }
     }
 
-    #[cfg(feature = "devtools")]
-    pub(crate) fn enqueue_fixture_request(
-        &self,
-        name: String,
-    ) -> oneshot::Receiver<Result<(), String>> {
-        let (sender, receiver) = oneshot::channel();
-        self.fixtures.enqueue_fixture_request(name, move |result| {
-            drop(sender.send(result));
-        });
-        self.fixture_runtime.notify_request();
-        self.request_repaint_of(egui::ViewportId::ROOT);
-        receiver
+    pub fn set_runtime_hooks(&self, hooks: Arc<dyn RuntimeHooks>) {
+        *lock(&self.runtime_hooks, "runtime hooks lock") = Some(hooks);
     }
 
-    pub(crate) fn reset_fixture_transient_state(&self) {
+    pub fn runtime_hooks(&self) -> Option<Arc<dyn RuntimeHooks>> {
+        lock(&self.runtime_hooks, "runtime hooks lock").clone()
+    }
+
+    pub fn enqueue_fixture_request(
+        &self,
+        name: String,
+        responder: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        self.fixtures.enqueue_fixture_request(name, responder);
+        if let Some(hooks) = self.runtime_hooks() {
+            hooks.on_fixture_request(self);
+        }
+        self.request_repaint_of(egui::ViewportId::ROOT);
+    }
+
+    pub fn reset_fixture_transient_state(&self) {
         self.actions.clear_all();
         lock(&self.widget_value_updates, "widget value update lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
@@ -140,34 +139,34 @@ impl Inner {
         self.request_repaint_of(egui::ViewportId::ROOT);
     }
 
-    pub(crate) fn set_verbose_logging(&self, verbose_logging: bool) {
+    pub fn set_verbose_logging(&self, verbose_logging: bool) {
         self.verbose_logging
             .store(verbose_logging, Ordering::Relaxed);
     }
 
-    pub(crate) fn verbose_logging(&self) -> bool {
+    pub fn verbose_logging(&self) -> bool {
         self.verbose_logging.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn capture_context(&self, viewport_id: egui::ViewportId, ctx: &Context) {
+    pub fn capture_context(&self, viewport_id: egui::ViewportId, ctx: &Context) {
         let mut stored = lock(&self.contexts, "contexts lock");
         stored.insert(viewport_id, ctx.clone());
     }
 
-    pub(crate) fn context_for(&self, viewport_id: egui::ViewportId) -> Option<Context> {
+    pub fn context_for(&self, viewport_id: egui::ViewportId) -> Option<Context> {
         let contexts = lock(&self.contexts, "contexts lock");
         contexts.get(&viewport_id).cloned()
     }
 
-    pub(crate) fn has_context(&self) -> bool {
+    pub fn has_context(&self) -> bool {
         !lock(&self.contexts, "contexts lock").is_empty()
     }
 
-    pub(crate) fn request_repaint(&self) {
+    pub fn request_repaint(&self) {
         self.request_repaint_of(egui::ViewportId::ROOT);
     }
 
-    pub(crate) fn request_repaint_of(&self, viewport_id: egui::ViewportId) {
+    pub fn request_repaint_of(&self, viewport_id: egui::ViewportId) {
         let ctx = {
             let contexts = lock(&self.contexts, "contexts lock");
             contexts.get(&viewport_id).cloned()
@@ -177,7 +176,7 @@ impl Inner {
         }
     }
 
-    pub(crate) fn queue_widget_value_update(
+    pub fn queue_widget_value_update(
         &self,
         viewport_id: egui::ViewportId,
         id: String,
@@ -188,7 +187,7 @@ impl Inner {
         self.request_repaint_of(viewport_id);
     }
 
-    pub(crate) fn take_widget_value_update(
+    pub fn take_widget_value_update(
         &self,
         viewport_id: egui::ViewportId,
         id: &str,
@@ -197,32 +196,32 @@ impl Inner {
         updates.remove(&WidgetValueKey::new(viewport_id, id))
     }
 
-    pub(crate) fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
+    pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
         self.overlays.set_overlay_debug_config(config);
         self.request_repaint();
     }
 
-    pub(crate) fn set_overlay(&self, key: String, overlay: OverlayEntry) {
+    pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {
         self.overlays.set_overlay(key, overlay);
         self.request_repaint();
     }
 
-    pub(crate) fn remove_overlay(&self, key: &str) {
+    pub fn remove_overlay(&self, key: &str) {
         self.overlays.remove_overlay(key);
         self.request_repaint();
     }
 
-    pub(crate) fn clear_overlays(&self) {
+    pub fn clear_overlays(&self) {
         self.overlays.clear_overlays();
         self.request_repaint();
     }
 
-    pub(crate) fn paint_overlays(&self, ctx: &Context) {
+    pub fn paint_overlays(&self, ctx: &Context) {
         self.overlays
             .paint_overlays(ctx, &self.widgets, &self.viewports);
     }
 
-    pub(crate) fn set_scroll_override(
+    pub fn set_scroll_override(
         &self,
         viewport_id: egui::ViewportId,
         widget_id: u64,
@@ -233,7 +232,7 @@ impl Inner {
         self.request_repaint_of(viewport_id);
     }
 
-    pub(crate) fn take_scroll_override(
+    pub fn take_scroll_override(
         &self,
         viewport_id: egui::ViewportId,
         widget_id: u64,
@@ -242,20 +241,11 @@ impl Inner {
         overrides.remove(&ScrollAreaKey::new(viewport_id, widget_id))
     }
 
-    #[cfg(feature = "devtools")]
-    pub(crate) fn capture_screenshot_events(&self, events: &[egui::Event]) {
-        self.screenshots.capture_screenshot_events(
-            events,
-            self.verbose_logging(),
-            self.frame_count(),
-        );
-    }
-
-    pub(crate) fn queue_action(&self, viewport_id: egui::ViewportId, action: InputAction) {
+    pub fn queue_action(&self, viewport_id: egui::ViewportId, action: InputAction) {
         self.queue_action_with_timing(viewport_id, ActionTiming::Current, action);
     }
 
-    pub(crate) fn queue_action_with_timing(
+    pub fn queue_action_with_timing(
         &self,
         viewport_id: egui::ViewportId,
         timing: ActionTiming,
@@ -266,80 +256,27 @@ impl Inner {
         self.request_repaint_of(viewport_id);
     }
 
-    pub(crate) fn queue_command(
-        &self,
-        viewport_id: egui::ViewportId,
-        command: egui::ViewportCommand,
-    ) {
+    pub fn queue_command(&self, viewport_id: egui::ViewportId, command: egui::ViewportCommand) {
         self.actions.queue_command(viewport_id, command);
         self.request_repaint_of(viewport_id);
     }
 
-    #[cfg(feature = "devtools")]
-    pub(crate) fn record_screenshot_request(
-        &self,
-        request_id: u64,
-        viewport_id: egui::ViewportId,
-        kind: &ScreenshotKind,
-    ) {
-        self.screenshots.record_screenshot_request(
-            request_id,
-            viewport_id,
-            kind,
-            self.verbose_logging(),
-            self.frame_count(),
-        );
-    }
-
-    #[cfg(feature = "devtools")]
-    pub(crate) fn record_screenshot_command_sent(
-        &self,
-        viewport_id: egui::ViewportId,
-        request_id: Option<u64>,
-    ) {
-        self.screenshots.record_screenshot_command_sent(
-            viewport_id,
-            request_id,
-            self.verbose_logging(),
-            self.frame_count(),
-        );
-    }
-
-    #[cfg(feature = "devtools")]
-    pub(crate) fn screenshot_debug_snapshot(&self) -> ScreenshotDebugSnapshot {
-        self.screenshots
-            .screenshot_debug_snapshot(true, self.frame_count())
-    }
-
-    pub(crate) fn next_request_id(&self) -> u64 {
+    pub fn next_request_id(&self) -> u64 {
         self.next_request_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub(crate) fn clear_all(&self) {
+    pub fn clear_all(&self) {
         lock(&self.widget_value_updates, "widget values lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         lock(&self.contexts, "contexts lock").clear();
         self.actions.clear_all();
     }
 
-    #[cfg(feature = "devtools")]
-    pub(crate) fn notify_frame_end(&self) {
+    pub fn advance_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
-        self.frame_notify.notify_waiters();
     }
 
-    #[cfg(feature = "devtools")]
-    pub(crate) fn frame_notify(&self) -> &Notify {
-        &self.frame_notify
-    }
-
-    #[cfg(feature = "devtools")]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) async fn wait_for_fixture_request(&self) {
-        self.fixture_runtime.wait_for_request(&self.fixtures).await;
-    }
-
-    pub(crate) fn frame_count(&self) -> u64 {
+    pub fn frame_count(&self) -> u64 {
         self.frame_count.load(Ordering::Relaxed)
     }
 }
@@ -385,26 +322,6 @@ mod tests {
     }
 
     fn new_test_inner() -> Inner {
-        #[cfg(feature = "devtools")]
-        {
-            Inner::new()
-        }
-        #[cfg(not(feature = "devtools"))]
-        {
-            Inner {
-                actions: ActionQueue::new(),
-                viewports: ViewportState::new(),
-                widgets: WidgetRegistry::new(),
-                overlays: OverlayManager::new(),
-                contexts: Mutex::new(HashMap::new()),
-                widget_value_updates: Mutex::new(HashMap::new()),
-                scroll_overrides: Mutex::new(HashMap::new()),
-                next_request_id: AtomicU64::new(1),
-                frame_count: AtomicU64::new(0),
-                last_action_frame: AtomicU64::new(0),
-                verbose_logging: AtomicBool::new(false),
-                fixtures: FixtureManager::new(),
-            }
-        }
+        Inner::new()
     }
 }

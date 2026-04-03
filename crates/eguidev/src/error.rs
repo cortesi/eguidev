@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -21,30 +23,20 @@ impl ToolError {
         self
     }
 
-    #[cfg(feature = "devtools")]
-    pub(crate) fn into_tmcp(self) -> tmcp::ToolError {
-        let code = self.code.as_str();
-        let message = self.message;
-        let mut structured = serde_json::json!({
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        });
-        if let Some(details) = self.details
-            && let Some(error) = structured.get_mut("error")
-            && let Some(map) = error.as_object_mut()
-        {
-            map.insert("details".to_string(), details);
-        }
-        tmcp::ToolError::new(code, message).with_structured(structured)
+    pub fn code(&self) -> ErrorCode {
+        self.code
     }
-}
 
-#[cfg(feature = "devtools")]
-impl From<ToolError> for tmcp::ToolError {
-    fn from(error: ToolError) -> Self {
-        error.into_tmcp()
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn details(&self) -> Option<&Value> {
+        self.details.as_ref()
+    }
+
+    pub fn into_parts(self) -> (ErrorCode, String, Option<Value>) {
+        (self.code, self.message, self.details)
     }
 }
 
@@ -62,7 +54,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::NotFound => "not_found",
             Self::Ambiguous => "ambiguous",

@@ -2,7 +2,7 @@
 
 Quick reference for Luau syntax used in eguidev scripts.
 For the canonical API surface and function-level behavior, see
-`crates/eguidev/luau/eguidev.d.luau` or `script_api`.
+`crates/eguidev_runtime/luau/eguidev.d.luau` or `script_api`.
 
 `--!strict` is implicit for all scripts passed to `script_eval`. Write strict Luau, but omit the
 hot comment unless you specifically want it in a checked-in file.

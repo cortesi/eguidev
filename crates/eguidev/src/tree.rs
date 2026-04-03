@@ -11,6 +11,7 @@ struct IndexedWidget {
     widget: WidgetRegistryEntry,
 }
 
+/// Collect a widget and all descendant widgets from a flat registry snapshot.
 pub fn collect_subtree(
     widgets: &[WidgetRegistryEntry],
     root: &WidgetRegistryEntry,

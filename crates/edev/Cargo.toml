@@ -23,7 +23,8 @@ schemars.workspace = true
 thiserror.workspace = true
 tmcp.workspace = true
 tokio.workspace = true
-eguidev = { workspace = true, features = ["devtools"] }
+eguidev.workspace = true
+eguidev_runtime.workspace = true
 syntect = "5.3.0"
 toml = "0.8"
 
