@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "edev"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "eguidev"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "eguidev_demo"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "eframe",
  "eguidev",
@@ -4891,7 +4891,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "clap",
  "eguidev",
