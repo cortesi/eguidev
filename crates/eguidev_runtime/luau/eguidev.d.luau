@@ -7,6 +7,8 @@
 -- trips.
 -- The script's final return value becomes JSON in the MCP result. Logs,
 -- assertions, and returned images are recorded alongside it.
+-- When the same script is run via `edev smoke`, the smoke runner ignores the
+-- final return value and only uses thrown errors/assertions plus logs.
 --
 -- This file is the canonical scripting reference. `script_api` and
 -- `edev --script-docs` return this file verbatim.
@@ -492,6 +494,8 @@ declare function root(): Viewport
 declare function viewports(): { Viewport }
 
 -- Apply a registered fixture and wait for the UI to settle before returning.
+-- App integrations should process fixture requests in `eframe::App::update`,
+-- not `logic`, when they need a fresh captured frame after fixture apply.
 declare function fixture(name: string): ()
 -- Fixtures are independent baseline setups and must be safe to invoke in any order.
 declare function fixtures(): { Fixture }

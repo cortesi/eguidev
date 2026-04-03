@@ -76,6 +76,30 @@
 //! [`track_response_full`] to register it after the fact. Use [`container`] to
 //! annotate hierarchy so scripts can traverse parent/child relationships.
 //!
+//! Custom widgets that should accept scripted `set_value(...)` calls must also
+//! consume queued overrides before rendering:
+//!
+//! ```rust,ignore
+//! let id = "settings.mode";
+//! if let Some(crate::WidgetValue::Int(index)) = take_widget_value_override(ui, id) {
+//!     *selected = index as usize;
+//! }
+//!
+//! let response = render_custom_mode_picker(ui, selected);
+//! track_response_full(
+//!     id,
+//!     &response,
+//!     WidgetMeta {
+//!         role: WidgetRole::ComboBox,
+//!         value: Some(WidgetValue::Int(*selected as i64)),
+//!         role_state: Some(RoleState::ComboBox {
+//!             options: mode_labels.clone(),
+//!         }),
+//!         ..Default::default()
+//!     },
+//! );
+//! ```
+//!
 //! Widget ids are the one canonical selector in the scripting API. Explicit ids
 //! must be unique within a captured frame; duplicates are treated as a hard
 //! automation fault.
@@ -83,7 +107,9 @@
 //! # Fixtures
 //!
 //! Apps register fixtures with [`DevMcp::fixtures`] and handle requests by
-//! polling [`DevMcp::collect_fixture_requests`] in `update`. Each fixture must
+//! polling [`DevMcp::collect_fixture_requests`] in `update`. For `eframe`
+//! integrations, prefer `App::update` over `App::logic` so fixture application
+//! is followed by a real UI frame capture. Each fixture must
 //! be independently invokable from any prior state and must leave the app in
 //! its declared baseline. Scripts call `fixture("name")` to reset before
 //! interacting with the UI.

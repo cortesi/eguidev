@@ -1,4 +1,18 @@
 //! Native embedded runtime for `eguidev`.
+//!
+//! `eguidev_runtime` attaches the in-process automation server, script
+//! evaluation, screenshots, and smoke runner to an inert [`eguidev::DevMcp`]
+//! handle.
+//!
+//! For `eframe` applications, the most reliable integration pattern is:
+//!
+//! - choose `eframe::Renderer::Glow` for automation runs when possible
+//! - process `DevMcp::collect_fixture_requests()` in `App::update`
+//! - wrap every frame in [`eguidev::FrameGuard`]
+//! - forward raw input through [`eguidev::raw_input_hook`]
+//!
+//! The `wgpu` backend can exhibit idle-frame stalls in some `eframe`
+//! integrations, so the demo and examples prefer `Glow`.
 
 #![allow(clippy::missing_docs_in_private_items)]
 

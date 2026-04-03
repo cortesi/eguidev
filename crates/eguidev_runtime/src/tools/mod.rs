@@ -572,7 +572,11 @@ impl DevMcpServer {
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            format!("Timed out waiting for {count} frame(s) after {timeout_ms}ms"),
+            format!(
+                "Timed out waiting for {count} frame(s) after {timeout_ms}ms. \
+If this is an eframe app, prefer Renderer::Glow for automation and ensure \
+fixture requests are processed in App::update."
+            ),
         )
         .with_details(wait_timeout_details(
             "frames",
@@ -1403,7 +1407,8 @@ async fn ensure_event_loop_active(
     if timeout(FRAME_WAIT_TIMEOUT, frame_wait).await.is_err() {
         return Err(ToolError::new(
             ErrorCode::Internal,
-            "Window event loop not responding. The window may be minimized or hidden.",
+            "Window event loop not responding. The window may be minimized or hidden. \
+For eframe apps, prefer Renderer::Glow for automation; Wgpu backends can stall idle frames.",
         )
         .with_details(screenshot_error_details(inner, runtime, viewport_id)));
     }

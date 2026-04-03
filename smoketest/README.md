@@ -8,6 +8,8 @@ This directory holds the checked-in Luau smoketest suite for `eguidev_demo`.
 - Each script must establish its own starting state with `fixture(...)` before interacting with
   the UI.
 - Scripts should assert visible app behavior and public API results rather than internal details.
+- `edev smoke` ignores a script's final return value; use assertions for pass/fail and `log(...)`
+  for extra diagnostics.
 - Keep files independent. Do not rely on state left behind by an earlier smoketest.
 
 ## Run

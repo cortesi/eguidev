@@ -46,6 +46,26 @@ changes, and return structured results in a single round trip.
   `eguidev_runtime::attach(devmcp)` in one bootstrap location. Keep widget code
   unconditional.
 
+For `eframe` apps, there are two practical integration rules:
+
+- Handle `DevMcp::collect_fixture_requests()` in `App::update`, not `logic`,
+  when fixture application must be followed by a freshly captured UI frame.
+- Prefer `eframe::Renderer::Glow` for automation runs. The `wgpu` backend can
+  exhibit idle-frame stalls in some `eframe` integrations.
+
+## Custom widgets
+
+Use `DevUiExt` for standard egui widgets whenever possible. For hand-rolled
+controls, instrument both directions:
+
+- Record the widget's current state with `track_response_full(...)` or
+  `id_with_meta(...)`.
+- Consume queued `set_value(...)` overrides with
+  `take_widget_value_override(...)` before rendering the custom control.
+
+That override step is what lets scripts drive custom combo boxes, sliders, and
+other widgets that are not built through the stock `dev_*` helpers.
+
 ## Configuration
 
 `edev` reads `.edev.toml` from the current directory upward, stopping at the
@@ -89,6 +109,10 @@ edev smoke smoketest/10_basic.luau tmp/ad_hoc_probe.luau
 Smoketests run against the live app through the same `script_eval` path agents
 use. They double as regression tests and as executable documentation for your
 scripting surface.
+
+In smoke mode, success is assertion-driven: `edev smoke` treats a script as
+passing when it finishes without throwing. Final return values are ignored by
+the smoke runner. Use `assert(...)` for checks and `log(...)` for diagnostics.
 
 ## API Reference
 

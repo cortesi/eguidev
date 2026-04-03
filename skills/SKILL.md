@@ -38,6 +38,12 @@ installed, run `ruskel eguidev` to inspect the public API surface (widget
 helpers, types, instrumentation functions). Use `ruskel eguidev --search <term>`
 to find specific items.
 
+For custom widgets, the happy path has two parts:
+
+- publish state with `track_response_full(...)` or `id_with_meta(...)`
+- consume queued `set_value(...)` updates with
+  `take_widget_value_override(...)` before rendering the widget
+
 
 ## Scripting
 
@@ -72,6 +78,8 @@ return { remaining = remaining.value_text }
 ```
 
 Use `log()` for intermediate diagnostics and return a summary at the end.
+When running under `edev smoke`, the final return value is ignored; only
+assertions/failures and logs affect the suite result.
 
 
 ## Lifecycle
@@ -80,6 +88,9 @@ Use `log()` for intermediate diagnostics and return a summary at the end.
 - Use `start` to ensure the app is running, `restart` for a fresh process.
 - Call `fixture()` at the start of scripts for a known in-app baseline.
 - Fixtures auto-settle, so the UI is ready for actions after `fixture()`.
+- For `eframe` apps, process fixture requests in `App::update`, not `logic`.
+- Prefer `eframe::Renderer::Glow` for automation runs; `wgpu` can stall idle
+  frames in some integrations.
 
 
 ## Inspection
@@ -117,6 +128,7 @@ Conventions:
 - Every script must call `fixture()` before interacting with the UI.
 - Assert visible app behavior, not internals.
 - Keep scripts independent -- no reliance on state from earlier tests.
+- Do not rely on the script's final `return` value; `edev smoke` ignores it.
 - Smoketests double as regression tests and executable API documentation.
 
 

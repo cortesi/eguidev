@@ -49,6 +49,15 @@ Tool hosting:
   `tools/list_changed` notifications.
 
 Fixtures are applied by scripts via `fixture()`, which auto-settles after application.
+For `eframe` apps, fixture requests should be drained from `App::update`.
+Handling them in `logic` can apply the state change without producing the fresh
+captured UI frame that automation expects afterward.
+
+Renderer note:
+
+- `eframe::Renderer::Glow` is currently the recommended backend for automation.
+- Some `wgpu`-backed `eframe` integrations can stall idle-frame delivery under
+  automation waits, screenshots, or fixture transitions.
 
 Failure points:
 - Build failure before app handshake.
