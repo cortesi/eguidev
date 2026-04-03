@@ -268,7 +268,6 @@ impl Inner {
     pub fn clear_all(&self) {
         lock(&self.widget_value_updates, "widget values lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
-        lock(&self.contexts, "contexts lock").clear();
         self.actions.clear_all();
     }
 
