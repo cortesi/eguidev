@@ -1,0 +1,6 @@
+{
+  "enabledMcpjsonServers": [
+    "eguidev_basic"
+  ],
+  "enableAllProjectMcpServers": true
+}

@@ -1,0 +1,23 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Workspace maintenance commands for the eguidev repository"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+eguidev = { workspace = true, features = ["devtools"] }
+luau-analyze = { path = "../../luau-analyze/crates/luau-analyze" }
+serde_json = "1.0"
+tmcp = { path = "../../tmcp/crates/tmcp" }
+tokio = { version = "1.50", features = ["full"] }

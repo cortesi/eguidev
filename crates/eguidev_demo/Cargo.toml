@@ -1,0 +1,24 @@
+[package]
+name = "eguidev_demo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "Demo application for exercising the eguidev scripting surface"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+devtools = ["eguidev/devtools"]
+
+[dependencies]
+eframe.workspace = true
+eguidev = { path = "../eguidev" }
+serde_json.workspace = true

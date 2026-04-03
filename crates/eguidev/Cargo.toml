@@ -1,0 +1,44 @@
+[features]
+default = []
+devtools = [
+    "dep:async-trait",
+    "dep:base64",
+    "dep:glob",
+    "dep:image",
+    "dep:mlua",
+    "dep:tmcp",
+    "dep:tokio",
+]
+
+[package]
+name = "eguidev"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "gui"]
+description = "AI-assisted development tooling and in-process instrumentation for egui apps"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true, optional = true }
+egui.workspace = true
+base64 = { workspace = true, optional = true }
+glob = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+mlua = { workspace = true, optional = true }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tmcp = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+eframe.workspace = true
