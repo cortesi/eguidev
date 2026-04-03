@@ -500,7 +500,11 @@ pub fn validate_widget_value(
         | WidgetRole::CollapsingHeader => {
             matches!(value, WidgetValue::Bool(_))
         }
-        WidgetRole::Slider => matches!(value, WidgetValue::Float(v) if slider_accepts(widget, *v)),
+        WidgetRole::Slider => match value {
+            WidgetValue::Float(v) => slider_accepts(widget, *v),
+            WidgetValue::Int(v) => slider_accepts(widget, *v as f64),
+            _ => false,
+        },
         WidgetRole::ComboBox => {
             matches!(value, WidgetValue::Int(index) if combo_box_accepts(widget, *index))
         }
@@ -780,7 +784,9 @@ mod tests {
         });
 
         assert!(validate_widget_value(&slider, &WidgetValue::Float(8.0)).is_ok());
+        assert!(validate_widget_value(&slider, &WidgetValue::Int(8)).is_ok());
         assert!(validate_widget_value(&slider, &WidgetValue::Float(12.0)).is_err());
+        assert!(validate_widget_value(&slider, &WidgetValue::Int(12)).is_err());
     }
 
     #[test]

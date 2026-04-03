@@ -121,7 +121,7 @@ pub use crate::{
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
-        TextEditOptions,
+        TextEditOptions, take_widget_value_override,
     },
     widget_registry::WidgetMeta,
 };

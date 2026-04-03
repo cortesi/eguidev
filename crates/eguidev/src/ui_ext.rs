@@ -868,7 +868,8 @@ impl DevScrollAreaExt for egui::ScrollArea {
     }
 }
 
-fn take_value_override(ui: &egui::Ui, id: &str) -> Option<WidgetValue> {
+/// Consume a queued widget value override for a custom instrumented widget.
+pub fn take_widget_value_override(ui: &egui::Ui, id: &str) -> Option<WidgetValue> {
     let inner = active_inner()?;
     let viewport_id = ui.ctx().viewport_id();
     inner.take_widget_value_update(viewport_id, id)
@@ -881,28 +882,28 @@ fn widget_text_parts(text: impl Into<egui::WidgetText>) -> (egui::WidgetText, St
 }
 
 fn take_bool_override(ui: &egui::Ui, id: &str) -> Option<bool> {
-    match take_value_override(ui, id) {
+    match take_widget_value_override(ui, id) {
         Some(WidgetValue::Bool(updated)) => Some(updated),
         _ => None,
     }
 }
 
 fn take_text_override(ui: &egui::Ui, id: &str) -> Option<String> {
-    match take_value_override(ui, id) {
+    match take_widget_value_override(ui, id) {
         Some(WidgetValue::Text(updated)) => Some(updated),
         _ => None,
     }
 }
 
 fn take_color_override(ui: &egui::Ui, id: &str) -> Option<egui::Color32> {
-    match take_value_override(ui, id) {
+    match take_widget_value_override(ui, id) {
         Some(WidgetValue::Text(updated)) => parse_color_hex(&updated),
         _ => None,
     }
 }
 
 fn take_float_override(ui: &egui::Ui, id: &str) -> Option<f32> {
-    match take_value_override(ui, id) {
+    match take_widget_value_override(ui, id) {
         Some(WidgetValue::Float(updated)) => Some(updated as f32),
         Some(WidgetValue::Int(updated)) => Some(updated as f32),
         _ => None,
@@ -910,7 +911,7 @@ fn take_float_override(ui: &egui::Ui, id: &str) -> Option<f32> {
 }
 
 fn take_i32_override(ui: &egui::Ui, id: &str) -> Option<i32> {
-    match take_value_override(ui, id) {
+    match take_widget_value_override(ui, id) {
         Some(WidgetValue::Int(updated)) => i32::try_from(updated).ok(),
         Some(WidgetValue::Float(updated)) => Some(updated as i32),
         _ => None,
@@ -918,7 +919,7 @@ fn take_i32_override(ui: &egui::Ui, id: &str) -> Option<i32> {
 }
 
 fn take_usize_override(ui: &egui::Ui, id: &str) -> Option<usize> {
-    match take_value_override(ui, id) {
+    match take_widget_value_override(ui, id) {
         Some(WidgetValue::Int(updated)) => usize::try_from(updated).ok(),
         Some(WidgetValue::Float(updated)) => Some(updated as usize),
         _ => None,
