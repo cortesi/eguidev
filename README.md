@@ -48,8 +48,8 @@ changes, and return structured results in a single round trip.
 
 For `eframe` apps, there are two practical integration rules:
 
-- Handle `DevMcp::collect_fixture_requests()` in `App::update`, not `logic`,
-  when fixture application must be followed by a freshly captured UI frame.
+- Register a fixture handler with `DevMcp::on_fixture()` to apply named
+  fixtures directly from the runtime without requiring a frame cycle.
 - Prefer `eframe::Renderer::Glow` for automation runs. The `wgpu` backend can
   exhibit idle-frame stalls in some `eframe` integrations.
 
@@ -90,6 +90,12 @@ edev fixture basic.default     # start app, apply fixture, keep running
 `edev fixture` applies the named fixture and blocks until ctrl-c. Use it to
 get the app into a repeatable state for interactive work.
 
+Fixtures are applied synchronously to app state through `DevMcp::on_fixture()`.
+That guarantees the baseline state change has happened, but it does not imply
+the next frame has already rebuilt the widget registry for the new pane. In
+scripts and smoketests, follow `fixture("name")` with a concrete readiness wait
+such as `wait_for_widget_visible(...)` for the first widget you depend on.
+
 ## Smoketests
 
 eguidev includes a built-in smoketest runner. A smoketest suite is a directory
@@ -97,7 +103,8 @@ of self-contained `.luau` scripts. The configured suite is discovered
 recursively and executed in lexicographic order by relative path. Explicit
 script arguments to `edev smoke` run in the order provided. Every script
 establishes its own state via `fixture()`, exercises the UI, and asserts
-outcomes.
+outcomes. After `fixture()`, wait for the widget or viewport state the script
+actually depends on before reading pane-specific widgets.
 
 ```sh
 edev smoke

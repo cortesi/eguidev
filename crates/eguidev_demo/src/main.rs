@@ -1,6 +1,12 @@
 //! Demo app exercising the DevMCP scripting surface.
 
-use std::{env, error::Error, io, path::PathBuf};
+use std::{
+    env,
+    error::Error,
+    io,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use eframe::{App, egui};
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::ScrollBarVisibility};
@@ -45,8 +51,13 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
 }
 
 /// Build the demo's DevMCP handle, optionally attaching the embedded runtime.
-fn build_devmcp(config: AppConfig) -> MainResult<DevMcp> {
-    let devmcp = DevMcp::new().fixtures(demo_fixtures());
+fn build_devmcp(config: AppConfig, state: Arc<Mutex<DemoState>>) -> MainResult<DevMcp> {
+    let devmcp = DevMcp::new()
+        .fixtures(demo_fixtures())
+        .on_fixture(move |name| {
+            let mut s = state.lock().expect("demo state lock");
+            s.apply_fixture(name)
+        });
     #[cfg(feature = "devtools")]
     {
         if config.enable_mcp {
@@ -113,11 +124,6 @@ impl AppConfig {
 
         Ok(Self { enable_mcp })
     }
-
-    #[cfg(test)]
-    fn test(enable_mcp: bool) -> Self {
-        Self { enable_mcp }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,10 +148,8 @@ enum DemoMode {
     Beta,
 }
 
-/// Application state for the demo app.
-struct DemoApp {
-    /// DevMCP integration handle.
-    devmcp: DevMcp,
+/// Mutable demo state shared between the app and the fixture handler.
+struct DemoState {
     /// Name field.
     name: String,
     /// Notes field.
@@ -190,8 +194,6 @@ struct DemoApp {
     link_click_count: u32,
     /// Probe input used by fixture reset tests for overlay-like state.
     overlay_probe_input: String,
-    /// Preview texture shown in the demo.
-    preview_texture: TextureHandle,
     /// Scroll state for the primary scroll demo.
     basic_scroll_state: ScrollAreaState,
     /// Whether the secondary viewport is visible.
@@ -222,17 +224,20 @@ struct DemoApp {
     widget_window_open: bool,
 }
 
-impl DemoApp {
-    /// Build a new demo app from the parsed configuration.
-    fn new(config: AppConfig, ctx: &egui::Context) -> MainResult<Self> {
-        let devmcp = build_devmcp(config)?;
-        let preview_texture = ctx.load_texture(
-            "eguidev_demo.preview",
-            ColorImage::filled([16, 16], Color32::from_rgb(64, 156, 255)),
-            TextureOptions::LINEAR,
-        );
-        Ok(Self {
-            devmcp,
+/// Application state for the demo app.
+struct DemoApp {
+    /// DevMCP integration handle.
+    devmcp: DevMcp,
+    /// Shared mutable state.
+    state: Arc<Mutex<DemoState>>,
+    /// Preview texture shown in the demo.
+    preview_texture: TextureHandle,
+}
+
+impl DemoState {
+    /// Create the default demo state.
+    fn new() -> Self {
+        Self {
             name: "Sky".to_string(),
             notes: "Try typing here.".to_string(),
             enabled: true,
@@ -255,7 +260,6 @@ impl DemoApp {
             menu_action_count: 0,
             link_click_count: 0,
             overlay_probe_input: String::new(),
-            preview_texture,
             basic_scroll_state: ScrollAreaState::default(),
             show_secondary: true,
             secondary_selected_row: 0,
@@ -270,7 +274,7 @@ impl DemoApp {
             last_modifiers: egui::Modifiers::default(),
             root_drag_offset: egui::Vec2::ZERO,
             widget_window_open: true,
-        })
+        }
     }
 
     /// Reset the demo state to its initial values.
@@ -355,9 +359,27 @@ impl DemoApp {
             _ => Err(format!("unknown fixture: {name}")),
         }
     }
+}
+
+impl DemoApp {
+    /// Build a new demo app from the parsed configuration.
+    fn new(config: AppConfig, ctx: &egui::Context) -> MainResult<Self> {
+        let state = Arc::new(Mutex::new(DemoState::new()));
+        let devmcp = build_devmcp(config, Arc::clone(&state))?;
+        let preview_texture = ctx.load_texture(
+            "eguidev_demo.preview",
+            ColorImage::filled([16, 16], Color32::from_rgb(64, 156, 255)),
+            TextureOptions::LINEAR,
+        );
+        Ok(Self {
+            devmcp,
+            state,
+            preview_texture,
+        })
+    }
 
     /// Render the root UI for the demo.
-    fn render_root(&mut self, ui: &mut egui::Ui) {
+    fn render_root(s: &mut DemoState, preview_texture: &TextureHandle, ui: &mut egui::Ui) {
         eguidev::container(ui, "basic.panel", |ui| {
             ui.heading("DevMCP basics");
             ui.label("Tagged widgets are available to MCP tools.");
@@ -365,41 +387,41 @@ impl DemoApp {
 
             ui.horizontal(|ui| {
                 ui.label("Name");
-                ui.dev_text_edit("basic.name", &mut self.name);
+                ui.dev_text_edit("basic.name", &mut s.name);
             });
 
             ui.label("Notes");
-            ui.dev_text_edit_multiline("basic.notes", &mut self.notes);
+            ui.dev_text_edit_multiline("basic.notes", &mut s.notes);
 
-            ui.dev_checkbox("basic.enabled", &mut self.enabled, "Enabled");
-            ui.dev_slider("basic.intensity", &mut self.intensity, 0.0..=100.0);
+            ui.dev_checkbox("basic.enabled", &mut s.enabled, "Enabled");
+            ui.dev_slider("basic.intensity", &mut s.intensity, 0.0..=100.0);
             ui.horizontal(|ui| {
                 ui.label("Overlay probe");
-                ui.dev_text_edit("overlay.fixture_probe.input", &mut self.overlay_probe_input);
+                ui.dev_text_edit("overlay.fixture_probe.input", &mut s.overlay_probe_input);
             });
 
             if ui.dev_button("basic.submit", "Submit").clicked() {
-                self.click_count += 1;
-                self.status = format!(
+                s.click_count += 1;
+                s.status = format!(
                     "Saved {name} with intensity {intensity:.1} (click {count}).",
-                    name = self.name,
-                    intensity = self.intensity,
-                    count = self.click_count
+                    name = s.name,
+                    intensity = s.intensity,
+                    count = s.click_count
                 );
             }
-            ui.dev_label("basic.status", &self.status);
+            ui.dev_label("basic.status", &s.status);
 
             ui.separator();
             ui.label("Root Draggable Region:");
             let (rect, _) = ui.allocate_exact_size(egui::vec2(160.0, 48.0), egui::Sense::hover());
-            let drag_rect = rect.translate(self.root_drag_offset);
+            let drag_rect = rect.translate(s.root_drag_offset);
             let response = ui.interact(
                 drag_rect,
                 egui::Id::new("basic.drag.region"),
                 egui::Sense::drag(),
             );
             if response.dragged() {
-                self.root_drag_offset += response.drag_delta();
+                s.root_drag_offset += response.drag_delta();
             }
             ui.painter()
                 .rect_filled(drag_rect, 6.0, egui::Color32::from_rgb(128, 32, 96));
@@ -426,15 +448,15 @@ impl DemoApp {
                 "basic.drag.detail",
                 format!(
                     "Root drag offset: {:.1}, {:.1}",
-                    self.root_drag_offset.x, self.root_drag_offset.y
+                    s.root_drag_offset.x, s.root_drag_offset.y
                 ),
             );
 
             ui.dev_separator("basic.separator.primary");
             ui.horizontal(|ui| {
                 if ui.dev_link("basic.link.docs", "Open docs").clicked() {
-                    self.link_click_count += 1;
-                    self.status = format!("Docs link clicked {} time(s).", self.link_click_count);
+                    s.link_click_count += 1;
+                    s.status = format!("Docs link clicked {} time(s).", s.link_click_count);
                 }
                 if ui
                     .dev_hyperlink_to(
@@ -444,21 +466,16 @@ impl DemoApp {
                     )
                     .clicked()
                 {
-                    self.link_click_count += 1;
-                    self.status =
-                        format!("Reference link clicked {} time(s).", self.link_click_count);
+                    s.link_click_count += 1;
+                    s.status = format!("Reference link clicked {} time(s).", s.link_click_count);
                 }
             });
             ui.horizontal(|ui| {
                 ui.dev_label(
                     "basic.links.count",
-                    format!("Link clicks: {}", self.link_click_count),
+                    format!("Link clicks: {}", s.link_click_count),
                 );
-                ui.dev_image(
-                    "basic.preview.image",
-                    "Preview swatch",
-                    &self.preview_texture,
-                );
+                ui.dev_image("basic.preview.image", "Preview swatch", preview_texture);
                 ui.dev_spinner("basic.spinner.loading");
             });
 
@@ -467,27 +484,27 @@ impl DemoApp {
                     .dev_button("basic.menu.actions.reset_status", "Reset status")
                     .clicked()
                 {
-                    self.menu_action_count += 1;
-                    self.status = format!("Menu reset clicked {} time(s).", self.menu_action_count);
+                    s.menu_action_count += 1;
+                    s.status = format!("Menu reset clicked {} time(s).", s.menu_action_count);
                     ui.close();
                 }
                 if ui
                     .dev_button("basic.menu.actions.mark_ready", "Mark ready")
                     .clicked()
                 {
-                    self.menu_action_count += 1;
-                    self.status = format!("Menu ready clicked {} time(s).", self.menu_action_count);
+                    s.menu_action_count += 1;
+                    s.status = format!("Menu ready clicked {} time(s).", s.menu_action_count);
                     ui.close();
                 }
             });
             ui.dev_label(
                 "basic.menu.count",
-                format!("Menu actions: {}", self.menu_action_count),
+                format!("Menu actions: {}", s.menu_action_count),
             );
 
             let _advanced = ui.dev_collapsing(
                 "basic.advanced",
-                &mut self.advanced_open,
+                &mut s.advanced_open,
                 "Advanced tools",
                 |ui| {
                     ui.dev_label(
@@ -498,48 +515,48 @@ impl DemoApp {
                         .dev_button("basic.advanced.action", "Advanced action")
                         .clicked()
                     {
-                        self.status = "Advanced action clicked.".to_string();
+                        s.status = "Advanced action clicked.".to_string();
                     }
                 },
             );
 
             let _input_debug = ui.dev_collapsing(
                 "basic.input.debug",
-                &mut self.input_debug_open,
+                &mut s.input_debug_open,
                 "Input diagnostics",
                 |ui| {
                     ui.dev_label(
                         "basic.input.raw_scroll",
                         format!(
                             "Raw scroll: {:.1}, {:.1}",
-                            self.last_raw_scroll.x, self.last_raw_scroll.y
+                            s.last_raw_scroll.x, s.last_raw_scroll.y
                         ),
                     );
                     ui.dev_label(
                         "basic.input.smooth_scroll",
                         format!(
                             "Smooth scroll: {:.1}, {:.1}",
-                            self.last_smooth_scroll.x, self.last_smooth_scroll.y
+                            s.last_smooth_scroll.x, s.last_smooth_scroll.y
                         ),
                     );
                     ui.dev_label(
                         "basic.input.pointer",
                         format!(
                             "Pointer: {}",
-                            self.last_pointer_pos
+                            s.last_pointer_pos
                                 .map(|pos| format!("{:.1}, {:.1}", pos.x, pos.y))
                                 .unwrap_or_else(|| "none".to_string())
                         ),
                     );
                     ui.dev_label(
                         "basic.input.scroll_events",
-                        format!("Scroll events: {}", self.last_scroll_event_count),
+                        format!("Scroll events: {}", s.last_scroll_event_count),
                     );
                     ui.dev_label(
                         "basic.input.events",
-                        format!("Input events: {}", self.last_event_count),
+                        format!("Input events: {}", s.last_event_count),
                     );
-                    let key_event = self
+                    let key_event = s
                         .last_key_event
                         .map(|event| {
                             format!(
@@ -554,7 +571,7 @@ impl DemoApp {
                     ui.dev_label("basic.input.key_event", key_event);
                     ui.dev_label(
                         "basic.input.modifiers",
-                        format!("Modifiers: {}", format_modifiers(self.last_modifiers)),
+                        format!("Modifiers: {}", format_modifiers(s.last_modifiers)),
                     );
                 },
             );
@@ -570,20 +587,20 @@ impl DemoApp {
                             .dev_button("basic.scroll.jump_top", "Scroll to top")
                             .clicked()
                         {
-                            self.basic_scroll_state.jump_to(egui::Vec2::ZERO);
+                            s.basic_scroll_state.jump_to(egui::Vec2::ZERO);
                         }
                         if ui
                             .dev_button("basic.scroll.jump_down", "Jump down")
                             .clicked()
                         {
-                            self.basic_scroll_state.jump_to(egui::vec2(0.0, 300.0));
+                            s.basic_scroll_state.jump_to(egui::vec2(0.0, 300.0));
                         }
                         ui.dev_label(
                             "basic.scroll.offset",
-                            format!("Scroll offset: {:.1}", self.basic_scroll_state.offset().y),
+                            format!("Scroll offset: {:.1}", s.basic_scroll_state.offset().y),
                         );
                     });
-                    let _output = self.basic_scroll_state.show(
+                    let _output = s.basic_scroll_state.show(
                         egui::ScrollArea::vertical()
                             .max_height(140.0)
                             .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible),
@@ -609,8 +626,8 @@ impl DemoApp {
                             .dev_button("viewports.toggle", "Toggle secondary viewport")
                             .clicked()
                         {
-                            self.show_secondary = !self.show_secondary;
-                            self.status = if self.show_secondary {
+                            s.show_secondary = !s.show_secondary;
+                            s.status = if s.show_secondary {
                                 "Secondary viewport opened.".to_string()
                             } else {
                                 "Secondary viewport hidden.".to_string()
@@ -618,25 +635,25 @@ impl DemoApp {
                         }
                         ui.dev_label(
                             "viewports.open",
-                            format!("Secondary open: {}", self.show_secondary),
+                            format!("Secondary open: {}", s.show_secondary),
                         );
                     });
                     ui.dev_label(
                         "viewports.selected_row",
-                        format!("Selected row: {}", self.secondary_selected_row),
+                        format!("Selected row: {}", s.secondary_selected_row),
                     );
                     ui.dev_label(
                         "viewports.scroll.offset",
                         format!(
                             "Secondary scroll offset: {:.1}",
-                            self.secondary_scroll_state.offset().y
+                            s.secondary_scroll_state.offset().y
                         ),
                     );
                     ui.dev_label(
                         "viewports.drag.offset",
                         format!(
                             "Drag offset: {:.1}, {:.1}",
-                            self.secondary_drag_offset.x, self.secondary_drag_offset.y
+                            s.secondary_drag_offset.x, s.secondary_drag_offset.y
                         ),
                     );
                 });
@@ -644,19 +661,19 @@ impl DemoApp {
     }
 
     /// Render the floating window that exercises the remaining widget roles.
-    fn render_widget_surface_window(&mut self, ui: &mut egui::Ui) {
+    fn render_widget_surface_window(s: &mut DemoState, ui: &mut egui::Ui) {
         eguidev::container(ui, "basic.window.surface.body", |ui| {
             ui.dev_label("basic.window.surface.label", "Floating window ready.");
             ui.dev_combo_box(
                 "basic.choice",
                 "Choice",
-                &mut self.choice_index,
+                &mut s.choice_index,
                 &["Alpha", "Beta", "Gamma"],
             );
             ui.horizontal(|ui| {
                 ui.label("Drag values");
-                ui.dev_drag_value_range("basic.drag.float", &mut self.drag_float, -10.0..=10.0);
-                ui.dev_drag_value_i32_range("basic.drag.int", &mut self.drag_int, -5..=20);
+                ui.dev_drag_value_range("basic.drag.float", &mut s.drag_float, -10.0..=10.0);
+                ui.dev_drag_value_i32_range("basic.drag.int", &mut s.drag_int, -5..=20);
             });
             ui.horizontal(|ui| {
                 if ui
@@ -664,21 +681,21 @@ impl DemoApp {
                         "basic.toolbar.sync",
                         "Toolbar sync",
                         ButtonOptions {
-                            selected: self.toolbar_selected,
+                            selected: s.toolbar_selected,
                         },
                     )
                     .clicked()
                 {
-                    self.toolbar_selected = !self.toolbar_selected;
-                    self.status = format!("Toolbar sync set to {}.", self.toolbar_selected);
+                    s.toolbar_selected = !s.toolbar_selected;
+                    s.status = format!("Toolbar sync set to {}.", s.toolbar_selected);
                 }
-                ui.dev_toggle_value("basic.toggle", &mut self.feature_toggle, "Feature toggle");
+                ui.dev_toggle_value("basic.toggle", &mut s.feature_toggle, "Feature toggle");
                 ui.dev_checkbox_with(
                     "basic.mixed",
-                    &mut self.mixed_value,
+                    &mut s.mixed_value,
                     "Mixed mode",
                     CheckboxOptions {
-                        indeterminate: self.mixed_indeterminate,
+                        indeterminate: s.mixed_indeterminate,
                     },
                 );
             });
@@ -686,7 +703,7 @@ impl DemoApp {
                 ui.label("Password");
                 ui.dev_text_edit_with(
                     "basic.password",
-                    &mut self.password,
+                    &mut s.password,
                     TextEditOptions {
                         multiline: false,
                         password: true,
@@ -694,17 +711,17 @@ impl DemoApp {
                 );
             });
             ui.horizontal(|ui| {
-                ui.dev_radio_value("basic.mode.alpha", &mut self.mode, DemoMode::Alpha, "Alpha");
-                ui.dev_radio_value("basic.mode.beta", &mut self.mode, DemoMode::Beta, "Beta");
+                ui.dev_radio_value("basic.mode.alpha", &mut s.mode, DemoMode::Alpha, "Alpha");
+                ui.dev_radio_value("basic.mode.beta", &mut s.mode, DemoMode::Beta, "Beta");
             });
             ui.horizontal(|ui| {
-                ui.dev_selectable_value("basic.select.0", &mut self.selected_item, 0, "Item 0");
-                ui.dev_selectable_value("basic.select.1", &mut self.selected_item, 1, "Item 1");
-                ui.dev_selectable_value("basic.select.2", &mut self.selected_item, 2, "Item 2");
+                ui.dev_selectable_value("basic.select.0", &mut s.selected_item, 0, "Item 0");
+                ui.dev_selectable_value("basic.select.1", &mut s.selected_item, 1, "Item 1");
+                ui.dev_selectable_value("basic.select.2", &mut s.selected_item, 2, "Item 2");
             });
             ui.dev_progress_bar_with(
                 "basic.progress.percent",
-                self.intensity / 100.0,
+                s.intensity / 100.0,
                 ProgressBarOptions {
                     text: None,
                     show_percentage: true,
@@ -712,26 +729,31 @@ impl DemoApp {
             );
             ui.dev_progress_bar_with(
                 "basic.progress.detail",
-                ((self.drag_float + 10.0) / 20.0).clamp(0.0, 1.0),
+                ((s.drag_float + 10.0) / 20.0).clamp(0.0, 1.0),
                 ProgressBarOptions {
-                    text: Some(format!("Drag {:.1}", self.drag_float)),
+                    text: Some(format!("Drag {:.1}", s.drag_float)),
                     show_percentage: false,
                 },
             );
             ui.horizontal(|ui| {
                 ui.label("Accent");
-                ui.dev_color_edit("basic.accent", &mut self.accent_color);
+                ui.dev_color_edit("basic.accent", &mut s.accent_color);
                 ui.dev_label(
                     "basic.accent.value",
-                    format!("Accent: {}", format_color(self.accent_color)),
+                    format!("Accent: {}", format_color(s.accent_color)),
                 );
             });
         });
     }
 
     /// Render contents inside the secondary viewport.
-    fn render_secondary(&mut self, ui: &mut egui::Ui, class: egui::ViewportClass) {
-        let devmcp = self.devmcp.clone();
+    fn render_secondary(
+        s: &mut DemoState,
+        devmcp: &DevMcp,
+        ui: &mut egui::Ui,
+        class: egui::ViewportClass,
+    ) {
+        let devmcp = devmcp.clone();
         let ctx = ui.ctx().clone();
         if devmcp.is_enabled() {
             ctx.input_mut(|i| eguidev::raw_input_hook(&devmcp, &ctx, &mut i.raw));
@@ -739,7 +761,7 @@ impl DemoApp {
         let _guard = FrameGuard::new(&devmcp, &ctx);
 
         if ui.ctx().input(|i| i.viewport().close_requested()) {
-            self.show_secondary = false;
+            s.show_secondary = false;
         }
 
         let title = match class {
@@ -749,7 +771,7 @@ impl DemoApp {
         ui.heading(title);
         ui.label("Scroll and drag inside this viewport.");
 
-        let _output = self.secondary_scroll_state.show(
+        let _output = s.secondary_scroll_state.show(
             egui::ScrollArea::vertical()
                 .id_salt("secondary_scroll")
                 .max_height(240.0),
@@ -760,8 +782,8 @@ impl DemoApp {
                     let label = format!("Row {row}");
                     let response = ui.dev_button(format!("viewports.row.{row}"), label);
                     if response.clicked() {
-                        self.secondary_selected_row = row;
-                        self.status = format!("Secondary row {row} selected.");
+                        s.secondary_selected_row = row;
+                        s.status = format!("Secondary row {row} selected.");
                     }
                 }
             },
@@ -770,19 +792,19 @@ impl DemoApp {
         ui.separator();
         ui.dev_label(
             "viewports.selected_row.detail",
-            format!("Selected row: {}", self.secondary_selected_row),
+            format!("Selected row: {}", s.secondary_selected_row),
         );
 
         ui.separator();
         let (rect, _) = ui.allocate_exact_size(egui::vec2(160.0, 48.0), egui::Sense::hover());
-        let drag_rect = rect.translate(self.secondary_drag_offset);
+        let drag_rect = rect.translate(s.secondary_drag_offset);
         let response = ui.interact(
             drag_rect,
             egui::Id::new("secondary_drag_region"),
             egui::Sense::drag(),
         );
         if response.dragged() {
-            self.secondary_drag_offset += response.drag_delta();
+            s.secondary_drag_offset += response.drag_delta();
         }
         ui.painter()
             .rect_filled(drag_rect, 6.0, egui::Color32::from_rgb(32, 128, 96));
@@ -809,7 +831,7 @@ impl DemoApp {
             "viewports.drag.detail",
             format!(
                 "Drag offset: {:.1}, {:.1}",
-                self.secondary_drag_offset.x, self.secondary_drag_offset.y
+                s.secondary_drag_offset.x, s.secondary_drag_offset.y
             ),
         );
     }
@@ -817,19 +839,15 @@ impl DemoApp {
 
 impl App for DemoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        for request in self.devmcp.collect_fixture_requests() {
-            let result = self.apply_fixture(&request.name);
-            if !request.respond(result) {
-                eprintln!("eguidev_demo: fixture response channel closed");
-            }
-        }
-        if self.show_secondary && ctx.viewport_id() == egui::ViewportId::ROOT {
+        let mut s = self.state.lock().expect("demo state lock");
+        if s.show_secondary && ctx.viewport_id() == egui::ViewportId::ROOT {
             let viewport_id = egui::ViewportId::from_hash_of("eguidev_demo.secondary");
             let builder = egui::ViewportBuilder::default()
                 .with_title("DevMCP secondary viewport")
                 .with_inner_size([480.0, 420.0]);
+            let devmcp = &self.devmcp;
             ctx.show_viewport_immediate(viewport_id, builder, |ui, class| {
-                self.render_secondary(ui, class)
+                Self::render_secondary(&mut s, devmcp, ui, class);
             });
         }
         let (
@@ -887,33 +905,34 @@ impl App for DemoApp {
             || raw_scroll != egui::Vec2::ZERO
             || smooth_scroll != egui::Vec2::ZERO;
         if saw_scroll_activity {
-            self.last_raw_scroll = raw_scroll;
-            self.last_smooth_scroll = smooth_scroll;
-            self.last_scroll_event_count = scroll_events.max(1);
+            s.last_raw_scroll = raw_scroll;
+            s.last_smooth_scroll = smooth_scroll;
+            s.last_scroll_event_count = scroll_events.max(1);
         }
-        self.last_pointer_pos = pointer_pos;
-        self.last_event_count = event_count;
+        s.last_pointer_pos = pointer_pos;
+        s.last_event_count = event_count;
         if let Some(key_event) = key_event {
-            self.last_key_event = Some(key_event);
+            s.last_key_event = Some(key_event);
         }
-        self.last_modifiers = modifiers;
+        s.last_modifiers = modifiers;
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let devmcp = self.devmcp.clone();
         let ctx = ui.ctx().clone();
         let _guard = FrameGuard::new(&devmcp, &ctx);
+        let mut s = self.state.lock().expect("demo state lock");
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            self.render_root(ui);
+            Self::render_root(&mut s, &self.preview_texture, ui);
         });
-        let mut open = self.widget_window_open;
+        let mut open = s.widget_window_open;
         if let Some(window) = egui::Window::new("Widget Surface Window")
             .id(egui::Id::new("basic.window.surface"))
             .open(&mut open)
             .default_pos(egui::pos2(540.0, 24.0))
             .default_size(egui::vec2(220.0, 320.0))
             .show(&ctx, |ui| {
-                self.render_widget_surface_window(ui);
+                Self::render_widget_surface_window(&mut s, ui);
             })
         {
             eguidev::track_response_full(
@@ -927,7 +946,7 @@ impl App for DemoApp {
                 },
             );
         }
-        self.widget_window_open = open;
+        s.widget_window_open = open;
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -955,18 +974,19 @@ mod tests {
 
     #[test]
     fn overlay_reset_probe_fixture_is_idempotent_for_overlay_input() {
-        let mut app =
-            DemoApp::new(AppConfig::test(false), &egui::Context::default()).expect("demo app");
+        let mut state = DemoState::new();
 
-        app.overlay_probe_input = "first".to_string();
-        app.apply_fixture("basic.overlay_reset_probe")
+        state.overlay_probe_input = "first".to_string();
+        state
+            .apply_fixture("basic.overlay_reset_probe")
             .expect("apply fixture");
-        assert!(app.overlay_probe_input.is_empty());
+        assert!(state.overlay_probe_input.is_empty());
 
-        app.overlay_probe_input = "second".to_string();
-        app.apply_fixture("basic.overlay_reset_probe")
+        state.overlay_probe_input = "second".to_string();
+        state
+            .apply_fixture("basic.overlay_reset_probe")
             .expect("apply fixture");
-        assert!(app.overlay_probe_input.is_empty());
+        assert!(state.overlay_probe_input.is_empty());
     }
 
     #[test]
@@ -975,22 +995,21 @@ mod tests {
         assert!(
             fixtures
                 .iter()
-                .find(|fixture| fixture.name == "basic.overlay_reset_probe")
-                .is_some()
+                .any(|fixture| fixture.name == "basic.overlay_reset_probe")
         );
     }
 
     #[test]
     fn viewport_fixture_keeps_secondary_viewport_available() {
-        let mut app =
-            DemoApp::new(AppConfig::test(false), &egui::Context::default()).expect("demo app");
-        app.show_secondary = false;
-        app.secondary_selected_row = 9;
+        let mut state = DemoState::new();
+        state.show_secondary = false;
+        state.secondary_selected_row = 9;
 
-        app.apply_fixture("viewports.default")
+        state
+            .apply_fixture("viewports.default")
             .expect("apply fixture");
 
-        assert!(app.show_secondary);
-        assert_eq!(app.secondary_selected_row, 0);
+        assert!(state.show_secondary);
+        assert_eq!(state.secondary_selected_row, 0);
     }
 }

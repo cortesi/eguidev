@@ -1678,7 +1678,6 @@ impl ScriptRuntime {
     pub(super) fn fixture(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
         let timeout_ms = self.configured_timeout_ms();
         self.block_on_tool(pos, self.server.fixture(name, timeout_ms))?;
-        self.settle_after_action(pos, None, None)?;
         self.to_json(pos, ())
     }
 

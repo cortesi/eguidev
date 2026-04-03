@@ -7,7 +7,7 @@
 //! For `eframe` applications, the most reliable integration pattern is:
 //!
 //! - choose `eframe::Renderer::Glow` for automation runs when possible
-//! - process `DevMcp::collect_fixture_requests()` in `App::update`
+//! - register a fixture handler with [`eguidev::DevMcp::on_fixture`]
 //! - wrap every frame in [`eguidev::FrameGuard`]
 //! - forward raw input through [`eguidev::raw_input_hook`]
 //!

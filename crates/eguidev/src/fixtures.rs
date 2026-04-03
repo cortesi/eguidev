@@ -1,90 +1,66 @@
 //! Fixture management for test data injection.
 
-use std::{collections::VecDeque, fmt, sync::Mutex};
+use std::sync::{Arc, Mutex};
 
 use crate::{registry::lock, types::FixtureSpec};
 
-type FixtureResponder = Box<dyn FnOnce(Result<(), String>) + Send>;
+/// Handler that applies a named fixture to the app state.
+pub type FixtureHandler = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
-/// Fixture request waiting to be handled by the app.
-pub struct FixtureRequest {
-    /// Fixture name to apply.
-    pub name: String,
-    responder: Option<FixtureResponder>,
-}
-
-impl fmt::Debug for FixtureRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FixtureRequest")
-            .field("name", &self.name)
-            .finish_non_exhaustive()
-    }
-}
-
-impl FixtureRequest {
-    /// Send the fixture result back to the waiting tool call.
-    pub fn respond(mut self, result: Result<(), String>) -> bool {
-        let Some(responder) = self.responder.take() else {
-            return false;
-        };
-        responder(result);
-        true
-    }
-}
-
+/// Manages fixture metadata and dispatches fixture application through a registered handler.
 pub struct FixtureManager {
     fixtures: Mutex<Vec<FixtureSpec>>,
-    fixture_requests: Mutex<VecDeque<FixtureRequest>>,
+    handler: Mutex<Option<FixtureHandler>>,
 }
 
 impl FixtureManager {
+    /// Create a new fixture manager with no fixtures or handler.
     pub fn new() -> Self {
         Self {
             fixtures: Mutex::new(Vec::new()),
-            fixture_requests: Mutex::new(VecDeque::new()),
+            handler: Mutex::new(None),
         }
     }
 
+    /// Replace the registered fixture catalog.
     pub fn set_fixtures(&self, fixtures: Vec<FixtureSpec>) {
         let mut stored = lock(&self.fixtures, "fixtures lock");
         *stored = fixtures;
     }
 
+    /// Return a snapshot of the current fixture catalog.
     pub fn fixtures(&self) -> Vec<FixtureSpec> {
         lock(&self.fixtures, "fixtures lock").clone()
     }
 
+    /// Return the fixture catalog sorted by name.
     pub fn fixtures_sorted(&self) -> Vec<FixtureSpec> {
         let mut fixtures = self.fixtures();
         fixtures.sort_by(|a, b| a.name.cmp(&b.name));
         fixtures
     }
 
+    /// Check whether a fixture with the given name is registered.
     pub fn has_fixture(&self, name: &str) -> bool {
         lock(&self.fixtures, "fixtures lock")
             .iter()
             .any(|fixture| fixture.name == name)
     }
 
-    pub fn enqueue_fixture_request(
-        &self,
-        name: String,
-        responder: impl FnOnce(Result<(), String>) + Send + 'static,
-    ) {
-        let mut queue = lock(&self.fixture_requests, "fixture requests lock");
-        queue.push_back(FixtureRequest {
-            name,
-            responder: Some(Box::new(responder)),
-        });
+    /// Register the callback that applies a named fixture to app state.
+    pub fn set_fixture_handler(&self, handler: FixtureHandler) {
+        *lock(&self.handler, "fixture handler lock") = Some(handler);
     }
 
-    pub fn collect_fixture_requests(&self) -> Vec<FixtureRequest> {
-        let mut queue = lock(&self.fixture_requests, "fixture requests lock");
-        queue.drain(..).collect()
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn has_fixture_requests(&self) -> bool {
-        !lock(&self.fixture_requests, "fixture requests lock").is_empty()
+    /// Apply a named fixture by calling the registered handler.
+    pub fn apply_fixture(&self, name: &str) -> Result<(), String> {
+        if !self.has_fixture(name) {
+            return Err(format!("unknown fixture: {name}"));
+        }
+        let handler = lock(&self.handler, "fixture handler lock").clone();
+        match handler {
+            Some(handler) => handler(name),
+            None => Err("no fixture handler registered".to_string()),
+        }
     }
 }

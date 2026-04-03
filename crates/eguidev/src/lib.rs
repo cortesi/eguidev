@@ -106,13 +106,15 @@
 //!
 //! # Fixtures
 //!
-//! Apps register fixtures with [`DevMcp::fixtures`] and handle requests by
-//! polling [`DevMcp::collect_fixture_requests`] in `update`. For `eframe`
-//! integrations, prefer `App::update` over `App::logic` so fixture application
-//! is followed by a real UI frame capture. Each fixture must
-//! be independently invokable from any prior state and must leave the app in
-//! its declared baseline. Scripts call `fixture("name")` to reset before
-//! interacting with the UI.
+//! Apps register fixtures with [`DevMcp::fixtures`] and a handler callback
+//! with [`DevMcp::on_fixture`]. When a fixture tool call arrives the handler
+//! is invoked directly on the tokio runtime, so no frame cycle is required.
+//! Each fixture must be independently invokable from any prior state and must
+//! leave the app in its declared baseline. A fixture guarantees state has been
+//! applied; it does not guarantee the next rendered frame has already rebuilt
+//! the widget registry for that baseline. Scripts call `fixture("name")` to
+//! reset, then should wait on the specific widget or viewport condition they
+//! need before interacting with pane-specific UI.
 //!
 //! # Scripting reference
 //!
@@ -137,7 +139,7 @@ mod widget_registry;
 
 pub use crate::{
     devmcp::{DevMcp, FrameGuard, raw_input_hook},
-    fixtures::FixtureRequest,
+    fixtures::FixtureHandler,
     instrument::{
         ContainerGuard, ScrollAreaState, container, id, id_with_meta, track_response_full,
     },

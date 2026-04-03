@@ -119,16 +119,9 @@ impl Inner {
         lock(&self.runtime_hooks, "runtime hooks lock").clone()
     }
 
-    pub fn enqueue_fixture_request(
-        &self,
-        name: String,
-        responder: impl FnOnce(Result<(), String>) + Send + 'static,
-    ) {
-        self.fixtures.enqueue_fixture_request(name, responder);
-        if let Some(hooks) = self.runtime_hooks() {
-            hooks.on_fixture_request(self);
-        }
-        self.request_repaint_of(egui::ViewportId::ROOT);
+    /// Apply a named fixture by calling the registered handler.
+    pub fn apply_fixture(&self, name: &str) -> Result<(), String> {
+        self.fixtures.apply_fixture(name)
     }
 
     pub fn reset_fixture_transient_state(&self) {

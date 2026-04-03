@@ -4,10 +4,7 @@ use std::{any::Any, sync::Arc, time::Duration};
 
 use egui::Context;
 use eguidev::internal::{devmcp::RuntimeHooks, registry::Inner};
-use tokio::{
-    runtime::Handle,
-    sync::{Notify, oneshot},
-};
+use tokio::{runtime::Handle, sync::Notify};
 
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
@@ -20,7 +17,6 @@ use crate::{
 pub struct Runtime {
     screenshots: ScreenshotManager,
     frame_notify: Notify,
-    fixture_notify: Notify,
 }
 
 #[derive(Debug)]
@@ -33,7 +29,6 @@ impl Runtime {
         Self {
             screenshots: ScreenshotManager::new(),
             frame_notify: Notify::new(),
-            fixture_notify: Notify::new(),
         }
     }
 
@@ -59,26 +54,6 @@ impl Runtime {
         let hooks = devmcp.runtime_hooks()?;
         let hooks = hooks.as_any().downcast_ref::<RuntimeHooksImpl>()?;
         Some(Arc::clone(&hooks.runtime))
-    }
-
-    pub(crate) fn enqueue_fixture_request(
-        &self,
-        inner: &Inner,
-        name: String,
-    ) -> oneshot::Receiver<Result<(), String>> {
-        let (sender, receiver) = oneshot::channel();
-        inner.enqueue_fixture_request(name, move |result| {
-            drop(sender.send(result));
-        });
-        receiver
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn wait_for_fixture_request(&self, inner: &Inner) {
-        if inner.fixtures.has_fixture_requests() {
-            return;
-        }
-        self.fixture_notify.notified().await;
     }
 
     pub(crate) fn frame_notify(&self) -> &Notify {
@@ -182,10 +157,6 @@ impl RuntimeHooks for RuntimeHooksImpl {
 
     fn on_frame_end(&self, inner: &Inner, ctx: &Context) {
         self.runtime.finish_frame(inner, ctx);
-    }
-
-    fn on_fixture_request(&self, _inner: &Inner) {
-        self.runtime.fixture_notify.notify_one();
     }
 }
 

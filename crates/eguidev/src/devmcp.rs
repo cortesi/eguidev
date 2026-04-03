@@ -3,6 +3,7 @@
 
 use std::{
     any::Any,
+    fmt,
     sync::{Arc, atomic::Ordering},
 };
 
@@ -10,7 +11,7 @@ use egui::Context;
 
 use crate::{
     actions::InputAction,
-    fixtures::FixtureRequest,
+    fixtures::FixtureHandler,
     instrument::{ACTIVE, swallow_panic},
     registry::Inner,
     types::FixtureSpec,
@@ -29,16 +30,25 @@ pub trait RuntimeHooks: Send + Sync {
     fn on_raw_input(&self, _inner: &Inner, _events: &[egui::Event]) {}
 
     fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
-
-    fn on_fixture_request(&self, _inner: &Inner) {}
 }
 
 /// DevMCP handle stored in app state.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct DevMcp {
     state: DevMcpState,
     fixtures: Vec<FixtureSpec>,
     verbose_logging: bool,
+    fixture_handler: Option<FixtureHandler>,
+}
+
+impl fmt::Debug for DevMcp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DevMcp")
+            .field("state", &self.state)
+            .field("fixtures", &self.fixtures)
+            .field("verbose_logging", &self.verbose_logging)
+            .finish()
+    }
 }
 
 impl DevMcp {
@@ -65,10 +75,20 @@ impl DevMcp {
         self
     }
 
-    /// Collect pending fixture requests.
-    pub fn collect_fixture_requests(&self) -> Vec<FixtureRequest> {
-        self.inner()
-            .map_or_else(Vec::new, |inner| inner.fixtures.collect_fixture_requests())
+    /// Register a callback that applies named fixtures to app state.
+    ///
+    /// The handler is called directly from the tokio runtime when a fixture
+    /// tool call arrives, removing the need for frame-driven polling.
+    pub fn on_fixture<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+    {
+        let handler: FixtureHandler = Arc::new(handler);
+        if let Some(inner) = self.inner() {
+            inner.fixtures.set_fixture_handler(handler.clone());
+        }
+        self.fixture_handler = Some(handler);
+        self
     }
 
     /// Returns true if DevMCP automation is attached.
@@ -103,6 +123,9 @@ impl DevMcp {
         inner.set_verbose_logging(self.verbose_logging);
         if !self.fixtures.is_empty() {
             inner.fixtures.set_fixtures(self.fixtures.clone());
+        }
+        if let Some(handler) = &self.fixture_handler {
+            inner.fixtures.set_fixture_handler(handler.clone());
         }
         self.state = DevMcpState::Active(inner);
         self

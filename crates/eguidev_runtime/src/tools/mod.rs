@@ -18,12 +18,7 @@ use tmcp::{
     schema::{CallToolResult, ClientCapabilities, Implementation, InitializeResult},
     tool,
 };
-use tokio::{
-    runtime::Handle,
-    sync::oneshot,
-    task::spawn_blocking,
-    time::{sleep, timeout},
-};
+use tokio::{runtime::Handle, task::spawn_blocking, time::timeout};
 
 use crate::{
     actions::{ActionTiming, InputAction},
@@ -43,7 +38,6 @@ use crate::{
 };
 
 pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_FIXTURE_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 16;
 mod layout;
 mod results;
@@ -132,51 +126,6 @@ fn resolve_widget(
         .widgets
         .resolve_widget(&inner.viewports, viewport_id, target)
         .map_err(Into::into)
-}
-
-/// Await a oneshot fixture response while actively keeping the event loop alive.
-///
-/// The app processes fixture requests during its frame update cycle. If the
-/// repaint cadence stalls (e.g. macOS throttles a background window), a passive
-/// `receiver.await` would block indefinitely. This function re-requests a
-/// repaint after each frame notification so the event loop keeps ticking.
-async fn await_with_repaint(
-    inner: &Inner,
-    timeout_ms: u64,
-    receiver: oneshot::Receiver<Result<(), String>>,
-) -> Result<(), ToolError> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut receiver = std::pin::pin!(receiver);
-    loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .unwrap_or_default();
-        if remaining.is_zero() {
-            return Err(ToolError::new(
-                ErrorCode::Timeout,
-                format!("Fixture request timed out after {timeout_ms}ms"),
-            ));
-        }
-        // Request a repaint before each poll. On macOS the event loop can
-        // stall when the window isn't focused, so we re-request on every
-        // iteration rather than relying on the frame cadence staying alive.
-        inner.request_repaint_of(egui::ViewportId::ROOT);
-        // Poll interval: check the receiver frequently without spinning.
-        let poll = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS).min(remaining);
-        tokio::select! {
-            result = &mut receiver => {
-                return match result {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(message)) => Err(ToolError::new(ErrorCode::Internal, message)),
-                    Err(_) => Err(ToolError::new(
-                        ErrorCode::Internal,
-                        "Fixture request dropped without a response",
-                    )),
-                };
-            }
-            _ = sleep(poll) => continue,
-        }
-    }
 }
 
 pub struct DevMcpServer {
@@ -1289,10 +1238,9 @@ fixture requests are processed in App::update."
 
     /// Navigate to an app-defined fixture by name.
     ///
-    /// Fixtures must be pre-registered by the app. Requests are delivered to the app via
-    /// `DevMcp::collect_fixture_requests`. The app decides what "navigating to a fixture"
-    /// means (e.g., resetting UI state and loading a specific test scenario).
-    async fn fixture(&self, name: String, timeout_ms: Option<u64>) -> ToolResult<()> {
+    /// The registered fixture handler is called directly. No frame cycle is
+    /// needed, so this works even when the window is occluded on macOS.
+    async fn fixture(&self, name: String, _timeout_ms: Option<u64>) -> ToolResult<()> {
         if !self.inner.fixtures.has_fixture(&name) {
             return Err(
                 ToolError::new(ErrorCode::NotFound, format!("Unknown fixture: {name}")).into(),
@@ -1300,21 +1248,11 @@ fixture requests are processed in App::update."
         }
         self.inner.clear_all();
         self.inner.reset_fixture_transient_state();
-        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_FIXTURE_TIMEOUT_MS);
-        let receiver = self
-            .runtime
-            .enqueue_fixture_request(&self.inner, name.clone());
-        // Actively drive the event loop while awaiting the fixture response.
-        // The app processes fixture requests in its update() method, which only
-        // runs during a frame. Rather than passively waiting on the oneshot
-        // (which fails if the repaint cadence stalls), we request a repaint on
-        // each frame notification so the event loop stays active.
-        let fixture_result = await_with_repaint(&self.inner, timeout_ms, receiver).await;
+        let result = self.inner.apply_fixture(&name);
         self.inner.reset_fixture_transient_state();
-        if let Err(error) = fixture_result {
-            return Err(error.into());
+        if let Err(message) = result {
+            return Err(ToolError::new(ErrorCode::Internal, message).into());
         }
-        self.wait_for_settle(None, Some(timeout_ms), None).await?;
         Ok(())
     }
 }
@@ -1653,14 +1591,17 @@ fn crop_image(
 #[allow(deprecated)]
 mod tests {
     use std::{
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering as AtomicOrdering},
+        },
         time::{Duration, Instant},
     };
 
     use eguidev::FixtureSpec;
     use serde_json::Value;
     use tmcp::schema::ContentBlock;
-    use tokio::task::yield_now;
+    use tokio::{task::yield_now, time::sleep};
 
     use super::*;
     use crate::{
@@ -1674,17 +1615,6 @@ mod tests {
         },
         widget_registry::{WidgetMeta, record_widget},
     };
-
-    trait InnerFixtureWaitExt {
-        async fn wait_for_fixture_request(&self);
-    }
-
-    impl InnerFixtureWaitExt for Arc<Inner> {
-        async fn wait_for_fixture_request(&self) {
-            let runtime = Runtime::ensure_for_inner(self);
-            runtime.wait_for_fixture_request(self).await;
-        }
-    }
 
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
         let viewport_id = raw_input.viewport_id;
@@ -2334,12 +2264,13 @@ return widget:wait_for_visible()"#
     }
 
     #[tokio::test]
-    async fn fixture_enqueues_request_and_returns_success() {
+    async fn fixture_applies_handler_without_waiting_for_a_new_frame() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![FixtureSpec {
             name: "test_fixture".to_string(),
             description: "Test fixture.".to_string(),
         }]);
+        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -2348,106 +2279,55 @@ return widget:wait_for_visible()"#
         drop(ctx.run(raw_input, |_| {}));
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.capture_input_snapshot(&ctx);
-        let inner_for_server = Arc::clone(&inner);
-        let handle = tokio::spawn(async move {
-            let server = DevMcpServer::new(inner_for_server);
-            server.fixture("test_fixture".to_string(), None).await
-        });
-        inner.wait_for_fixture_request().await;
-        let mut requests = inner.fixtures.collect_fixture_requests();
-        assert_eq!(requests.len(), 1);
-        let request = requests.pop().expect("fixture request");
-        assert_eq!(request.name, "test_fixture");
-        let inner_for_frame = Arc::clone(&inner);
-        let runtime_for_frame = Runtime::ensure_for_inner(&inner);
-        tokio::spawn(async move {
-            for _ in 0..4 {
-                yield_now().await;
-                inner_for_frame.advance_frame();
-                runtime_for_frame.frame_notify().notify_waiters();
-            }
-        });
-        assert!(request.respond(Ok(())));
-        handle.await.expect("fixture task").expect("fixture result");
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        server
+            .fixture("test_fixture".to_string(), None)
+            .await
+            .expect("fixture result");
     }
 
     #[tokio::test]
-    async fn fixture_returns_error_when_request_fails() {
+    async fn fixture_returns_error_when_handler_fails() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![FixtureSpec {
             name: "broken".to_string(),
             description: "Broken fixture.".to_string(),
         }]);
-        let inner_for_server = Arc::clone(&inner);
-        let handle = tokio::spawn(async move {
-            let server = DevMcpServer::new(inner_for_server);
-            server.fixture("broken".to_string(), None).await
-        });
-        inner.wait_for_fixture_request().await;
-        let mut requests = inner.fixtures.collect_fixture_requests();
-        let request = requests.pop().expect("fixture request");
-        assert!(request.respond(Err("fixture failed".to_string())));
-        let result = handle.await.expect("fixture task");
+        inner
+            .fixtures
+            .set_fixture_handler(Arc::new(|_name| Err("fixture failed".to_string())));
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let result = server.fixture("broken".to_string(), None).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn fixture_returns_error_when_request_dropped() {
+    async fn fixture_returns_error_when_no_handler_registered() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "dropped".to_string(),
-            description: "Dropped fixture.".to_string(),
+            name: "no_handler".to_string(),
+            description: "No handler fixture.".to_string(),
         }]);
-        let inner_for_server = Arc::clone(&inner);
-        let handle = tokio::spawn(async move {
-            let server = DevMcpServer::new(inner_for_server);
-            server.fixture("dropped".to_string(), None).await
-        });
-        inner.wait_for_fixture_request().await;
-        let requests = inner.fixtures.collect_fixture_requests();
-        drop(requests);
-        let result = handle.await.expect("fixture task");
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let result = server.fixture("no_handler".to_string(), None).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn fixture_returns_timeout_when_request_is_not_handled() {
+    async fn script_eval_fixture_succeeds_without_a_new_frame() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![FixtureSpec {
             name: "slow".to_string(),
             description: "Slow fixture.".to_string(),
         }]);
-        let inner_for_server = Arc::clone(&inner);
-        let handle = tokio::spawn(async move {
-            let server = DevMcpServer::new(inner_for_server);
-            server.fixture("slow".to_string(), Some(10)).await
-        });
-        inner.wait_for_fixture_request().await;
-        let result = handle.await.expect("fixture task");
-        let error = result.expect_err("fixture timeout expected");
-        assert_eq!(error.code, "timeout");
-    }
-
-    #[tokio::test]
-    async fn script_eval_times_out_when_tool_call_blocks() {
-        let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "slow".to_string(),
-            description: "Slow fixture.".to_string(),
-        }]);
-        let inner_for_server = Arc::clone(&inner);
-        let handle = tokio::spawn(async move {
-            let server = DevMcpServer::new(inner_for_server);
-            server
-                .script_eval("fixture(\"slow\")".to_string(), Some(20), None)
-                .await
-                .expect("script eval")
-        });
-        inner.wait_for_fixture_request().await;
-        let result = handle.await.expect("script eval task");
+        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let result = server
+            .script_eval("fixture(\"slow\")".to_string(), Some(20), None)
+            .await
+            .expect("script eval");
         let json = parse_script_eval_json(&result);
-        assert_eq!(json["success"], false);
-        assert_eq!(json["error"]["type"], "timeout");
+        assert_eq!(json["success"], true);
     }
 
     #[tokio::test]
@@ -2487,6 +2367,12 @@ return widget:wait_for_visible()"#
             name: "reset".to_string(),
             description: "Reset fixture.".to_string(),
         }]);
+        let applied = Arc::new(AtomicBool::new(false));
+        let applied_handler = Arc::clone(&applied);
+        inner.fixtures.set_fixture_handler(Arc::new(move |_name| {
+            applied_handler.store(true, AtomicOrdering::Relaxed);
+            Ok(())
+        }));
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -2524,25 +2410,6 @@ return widget:wait_for_visible()"#
             ..Default::default()
         });
 
-        let inner_for_server = Arc::clone(&inner);
-        let handle = tokio::spawn(async move {
-            let server = DevMcpServer::new(inner_for_server);
-            server.fixture("reset".to_string(), None).await
-        });
-        inner.wait_for_fixture_request().await;
-
-        assert!(!inner.actions.has_pending_actions(viewport_id));
-        assert!(!inner.actions.has_pending_commands(viewport_id));
-        assert!(
-            inner
-                .take_widget_value_update(viewport_id, "field")
-                .is_none()
-        );
-        assert!(inner.take_scroll_override(viewport_id, 7).is_none());
-        assert!(!inner.overlays.overlay_debug_config().enabled);
-
-        let mut requests = inner.fixtures.collect_fixture_requests();
-        let request = requests.pop().expect("fixture request");
         let inner_for_frame = Arc::clone(&inner);
         let runtime_for_frame = Runtime::ensure_for_inner(&inner);
         tokio::spawn(async move {
@@ -2552,8 +2419,23 @@ return widget:wait_for_visible()"#
                 runtime_for_frame.frame_notify().notify_waiters();
             }
         });
-        assert!(request.respond(Ok(())));
-        handle.await.expect("fixture task").expect("fixture result");
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        server
+            .fixture("reset".to_string(), None)
+            .await
+            .expect("fixture result");
+
+        assert!(applied.load(AtomicOrdering::Relaxed));
+        // After fixture application, transient state should be cleared.
+        assert!(!inner.actions.has_pending_actions(viewport_id));
+        assert!(!inner.actions.has_pending_commands(viewport_id));
+        assert!(
+            inner
+                .take_widget_value_update(viewport_id, "field")
+                .is_none()
+        );
+        assert!(inner.take_scroll_override(viewport_id, 7).is_none());
+        assert!(!inner.overlays.overlay_debug_config().enabled);
     }
 
     #[tokio::test]
