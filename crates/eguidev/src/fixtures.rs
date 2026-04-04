@@ -24,6 +24,11 @@ impl FixtureManager {
 
     /// Replace the registered fixture catalog.
     pub fn set_fixtures(&self, fixtures: Vec<FixtureSpec>) {
+        for fixture in &fixtures {
+            if let Err(error) = fixture.validate(true) {
+                panic!("invalid fixture {}: {error}", fixture.name);
+            }
+        }
         let mut stored = lock(&self.fixtures, "fixtures lock");
         *stored = fixtures;
     }
@@ -42,9 +47,15 @@ impl FixtureManager {
 
     /// Check whether a fixture with the given name is registered.
     pub fn has_fixture(&self, name: &str) -> bool {
+        self.fixture(name).is_some()
+    }
+
+    /// Return a registered fixture by name.
+    pub fn fixture(&self, name: &str) -> Option<FixtureSpec> {
         lock(&self.fixtures, "fixtures lock")
             .iter()
-            .any(|fixture| fixture.name == name)
+            .find(|fixture| fixture.name == name)
+            .cloned()
     }
 
     /// Register the callback that applies a named fixture to app state.

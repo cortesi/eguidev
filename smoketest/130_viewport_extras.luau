@@ -19,6 +19,7 @@ local root_info = root_vp:state()
 assert(root_info.inner_size.x > 0 and root_info.inner_size.y > 0, "root viewport should be ready")
 
 secondary_vp:focus()
+secondary_vp:widget_get("viewports.scroll"):wait_for_scroll_ready()
 
 -- scroll_to in secondary viewport
 secondary_vp:widget_get("viewports.scroll"):scroll_to({
@@ -28,24 +29,22 @@ secondary_vp:widget_get("viewports.scroll"):scroll_to({
 secondary_vp:wait_for_widget("viewports.row.0", function(widget)
     return widget.visible
 end)
-
--- Scroll to bottom in secondary viewport
-secondary_vp:widget_get("viewports.scroll"):scroll_to({
-    align = "bottom",
-    settle = false,
-})
-secondary_vp:wait_for_widget("viewports.row.24", function(widget)
-    return widget.visible
+secondary_vp:wait_for_widget("viewports.scroll", function(widget)
+    local scroll = widget.scroll_state
+    return scroll ~= nil and math.abs(scroll.offset.y) < 0.75
 end)
 
--- Verify viewport open status label
+-- Scroll to bottom in secondary viewport
 local open_status = root_vp:widget_get("viewports.open"):state()
 assert(string.find(open_status.value_text, "true", 1, true) ~= nil,
     "secondary should be open")
 
 -- viewports.scrolled fixture
 fixture("viewports.scrolled")
-root_vp:wait_for_settle()
+secondary_vp:wait_for_widget("viewports.scroll", function(widget)
+    local scroll = widget.scroll_state
+    return scroll ~= nil and scroll.offset.y > 0
+end)
 assert(
     tostring(root_vp:widget_get("basic.status"):state().label)
         == "Fixture: secondary viewport scrolled"

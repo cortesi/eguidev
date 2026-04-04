@@ -1,19 +1,8 @@
 fixture("basic.default")
 local vp = root()
+local TOLERANCE = 0.75
 
 -- Verify initial state: top rows visible
-vp:wait_for_widget("basic.scroll.row.0", function(widget)
-    return widget.visible
-end)
-
--- scroll_to align=bottom
-vp:widget_get("basic.scroll"):scroll_to({ align = "bottom" })
-vp:wait_for_widget("basic.scroll.row.49", function(widget)
-    return widget.visible
-end)
-
--- scroll_to align=top
-vp:widget_get("basic.scroll"):scroll_to({ align = "top" })
 vp:wait_for_widget("basic.scroll.row.0", function(widget)
     return widget.visible
 end)
@@ -35,9 +24,9 @@ local offset_text = tostring(vp:widget_get("basic.scroll.offset"):state().label)
 assert(string.find(offset_text, "Scroll offset:", 1, true) ~= nil, "should show scroll offset")
 
 vp:widget_get("basic.scroll.jump_top"):click()
-vp:wait_for_settle()
-vp:wait_for_widget("basic.scroll.row.0", function(widget)
-    return widget.visible
+vp:wait_for_widget("basic.scroll", function(widget)
+    local scroll = widget.scroll_state
+    return scroll ~= nil and math.abs(scroll.offset.y) < 0.75
 end)
 
 -- scroll with positive delta (content up)
@@ -46,12 +35,10 @@ vp:wait_for_settle()
 
 -- basic.scrolled fixture pre-scrolls the area
 fixture("basic.scrolled")
-vp:wait_for_settle()
 assert(tostring(vp:widget_get("basic.status"):state().label) == "Fixture: scrolled")
 
 -- viewports.scrolled fixture pre-scrolls the secondary viewport
 fixture("viewports.scrolled")
-vp:wait_for_settle()
 assert(
     tostring(vp:widget_get("basic.status"):state().label)
         == "Fixture: secondary viewport scrolled"

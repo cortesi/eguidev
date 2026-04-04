@@ -1,6 +1,6 @@
 //! Data types used by DevMCP tooling.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt};
 
 use egui::{Rect as EguiRect, Vec2 as EguiVec2};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -9,6 +9,8 @@ use serde::{
     de::{self, Deserializer},
     ser::Serializer,
 };
+
+use crate::registry::viewport_id_to_string;
 
 fn sanitize_f32(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
@@ -127,6 +129,255 @@ pub struct FixtureSpec {
     pub name: String,
     /// Fixture description.
     pub description: String,
+    /// Declarative readiness anchors for the fixture baseline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<Anchor>,
+}
+
+/// A single readiness anchor for a fixture baseline.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Anchor {
+    /// Widget id to resolve from the registry.
+    pub widget_id: String,
+    /// Optional viewport selector (`root` or `vp:...`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_id: Option<String>,
+    /// Readiness condition to evaluate against the widget state.
+    pub check: AnchorCheck,
+}
+
+/// Declarative readiness checks for fixture anchors.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum AnchorCheck {
+    /// Widget exists and is visible.
+    Visible,
+    /// Widget label matches exactly.
+    Label(String),
+    /// Widget value matches.
+    Value(WidgetValue),
+    /// Scroll area is initialized and stable across captures.
+    ScrollReady,
+    /// Scroll area is initialized, stable, and near the requested offset.
+    ScrollAt {
+        /// Target scroll offset.
+        offset: Vec2,
+        /// Allowed absolute error per axis.
+        tolerance: f32,
+    },
+}
+
+impl FixtureSpec {
+    /// Create a new fixture specification.
+    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            anchors: Vec::new(),
+        }
+    }
+
+    /// Add a visible-widget readiness anchor.
+    pub fn anchor(self, widget_id: impl Into<String>) -> Self {
+        self.push_anchor(widget_id.into(), None, AnchorCheck::Visible)
+    }
+
+    /// Add a visible-widget readiness anchor scoped to a viewport.
+    pub fn anchor_in(self, widget_id: impl Into<String>, viewport: egui::ViewportId) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::Visible,
+        )
+    }
+
+    /// Add an exact-label readiness anchor.
+    pub fn anchor_label(self, widget_id: impl Into<String>, text: impl Into<String>) -> Self {
+        self.push_anchor(widget_id.into(), None, AnchorCheck::Label(text.into()))
+    }
+
+    /// Add an exact-label readiness anchor scoped to a viewport.
+    pub fn anchor_label_in(
+        self,
+        widget_id: impl Into<String>,
+        text: impl Into<String>,
+        viewport: egui::ViewportId,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::Label(text.into()),
+        )
+    }
+
+    /// Add an exact-value readiness anchor.
+    pub fn anchor_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
+        self.push_anchor(widget_id.into(), None, AnchorCheck::Value(value))
+    }
+
+    /// Add an exact-value readiness anchor scoped to a viewport.
+    pub fn anchor_value_in(
+        self,
+        widget_id: impl Into<String>,
+        value: WidgetValue,
+        viewport: egui::ViewportId,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::Value(value),
+        )
+    }
+
+    /// Add a scroll-readiness anchor.
+    pub fn anchor_scroll(self, widget_id: impl Into<String>) -> Self {
+        self.push_anchor(widget_id.into(), None, AnchorCheck::ScrollReady)
+    }
+
+    /// Add a scroll-readiness anchor scoped to a viewport.
+    pub fn anchor_scroll_in(
+        self,
+        widget_id: impl Into<String>,
+        viewport: egui::ViewportId,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::ScrollReady,
+        )
+    }
+
+    /// Add a scroll-position readiness anchor.
+    pub fn anchor_scroll_at(
+        self,
+        widget_id: impl Into<String>,
+        offset: impl Into<Vec2>,
+        tolerance: f32,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            None,
+            AnchorCheck::ScrollAt {
+                offset: offset.into(),
+                tolerance,
+            },
+        )
+    }
+
+    /// Add a scroll-position readiness anchor scoped to a viewport.
+    pub fn anchor_scroll_at_in(
+        self,
+        widget_id: impl Into<String>,
+        offset: impl Into<Vec2>,
+        tolerance: f32,
+        viewport: egui::ViewportId,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::ScrollAt {
+                offset: offset.into(),
+                tolerance,
+            },
+        )
+    }
+
+    /// Validate fixture metadata and readiness anchors.
+    pub fn validate(&self, require_anchors: bool) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("fixture name must not be empty".to_string());
+        }
+        for (index, anchor) in self.anchors.iter().enumerate() {
+            anchor
+                .validate()
+                .map_err(|error| format!("fixture {} anchor {}: {error}", self.name, index + 1))?;
+        }
+        if require_anchors && self.anchors.is_empty() {
+            return Err(format!(
+                "fixture {} must declare at least one readiness anchor",
+                self.name
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return a human-readable summary of the readiness contract.
+    pub fn describe_readiness(&self) -> String {
+        if self.anchors.is_empty() {
+            return "No readiness anchors declared.".to_string();
+        }
+        self.anchors
+            .iter()
+            .map(Anchor::describe)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    fn push_anchor(
+        mut self,
+        widget_id: String,
+        viewport_id: Option<String>,
+        check: AnchorCheck,
+    ) -> Self {
+        self.anchors.push(Anchor {
+            widget_id,
+            viewport_id,
+            check,
+        });
+        self
+    }
+}
+
+impl Anchor {
+    /// Return a human-readable description of the anchor.
+    pub fn describe(&self) -> String {
+        let target = match &self.viewport_id {
+            Some(viewport_id) => format!("{} in {}", self.widget_id, viewport_id),
+            None => self.widget_id.clone(),
+        };
+        format!("{target} {}", self.check)
+    }
+
+    /// Validate the anchor contents.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.widget_id.trim().is_empty() {
+            return Err("widget_id must not be empty".to_string());
+        }
+        if let Some(viewport_id) = &self.viewport_id
+            && viewport_id.trim().is_empty()
+        {
+            return Err("viewport_id must not be empty when provided".to_string());
+        }
+        match &self.check {
+            AnchorCheck::Label(text) if text.is_empty() => {
+                Err("label anchors must not be empty".to_string())
+            }
+            AnchorCheck::ScrollAt { tolerance, .. }
+                if !tolerance.is_finite() || *tolerance <= 0.0 =>
+            {
+                Err("scroll_at tolerance must be finite and greater than 0".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl fmt::Display for AnchorCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Visible => f.write_str("visible"),
+            Self::Label(text) => write!(f, "label == \"{text}\""),
+            Self::Value(value) => match value {
+                WidgetValue::Text(text) => write!(f, "value == \"{text}\""),
+                _ => write!(f, "value == {}", value.to_text()),
+            },
+            Self::ScrollReady => f.write_str("scroll_ready"),
+            Self::ScrollAt { offset, tolerance } => write!(
+                f,
+                "scroll_at ({:.1}, {:.1}) ± {:.2}",
+                offset.x, offset.y, tolerance
+            ),
+        }
+    }
 }
 
 impl From<Modifiers> for egui::Modifiers {

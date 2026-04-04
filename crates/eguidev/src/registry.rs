@@ -42,6 +42,7 @@ pub struct Inner {
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     next_request_id: AtomicU64,
     frame_count: AtomicU64,
+    fixture_epoch: AtomicU64,
     pub last_action_frame: AtomicU64,
     verbose_logging: AtomicBool,
     pub fixtures: FixtureManager,
@@ -104,6 +105,7 @@ impl Inner {
             scroll_overrides: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
+            fixture_epoch: AtomicU64::new(0),
             last_action_frame: AtomicU64::new(0),
             verbose_logging: AtomicBool::new(false),
             fixtures: FixtureManager::new(),
@@ -144,6 +146,7 @@ impl Inner {
     pub fn capture_context(&self, viewport_id: egui::ViewportId, ctx: &Context) {
         let mut stored = lock(&self.contexts, "contexts lock");
         stored.insert(viewport_id, ctx.clone());
+        self.viewports.remember_viewport_id(viewport_id);
     }
 
     pub fn context_for(&self, viewport_id: egui::ViewportId) -> Option<Context> {
@@ -157,6 +160,16 @@ impl Inner {
 
     pub fn request_repaint(&self) {
         self.request_repaint_of(egui::ViewportId::ROOT);
+    }
+
+    pub fn request_repaint_all(&self) {
+        let contexts = {
+            let contexts = lock(&self.contexts, "contexts lock");
+            contexts.values().cloned().collect::<Vec<_>>()
+        };
+        for ctx in contexts {
+            ctx.request_repaint();
+        }
     }
 
     pub fn request_repaint_of(&self, viewport_id: egui::ViewportId) {
@@ -270,6 +283,14 @@ impl Inner {
 
     pub fn frame_count(&self) -> u64 {
         self.frame_count.load(Ordering::Relaxed)
+    }
+
+    pub fn begin_fixture_epoch(&self) -> u64 {
+        self.fixture_epoch.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn fixture_epoch(&self) -> u64 {
+        self.fixture_epoch.load(Ordering::Relaxed)
     }
 }
 

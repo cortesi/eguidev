@@ -765,6 +765,23 @@ fn create_widget_metatable(lua: &Lua, runtime: Arc<ScriptRuntime>) -> mlua::Resu
         })?,
     )?;
 
+    // wait_for_scroll_ready(self)
+    let rt = Arc::clone(&runtime);
+    methods.set(
+        "wait_for_scroll_ready",
+        lua.create_function(move |lua, self_t: LuaTable| {
+            let pos = current_position(lua);
+            let target = widget_id(&self_t)?;
+            let mut options = Some(Value::Object(serde_json::Map::new()));
+            inject_viewport(&self_t, &mut options)?;
+            let options_map = options.as_ref().and_then(Value::as_object);
+            let result = rt
+                .wait_for_scroll_ready(pos, &target, options_map)
+                .map_err(host_error)?;
+            lua.to_value(&result)
+        })?,
+    )?;
+
     // wait_for_absent(self)
     let rt = Arc::clone(&runtime);
     methods.set(
@@ -924,6 +941,20 @@ fn create_viewport_metatable(lua: &Lua, runtime: Arc<ScriptRuntime>) -> mlua::Re
             inject_viewport_id(viewport_id(&self_t)?, &mut options);
             let result = rt
                 .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
+                .map_err(host_error)?;
+            lua.to_value(&result)
+        })?,
+    )?;
+
+    let rt = Arc::clone(&runtime);
+    methods.set(
+        "wait_for_capture",
+        lua.create_function(move |lua, self_t: LuaTable| {
+            let pos = current_position(lua);
+            let mut options = Some(Value::Object(serde_json::Map::new()));
+            inject_viewport_id(viewport_id(&self_t)?, &mut options);
+            let result = rt
+                .wait_for_capture(pos, options.as_ref().and_then(Value::as_object))
                 .map_err(host_error)?;
             lua.to_value(&result)
         })?,
@@ -1360,6 +1391,19 @@ fn register_wait_functions(lua: &Lua, runtime: Arc<ScriptRuntime>) -> mlua::Resu
         })?,
     )?;
 
+    let runtime_c = Arc::clone(&runtime);
+    globals.set(
+        "wait_for_capture",
+        lua.create_function(move |lua, arg: Option<LuaValue>| {
+            let pos = current_position(lua);
+            let arg = optional_json_from_lua(lua, arg)?;
+            let result = runtime_c
+                .wait_for_capture(pos, arg.as_ref().and_then(Value::as_object))
+                .map_err(host_error)?;
+            lua.to_value(&result)
+        })?,
+    )?;
+
     Ok(())
 }
 
@@ -1502,6 +1546,16 @@ fn register_fixture_functions(lua: &Lua, runtime: Arc<ScriptRuntime>) -> mlua::R
         lua.create_function(move |lua, name: String| {
             let pos = current_position(lua);
             let result = runtime_c.fixture(pos, name).map_err(host_error)?;
+            lua.to_value(&result)
+        })?,
+    )?;
+
+    let runtime_c = Arc::clone(&runtime);
+    globals.set(
+        "fixture_raw",
+        lua.create_function(move |lua, name: String| {
+            let pos = current_position(lua);
+            let result = runtime_c.fixture_raw(pos, name).map_err(host_error)?;
             lua.to_value(&result)
         })?,
     )?;

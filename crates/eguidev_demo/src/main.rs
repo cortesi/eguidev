@@ -22,31 +22,44 @@ type MainResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 /// Fixture catalog for the demo app.
 fn demo_fixtures() -> Vec<FixtureSpec> {
+    let secondary = egui::ViewportId::from_hash_of("eguidev_demo.secondary");
     vec![
-        FixtureSpec {
-            name: "basic.default".to_string(),
-            description: "Reset to the initial demo state.".to_string(),
-        },
-        FixtureSpec {
-            name: "basic.empty".to_string(),
-            description: "Clear inputs, disable toggle, and reset intensity.".to_string(),
-        },
-        FixtureSpec {
-            name: "basic.scrolled".to_string(),
-            description: "Jump the scroll area down to a later row.".to_string(),
-        },
-        FixtureSpec {
-            name: "basic.overlay_reset_probe".to_string(),
-            description: "Reset probe for overlay-local fixture input.".to_string(),
-        },
-        FixtureSpec {
-            name: "viewports.default".to_string(),
-            description: "Reset the secondary viewport to its default state.".to_string(),
-        },
-        FixtureSpec {
-            name: "viewports.scrolled".to_string(),
-            description: "Jump the secondary viewport list down to a later row.".to_string(),
-        },
+        FixtureSpec::new("basic.default", "Reset to the initial demo state.")
+            .anchor_label("basic.status", "Waiting for input.")
+            .anchor_scroll_at("basic.scroll", egui::vec2(0.0, 0.0), 0.75),
+        FixtureSpec::new(
+            "basic.empty",
+            "Clear inputs, disable toggle, and reset intensity.",
+        )
+        .anchor_label("basic.status", "Fixture: empty")
+        .anchor_value("basic.enabled", eguidev::WidgetValue::Bool(false)),
+        FixtureSpec::new(
+            "basic.scrolled",
+            "Jump the scroll area down to a later row.",
+        )
+        .anchor_label("basic.status", "Fixture: scrolled")
+        .anchor_scroll_at("basic.scroll", egui::vec2(0.0, 300.0), 0.75),
+        FixtureSpec::new(
+            "basic.overlay_reset_probe",
+            "Reset probe for overlay-local fixture input.",
+        )
+        .anchor_label("basic.status", "Fixture: overlay reset probe")
+        .anchor_value(
+            "overlay.fixture_probe.input",
+            eguidev::WidgetValue::Text(String::new()),
+        ),
+        FixtureSpec::new(
+            "viewports.default",
+            "Reset the secondary viewport to its default state.",
+        )
+        .anchor_label("basic.status", "Waiting for input.")
+        .anchor_scroll_at_in("viewports.scroll", egui::vec2(0.0, 0.0), 0.75, secondary),
+        FixtureSpec::new(
+            "viewports.scrolled",
+            "Jump the secondary viewport list down to a later row.",
+        )
+        .anchor_label("basic.status", "Fixture: secondary viewport scrolled")
+        .anchor_scroll_at_in("viewports.scroll", egui::vec2(0.0, 300.0), 32.0, secondary),
     ]
 }
 

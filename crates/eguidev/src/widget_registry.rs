@@ -139,24 +139,46 @@ impl WidgetRegistry {
             return Err(error);
         }
         let tool_viewport = viewport_id;
-        let (viewport_id, resolved_viewport) =
-            resolve_viewport_selector(viewports, tool_viewport, target)?;
         let registry = lock(&self.registry_snapshot, "registry snapshot lock");
-        let widgets = registry.get(&viewport_id).cloned().unwrap_or_default();
 
         if target.id.is_none() {
             return Err(
-                ToolError::new(ErrorCode::InvalidRef, "WidgetRef must include id").with_details(
-                    selector_details(target, tool_viewport, Some(&resolved_viewport)),
-                ),
+                ToolError::new(ErrorCode::InvalidRef, "WidgetRef must include id")
+                    .with_details(selector_details(target, tool_viewport, None)),
             );
         }
 
-        let matches = widgets
-            .iter()
-            .filter(|entry| entry.id == target.id.as_deref().unwrap_or_default())
-            .cloned()
-            .collect::<Vec<_>>();
+        let (matches, resolved_viewport) =
+            match resolve_viewport_selector(viewports, tool_viewport, target) {
+                Ok((viewport_id, resolved_viewport)) => {
+                    let widgets = registry.get(&viewport_id).cloned().unwrap_or_default();
+                    let matches = widgets
+                        .iter()
+                        .filter(|entry| entry.id == target.id.as_deref().unwrap_or_default())
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    (matches, resolved_viewport)
+                }
+                Err(error)
+                    if error.code == ErrorCode::InvalidRef && target.viewport_id.is_some() =>
+                {
+                    let resolved_viewport = target
+                        .viewport_id
+                        .clone()
+                        .expect("checked target viewport id");
+                    let matches = registry
+                        .values()
+                        .flatten()
+                        .filter(|entry| {
+                            entry.viewport_id == resolved_viewport
+                                && entry.id == target.id.as_deref().unwrap_or_default()
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    (matches, resolved_viewport)
+                }
+                Err(error) => return Err(error),
+            };
 
         if matches.is_empty() {
             return Err(not_found_error(

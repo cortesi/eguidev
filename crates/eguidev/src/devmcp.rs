@@ -180,7 +180,10 @@ impl DevMcp {
 
     fn finish_frame(&self, inner: &Arc<Inner>, ctx: &Context) {
         inner.widgets.finalize_registry(ctx.viewport_id());
-        inner.viewports.capture_input_snapshot(ctx);
+        let next_frame = inner.frame_count() + 1;
+        inner
+            .viewports
+            .capture_input_snapshot(ctx, inner.fixture_epoch(), next_frame);
         inner.advance_frame();
         if let Some(hooks) = inner.runtime_hooks() {
             hooks.on_frame_end(inner, ctx);

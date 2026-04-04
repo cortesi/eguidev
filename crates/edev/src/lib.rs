@@ -14,6 +14,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use eguidev::Anchor;
 use eguidev_runtime::{
     ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, run_suite_with},
@@ -168,7 +169,7 @@ async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
     }
 
     // Apply the fixture.
-    let apply_script = format!("fixture({:?})", name);
+    let apply_script = format!("fixture_raw({:?})", name);
     if let Err(error) =
         eval_fixture_script(&client, &apply_script, "fixture application failed").await
     {
@@ -268,6 +269,9 @@ struct FixtureInfo {
     /// Human-readable description of the fixture baseline.
     #[serde(default)]
     description: String,
+    /// Declarative readiness anchors reported by the app.
+    #[serde(default)]
+    anchors: Vec<Anchor>,
 }
 
 /// Print a formatted fixture table to stdout.
@@ -279,10 +283,25 @@ fn print_fixture_table(fixtures: &[FixtureInfo]) {
         .unwrap_or(0)
         .max(4);
     for f in fixtures {
-        if f.description.is_empty() {
-            println!("  {}", f.name);
+        let readiness = if f.anchors.is_empty() {
+            String::new()
         } else {
-            println!("  {:width$}  {}", f.name, f.description, width = max_name);
+            format!(
+                " [{} anchor{}]",
+                f.anchors.len(),
+                if f.anchors.len() == 1 { "" } else { "s" }
+            )
+        };
+        if f.description.is_empty() {
+            println!("  {}{}", f.name, readiness);
+        } else {
+            println!(
+                "  {:width$}  {}{}",
+                f.name,
+                f.description,
+                readiness,
+                width = max_name
+            );
         }
     }
 }

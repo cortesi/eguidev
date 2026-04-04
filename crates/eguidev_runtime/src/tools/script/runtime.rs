@@ -1327,6 +1327,20 @@ impl ScriptRuntime {
         self.to_json(pos, result)
     }
 
+    pub(super) fn wait_for_capture(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
+        self.block_on_tool(
+            pos,
+            self.server
+                .wait_for_capture(viewport_id, timeout_ms, poll_interval_ms),
+        )?;
+        self.to_json(pos, ())
+    }
+
     pub(super) fn wait_for_settle(
         &self,
         pos: ScriptPosition,
@@ -1339,6 +1353,29 @@ impl ScriptRuntime {
                 .wait_for_settle(viewport_id, timeout_ms, poll_interval_ms),
         )?;
         self.to_json(pos, ())
+    }
+
+    pub(super) fn wait_for_scroll_ready(
+        &self,
+        pos: ScriptPosition,
+        target: &Value,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let target =
+            parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
+        let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
+        let widget = self.block_on_tool(
+            pos,
+            self.server
+                .wait_for_scroll_ready(viewport_id, target, timeout_ms, poll_interval_ms),
+        )?;
+        let Some(widget) = widget else {
+            return Err(self.runtime_error(
+                pos,
+                "wait_for_scroll_ready matched without a widget snapshot",
+            ));
+        };
+        self.widget_state_json(pos, &widget)
     }
 
     pub(super) fn wait_for_viewport_predicate<F>(
@@ -1678,6 +1715,11 @@ impl ScriptRuntime {
     pub(super) fn fixture(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
         let timeout_ms = self.configured_timeout_ms();
         self.block_on_tool(pos, self.server.fixture(name, timeout_ms))?;
+        self.to_json(pos, ())
+    }
+
+    pub(super) fn fixture_raw(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
+        self.block_on_tool(pos, self.server.fixture_apply(name))?;
         self.to_json(pos, ())
     }
 

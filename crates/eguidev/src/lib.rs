@@ -107,14 +107,14 @@
 //! # Fixtures
 //!
 //! Apps register fixtures with [`DevMcp::fixtures`] and a handler callback
-//! with [`DevMcp::on_fixture`]. When a fixture tool call arrives the handler
-//! is invoked directly on the tokio runtime, so no frame cycle is required.
-//! Each fixture must be independently invokable from any prior state and must
-//! leave the app in its declared baseline. A fixture guarantees state has been
-//! applied; it does not guarantee the next rendered frame has already rebuilt
-//! the widget registry for that baseline. Scripts call `fixture("name")` to
-//! reset, then should wait on the specific widget or viewport condition they
-//! need before interacting with pane-specific UI.
+//! with [`DevMcp::on_fixture`]. Each fixture must be independently invokable
+//! from any prior state and must leave the app in a baseline that can be
+//! described with readiness anchors. Scripts call `fixture("name")` to apply
+//! the named baseline, wait for fresh captures, and verify those anchors
+//! before returning. Widget and viewport handles resolve fresh across fixture
+//! boundaries, so rebinding `root()` after each fixture is usually unnecessary.
+//! Use `fixture_raw("name")` only when you explicitly want the old
+//! fire-and-forget behavior for debugging or manual setup flows.
 //!
 //! # Scripting reference
 //!
@@ -144,8 +144,8 @@ pub use crate::{
         ContainerGuard, ScrollAreaState, container, id, id_with_meta, track_response_full,
     },
     types::{
-        FixtureSpec, RoleState, ScrollAreaMeta, WidgetLayout, WidgetRange, WidgetRole, WidgetState,
-        WidgetValue,
+        Anchor, AnchorCheck, FixtureSpec, RoleState, ScrollAreaMeta, WidgetLayout, WidgetRange,
+        WidgetRole, WidgetState, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -184,8 +184,9 @@ pub mod internal {
 
     pub mod types {
         pub use crate::types::{
-            Modifiers, Pos2, Rect, RoleState, ScrollAreaMeta, Vec2, WidgetLayout, WidgetRange,
-            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
+            Anchor, AnchorCheck, FixtureSpec, Modifiers, Pos2, Rect, RoleState, ScrollAreaMeta,
+            Vec2, WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole,
+            WidgetState, WidgetValue,
         };
     }
 

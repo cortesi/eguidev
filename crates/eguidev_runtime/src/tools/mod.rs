@@ -6,13 +6,14 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::codecs::jpeg::JpegEncoder;
-use serde_json::Value;
+use serde::Serialize;
+use serde_json::{Value, json};
 use tmcp::{
     ServerCtx, ToolResult, mcp_server,
     schema::{CallToolResult, ClientCapabilities, Implementation, InitializeResult},
@@ -31,14 +32,15 @@ use crate::{
     script_definitions,
     tree::collect_subtree,
     types::{
-        Modifiers, Pos2, Rect, RoleState, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole,
-        WidgetValue,
+        Anchor, AnchorCheck, FixtureSpec, Modifiers, Pos2, Rect, RoleState, Vec2, WidgetRef,
+        WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
     },
     viewports::ViewportSnapshot,
 };
 
 pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 16;
+const SCROLL_STABILITY_TOLERANCE: f32 = 0.75;
 mod layout;
 mod results;
 pub mod script;
@@ -60,6 +62,29 @@ pub const DEFAULT_SCRIPT_EVAL_TIMEOUT_MS: u64 = script::DEFAULT_SCRIPT_TIMEOUT_M
 
 fn scroll_state(widget: &WidgetRegistryEntry) -> Option<crate::ScrollAreaMeta> {
     widget.role_state.as_ref().and_then(RoleState::scroll_state)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AnchorStatus {
+    widget_id: String,
+    viewport_id: Option<String>,
+    check: String,
+    satisfied: bool,
+    detail: String,
+    current_state: Option<WidgetState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AnchorEvaluationSnapshot {
+    fixture: String,
+    statuses: Vec<AnchorStatus>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScrollSample {
+    frame_count: u64,
+    max_offset: Vec2,
+    stabilized: bool,
 }
 
 fn reveal_axis(
@@ -105,6 +130,86 @@ fn scroll_area_target_offset(
             scroll.max_offset.y,
         ),
     })
+}
+
+fn approx_eq_vec2(left: Vec2, right: Vec2, tolerance: f32) -> bool {
+    (left.x - right.x).abs() <= tolerance && (left.y - right.y).abs() <= tolerance
+}
+
+fn anchor_target(anchor: &Anchor) -> WidgetRef {
+    WidgetRef {
+        id: Some(anchor.widget_id.clone()),
+        viewport_id: anchor.viewport_id.clone(),
+    }
+}
+
+fn anchor_status(
+    anchor: &Anchor,
+    satisfied: bool,
+    detail: impl Into<String>,
+    current_state: Option<WidgetState>,
+) -> AnchorStatus {
+    AnchorStatus {
+        widget_id: anchor.widget_id.clone(),
+        viewport_id: anchor.viewport_id.clone(),
+        check: anchor.check.to_string(),
+        satisfied,
+        detail: detail.into(),
+        current_state,
+    }
+}
+
+fn format_anchor_status(status: &AnchorStatus) -> String {
+    let marker = if status.satisfied { "✓" } else { "✗" };
+    let target = match &status.viewport_id {
+        Some(viewport_id) => format!("{} in {}", status.widget_id, viewport_id),
+        None => status.widget_id.clone(),
+    };
+    format!("{marker} {target} {} — {}", status.check, status.detail)
+}
+
+fn update_scroll_stability(
+    scroll_samples: &Mutex<HashMap<(String, String), ScrollSample>>,
+    widget: &WidgetRegistryEntry,
+    current_sample: ScrollSample,
+) -> bool {
+    let key = (widget.viewport_id.clone(), widget.id.clone());
+    let mut samples = scroll_samples
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match samples.get_mut(&key) {
+        Some(previous) => {
+            let stabilized = if previous.stabilized {
+                approx_eq_vec2(
+                    previous.max_offset,
+                    current_sample.max_offset,
+                    SCROLL_STABILITY_TOLERANCE,
+                )
+            } else {
+                previous.frame_count != current_sample.frame_count
+                    && approx_eq_vec2(
+                        previous.max_offset,
+                        current_sample.max_offset,
+                        SCROLL_STABILITY_TOLERANCE,
+                    )
+            };
+            *previous = ScrollSample {
+                stabilized,
+                ..current_sample
+            };
+            stabilized
+        }
+        None => {
+            samples.insert(
+                key,
+                ScrollSample {
+                    stabilized: false,
+                    ..current_sample
+                },
+            );
+            false
+        }
+    }
 }
 
 fn resolve_viewport_id(
@@ -201,6 +306,268 @@ impl DevMcpServer {
             return Err(ToolError::new(ErrorCode::NotFound, "Widget is not visible").into());
         }
         Ok((widget, viewport_id))
+    }
+
+    async fn fixture_apply_internal(&self, name: &str) -> Result<(FixtureSpec, u64), ToolError> {
+        let Some(spec) = self.inner.fixtures.fixture(name) else {
+            return Err(ToolError::new(
+                ErrorCode::NotFound,
+                format!("Unknown fixture: {name}"),
+            ));
+        };
+
+        self.inner.clear_all();
+        self.inner.reset_fixture_transient_state();
+        let fixture_epoch = self.inner.begin_fixture_epoch();
+        let result = self.inner.apply_fixture(name);
+        self.inner.reset_fixture_transient_state();
+        if let Err(message) = result {
+            return Err(ToolError::new(ErrorCode::Internal, message));
+        }
+        Ok((spec, fixture_epoch))
+    }
+
+    fn evaluate_anchor(
+        &self,
+        anchor: &Anchor,
+        fixture_epoch: u64,
+        scroll_samples: &Mutex<HashMap<(String, String), ScrollSample>>,
+    ) -> Result<AnchorStatus, ToolError> {
+        let target = anchor_target(anchor);
+        let widget = match resolve_widget(&self.inner, None, &target) {
+            Ok(widget) => widget,
+            Err(error) if error.code == ErrorCode::NotFound => {
+                return Ok(anchor_status(anchor, false, "widget not found", None));
+            }
+            Err(error) => return Err(error),
+        };
+
+        let current_state = WidgetState::from(&widget);
+        let viewport_id = match self
+            .inner
+            .viewports
+            .resolve_viewport_id(Some(widget.viewport_id.clone()))
+        {
+            Ok(viewport_id) => viewport_id,
+            Err(_) => {
+                return Ok(anchor_status(
+                    anchor,
+                    false,
+                    "viewport has no captured context yet",
+                    Some(current_state),
+                ));
+            }
+        };
+        let Some(capture) = self.inner.viewports.capture_snapshot(viewport_id) else {
+            return Ok(anchor_status(
+                anchor,
+                false,
+                "viewport has no captured snapshot yet",
+                Some(current_state),
+            ));
+        };
+        if capture.fixture_epoch < fixture_epoch {
+            return Ok(anchor_status(
+                anchor,
+                false,
+                format!(
+                    "waiting for post-fixture capture (current epoch {}, need {})",
+                    capture.fixture_epoch, fixture_epoch
+                ),
+                Some(current_state),
+            ));
+        }
+
+        let status = match &anchor.check {
+            AnchorCheck::Visible => anchor_status(
+                anchor,
+                widget.visible,
+                if widget.visible {
+                    "widget is visible".to_string()
+                } else {
+                    "widget exists but is not visible".to_string()
+                },
+                Some(current_state),
+            ),
+            AnchorCheck::Label(expected) => {
+                let actual = widget.label.as_deref().unwrap_or("");
+                anchor_status(
+                    anchor,
+                    widget.label.as_deref() == Some(expected.as_str()),
+                    format!("current label: {actual:?}"),
+                    Some(current_state),
+                )
+            }
+            AnchorCheck::Value(expected) => {
+                let matched = widget.value.as_ref() == Some(expected);
+                let actual = widget
+                    .value
+                    .as_ref()
+                    .map(WidgetValue::to_text)
+                    .unwrap_or_default();
+                anchor_status(
+                    anchor,
+                    matched,
+                    format!("current value: {actual:?}"),
+                    Some(current_state),
+                )
+            }
+            AnchorCheck::ScrollReady => {
+                let Some(scroll) = scroll_state(&widget) else {
+                    return Ok(anchor_status(
+                        anchor,
+                        false,
+                        "widget has no scroll_state yet",
+                        Some(current_state),
+                    ));
+                };
+                if scroll.max_offset.y <= 0.0 {
+                    return Ok(anchor_status(
+                        anchor,
+                        false,
+                        format!(
+                            "scroll max_offset is not ready: ({:.1}, {:.1})",
+                            scroll.max_offset.x, scroll.max_offset.y
+                        ),
+                        Some(current_state),
+                    ));
+                }
+                let current_sample = ScrollSample {
+                    frame_count: capture.frame_count,
+                    max_offset: scroll.max_offset,
+                    stabilized: false,
+                };
+                if update_scroll_stability(scroll_samples, &widget, current_sample) {
+                    anchor_status(
+                        anchor,
+                        true,
+                        format!(
+                            "scroll stabilized at max_offset ({:.1}, {:.1})",
+                            scroll.max_offset.x, scroll.max_offset.y
+                        ),
+                        Some(current_state),
+                    )
+                } else {
+                    anchor_status(
+                        anchor,
+                        false,
+                        "waiting for scroll initialization to stabilize".to_string(),
+                        Some(current_state),
+                    )
+                }
+            }
+            AnchorCheck::ScrollAt { offset, tolerance } => {
+                let Some(scroll) = scroll_state(&widget) else {
+                    return Ok(anchor_status(
+                        anchor,
+                        false,
+                        "widget has no scroll_state yet",
+                        Some(current_state),
+                    ));
+                };
+                if scroll.max_offset.y <= 0.0 {
+                    return Ok(anchor_status(
+                        anchor,
+                        false,
+                        format!(
+                            "scroll max_offset is not ready: ({:.1}, {:.1})",
+                            scroll.max_offset.x, scroll.max_offset.y
+                        ),
+                        Some(current_state),
+                    ));
+                }
+                let current_sample = ScrollSample {
+                    frame_count: capture.frame_count,
+                    max_offset: scroll.max_offset,
+                    stabilized: false,
+                };
+                let stable = update_scroll_stability(scroll_samples, &widget, current_sample);
+                if !stable {
+                    return Ok(anchor_status(
+                        anchor,
+                        false,
+                        "waiting for scroll initialization to stabilize".to_string(),
+                        Some(current_state),
+                    ));
+                }
+                let matched = approx_eq_vec2(scroll.offset, *offset, *tolerance);
+                anchor_status(
+                    anchor,
+                    matched,
+                    format!(
+                        "current offset: ({:.1}, {:.1})",
+                        scroll.offset.x, scroll.offset.y
+                    ),
+                    Some(current_state),
+                )
+            }
+        };
+        Ok(status)
+    }
+
+    async fn evaluate_anchors(
+        &self,
+        spec: &FixtureSpec,
+        fixture_epoch: u64,
+        timeout_ms: u64,
+    ) -> Result<(), ToolError> {
+        let scroll_samples = Arc::new(Mutex::new(HashMap::new()));
+        let (matched, state, elapsed_ms) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            DEFAULT_POLL_INTERVAL_MS,
+            None,
+            || async {
+                self.inner.request_repaint_all();
+                let mut statuses = Vec::with_capacity(spec.anchors.len());
+                for anchor in &spec.anchors {
+                    statuses.push(self.evaluate_anchor(
+                        anchor,
+                        fixture_epoch,
+                        scroll_samples.as_ref(),
+                    )?);
+                }
+                let matched = statuses.iter().all(|status| status.satisfied);
+                Ok::<_, ToolError>((
+                    matched,
+                    Some(AnchorEvaluationSnapshot {
+                        fixture: spec.name.clone(),
+                        statuses,
+                    }),
+                ))
+            },
+        )
+        .await?;
+
+        if matched {
+            return Ok(());
+        }
+
+        let snapshot = state.unwrap_or_else(|| AnchorEvaluationSnapshot {
+            fixture: spec.name.clone(),
+            statuses: Vec::new(),
+        });
+        let status_lines = snapshot
+            .statuses
+            .iter()
+            .map(format_anchor_status)
+            .collect::<Vec<_>>();
+        let message = if status_lines.is_empty() {
+            format!("fixture \"{}\" timed out after {timeout_ms}ms", spec.name)
+        } else {
+            format!(
+                "fixture \"{}\" timed out after {timeout_ms}ms\n{}",
+                spec.name,
+                status_lines.join("\n")
+            )
+        };
+        Err(
+            ToolError::new(ErrorCode::Timeout, message).with_details(json!({
+                "fixture": spec.name,
+                "elapsed_ms": elapsed_ms,
+                "statuses": snapshot.statuses,
+            })),
+        )
     }
 
     async fn initialize(
@@ -538,6 +905,58 @@ fixture requests are processed in App::update."
         .into())
     }
 
+    /// Wait until the target viewport has produced a fresh captured snapshot.
+    async fn wait_for_capture(
+        &self,
+        viewport_id: Option<String>,
+        timeout_ms: Option<u64>,
+        poll_interval_ms: Option<u64>,
+    ) -> ToolResult<()> {
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+        let start_capture = self
+            .inner
+            .viewports
+            .capture_snapshot(viewport_id)
+            .map(|snapshot| snapshot.frame_count)
+            .unwrap_or(0);
+
+        let (matched, _, elapsed_ms) =
+            wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || async {
+                self.inner.request_repaint_of(viewport_id);
+                let current = self
+                    .inner
+                    .viewports
+                    .capture_snapshot(viewport_id)
+                    .map(|snapshot| snapshot.frame_count)
+                    .unwrap_or(0);
+                Ok::<_, ToolError>((current > start_capture, None::<()>))
+            })
+            .await?;
+
+        if matched {
+            return Ok(());
+        }
+
+        Err(ToolError::new(
+            ErrorCode::Timeout,
+            format!("Timed out waiting for a fresh capture after {timeout_ms}ms"),
+        )
+        .with_details(wait_timeout_details(
+            "capture",
+            elapsed_ms,
+            None,
+            viewport_snapshot_for(&self.inner, viewport_id).as_ref(),
+            Some(start_capture),
+            self.inner
+                .viewports
+                .capture_snapshot(viewport_id)
+                .map(|snapshot| snapshot.frame_count),
+        ))
+        .into())
+    }
+
     /// Wait until the UI has settled: all input actions and viewport commands are drained
     /// and at least one frame has been processed.
     async fn wait_for_settle(
@@ -583,6 +1002,85 @@ fixture requests are processed in App::update."
             viewport_snapshot_for(&self.inner, viewport_id).as_ref(),
             Some(start_frame),
             Some(self.inner.frame_count()),
+        ))
+        .into())
+    }
+
+    /// Wait until a scroll area has initialized and stabilized across captures.
+    async fn wait_for_scroll_ready(
+        &self,
+        viewport_id: Option<String>,
+        target: WidgetRef,
+        timeout_ms: Option<u64>,
+        poll_interval_ms: Option<u64>,
+    ) -> ToolResult<Option<WidgetRegistryEntry>> {
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+        let last_sample = Mutex::new(None);
+
+        let (matched, widget, elapsed_ms) =
+            wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || async {
+                let widget = match resolve_widget(&self.inner, viewport_id.as_deref(), &target) {
+                    Ok(widget) => widget,
+                    Err(error) if error.code == ErrorCode::NotFound => {
+                        return Ok::<_, ToolError>((false, None));
+                    }
+                    Err(error) => return Err(error),
+                };
+                let viewport_id = self
+                    .inner
+                    .viewports
+                    .resolve_viewport_id(Some(widget.viewport_id.clone()))
+                    .map_err(ToolError::from)?;
+                self.inner.request_repaint_of(viewport_id);
+                let Some(capture) = self.inner.viewports.capture_snapshot(viewport_id) else {
+                    return Ok((false, Some(widget)));
+                };
+                let Some(scroll) = scroll_state(&widget) else {
+                    return Ok((false, Some(widget)));
+                };
+                if scroll.max_offset.y <= 0.0 {
+                    return Ok((false, Some(widget)));
+                }
+                let current = ScrollSample {
+                    frame_count: capture.frame_count,
+                    max_offset: scroll.max_offset,
+                    stabilized: false,
+                };
+                let matched = match last_sample
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .replace(current)
+                {
+                    Some(previous) => {
+                        previous.frame_count != current.frame_count
+                            && approx_eq_vec2(
+                                previous.max_offset,
+                                current.max_offset,
+                                SCROLL_STABILITY_TOLERANCE,
+                            )
+                    }
+                    None => false,
+                };
+                Ok((matched, Some(widget)))
+            })
+            .await?;
+
+        if matched {
+            return Ok(widget);
+        }
+
+        Err(ToolError::new(
+            ErrorCode::Timeout,
+            format!("Timed out waiting for scroll readiness after {timeout_ms}ms"),
+        )
+        .with_details(wait_timeout_details(
+            "scroll_ready",
+            elapsed_ms,
+            widget.as_ref(),
+            None,
+            None,
+            None,
         ))
         .into())
     }
@@ -1236,24 +1734,19 @@ fixture requests are processed in App::update."
         Ok(CallToolResult::new().with_text_content(script_definitions()))
     }
 
-    /// Navigate to an app-defined fixture by name.
-    ///
-    /// The registered fixture handler is called directly. No frame cycle is
-    /// needed, so this works even when the window is occluded on macOS.
-    async fn fixture(&self, name: String, _timeout_ms: Option<u64>) -> ToolResult<()> {
-        if !self.inner.fixtures.has_fixture(&name) {
-            return Err(
-                ToolError::new(ErrorCode::NotFound, format!("Unknown fixture: {name}")).into(),
-            );
-        }
-        self.inner.clear_all();
-        self.inner.reset_fixture_transient_state();
-        let result = self.inner.apply_fixture(&name);
-        self.inner.reset_fixture_transient_state();
-        if let Err(message) = result {
-            return Err(ToolError::new(ErrorCode::Internal, message).into());
-        }
+    /// Apply an app-defined fixture without waiting for readiness.
+    async fn fixture_apply(&self, name: String) -> ToolResult<()> {
+        self.fixture_apply_internal(&name).await?;
         Ok(())
+    }
+
+    /// Navigate to an app-defined fixture by name and wait for readiness anchors.
+    async fn fixture(&self, name: String, timeout_ms: Option<u64>) -> ToolResult<()> {
+        let (spec, fixture_epoch) = self.fixture_apply_internal(&name).await?;
+        let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        self.evaluate_anchors(&spec, fixture_epoch, timeout_ms)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -1613,6 +2106,7 @@ mod tests {
         types::{
             Modifiers, Pos2, Rect, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetValue,
         },
+        viewports::InputSnapshot,
         widget_registry::{WidgetMeta, record_widget},
     };
 
@@ -1700,6 +2194,51 @@ mod tests {
             visible: true,
             focused: false,
         }
+    }
+
+    fn make_scroll_entry(
+        id: &str,
+        native_id: u64,
+        offset: Vec2,
+        max_offset: Vec2,
+    ) -> WidgetRegistryEntry {
+        let mut entry = make_entry(id, native_id, WidgetRole::ScrollArea);
+        entry.role_state = Some(RoleState::ScrollArea {
+            offset,
+            viewport_size: Vec2 { x: 100.0, y: 100.0 },
+            content_size: Vec2 {
+                x: 100.0 + max_offset.x,
+                y: 100.0 + max_offset.y,
+            },
+        });
+        entry
+    }
+
+    fn capture_test_frame(inner: &Arc<Inner>, ctx: &egui::Context) {
+        inner.capture_context(ctx.viewport_id(), ctx);
+        inner
+            .viewports
+            .capture_input_snapshot(ctx, inner.fixture_epoch(), inner.frame_count() + 1);
+        inner.advance_frame();
+        Runtime::ensure_for_inner(inner)
+            .frame_notify()
+            .notify_waiters();
+    }
+
+    fn record_test_snapshot(inner: &Arc<Inner>, viewport_id: egui::ViewportId) {
+        inner.viewports.record_input_snapshot(
+            viewport_id,
+            InputSnapshot {
+                pixels_per_point: 1.0,
+                pointer_pos: None,
+            },
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
+        inner.advance_frame();
+        Runtime::ensure_for_inner(inner)
+            .frame_notify()
+            .notify_waiters();
     }
 
     fn parse_script_eval_json(result: &CallToolResult) -> Value {
@@ -2156,7 +2695,11 @@ return widget:wait_for_visible()"#
         }
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.update_viewports(&ctx);
-        inner.viewports.capture_input_snapshot(&ctx);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
 
         inner.widgets.clear_registry(secondary);
         let mut entry = make_entry("overlay", 1, WidgetRole::Button);
@@ -2224,7 +2767,11 @@ return widget:wait_for_visible()"#
         }
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.update_viewports(&ctx);
-        inner.viewports.capture_input_snapshot(&ctx);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
 
         inner.widgets.clear_registry(secondary);
         let mut entry = make_entry("status", 1, WidgetRole::Button);
@@ -2264,12 +2811,11 @@ return widget:wait_for_visible()"#
     }
 
     #[tokio::test]
-    async fn fixture_applies_handler_without_waiting_for_a_new_frame() {
+    async fn fixture_apply_applies_handler_without_waiting_for_a_new_frame() {
         let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "test_fixture".to_string(),
-            description: "Test fixture.".to_string(),
-        }]);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("test_fixture", "Test fixture.").anchor("status"),
+        ]);
         inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
@@ -2278,21 +2824,24 @@ return widget:wait_for_visible()"#
         };
         drop(ctx.run(raw_input, |_| {}));
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
-        inner.viewports.capture_input_snapshot(&ctx);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
         let server = DevMcpServer::new(Arc::clone(&inner));
         server
-            .fixture("test_fixture".to_string(), None)
+            .fixture_apply("test_fixture".to_string())
             .await
-            .expect("fixture result");
+            .expect("fixture_apply result");
     }
 
     #[tokio::test]
     async fn fixture_returns_error_when_handler_fails() {
         let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "broken".to_string(),
-            description: "Broken fixture.".to_string(),
-        }]);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("broken", "Broken fixture.").anchor("status"),
+        ]);
         inner
             .fixtures
             .set_fixture_handler(Arc::new(|_name| Err("fixture failed".to_string())));
@@ -2304,26 +2853,24 @@ return widget:wait_for_visible()"#
     #[tokio::test]
     async fn fixture_returns_error_when_no_handler_registered() {
         let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "no_handler".to_string(),
-            description: "No handler fixture.".to_string(),
-        }]);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("no_handler", "No handler fixture.").anchor("status"),
+        ]);
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result = server.fixture("no_handler".to_string(), None).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn script_eval_fixture_succeeds_without_a_new_frame() {
+    async fn script_eval_fixture_raw_succeeds_without_a_new_frame() {
         let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "slow".to_string(),
-            description: "Slow fixture.".to_string(),
-        }]);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("slow", "Slow fixture.").anchor("status"),
+        ]);
         inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result = server
-            .script_eval("fixture(\"slow\")".to_string(), Some(20), None)
+            .script_eval("fixture_raw(\"slow\")".to_string(), Some(20), None)
             .await
             .expect("script eval");
         let json = parse_script_eval_json(&result);
@@ -2331,12 +2878,279 @@ return widget:wait_for_visible()"#
     }
 
     #[tokio::test]
+    async fn script_eval_fixture_timeout_reports_stale_snapshot_diagnostics() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("stale", "Stale fixture.").anchor("status"),
+        ]);
+        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        drop(ctx.run(raw_input, |_| {}));
+        let entry = make_entry("status", 1, WidgetRole::Label);
+        inner.widgets.clear_registry(egui::ViewportId::ROOT);
+        inner.widgets.record_widget(egui::ViewportId::ROOT, entry);
+        inner.widgets.finalize_registry(egui::ViewportId::ROOT);
+        capture_test_frame(&inner, &ctx);
+
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let result = server
+            .script_eval(
+                "configure({ timeout_ms = 20, poll_interval_ms = 1 }) fixture(\"stale\")"
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["type"], "timeout");
+        assert_eq!(json["error"]["details"]["fixture"], "stale");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .expect("timeout message")
+                .contains("status visible"),
+            "timeout should include per-anchor diagnostics"
+        );
+        assert!(
+            json["error"]["details"]["statuses"][0]["detail"]
+                .as_str()
+                .expect("status detail")
+                .contains("post-fixture capture"),
+            "timeout details should explain the stale capture"
+        );
+    }
+
+    #[tokio::test]
+    async fn fixture_waits_for_multiviewport_anchor_capture() {
+        let inner = Arc::new(Inner::new());
+        let secondary = egui::ViewportId::from_hash_of("fixture.secondary");
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("multi", "Multi viewport fixture.").anchor_in("status", secondary),
+        ]);
+        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+
+        let root_ctx = egui::Context::default();
+        let mut root_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        root_input
+            .viewports
+            .insert(egui::ViewportId::ROOT, Default::default());
+        root_input.viewports.insert(secondary, Default::default());
+        drop(root_ctx.run(root_input, |_| {}));
+        inner.capture_context(egui::ViewportId::ROOT, &root_ctx);
+        inner.viewports.update_viewports(&root_ctx);
+        capture_test_frame(&inner, &root_ctx);
+
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let inner_for_capture = Arc::clone(&inner);
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(20)).await;
+            inner_for_capture.widgets.clear_registry(secondary);
+            let mut entry = make_entry("status", 1, WidgetRole::Label);
+            entry.viewport_id = viewport_id_to_string(secondary);
+            inner_for_capture.widgets.record_widget(secondary, entry);
+            inner_for_capture.widgets.finalize_registry(secondary);
+            record_test_snapshot(&inner_for_capture, secondary);
+        });
+
+        server
+            .fixture("multi".to_string(), Some(200))
+            .await
+            .expect("fixture");
+    }
+
+    #[tokio::test]
+    async fn fixture_waits_for_scroll_anchor_stability() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("scroll", "Scroll fixture.").anchor_scroll_at(
+                "scroll",
+                Vec2 { x: 0.0, y: 300.0 },
+                1.0,
+            ),
+        ]);
+        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        drop(ctx.run(raw_input, |_| {}));
+        capture_test_frame(&inner, &ctx);
+
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let inner_for_capture = Arc::clone(&inner);
+        tokio::spawn(async move {
+            let capture_ctx = egui::Context::default();
+            let raw_input = egui::RawInput {
+                viewport_id: egui::ViewportId::ROOT,
+                ..Default::default()
+            };
+            drop(capture_ctx.run(raw_input, |_| {}));
+            sleep(Duration::from_millis(20)).await;
+            inner_for_capture
+                .widgets
+                .clear_registry(egui::ViewportId::ROOT);
+            inner_for_capture.widgets.record_widget(
+                egui::ViewportId::ROOT,
+                make_scroll_entry(
+                    "scroll",
+                    1,
+                    Vec2 { x: 0.0, y: 300.0 },
+                    Vec2 { x: 0.0, y: 600.0 },
+                ),
+            );
+            inner_for_capture
+                .widgets
+                .finalize_registry(egui::ViewportId::ROOT);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+            sleep(Duration::from_millis(25)).await;
+            inner_for_capture
+                .widgets
+                .clear_registry(egui::ViewportId::ROOT);
+            inner_for_capture.widgets.record_widget(
+                egui::ViewportId::ROOT,
+                make_scroll_entry(
+                    "scroll",
+                    1,
+                    Vec2 { x: 0.0, y: 300.0 },
+                    Vec2 { x: 0.0, y: 600.0 },
+                ),
+            );
+            inner_for_capture
+                .widgets
+                .finalize_registry(egui::ViewportId::ROOT);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+        });
+
+        server
+            .fixture("scroll".to_string(), Some(250))
+            .await
+            .expect("fixture");
+    }
+
+    #[tokio::test]
+    async fn wait_for_capture_waits_for_new_snapshot() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        drop(ctx.run(raw_input, |_| {}));
+        capture_test_frame(&inner, &ctx);
+
+        let inner_for_capture = Arc::clone(&inner);
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(50)).await;
+            let capture_ctx = egui::Context::default();
+            let raw_input = egui::RawInput {
+                viewport_id: egui::ViewportId::ROOT,
+                ..Default::default()
+            };
+            drop(capture_ctx.run(raw_input, |_| {}));
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+        });
+
+        server
+            .wait_for_capture(None, Some(500), Some(1))
+            .await
+            .expect("wait_for_capture");
+    }
+
+    #[tokio::test]
+    async fn wait_for_scroll_ready_waits_for_stable_scroll_state() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        drop(ctx.run(raw_input, |_| {}));
+        inner.widgets.clear_registry(egui::ViewportId::ROOT);
+        inner.widgets.record_widget(
+            egui::ViewportId::ROOT,
+            make_scroll_entry(
+                "scroll",
+                1,
+                Vec2 { x: 0.0, y: 150.0 },
+                Vec2 { x: 0.0, y: 400.0 },
+            ),
+        );
+        inner.widgets.finalize_registry(egui::ViewportId::ROOT);
+        capture_test_frame(&inner, &ctx);
+
+        let inner_for_capture = Arc::clone(&inner);
+        tokio::spawn(async move {
+            let capture_ctx = egui::Context::default();
+            let raw_input = egui::RawInput {
+                viewport_id: egui::ViewportId::ROOT,
+                ..Default::default()
+            };
+            drop(capture_ctx.run(raw_input, |_| {}));
+            sleep(Duration::from_millis(50)).await;
+            inner_for_capture
+                .widgets
+                .clear_registry(egui::ViewportId::ROOT);
+            inner_for_capture.widgets.record_widget(
+                egui::ViewportId::ROOT,
+                make_scroll_entry(
+                    "scroll",
+                    1,
+                    Vec2 { x: 0.0, y: 150.0 },
+                    Vec2 { x: 0.0, y: 400.0 },
+                ),
+            );
+            inner_for_capture
+                .widgets
+                .finalize_registry(egui::ViewportId::ROOT);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+            sleep(Duration::from_millis(60)).await;
+            inner_for_capture
+                .widgets
+                .clear_registry(egui::ViewportId::ROOT);
+            inner_for_capture.widgets.record_widget(
+                egui::ViewportId::ROOT,
+                make_scroll_entry(
+                    "scroll",
+                    1,
+                    Vec2 { x: 0.0, y: 150.0 },
+                    Vec2 { x: 0.0, y: 400.0 },
+                ),
+            );
+            inner_for_capture
+                .widgets
+                .finalize_registry(egui::ViewportId::ROOT);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+        });
+
+        let result = server
+            .wait_for_scroll_ready(None, widget_ref_id("scroll"), Some(500), Some(1))
+            .await
+            .expect("wait_for_scroll_ready")
+            .expect("widget snapshot");
+        let scroll = scroll_state(&result).expect("scroll metadata");
+        assert_eq!(scroll.offset.y, 150.0);
+    }
+
+    #[tokio::test]
     async fn fixture_rejects_unregistered_names() {
         let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "known".to_string(),
-            description: "Known fixture.".to_string(),
-        }]);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("known", "Known fixture.").anchor("status"),
+        ]);
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result = server.fixture("unknown".to_string(), None).await;
         assert!(result.is_err());
@@ -2346,14 +3160,8 @@ return widget:wait_for_visible()"#
     async fn fixtures_are_sorted_for_scripts() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![
-            FixtureSpec {
-                name: "zeta".to_string(),
-                description: "Last fixture.".to_string(),
-            },
-            FixtureSpec {
-                name: "alpha".to_string(),
-                description: "First fixture.".to_string(),
-            },
+            FixtureSpec::new("zeta", "Last fixture.").anchor("status"),
+            FixtureSpec::new("alpha", "First fixture.").anchor("status"),
         ]);
         let specs = inner.fixtures.fixtures_sorted();
         let specs: Vec<_> = specs.into_iter().map(|fixture| fixture.name).collect();
@@ -2363,10 +3171,9 @@ return widget:wait_for_visible()"#
     #[tokio::test]
     async fn fixture_clears_transient_automation_state_on_apply_boundaries() {
         let inner = Arc::new(Inner::new());
-        inner.fixtures.set_fixtures(vec![FixtureSpec {
-            name: "reset".to_string(),
-            description: "Reset fixture.".to_string(),
-        }]);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("reset", "Reset fixture.").anchor("status"),
+        ]);
         let applied = Arc::new(AtomicBool::new(false));
         let applied_handler = Arc::clone(&applied);
         inner.fixtures.set_fixture_handler(Arc::new(move |_name| {
@@ -2380,7 +3187,11 @@ return widget:wait_for_visible()"#
         };
         drop(ctx.run(raw_input, |_| {}));
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
-        inner.viewports.capture_input_snapshot(&ctx);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
         let viewport_id = egui::ViewportId::ROOT;
         inner.queue_action(
             viewport_id,
@@ -2421,7 +3232,7 @@ return widget:wait_for_visible()"#
         });
         let server = DevMcpServer::new(Arc::clone(&inner));
         server
-            .fixture("reset".to_string(), None)
+            .fixture_apply("reset".to_string())
             .await
             .expect("fixture result");
 
@@ -3543,7 +4354,11 @@ return widget:wait_for_visible()"#
         };
         drop(ctx.run(raw_input, |_| {}));
         inner.capture_context(viewport_id, &ctx);
-        inner.viewports.capture_input_snapshot(&ctx);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
         let runtime_for_frame = Runtime::ensure_for_inner(&inner);
         tokio::spawn(async move {
             yield_now().await;
@@ -3570,7 +4385,11 @@ return widget:wait_for_visible()"#
         };
         drop(ctx.run(raw_input, |_| {}));
         inner.capture_context(viewport_id, &ctx);
-        inner.viewports.capture_input_snapshot(&ctx);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner.fixture_epoch(),
+            inner.frame_count() + 1,
+        );
 
         let error = server
             .wait_for_settle(None, Some(10), Some(1))

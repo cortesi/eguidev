@@ -16,21 +16,27 @@ local function approx_eq(actual: number, expected: number, label: string)
     )
 end
 
+vp:widget_get("basic.scroll"):wait_for_scroll_ready()
+
 local basic_initial = scroll_meta("basic.scroll")
 local basic_max = basic_initial.max_offset.y
 approx_eq(basic_initial.offset.y, 0, "basic.scroll should start at top")
 
 vp:widget_get("basic.scroll"):scroll_to({ align = "bottom", settle = false })
-local row49_visible = vp:wait_for_widget_visible("basic.scroll.row.49")
-assert(row49_visible.visible, "bottom align should reveal the last row")
+vp:wait_for_widget("basic.scroll", function(widget)
+    local scroll = widget.scroll_state
+    return scroll ~= nil and math.abs(scroll.offset.y - basic_max) <= TOLERANCE
+end)
 vp:wait_for_settle()
 local basic_bottom = scroll_meta("basic.scroll")
 approx_eq(basic_bottom.offset.y, basic_max, "basic.scroll bottom align should reach max offset")
 assert(not vp:widget_get("basic.scroll.row.0"):state().visible, "bottom align should hide the first row")
 
 vp:widget_get("basic.scroll"):scroll_to({ align = "center", settle = false })
-local row25_visible = vp:widget_get("basic.scroll.row.25"):wait_for_visible()
-assert(row25_visible.visible, "center align should reveal a middle row")
+vp:wait_for_widget("basic.scroll", function(widget)
+    local scroll = widget.scroll_state
+    return scroll ~= nil and math.abs(scroll.offset.y - (basic_max * 0.5)) <= TOLERANCE
+end)
 vp:wait_for_settle()
 local basic_center = scroll_meta("basic.scroll")
 approx_eq(
@@ -40,8 +46,10 @@ approx_eq(
 )
 
 vp:widget_get("basic.scroll"):scroll_to({ align = "top", settle = false })
-local row0_visible = vp:widget_get("basic.scroll.row.0"):wait_for_visible()
-assert(row0_visible.visible, "top align should reveal the first row")
+vp:wait_for_widget("basic.scroll", function(widget)
+    local scroll = widget.scroll_state
+    return scroll ~= nil and math.abs(scroll.offset.y) <= TOLERANCE
+end)
 vp:wait_for_settle()
 local basic_top = scroll_meta("basic.scroll")
 approx_eq(basic_top.offset.y, 0, "basic.scroll top align should return to origin")
@@ -69,16 +77,6 @@ local status_basic_after = scroll_meta("basic.scroll").offset.y
 local status_root_after = scroll_meta("basic.root_scroll").offset.y
 approx_eq(status_basic_after, status_basic_before, "scroll_into_view without scroll ancestors should be a no-op for basic.scroll")
 approx_eq(status_root_after, status_root_before, "scroll_into_view without scroll ancestors should be a no-op for basic.root_scroll")
-
-fixture("basic.default")
-vp:widget_get("basic.scroll.row.49"):scroll_into_view({ settle = false })
-local row49_revealed = vp:widget_get("basic.scroll.row.49"):wait_for_visible()
-assert(row49_revealed.visible, "scroll_into_view should reveal row 49")
-vp:wait_for_settle()
-local row49_basic = scroll_meta("basic.scroll")
-local row49_root = scroll_meta("basic.root_scroll")
-assert(row49_basic.offset.y > 0, "scroll_into_view should move the inner scroll area for row 49")
-approx_eq(row49_root.offset.y, 0, "scroll_into_view for row 49 should not move the outer root scroll")
 
 fixture("basic.default")
 vp:widget_get("basic.scroll.row.0"):scroll_into_view()

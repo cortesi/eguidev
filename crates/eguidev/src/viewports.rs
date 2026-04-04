@@ -19,6 +19,12 @@ pub struct InputSnapshot {
     pub pointer_pos: Option<Pos2>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureSnapshot {
+    pub fixture_epoch: u64,
+    pub frame_count: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ViewportSnapshot {
     pub viewport_id: String,
@@ -37,6 +43,7 @@ pub struct ViewportState {
     viewports_snapshot: Mutex<Vec<ViewportSnapshot>>,
     viewport_lookup: Mutex<HashMap<String, egui::ViewportId>>,
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
+    capture_snapshot: Mutex<HashMap<egui::ViewportId, CaptureSnapshot>>,
 }
 
 impl Default for ViewportState {
@@ -51,6 +58,7 @@ impl ViewportState {
             viewports_snapshot: Mutex::new(Vec::new()),
             viewport_lookup: Mutex::new(HashMap::new()),
             input_snapshot: Mutex::new(HashMap::new()),
+            capture_snapshot: Mutex::new(HashMap::new()),
         }
     }
 
@@ -95,14 +103,38 @@ impl ViewportState {
         *stored = ordered;
     }
 
-    pub fn capture_input_snapshot(&self, ctx: &Context) {
+    pub fn remember_viewport_id(&self, viewport_id: egui::ViewportId) {
+        lock(&self.viewport_lookup, "viewport lookup lock")
+            .insert(viewport_id_to_string(viewport_id), viewport_id);
+    }
+
+    pub fn capture_input_snapshot(&self, ctx: &Context, fixture_epoch: u64, frame_count: u64) {
         let viewport_id = ctx.viewport_id();
+        self.remember_viewport_id(viewport_id);
         let snapshot = ctx.input(|i| InputSnapshot {
             pixels_per_point: i.pixels_per_point(),
             pointer_pos: i.pointer.latest_pos().map(Pos2::from),
         });
+        self.record_input_snapshot(viewport_id, snapshot, fixture_epoch, frame_count);
+    }
+
+    pub fn record_input_snapshot(
+        &self,
+        viewport_id: egui::ViewportId,
+        snapshot: InputSnapshot,
+        fixture_epoch: u64,
+        frame_count: u64,
+    ) {
         let mut map = lock(&self.input_snapshot, "input snapshot lock");
         map.insert(viewport_id, snapshot);
+        let mut capture_map = lock(&self.capture_snapshot, "capture snapshot lock");
+        capture_map.insert(
+            viewport_id,
+            CaptureSnapshot {
+                fixture_epoch,
+                frame_count,
+            },
+        );
     }
 
     pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {
@@ -120,6 +152,12 @@ impl ViewportState {
         lock(&self.input_snapshot, "input snapshot lock")
             .get(&viewport_id)
             .cloned()
+    }
+
+    pub fn capture_snapshot(&self, viewport_id: egui::ViewportId) -> Option<CaptureSnapshot> {
+        lock(&self.capture_snapshot, "capture snapshot lock")
+            .get(&viewport_id)
+            .copied()
     }
 
     pub fn resolve_viewport_id(

@@ -182,6 +182,9 @@ export type Widget = {
     --- Returns the terminal widget snapshot on success.
     --- Throws a timeout error if the widget never becomes visible.
     wait_for_visible: (self: Widget) -> WidgetState,
+    --- Wait until this widget's scroll_state is initialized and stable across captures.
+    --- Returns the terminal widget snapshot on success.
+    wait_for_scroll_ready: (self: Widget) -> WidgetState,
     --- Poll until this widget is no longer present.
     --- Throws a timeout error if the widget does not disappear in time.
     wait_for_absent: (self: Widget) -> (),
@@ -255,6 +258,9 @@ export type Viewport = {
     --- observed a fresh frame.
     --- Throws a timeout error if the viewport does not settle in time.
     wait_for_settle: (self: Viewport) -> (),
+    --- Wait until this viewport has produced a fresh captured snapshot.
+    --- Throws a timeout error if no new capture arrives in time.
+    wait_for_capture: (self: Viewport) -> (),
     --- Poll this viewport until `predicate` returns true.
     --- The predicate receives the latest viewport snapshot on each poll.
     --- Returns the terminal viewport snapshot that satisfied the predicate.
@@ -471,6 +477,20 @@ export type TextMeasure = {
 export type Fixture = {
     name: string,
     description: string,
+    anchors: { Anchor },
+}
+
+export type AnchorCheck =
+    "Visible"
+    | "ScrollReady"
+    | { Label: string }
+    | { Value: WidgetValue }
+    | { ScrollAt: { offset: Vec, tolerance: number } }
+
+export type Anchor = {
+    widget_id: string,
+    viewport_id: string?,
+    check: AnchorCheck,
 }
 
 export type ScriptOptions = {
@@ -490,13 +510,17 @@ declare function configure(options: ScriptOptions): ()
 --- Returns the ending frame count on success.
 --- Throws a timeout error if the requested frames are not observed in time.
 declare function wait_for_frames(count: number?): number
+--- Wait until the root viewport has produced a fresh captured snapshot.
+declare function wait_for_capture(): ()
 declare function root(): Viewport
 declare function viewports(): { Viewport }
 
--- Apply a registered fixture and wait for the UI to settle before returning.
--- App integrations should process fixture requests in `eframe::App::update`,
--- not `logic`, when they need a fresh captured frame after fixture apply.
+--- Apply a registered fixture and wait until its readiness anchors match fresh captures.
+--- Widget and viewport handles resolve fresh across fixture boundaries, so rebinding `root()`
+--- after each fixture is usually unnecessary.
 declare function fixture(name: string): ()
+--- Apply a registered fixture without waiting for readiness.
+declare function fixture_raw(name: string): ()
 -- Fixtures are independent baseline setups and must be safe to invoke in any order.
 declare function fixtures(): { Fixture }
 

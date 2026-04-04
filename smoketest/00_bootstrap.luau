@@ -5,6 +5,7 @@ local saw_basic_default = false
 for _, fixture_info in ipairs(available) do
     if fixture_info.name == "basic.default" then
         saw_basic_default = true
+        assert(#fixture_info.anchors >= 1, "basic.default should advertise readiness anchors")
     end
 end
 assert(saw_basic_default, "basic.default fixture should be present")
