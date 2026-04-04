@@ -3,7 +3,7 @@ members = ["crates/*", "xtask"]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 license = "MIT"
@@ -28,8 +28,8 @@ tempfile = "3.27"
 thiserror = "2.0"
 tmcp = "0.4"
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "sync", "io-util", "process"] }
-eguidev = { version = "0.0.1", path = "crates/eguidev" }
-eguidev_runtime = { version = "0.0.1", path = "crates/eguidev_runtime" }
+eguidev = { version = "0.0.2", path = "crates/eguidev" }
+eguidev_runtime = { version = "0.0.2", path = "crates/eguidev_runtime" }
 
 [patch.crates-io]
 tmcp = { path = "/Users/cortesi/git/public/tmcp/crates/tmcp" }

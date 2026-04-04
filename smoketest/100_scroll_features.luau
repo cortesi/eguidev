@@ -26,7 +26,7 @@ assert(string.find(offset_text, "Scroll offset:", 1, true) ~= nil, "should show 
 vp:widget_get("basic.scroll.jump_top"):click()
 vp:wait_for_widget("basic.scroll", function(widget)
     local scroll = widget.scroll_state
-    return scroll ~= nil and math.abs(scroll.offset.y) < 0.75
+    return scroll ~= nil and math.abs(scroll.offset.y) < TOLERANCE
 end)
 
 -- scroll with positive delta (content up)
