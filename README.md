@@ -5,10 +5,10 @@
 [![Documentation](https://docs.rs/eguidev/badge.svg)](https://docs.rs/eguidev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-AI-assisted development tooling for [egui](https://github.com/emilk/egui).
-`eguidev` handles cross-target instrumentation inside your app,
-`eguidev_runtime` adds the native-only embedded automation runtime, and `edev`
-manages lifecycle plus the external MCP tool surface.
+Like [Playwright](https://playwright.dev/) for [egui](https://github.com/emilk/egui)
+apps. eguidev lets AI agents drive your UI end-to-end -- taking screenshots of
+entire windows or individual widgets, inspecting widget state, and injecting
+input -- all from inside the process with no pixel guessing.
 
 Join the [Discord server](https://discord.gg/fHmRmuBDxF) for discussion and
 release updates.
