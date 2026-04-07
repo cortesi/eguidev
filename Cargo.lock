@@ -2161,6 +2161,7 @@ name = "luau-analyze"
 version = "0.0.1"
 dependencies = [
  "cc",
+ "libloading",
 ]
 
 [[package]]
