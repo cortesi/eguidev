@@ -2817,6 +2817,7 @@ dependencies = [
  "oxau-analysis",
  "oxau-ast",
  "oxau-bytecode",
+ "oxau-decl",
  "oxau-pretty",
  "oxau-source",
  "oxau-typecheck",
@@ -2855,6 +2856,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxau-decl"
+version = "0.1.0"
+
+[[package]]
 name = "oxau-pretty"
 version = "0.1.0"
 dependencies = [
@@ -2888,6 +2893,7 @@ dependencies = [
  "blake3",
  "foldhash 0.2.0",
  "oxau-bytecode",
+ "oxau-decl",
  "oxau-source",
  "oxau-vm-api",
  "serde",
@@ -2900,6 +2906,7 @@ dependencies = [
 name = "oxau-vm-api"
 version = "0.1.0"
 dependencies = [
+ "oxau-decl",
  "serde",
 ]
 

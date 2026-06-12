@@ -17,7 +17,9 @@ use oxau::{
         serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
     },
     profile::Profile,
-    session::{Ambient, Deadline, Limits, LoadedModule, RuntimeErrorKind, TracebackFrame, Vm},
+    session::{
+        Ambient, CallOptions, Deadline, Limits, LoadedModule, RuntimeErrorKind, TracebackFrame, Vm,
+    },
 };
 use serde_json::Value;
 use tokio::{
@@ -271,7 +273,7 @@ async fn run_script_eval_local(
     let compile_elapsed = compile_start.elapsed();
     let exec_start = Instant::now();
     let outcome = vm
-        .call_protected_owned_async_with_limits(&module, invocation_limits(timeout_ms))
+        .exec_async(&module, CallOptions::new().limits(invocation_limits(timeout_ms)))
         .await;
     let timing = timing(start, compile_elapsed, exec_start.elapsed());
 
@@ -416,7 +418,7 @@ fn is_supported_method(name: &str) -> bool {
 }
 
 async fn run_setup(vm: &mut Vm, setup: &LoadedModule) -> Result<(), ScriptErrorInfo> {
-    match vm.call_protected_owned_async(setup).await {
+    match vm.exec_async(setup, CallOptions::new()).await {
         Ok(values) if values.is_empty() => Ok(()),
         Ok(values) => Err(runtime_error(format!(
             "Oxau setup returned unexpected values: {values:?}"
