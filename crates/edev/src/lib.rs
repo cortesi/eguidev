@@ -30,8 +30,8 @@ use syntect::{
 use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
-        CallToolResult, ClientCapabilities, Cursor, Implementation, InitializeResult,
-        ListToolsResult, TaskMetadata, Tool, ToolSchema,
+        CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
+        InitializeResult, ListToolsResult, TaskMetadata, Tool, ToolSchema,
     },
 };
 use tokio::{
@@ -218,7 +218,7 @@ async fn call_script_eval(
         options: None,
     });
     let result = {
-        let mut client = client.lock().await;
+        let client = client.lock().await;
         client
             .call_tool("script_eval".to_string(), request)
             .await
@@ -840,7 +840,7 @@ async fn spawn_app(
 
     let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
         .with_request_timeout(APP_REQUEST_TIMEOUT);
-    if let Err(error) = client.connect_stream(stdout, stdin).await {
+    if let Err(error) = client.connect_stream_raw(stdout, stdin).await {
         return Err(fail_startup_handshake(
             &mut child,
             process_group_id,
@@ -1034,7 +1034,7 @@ impl ServerHandler for EdevServer {
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(InitializeResult::new("edev")
             .with_version(version)
-            .with_tools(false))
+            .with_tools(Some(false)))
     }
 
     async fn list_tools(
@@ -1053,7 +1053,7 @@ impl ServerHandler for EdevServer {
         name: String,
         arguments: Option<Arguments>,
         _task: Option<TaskMetadata>,
-    ) -> tmcp::Result<CallToolResult> {
+    ) -> tmcp::Result<CallToolResponse> {
         let state = Arc::clone(&self.state);
         {
             let mut state_guard = state.lock().await;
@@ -1062,49 +1062,49 @@ impl ServerHandler for EdevServer {
         if !is_host_tool(&name) && !is_proxied_tool(&name) {
             return Err(McpError::ToolNotFound(name));
         }
-        match name.as_str() {
+        let result = match name.as_str() {
             "start" => {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.start().await {
-                    Ok(StartStatus::Started) => Ok(lifecycle_success("started", start.elapsed())),
+                    Ok(StartStatus::Started) => lifecycle_success("started", start.elapsed()),
                     Ok(StartStatus::AlreadyRunning) => {
-                        Ok(lifecycle_success("already_running", start.elapsed()))
+                        lifecycle_success("already_running", start.elapsed())
                     }
-                    Ok(StartStatus::AppStarting) => Ok(tool_error(
+                    Ok(StartStatus::AppStarting) => tool_error(
                         ErrorKind::AppStarting,
                         "App is starting. Try again shortly.",
-                    )),
-                    Ok(StartStatus::RestartRequired(output)) => Ok(tool_error_with_data(
+                    ),
+                    Ok(StartStatus::RestartRequired(output)) => tool_error_with_data(
                         ErrorKind::RestartRequired,
                         "App startup previously failed. Fix the issue and call restart.",
                         &serde_json::json!({ "startup_output": output }),
-                    )),
-                    Ok(StartStatus::StartupFailed(output)) => Ok(lifecycle_startup_failed(
+                    ),
+                    Ok(StartStatus::StartupFailed(output)) => lifecycle_startup_failed(
                         "App startup failed. Fix the issue and call restart again.",
                         &output,
                         start.elapsed(),
-                    )),
-                    Err(error) => Ok(lifecycle_failed(
+                    ),
+                    Err(error) => lifecycle_failed(
                         ErrorKind::StartFailed,
                         format!("Start failed: {error}"),
                         start.elapsed(),
-                    )),
+                    ),
                 }
             }
             "stop" => {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.stop_app().await {
-                    Ok(StopStatus::Stopped) => Ok(lifecycle_success("stopped", start.elapsed())),
+                    Ok(StopStatus::Stopped) => lifecycle_success("stopped", start.elapsed()),
                     Ok(StopStatus::AlreadyStopped) => {
-                        Ok(lifecycle_success("already_stopped", start.elapsed()))
+                        lifecycle_success("already_stopped", start.elapsed())
                     }
-                    Err(error) => Ok(lifecycle_failed(
+                    Err(error) => lifecycle_failed(
                         ErrorKind::StopFailed,
                         format!("Stop failed: {error}"),
                         start.elapsed(),
-                    )),
+                    ),
                 }
             }
             "restart" => {
@@ -1112,40 +1112,39 @@ impl ServerHandler for EdevServer {
                 let start = Instant::now();
                 match state.restart().await {
                     Ok(LifecycleStartStatus::Running) => {
-                        Ok(lifecycle_success("completed", start.elapsed()))
+                        lifecycle_success("completed", start.elapsed())
                     }
-                    Ok(LifecycleStartStatus::StartupFailed(output)) => {
-                        Ok(lifecycle_startup_failed(
-                            "App startup failed. Fix the issue and call restart again.",
-                            &output,
-                            start.elapsed(),
-                        ))
-                    }
-                    Err(error) => Ok(lifecycle_failed(
+                    Ok(LifecycleStartStatus::StartupFailed(output)) => lifecycle_startup_failed(
+                        "App startup failed. Fix the issue and call restart again.",
+                        &output,
+                        start.elapsed(),
+                    ),
+                    Err(error) => lifecycle_failed(
                         ErrorKind::RestartFailed,
                         format!("Restart failed: {error}"),
                         start.elapsed(),
-                    )),
+                    ),
                 }
             }
             "status" => {
                 let state = state.lock().await;
-                Ok(CallToolResult::new().with_structured_content(
+                CallToolResult::new().with_structured_content(
                     serde_json::to_value(state.status_report()).expect("status report"),
-                ))
+                )
             }
-            "script_api" => Ok(CallToolResult::new().with_text_content(script_definitions())),
+            "script_api" => CallToolResult::new().with_text_content(script_definitions()),
             _ => {
                 let (client, log_state) = {
                     let state = state.lock().await;
                     match state.proxy_target() {
                         Ok(client) => (client, state.log_state.clone()),
-                        Err(error) => return Ok(error),
+                        Err(error) => return Ok(error.into()),
                     }
                 };
-                Ok(call_proxy_tool(client, log_state, name, arguments).await)
+                call_proxy_tool(client, log_state, name, arguments).await
             }
-        }
+        };
+        Ok(result.into())
     }
 }
 
@@ -1156,7 +1155,7 @@ async fn call_proxy_tool(
     name: String,
     arguments: Option<Arguments>,
 ) -> CallToolResult {
-    let mut client = client.lock().await;
+    let client = client.lock().await;
     match client.call_tool(name, arguments.unwrap_or_default()).await {
         Ok(result) => normalize_tool_result(result),
         Err(error) => {
@@ -1184,7 +1183,7 @@ async fn run_smoke_suite(
             });
             let result = block_in_place(|| {
                 Handle::current().block_on(async {
-                    let mut client = client.lock().await;
+                    let client = client.lock().await;
                     client
                         .call_tool("script_eval".to_string(), payload)
                         .await
@@ -1224,7 +1223,7 @@ async fn probe_script_eval_ready(client: &Arc<AsyncMutex<tmcp::Client<()>>>) -> 
         options: None,
     });
     let result = {
-        let mut client = client.lock().await;
+        let client = client.lock().await;
         client
             .call_tool("script_eval".to_string(), request)
             .await
@@ -1250,25 +1249,25 @@ fn is_host_tool(name: &str) -> bool {
 
 /// Tool definition for starting the app process.
 fn start_tool() -> Tool {
-    Tool::new("start", ToolSchema::empty())
+    Tool::new("start", ToolSchema::default())
         .with_description("Start the underlying app process if it is not already running.")
 }
 
 /// Tool definition for stopping the app process.
 fn stop_tool() -> Tool {
-    Tool::new("stop", ToolSchema::empty())
+    Tool::new("stop", ToolSchema::default())
         .with_description("Stop the underlying app process if it is running.")
 }
 
 /// Tool definition for restarting the app process.
 fn restart_tool() -> Tool {
-    Tool::new("restart", ToolSchema::empty())
+    Tool::new("restart", ToolSchema::default())
         .with_description("Restart the underlying app process.")
 }
 
 /// Tool definition for reporting launcher lifecycle state.
 fn status_tool() -> Tool {
-    Tool::new("status", ToolSchema::empty())
+    Tool::new("status", ToolSchema::default())
         .with_description("Report the current launcher and app lifecycle state.")
 }
 
@@ -1285,7 +1284,7 @@ fn script_eval_tool() -> Tool {
 
 /// Tool definition for exposing the checked-in Luau API definitions.
 fn script_api_tool() -> Tool {
-    Tool::new("script_api", ToolSchema::empty())
+    Tool::new("script_api", ToolSchema::default())
         .with_description("Return the checked-in Luau definitions for the full scripting API.")
 }
 
@@ -1401,7 +1400,7 @@ fn build_tool_error(
             .insert("data".to_string(), data.clone());
     }
     CallToolResult::new()
-        .mark_as_error()
+        .with_is_error(true)
         .with_text_content(message)
         .with_structured_content(serde_json::json!({ "error": error }))
 }
@@ -1509,7 +1508,8 @@ mod tests {
     use tmcp::{
         Client, Server, ServerCtx, ServerHandle, ServerHandler,
         schema::{
-            CallToolResult, ContentBlock, Cursor, InitializeResult, ListToolsResult, TaskMetadata,
+            CallToolResponse, CallToolResult, ContentBlock, Cursor, InitializeResult,
+            ListToolsResult, TaskMetadata,
         },
         testutils::{TestServerContext, make_duplex_pair},
     };
@@ -1586,9 +1586,9 @@ mod tests {
             name: String,
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> tmcp::Result<CallToolResult> {
+        ) -> tmcp::Result<CallToolResponse> {
             if name == "script_eval" {
-                Ok(successful_script_eval_result())
+                Ok(successful_script_eval_result().into())
             } else {
                 Err(McpError::ToolNotFound(name))
             }
@@ -1623,7 +1623,7 @@ mod tests {
             name: String,
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
-        ) -> tmcp::Result<CallToolResult> {
+        ) -> tmcp::Result<CallToolResponse> {
             if name == "script_eval" {
                 Err(McpError::InternalError("boom".to_string()))
             } else {
@@ -1645,7 +1645,7 @@ mod tests {
 
         let mut client = Client::new("test", "0.1.0");
         client
-            .connect_stream(client_reader, client_writer)
+            .connect_stream_raw(client_reader, client_writer)
             .await
             .expect("connect");
         client.init().await.expect("init");
@@ -1675,7 +1675,7 @@ mod tests {
 
         let mut client = Client::new("test", "0.1.0");
         client
-            .connect_stream(client_reader, client_writer)
+            .connect_stream_raw(client_reader, client_writer)
             .await
             .expect("connect");
         client.init().await.expect("init");
@@ -2004,7 +2004,9 @@ mod tests {
         let result = server
             .call_tool(ctx.ctx(), "script_api".to_string(), None, None)
             .await
-            .expect("script_api");
+            .expect("script_api")
+            .into_result()
+            .expect("immediate result");
         assert_eq!(result.text().expect("text"), script_definitions());
     }
 
@@ -2027,7 +2029,9 @@ mod tests {
                 None,
             )
             .await
-            .expect("script_eval");
+            .expect("script_eval")
+            .into_result()
+            .expect("immediate result");
         let payload = result
             .structured_content
             .clone()

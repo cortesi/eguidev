@@ -4,7 +4,7 @@ use std::{any::Any, sync::Arc, time::Duration};
 
 use egui::Context;
 use eguidev::internal::{devmcp::RuntimeHooks, registry::Inner};
-use tokio::{runtime::Handle, sync::Notify};
+use tokio::sync::Notify;
 
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
@@ -188,9 +188,8 @@ pub fn attach_for_tests(devmcp: DevMcp) -> DevMcp {
 }
 
 /// Evaluate a Luau script directly against this attached `DevMcp` instance.
-pub fn eval_script(
+pub async fn eval_script(
     devmcp: &DevMcp,
-    handle: Handle,
     script_source: &str,
     timeout_ms: Option<u64>,
     options: ScriptEvalOptions,
@@ -213,12 +212,12 @@ pub fn eval_script(
     run_script_eval(
         inner,
         runtime,
-        handle,
-        script_source,
+        script_source.to_string(),
         timeout_ms,
         source_name,
         options.args,
     )
+    .await
 }
 
 #[cfg(test)]

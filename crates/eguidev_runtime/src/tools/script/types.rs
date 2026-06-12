@@ -338,6 +338,7 @@ mod tests {
     fn script_eval_options_reject_invalid_arg_shapes() {
         for invalid in [
             json!({ "args": null }),
+            json!({ "args": { "bad": null } }),
             json!({ "args": { "bad": [1, 2, 3] } }),
             json!({ "args": { "bad": { "nested": true } } }),
         ] {

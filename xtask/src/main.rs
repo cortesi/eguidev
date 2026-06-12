@@ -12,7 +12,11 @@ use std::{
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
-use luau_analyze::Checker;
+use oxau::{
+    diagnostic::render_diagnostic_summary,
+    source::AnalysisMode,
+    types::{Checker, CheckerConfig},
+};
 use serde_json::{Value, json};
 use tmcp::{Client, schema::CallToolResult};
 use tokio::{process::Command as TokioCommand, runtime::Builder};
@@ -158,8 +162,7 @@ fn smoke_edev(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
 fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
     let definitions_path = Path::new("crates/eguidev_runtime/luau/eguidev.d.luau");
     let definitions = fs::read_to_string(definitions_path)?;
-    let mut checker = Checker::new()?;
-    checker.add_definitions_with_name(&definitions, "eguidev.d.luau")?;
+    check_luau_source(definitions_path, "eguidev.d.luau", &definitions)?;
 
     for source_path in luau_sources()? {
         let source = fs::read_to_string(&source_path)?;
@@ -167,51 +170,35 @@ fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
             .to_str()
             .map(|path| path.replace('\\', "/"))
             .unwrap_or_else(|| "script.luau".to_string());
-        let result = checker.check_with_options(
-            &source,
-            luau_analyze::CheckOptions {
-                module_name: Some(&module_name),
-                ..luau_analyze::CheckOptions::default()
-            },
-        )?;
-        if result.timed_out || result.cancelled || !result.diagnostics.is_empty() {
-            let diagnostics = result
-                .diagnostics
-                .iter()
-                .map(render_luau_diagnostic)
-                .collect::<Vec<_>>()
-                .join("\n");
-            let mut message = format!("Luau check failed for {}", source_path.display());
-            if result.timed_out {
-                message.push_str("\n- checker timed out");
-            }
-            if result.cancelled {
-                message.push_str("\n- checker was cancelled");
-            }
-            if !diagnostics.is_empty() {
-                message.push_str(":\n");
-                message.push_str(&diagnostics);
-            }
-            return Err(message.into());
-        }
+        let source = source_with_luau_definitions(&definitions, &source);
+        check_luau_source(&source_path, &module_name, &source)?;
     }
 
     Ok(())
 }
 
-/// Format a Luau diagnostic for CLI output.
-fn render_luau_diagnostic(diagnostic: &luau_analyze::Diagnostic) -> String {
-    let severity = match diagnostic.severity {
-        luau_analyze::Severity::Error => "error",
-        luau_analyze::Severity::Warning => "warning",
-    };
-    format!(
-        "{}:{}: {}: {}",
-        diagnostic.line + 1,
-        diagnostic.col + 1,
-        severity,
-        diagnostic.message
-    )
+/// Prefix a script with the checked-in declaration surface for Oxau's single-module checker.
+fn source_with_luau_definitions(definitions: &str, source: &str) -> String {
+    format!("{definitions}\n\n{source}")
+}
+
+/// Check one Luau source with Oxau's checker and surface any diagnostics.
+fn check_luau_source(path: &Path, module_name: &str, source: &str) -> Result<(), Box<dyn Error>> {
+    let mut checker = Checker::new();
+    let checked = checker.check_source_with_config(source, luau_checker_config());
+    if checked.has_errors() {
+        let diagnostics = render_diagnostic_summary(module_name, checked.diagnostics());
+        return Err(format!("Luau check failed for {}:\n{diagnostics}", path.display()).into());
+    }
+    Ok(())
+}
+
+/// Return the checker settings used for shipped script validation.
+fn luau_checker_config() -> CheckerConfig {
+    CheckerConfig {
+        source_mode_override: Some(AnalysisMode::Strict),
+        ..CheckerConfig::default()
+    }
 }
 
 /// Enumerate checked-in example scripts that should type-check against the API definitions.
@@ -438,7 +425,26 @@ fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
     }
 
     let stdout = String::from_utf8(output.stdout)?;
-    let forbidden = ["base64", "glob", "image", "mlua", "tmcp", "tokio"];
+    let forbidden = [
+        "base64",
+        "glob",
+        "image",
+        "luau0-src",
+        "mlua",
+        "mlua-sys",
+        "oxau",
+        "oxau-analysis",
+        "oxau-ast",
+        "oxau-bytecode",
+        "oxau-pretty",
+        "oxau-source",
+        "oxau-stdlib",
+        "oxau-typecheck",
+        "oxau-vm",
+        "oxau-vm-api",
+        "tmcp",
+        "tokio",
+    ];
     let leaks = stdout
         .lines()
         .filter_map(|line| {

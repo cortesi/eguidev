@@ -197,16 +197,15 @@ struct SuiteScript {
 /// Run a smoketest suite against a live `DevMcp` instance.
 pub fn run_suite(devmcp: &DevMcp, handle: &Handle, config: &SuiteConfig) -> SuiteResult {
     run_suite_with(config, |request| {
-        Ok(runtime::eval_script(
+        Ok(handle.block_on(runtime::eval_script(
             devmcp,
-            handle.clone(),
             &request.source,
             request.timeout_ms,
             ScriptEvalOptions {
                 source_name: Some(request.path),
                 args: request.args,
             },
-        ))
+        )))
     })
 }
 

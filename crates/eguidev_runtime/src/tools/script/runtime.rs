@@ -12,7 +12,7 @@ use std::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tmcp::ToolResult;
-use tokio::{runtime::Handle, time::timeout};
+use tokio::time::timeout;
 
 use super::{
     super::{
@@ -43,7 +43,6 @@ use crate::{
 
 pub(super) struct ScriptRuntime {
     pub(super) server: DevMcpServer,
-    pub(super) handle: Handle,
     logs: Mutex<Vec<String>>,
     assertions: Mutex<Vec<ScriptAssertion>>,
     images: Mutex<Vec<ImageCapture>>,
@@ -56,10 +55,14 @@ pub(super) struct ScriptRuntime {
     config_settle: Mutex<Option<bool>>,
 }
 
-fn resolve_widget(inner: &Inner, target: &WidgetRef) -> Result<WidgetRegistryEntry, ToolError> {
+fn resolve_widget(
+    inner: &Inner,
+    viewport_id: Option<&str>,
+    target: &WidgetRef,
+) -> Result<WidgetRegistryEntry, ToolError> {
     inner
         .widgets
-        .resolve_widget(&inner.viewports, None, target)
+        .resolve_widget(&inner.viewports, viewport_id, target)
         .map_err(Into::into)
 }
 
@@ -77,7 +80,6 @@ impl ScriptRuntime {
     pub(super) fn new(
         inner: Arc<Inner>,
         runtime: Arc<Runtime>,
-        handle: Handle,
         source_name: String,
         timeout_ms: u64,
     ) -> Self {
@@ -86,7 +88,6 @@ impl ScriptRuntime {
             .unwrap_or_else(Instant::now);
         Self {
             server: DevMcpServer::with_runtime(inner, runtime),
-            handle,
             logs: Mutex::new(Vec::new()),
             assertions: Mutex::new(Vec::new()),
             images: Mutex::new(Vec::new()),
@@ -163,10 +164,6 @@ impl ScriptRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-    }
-
-    pub(super) fn source_name(&self) -> &str {
-        &self.source_name
     }
 
     pub(super) fn assertions(&self) -> Vec<ScriptAssertion> {
@@ -307,23 +304,23 @@ impl ScriptRuntime {
         Ok(remaining)
     }
 
-    fn block_on_tool<T>(
+    async fn await_tool<T>(
         &self,
         pos: ScriptPosition,
         fut: impl Future<Output = ToolResult<T>>,
     ) -> ScriptResult<T> {
         let remaining = self.remaining_script_duration(pos)?;
-        self.handle
-            .block_on(async move {
-                timeout(remaining, fut).await.map_err(|_| {
-                    ToolError::new(
-                        ErrorCode::Timeout,
-                        "Script deadline exceeded while waiting for tool call",
-                    )
-                    .into_tmcp()
-                })?
-            })
-            .map_err(|error| self.tool_error(pos, error))
+        let result = timeout(remaining, fut).await.map_err(|_| {
+            self.tool_error(
+                pos,
+                ToolError::new(
+                    ErrorCode::Timeout,
+                    "Script deadline exceeded while waiting for tool call",
+                )
+                .into_tmcp(),
+            )
+        })?;
+        result.map_err(|error| self.tool_error(pos, error))
     }
 
     fn to_json<T: Serialize>(&self, pos: ScriptPosition, value: T) -> ScriptResult<Value> {
@@ -459,7 +456,7 @@ impl ScriptRuntime {
         Ok(viewport_id_to_string(resolved_viewport_id))
     }
 
-    fn settle_after_action(
+    async fn settle_after_action(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
@@ -474,11 +471,12 @@ impl ScriptRuntime {
         }
         let timeout_ms = self.configured_timeout_ms();
         let poll_interval_ms = self.configured_poll_interval_ms();
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .wait_for_settle(viewport_id, timeout_ms, poll_interval_ms),
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -497,7 +495,7 @@ impl ScriptRuntime {
         Ok((target, action_viewport_id))
     }
 
-    fn finish_action<T: Serialize>(
+    async fn finish_action<T: Serialize>(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
@@ -505,7 +503,7 @@ impl ScriptRuntime {
         result: T,
         _target: Option<&WidgetRef>,
     ) -> ScriptResult<Value> {
-        self.settle_after_action(pos, options, viewport_id)?;
+        self.settle_after_action(pos, options, viewport_id).await?;
         self.to_json(pos, result)
     }
 
@@ -550,11 +548,14 @@ impl ScriptRuntime {
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
         let viewport_id = parse_optional_string(options, "viewport_id")
             .map_err(|error| self.type_error(pos, error.message))?;
-        let result = self.block_on_tool(pos, self.server.widget_get(viewport_id, target))?;
+        let result = self
+            .server
+            .widget_get_result(viewport_id.as_deref(), &target)
+            .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_json(pos, &result.widget)
     }
 
-    pub(super) fn widget_set_value(
+    pub(super) async fn widget_set_value(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -564,12 +565,14 @@ impl ScriptRuntime {
         let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
         let value = widget_value_from_dynamic(value)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .widget_set_value(Some(action_viewport_id.clone()), target, value),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
     pub(super) fn widget_at_point(
@@ -583,21 +586,27 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let viewport_id = parse_optional_string(options, "viewport_id")
             .map_err(|error| self.type_error(pos, error.message))?;
-        let result = self.block_on_tool(
-            pos,
-            self.server.widget_at_point(point, all_layers, viewport_id),
-        )?;
+        let result = self
+            .server
+            .widget_at_point_result(point, all_layers, viewport_id.as_deref())
+            .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_list_json(pos, &result.widgets)
     }
 
-    pub(super) fn text_measure(&self, pos: ScriptPosition, target: &Value) -> ScriptResult<Value> {
+    pub(super) async fn text_measure(
+        &self,
+        pos: ScriptPosition,
+        target: &Value,
+    ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let result = self.block_on_tool(pos, self.server.text_measure(target))?;
+        let result = self
+            .await_tool(pos, self.server.text_measure(target))
+            .await?;
         self.to_json(pos, result)
     }
 
-    pub(super) fn action_click(
+    pub(super) async fn action_click(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -615,7 +624,7 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let click_count = parse_optional_u8(options, "click_count")
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_click(
                 Some(action_viewport_id.clone()),
@@ -624,11 +633,13 @@ impl ScriptRuntime {
                 modifiers,
                 click_count,
             ),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), Some(&target))
+            .await
     }
 
-    pub(super) fn action_hover(
+    pub(super) async fn action_hover(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -639,7 +650,7 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let duration_ms = parse_optional_u64(options, "duration_ms")
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_hover(
                 Some(action_viewport_id.clone()),
@@ -647,11 +658,13 @@ impl ScriptRuntime {
                 position,
                 duration_ms,
             ),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_type(
+    pub(super) async fn action_type(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -666,7 +679,7 @@ impl ScriptRuntime {
         let focus_timeout_ms = parse_optional_u64(options, "focus_timeout_ms")
             .map_err(|error| self.type_error(pos, error.message))?;
         if focus_timeout_ms.is_some() {
-            self.block_on_tool(pos, async {
+            self.await_tool(pos, async {
                 self.server
                     .focus_widget_for_keyboard(
                         Some(action_viewport_id.clone()),
@@ -675,9 +688,10 @@ impl ScriptRuntime {
                     )
                     .await
                     .map_err(tmcp::ToolError::from)
-            })?;
+            })
+            .await?;
         }
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_type(
                 Some(action_viewport_id.clone()),
@@ -686,22 +700,29 @@ impl ScriptRuntime {
                 enter,
                 clear,
             ),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), Some(&target))
+            .await
     }
 
-    pub(super) fn action_focus(&self, pos: ScriptPosition, target: &Value) -> ScriptResult<Value> {
+    pub(super) async fn action_focus(
+        &self,
+        pos: ScriptPosition,
+        target: &Value,
+    ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
         let action_viewport_id = self.resolve_target_viewport(pos, None, &target)?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_focus(Some(action_viewport_id), target),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn action_drag(
+    pub(super) async fn action_drag(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -713,15 +734,17 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .action_drag(Some(action_viewport_id.clone()), target, to, modifiers),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_drag_relative(
+    pub(super) async fn action_drag_relative(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -735,7 +758,7 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_drag_relative(
                 Some(action_viewport_id.clone()),
@@ -744,11 +767,13 @@ impl ScriptRuntime {
                 to,
                 modifiers,
             ),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_drag_to_widget(
+    pub(super) async fn action_drag_to_widget(
         &self,
         pos: ScriptPosition,
         from: &Value,
@@ -760,7 +785,7 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_drag_to_widget(
                 Some(action_viewport_id.clone()),
@@ -768,11 +793,13 @@ impl ScriptRuntime {
                 to,
                 modifiers,
             ),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_scroll(
+    pub(super) async fn action_scroll(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -784,15 +811,17 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .action_scroll(Some(action_viewport_id.clone()), target, delta, modifiers),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_scroll_to(
+    pub(super) async fn action_scroll_to(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -813,30 +842,34 @@ impl ScriptRuntime {
         if offset.is_none() && align.is_none() {
             return Err(self.type_error(pos, "scroll_to requires either offset or align"));
         }
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .action_scroll_to(Some(action_viewport_id.clone()), target, offset, align),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_scroll_into_view(
+    pub(super) async fn action_scroll_into_view(
         &self,
         pos: ScriptPosition,
         target: &Value,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .action_scroll_into_view(Some(action_viewport_id.clone()), target),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
-    pub(super) fn action_key(
+    pub(super) async fn action_key(
         &self,
         pos: ScriptPosition,
         combo: String,
@@ -863,14 +896,15 @@ impl ScriptRuntime {
         };
         if let Some(target) = &target {
             let focus_timeout_ms = focus_timeout_ms.or(Some(5_000));
-            self.block_on_tool(pos, async {
+            self.await_tool(pos, async {
                 self.server
                     .focus_widget_for_keyboard(action_viewport_id.clone(), target, focus_timeout_ms)
                     .await
                     .map_err(tmcp::ToolError::from)
-            })?;
+            })
+            .await?;
         }
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.action_key(
                 action_viewport_id.clone(),
@@ -879,11 +913,13 @@ impl ScriptRuntime {
                 &key_name,
                 repeat,
             ),
-        )?;
+        )
+        .await?;
         self.finish_action(pos, options, action_viewport_id, (), target.as_ref())
+            .await
     }
 
-    pub(super) fn action_paste(
+    pub(super) async fn action_paste(
         &self,
         pos: ScriptPosition,
         text: String,
@@ -891,8 +927,10 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let viewport_id = parse_optional_string(options, "viewport_id")
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(pos, self.server.action_paste(viewport_id.clone(), text))?;
+        self.await_tool(pos, self.server.action_paste(viewport_id.clone(), text))
+            .await?;
         self.finish_action(pos, options, viewport_id, (), None)
+            .await
     }
 
     fn parse_optional_viewport_id_arg(
@@ -919,13 +957,15 @@ impl ScriptRuntime {
         self.viewport_handle_json(pos, "root")
     }
 
-    pub(super) fn viewports_list(
+    pub(super) async fn viewports_list(
         &self,
         pos: ScriptPosition,
         arg: Option<&Value>,
     ) -> ScriptResult<Value> {
         let viewport_id = self.parse_optional_viewport_id_arg(pos, arg)?;
-        let result = self.block_on_tool(pos, self.server.viewports_list(viewport_id))?;
+        let result = self
+            .await_tool(pos, self.server.viewports_list(viewport_id))
+            .await?;
         self.viewport_handle_list_json(pos, &result)
     }
 
@@ -934,20 +974,21 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         viewport_id: String,
     ) -> ScriptResult<Value> {
-        let snapshot = self
-            .block_on_tool(pos, self.server.viewports_list(Some(viewport_id.clone())))?
-            .into_iter()
-            .find(|snapshot| snapshot.viewport_id == viewport_id)
-            .ok_or_else(|| {
-                self.runtime_error(pos, format!("Viewport `{viewport_id}` is not available"))
-            })?;
+        let resolved = resolve_viewport_id(&self.server.inner, Some(viewport_id.clone()))
+            .map_err(|error| self.tool_error(pos, error.into()))?;
+        let snapshot = viewport_snapshot_for(&self.server.inner, resolved).ok_or_else(|| {
+            self.runtime_error(pos, format!("Viewport `{viewport_id}` is not available"))
+        })?;
         self.viewport_state_json(pos, &snapshot)
     }
 
     pub(super) fn widget_state(&self, pos: ScriptPosition, target: &Value) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let result = self.block_on_tool(pos, self.server.widget_get(None, target))?;
+        let result = self
+            .server
+            .widget_get_result(None, &target)
+            .map_err(|error| self.tool_error(pos, error))?;
         self.widget_state_json(pos, &result.widget)
     }
 
@@ -955,8 +996,8 @@ impl ScriptRuntime {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
         let inner = &self.server.inner;
-        let widget =
-            resolve_widget(inner, &target).map_err(|error| self.tool_error(pos, error.into()))?;
+        let widget = resolve_widget(inner, None, &target)
+            .map_err(|error| self.tool_error(pos, error.into()))?;
         let Some(parent_id) = widget.parent_id.as_deref() else {
             return Ok(Value::Null);
         };
@@ -998,8 +1039,8 @@ impl ScriptRuntime {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
         let inner = &self.server.inner;
-        let widget =
-            resolve_widget(inner, &target).map_err(|error| self.tool_error(pos, error.into()))?;
+        let widget = resolve_widget(inner, None, &target)
+            .map_err(|error| self.tool_error(pos, error.into()))?;
         let viewport_id = resolve_viewport_id(inner, Some(widget.viewport_id.clone()))
             .map_err(|error| self.tool_error(pos, error.into()))?;
         let widgets = self.server.inner.widgets.widget_list(viewport_id);
@@ -1010,7 +1051,7 @@ impl ScriptRuntime {
         self.widget_handle_list_json(pos, &children)
     }
 
-    pub(super) fn raw_pointer_move(
+    pub(super) async fn raw_pointer_move(
         &self,
         pos: ScriptPosition,
         pos_arg: &Value,
@@ -1019,11 +1060,12 @@ impl ScriptRuntime {
         let point = parse_pos2(pos_arg).map_err(|error| self.type_error(pos, error.message))?;
         let viewport_id = parse_optional_string(options, "viewport_id")
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(pos, self.server.input_pointer_move(viewport_id, point))?;
+        self.await_tool(pos, self.server.input_pointer_move(viewport_id, point))
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn raw_pointer_button(
+    pub(super) async fn raw_pointer_button(
         &self,
         pos: ScriptPosition,
         pos_arg: &Value,
@@ -1039,15 +1081,16 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .input_pointer_button(viewport_id, point, button, pressed, modifiers),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn raw_key(
+    pub(super) async fn raw_key(
         &self,
         pos: ScriptPosition,
         key: String,
@@ -1059,14 +1102,15 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.input_key(viewport_id, key, pressed, modifiers),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn raw_text(
+    pub(super) async fn raw_text(
         &self,
         pos: ScriptPosition,
         text: String,
@@ -1074,11 +1118,12 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let viewport_id = parse_optional_string(options, "viewport_id")
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(pos, self.server.input_text(viewport_id, text))?;
+        self.await_tool(pos, self.server.input_text(viewport_id, text))
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn raw_scroll(
+    pub(super) async fn raw_scroll(
         &self,
         pos: ScriptPosition,
         delta: &Value,
@@ -1090,19 +1135,21 @@ impl ScriptRuntime {
         let modifiers = self
             .modifiers_from_options(options)
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(pos, self.server.input_scroll(viewport_id, delta, modifiers))?;
+        self.await_tool(pos, self.server.input_scroll(viewport_id, delta, modifiers))
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn wait_for_widget_predicate<F>(
+    pub(super) async fn wait_for_widget_predicate<F, Fut>(
         &self,
         pos: ScriptPosition,
         target: &Value,
         options: Option<&Map<String, Value>>,
-        mut predicate: F,
+        predicate: F,
     ) -> ScriptResult<Value>
     where
-        F: FnMut(Value) -> ScriptResult<bool>,
+        F: Fn(Value) -> Fut + Clone,
+        Fut: Future<Output = ScriptResult<bool>>,
     {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
@@ -1110,14 +1157,17 @@ impl ScriptRuntime {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
-        let result = self.handle.block_on(async {
-            super::super::utils::wait_until_condition(
-                &self.server.inner,
-                timeout_ms,
-                poll_interval_ms,
-                Some(self.deadline),
-                || {
-                    let result = match resolve_widget_and_viewport(
+        let result = super::super::utils::wait_until_condition(
+            &self.server.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(self.deadline),
+            || {
+                let predicate = predicate.clone();
+                let target = target.clone();
+                let viewport_id = viewport_id.clone();
+                async move {
+                    match resolve_widget_and_viewport(
                         &self.server.inner,
                         viewport_id.as_deref(),
                         &target,
@@ -1125,7 +1175,7 @@ impl ScriptRuntime {
                     .map(|(widget, _)| widget)
                     {
                         Ok(widget) => match self.widget_state_json(pos, &widget) {
-                            Ok(widget_json) => match predicate(widget_json) {
+                            Ok(widget_json) => match predicate(widget_json).await {
                                 Ok(matched) => Ok::<_, ScriptErrorInfo>((matched, Some(widget))),
                                 Err(error) => Err(error),
                             },
@@ -1136,12 +1186,11 @@ impl ScriptRuntime {
                         },
                         Err(error) if error.code == ErrorCode::NotFound => Ok((false, None)),
                         Err(error) => Err(self.tool_error(pos, error.into())),
-                    };
-                    async move { result }
-                },
-            )
-            .await
-        });
+                    }
+                }
+            },
+        )
+        .await;
 
         match result {
             Ok((matched, widget, elapsed_ms)) => {
@@ -1173,7 +1222,7 @@ impl ScriptRuntime {
         }
     }
 
-    pub(super) fn wait_for_widget_visible(
+    pub(super) async fn wait_for_widget_visible(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1185,29 +1234,27 @@ impl ScriptRuntime {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
-        let result = self.handle.block_on(async {
-            super::super::utils::wait_until_condition(
-                &self.server.inner,
-                timeout_ms,
-                poll_interval_ms,
-                Some(self.deadline),
-                || {
-                    let result = match resolve_widget_and_viewport(
-                        &self.server.inner,
-                        viewport_id.as_deref(),
-                        &target,
-                    )
-                    .map(|(widget, _)| widget)
-                    {
-                        Ok(widget) => Ok::<_, ScriptErrorInfo>((widget.visible, Some(widget))),
-                        Err(error) if error.code == ErrorCode::NotFound => Ok((false, None)),
-                        Err(error) => Err(self.tool_error(pos, error.into())),
-                    };
-                    async move { result }
-                },
-            )
-            .await
-        });
+        let result = super::super::utils::wait_until_condition(
+            &self.server.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(self.deadline),
+            || {
+                let result = match resolve_widget_and_viewport(
+                    &self.server.inner,
+                    viewport_id.as_deref(),
+                    &target,
+                )
+                .map(|(widget, _)| widget)
+                {
+                    Ok(widget) => Ok::<_, ScriptErrorInfo>((widget.visible, Some(widget))),
+                    Err(error) if error.code == ErrorCode::NotFound => Ok((false, None)),
+                    Err(error) => Err(self.tool_error(pos, error.into())),
+                };
+                async move { result }
+            },
+        )
+        .await;
 
         match result {
             Ok((matched, widget, elapsed_ms)) => {
@@ -1248,7 +1295,7 @@ impl ScriptRuntime {
         }
     }
 
-    pub(super) fn wait_for_widget_absent(
+    pub(super) async fn wait_for_widget_absent(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1260,29 +1307,27 @@ impl ScriptRuntime {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
-        let result = self.handle.block_on(async {
-            super::super::utils::wait_until_condition(
-                &self.server.inner,
-                timeout_ms,
-                poll_interval_ms,
-                Some(self.deadline),
-                || {
-                    let result = match resolve_widget_and_viewport(
-                        &self.server.inner,
-                        viewport_id.as_deref(),
-                        &target,
-                    )
-                    .map(|(widget, _)| widget)
-                    {
-                        Ok(widget) => Ok::<_, ScriptErrorInfo>((false, Some(widget))),
-                        Err(error) if error.code == ErrorCode::NotFound => Ok((true, None)),
-                        Err(error) => Err(self.tool_error(pos, error.into())),
-                    };
-                    async move { result }
-                },
-            )
-            .await
-        });
+        let result = super::super::utils::wait_until_condition(
+            &self.server.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(self.deadline),
+            || {
+                let result = match resolve_widget_and_viewport(
+                    &self.server.inner,
+                    viewport_id.as_deref(),
+                    &target,
+                )
+                .map(|(widget, _)| widget)
+                {
+                    Ok(widget) => Ok::<_, ScriptErrorInfo>((false, Some(widget))),
+                    Err(error) if error.code == ErrorCode::NotFound => Ok((true, None)),
+                    Err(error) => Err(self.tool_error(pos, error.into())),
+                };
+                async move { result }
+            },
+        )
+        .await;
 
         match result {
             Ok((matched, _widget, elapsed_ms)) => {
@@ -1314,7 +1359,7 @@ impl ScriptRuntime {
         }
     }
 
-    pub(super) fn wait_for_frames(
+    pub(super) async fn wait_for_frames(
         &self,
         pos: ScriptPosition,
         count: &Value,
@@ -1322,40 +1367,43 @@ impl ScriptRuntime {
         let count =
             parse_optional_u64_val(count).map_err(|error| self.type_error(pos, error.message))?;
         let timeout_ms = self.configured_timeout_ms();
-        let result =
-            self.block_on_tool(pos, self.server.wait_for_frame_count(count, timeout_ms))?;
+        let result = self
+            .await_tool(pos, self.server.wait_for_frame_count(count, timeout_ms))
+            .await?;
         self.to_json(pos, result)
     }
 
-    pub(super) fn wait_for_capture(
+    pub(super) async fn wait_for_capture(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .wait_for_capture(viewport_id, timeout_ms, poll_interval_ms),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn wait_for_settle(
+    pub(super) async fn wait_for_settle(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .wait_for_settle(viewport_id, timeout_ms, poll_interval_ms),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn wait_for_scroll_ready(
+    pub(super) async fn wait_for_scroll_ready(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1364,11 +1412,17 @@ impl ScriptRuntime {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
         let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
-        let widget = self.block_on_tool(
-            pos,
-            self.server
-                .wait_for_scroll_ready(viewport_id, target, timeout_ms, poll_interval_ms),
-        )?;
+        let widget = self
+            .await_tool(
+                pos,
+                self.server.wait_for_scroll_ready(
+                    viewport_id,
+                    target,
+                    timeout_ms,
+                    poll_interval_ms,
+                ),
+            )
+            .await?;
         let Some(widget) = widget else {
             return Err(self.runtime_error(
                 pos,
@@ -1378,14 +1432,15 @@ impl ScriptRuntime {
         self.widget_state_json(pos, &widget)
     }
 
-    pub(super) fn wait_for_viewport_predicate<F>(
+    pub(super) async fn wait_for_viewport_predicate<F, Fut>(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
-        mut predicate: F,
+        predicate: F,
     ) -> ScriptResult<Value>
     where
-        F: FnMut(Value) -> ScriptResult<bool>,
+        F: Fn(Value) -> Fut + Clone,
+        Fut: Future<Output = ScriptResult<bool>>,
     {
         let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
@@ -1394,16 +1449,17 @@ impl ScriptRuntime {
         let viewport_id = resolve_viewport_id(inner, viewport_id)
             .map_err(|error| self.tool_error(pos, error.into()))?;
 
-        let result = self.handle.block_on(async {
-            super::super::utils::wait_until_condition(
-                &self.server.inner,
-                timeout_ms,
-                poll_interval_ms,
-                Some(self.deadline),
-                || {
-                    let result = match viewport_snapshot_for(&self.server.inner, viewport_id) {
+        let result = super::super::utils::wait_until_condition(
+            &self.server.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(self.deadline),
+            || {
+                let predicate = predicate.clone();
+                async move {
+                    match viewport_snapshot_for(&self.server.inner, viewport_id) {
                         Some(snapshot) => match self.viewport_state_json(pos, &snapshot) {
-                            Ok(viewport_json) => match predicate(viewport_json) {
+                            Ok(viewport_json) => match predicate(viewport_json).await {
                                 Ok(matched) => Ok::<_, ScriptErrorInfo>((matched, Some(snapshot))),
                                 Err(error) => Err(error),
                             },
@@ -1419,12 +1475,11 @@ impl ScriptRuntime {
                             ToolError::new(ErrorCode::InvalidRef, "Viewport not ready for wait")
                                 .into_tmcp(),
                         )),
-                    };
-                    async move { result }
-                },
-            )
-            .await
-        });
+                    }
+                }
+            },
+        )
+        .await;
 
         match result {
             Ok((matched, viewport, elapsed_ms)) => {
@@ -1460,7 +1515,7 @@ impl ScriptRuntime {
         }
     }
 
-    pub(super) fn screenshot(
+    pub(super) async fn screenshot(
         &self,
         pos: ScriptPosition,
         target: Option<&Value>,
@@ -1506,17 +1561,20 @@ impl ScriptRuntime {
                 .map(|snapshot| snapshot.pixels_per_point)
                 .unwrap_or(1.0);
             let data = self
-                .handle
-                .block_on(capture_screenshot(
-                    &self.server.inner,
-                    &self.server.runtime,
-                    viewport_id_resolved,
-                    ScreenshotKind::Widget {
-                        rect: widget.interact_rect,
-                        pixels_per_point,
-                    },
-                ))
-                .map_err(|error| self.tool_error(pos, error.into()))?;
+                .await_tool(pos, async {
+                    capture_screenshot(
+                        &self.server.inner,
+                        &self.server.runtime,
+                        viewport_id_resolved,
+                        ScreenshotKind::Widget {
+                            rect: widget.interact_rect,
+                            pixels_per_point,
+                        },
+                    )
+                    .await
+                    .map_err(tmcp::ToolError::from)
+                })
+                .await?;
             self.store_image(ImageCapture {
                 id: id.clone(),
                 data,
@@ -1531,14 +1589,17 @@ impl ScriptRuntime {
         let viewport_id_resolved = resolve_screenshot_viewport(&self.server.inner, viewport_id)
             .map_err(|error| self.tool_error(pos, error.into()))?;
         let data = self
-            .handle
-            .block_on(capture_screenshot(
-                &self.server.inner,
-                &self.server.runtime,
-                viewport_id_resolved,
-                ScreenshotKind::Viewport,
-            ))
-            .map_err(|error| self.tool_error(pos, error.into()))?;
+            .await_tool(pos, async {
+                capture_screenshot(
+                    &self.server.inner,
+                    &self.server.runtime,
+                    viewport_id_resolved,
+                    ScreenshotKind::Viewport,
+                )
+                .await
+                .map_err(tmcp::ToolError::from)
+            })
+            .await?;
         self.store_image(ImageCapture {
             id: id.clone(),
             data,
@@ -1550,16 +1611,18 @@ impl ScriptRuntime {
         Ok(image_ref_json(id))
     }
 
-    pub(super) fn check_layout(
+    pub(super) async fn check_layout(
         &self,
         pos: ScriptPosition,
         viewport_id: Option<String>,
     ) -> ScriptResult<Value> {
-        let result = self.block_on_tool(pos, self.server.check_layout(viewport_id, None))?;
+        let result = self
+            .await_tool(pos, self.server.check_layout(viewport_id, None))
+            .await?;
         self.to_json(pos, result)
     }
 
-    pub(super) fn check_layout_widget(
+    pub(super) async fn check_layout_widget(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1567,13 +1630,14 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let result =
-            self.block_on_tool(pos, self.server.check_layout(viewport_id, Some(target)))?;
+        let result = self
+            .await_tool(pos, self.server.check_layout(viewport_id, Some(target)))
+            .await?;
         self.to_json(pos, result)
     }
 
     /// Show a highlight on a widget (by target) or a rect with a mandatory color.
-    pub(super) fn show_highlight_widget(
+    pub(super) async fn show_highlight_widget(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1582,32 +1646,36 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let result = self.block_on_tool(
-            pos,
-            self.server
-                .show_highlight(viewport_id, Some(target), None, color),
-        )?;
+        let result = self
+            .await_tool(
+                pos,
+                self.server
+                    .show_highlight(viewport_id, Some(target), None, color),
+            )
+            .await?;
         self.to_json(pos, result)
     }
 
     /// Show a highlight on a rect with a mandatory color.
-    pub(super) fn show_highlight_rect(
+    pub(super) async fn show_highlight_rect(
         &self,
         pos: ScriptPosition,
         viewport_id: Option<String>,
         rect: Rect,
         color: String,
     ) -> ScriptResult<Value> {
-        let result = self.block_on_tool(
-            pos,
-            self.server
-                .show_highlight(viewport_id, None, Some(rect), color),
-        )?;
+        let result = self
+            .await_tool(
+                pos,
+                self.server
+                    .show_highlight(viewport_id, None, Some(rect), color),
+            )
+            .await?;
         self.to_json(pos, result)
     }
 
     /// Hide a widget's highlight.
-    pub(super) fn hide_highlight_widget(
+    pub(super) async fn hide_highlight_widget(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1615,17 +1683,19 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(pos, self.server.hide_highlight(viewport_id, Some(target)))?;
+        self.await_tool(pos, self.server.hide_highlight(viewport_id, Some(target)))
+            .await?;
         Ok(Value::Null)
     }
 
     /// Clear all highlights.
-    pub(super) fn hide_highlight_all(&self, pos: ScriptPosition) -> ScriptResult<Value> {
-        self.block_on_tool(pos, self.server.hide_highlight(None, None))?;
+    pub(super) async fn hide_highlight_all(&self, pos: ScriptPosition) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.hide_highlight(None, None))
+            .await?;
         Ok(Value::Null)
     }
 
-    pub(super) fn show_debug_overlay(
+    pub(super) async fn show_debug_overlay(
         &self,
         pos: ScriptPosition,
         viewport_id: Option<String>,
@@ -1652,31 +1722,34 @@ impl ScriptRuntime {
             })
             .transpose()
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server
                 .show_debug_overlay(viewport_id, mode, scope, options),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn hide_debug_overlay(&self, pos: ScriptPosition) -> ScriptResult<Value> {
-        self.block_on_tool(pos, self.server.hide_debug_overlay())?;
+    pub(super) async fn hide_debug_overlay(&self, pos: ScriptPosition) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.hide_debug_overlay())
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn viewport_set_inner_size(
+    pub(super) async fn viewport_set_inner_size(
         &self,
         pos: ScriptPosition,
         size: &Value,
         viewport_id: Option<String>,
     ) -> ScriptResult<Value> {
         let size = parse_vec2(size).map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(pos, self.server.viewport_set_inner_size(viewport_id, size))?;
+        self.await_tool(pos, self.server.viewport_set_inner_size(viewport_id, size))
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn viewport_set_resize_options(
+    pub(super) async fn viewport_set_resize_options(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
@@ -1690,7 +1763,7 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let resizable = parse_optional_bool(options, "resizable")
             .map_err(|error| self.type_error(pos, error.message))?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.viewport_set_resize_options(
                 viewport_id,
@@ -1699,27 +1772,35 @@ impl ScriptRuntime {
                 increments,
                 resizable,
             ),
-        )?;
+        )
+        .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn focus_window(
+    pub(super) async fn focus_window(
         &self,
         pos: ScriptPosition,
         viewport: String,
     ) -> ScriptResult<Value> {
-        self.block_on_tool(pos, self.server.focus_window(viewport))?;
+        self.await_tool(pos, self.server.focus_window(viewport))
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn fixture(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
+    pub(super) async fn fixture(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
         let timeout_ms = self.configured_timeout_ms();
-        self.block_on_tool(pos, self.server.fixture(name, timeout_ms))?;
+        self.await_tool(pos, self.server.fixture(name, timeout_ms))
+            .await?;
         self.to_json(pos, ())
     }
 
-    pub(super) fn fixture_raw(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
-        self.block_on_tool(pos, self.server.fixture_apply(name))?;
+    pub(super) async fn fixture_raw(
+        &self,
+        pos: ScriptPosition,
+        name: String,
+    ) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.fixture_apply(name))
+            .await?;
         self.to_json(pos, ())
     }
 
@@ -1757,7 +1838,7 @@ impl ScriptRuntime {
         self.assert_result(pos, condition, message)
     }
 
-    pub(super) fn assert_widget_exists(
+    pub(super) async fn assert_widget_exists(
         &self,
         pos: ScriptPosition,
         target: &Value,
@@ -1766,7 +1847,7 @@ impl ScriptRuntime {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
         let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
-        self.block_on_tool(
+        self.await_tool(
             pos,
             self.server.wait_for_widget_state(
                 viewport_id,
@@ -1775,7 +1856,8 @@ impl ScriptRuntime {
                 poll_interval_ms,
                 |widget| widget.is_some(),
             ),
-        )?;
+        )
+        .await?;
         self.assert_result(pos, true, "widget exists".to_string())
     }
 }
@@ -1785,4 +1867,16 @@ fn image_ref_json(id: String) -> Value {
         "type": "image_ref",
         "id": id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScriptRuntime;
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn script_runtime_is_send_sync() {
+        assert_send_sync::<ScriptRuntime>();
+    }
 }

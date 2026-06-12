@@ -3,13 +3,14 @@ use std::sync::LazyLock;
 use tokio::sync::Mutex as AsyncMutex;
 
 mod eval;
+mod outcome;
+mod oxau_adapter;
 mod parse;
 mod runtime;
 mod types;
 mod value;
 
 pub use eval::run_script_eval;
-pub(super) use eval::script_eval_task_error;
 pub use types::{
     ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo, ScriptEvalOptions,
     ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation, ScriptTiming,

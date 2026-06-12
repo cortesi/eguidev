@@ -19,7 +19,7 @@ use tmcp::{
     schema::{CallToolResult, ClientCapabilities, Implementation, InitializeResult},
     tool,
 };
-use tokio::{runtime::Handle, task::spawn_blocking, time::timeout};
+use tokio::time::timeout;
 
 use crate::{
     actions::{ActionTiming, InputAction},
@@ -580,7 +580,7 @@ impl DevMcpServer {
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(InitializeResult::new("eguidev")
             .with_version(version)
-            .with_tools(true))
+            .with_tools(Some(true)))
     }
 
     /// List viewports and their properties.
@@ -1165,12 +1165,12 @@ fixture requests are processed in App::update."
     }
 
     /// Get a single widget by id (error if not found or ambiguous).
-    async fn widget_get(
+    fn widget_get_result(
         &self,
-        viewport_id: Option<String>,
-        target: WidgetRef,
+        viewport_id: Option<&str>,
+        target: &WidgetRef,
     ) -> ToolResult<WidgetGetResult> {
-        let widget = resolve_widget(&self.inner, viewport_id.as_deref(), &target)?;
+        let widget = resolve_widget(&self.inner, viewport_id, target)?;
         Ok(WidgetGetResult { widget })
     }
 
@@ -1582,14 +1582,13 @@ fixture requests are processed in App::update."
         Ok(measure_text(&ctx, &widget)?)
     }
 
-    /// Find widget(s) at a specific coordinate.
-    async fn widget_at_point(
+    fn widget_at_point_result(
         &self,
         pos: Pos2,
         all_layers: Option<bool>,
-        viewport_id: Option<String>,
+        viewport_id: Option<&str>,
     ) -> ToolResult<WidgetAtPointResult> {
-        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id.map(str::to_string))?;
         let widgets = self.inner.widgets.widget_list(viewport_id);
         let mut hits: Vec<WidgetRegistryEntry> = widgets
             .iter()
@@ -1697,23 +1696,16 @@ fixture requests are processed in App::update."
             .unwrap_or_else(|| "script.luau".to_string());
         let inner = Arc::clone(&self.inner);
         let runtime = Arc::clone(&self.runtime);
-        let handle = Handle::current();
-        let eval = spawn_blocking(move || {
-            script::run_script_eval(
-                inner,
-                runtime,
-                handle,
-                &script,
-                timeout_ms,
-                source_name,
-                options.args,
-            )
-        })
+        let eval = script::run_script_eval(
+            inner,
+            runtime,
+            script,
+            timeout_ms,
+            source_name,
+            options.args,
+        )
         .await;
-        Ok(match eval {
-            Ok(result) => result.to_tool_result(),
-            Err(error) => script::script_eval_task_error(&error).to_tool_result(),
-        })
+        Ok(eval.to_tool_result())
     }
 
     fn resolve_scope_viewport(
@@ -2092,7 +2084,7 @@ mod tests {
     };
 
     use eguidev::FixtureSpec;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use tmcp::schema::ContentBlock;
     use tokio::{task::yield_now, time::sleep};
 
@@ -2335,6 +2327,198 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn script_eval_preserves_empty_tool_result_arrays() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"return root():widget_list({ id_prefix = "missing" })"#.to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn script_eval_root_widget_list_returns_widget_handles() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("status", 1, WidgetRole::Label));
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("other", 2, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"local widgets = root():widget_list({ id_prefix = "status" })
+return { count = #widgets, id = widgets[1].id, viewport = widgets[1].viewport_id }"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(
+            json["value"],
+            json!({ "count": 1, "id": "status", "viewport": "root" })
+        );
+    }
+
+    #[tokio::test]
+    async fn script_eval_root_viewport_state_returns_current_snapshot() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        inner.viewports.update_viewports(&ctx);
+        record_test_snapshot(&inner, egui::ViewportId::ROOT);
+
+        let result = server
+            .script_eval(
+                r#"local state = root():state()
+return { frame = state.frame_count, pixels_per_point = state.pixels_per_point }"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], json!({ "frame": 1, "pixels_per_point": 1 }));
+    }
+
+    #[tokio::test]
+    async fn script_eval_widget_get_state_reads_current_snapshot() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("status", 1, WidgetRole::Button);
+        entry.label = Some("Ready".to_string());
+        entry.focused = true;
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"local state = root():widget_get("status"):state()
+return { role = state.role, label = state.label, focused = state.focused }"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(
+            json["value"],
+            json!({ "role": "button", "label": "Ready", "focused": true })
+        );
+    }
+
+    #[tokio::test]
+    async fn script_eval_preserves_empty_tool_result_arrays_in_multi_returns() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"local viewport = root()
+return viewport:widget_list({ id_prefix = "missing" }),
+    viewport:widget_list({ id_prefix = "also_missing" })"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], json!([[], []]));
+    }
+
+    #[tokio::test]
+    async fn script_eval_characterizes_integral_float_collapse() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "return { arg = args.unit, literal = 1.0 }".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("integral-float.luau".to_string()),
+                    args: ScriptArgs::from([("unit".to_string(), ScriptArgValue::Float(1.0))]),
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"]["arg"].as_i64(), Some(1));
+        assert_eq!(json["value"]["literal"].as_i64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn script_eval_characterizes_nil_options_as_absent() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"configure(nil)
+return root():widget_list(nil)"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn script_eval_characterizes_nil_inside_returned_arrays() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval("return { 1, nil, 3 }".to_string(), None, None)
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], json!([1, null, 3]));
+    }
+
+    #[tokio::test]
     async fn script_eval_reports_parse_errors() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(inner);
@@ -2345,6 +2529,45 @@ mod tests {
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], false);
         assert_eq!(json["error"]["type"], "parse");
+    }
+
+    #[tokio::test]
+    async fn script_eval_pcall_catches_host_tool_errors() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"
+                    local ok, err = pcall(function()
+                        return root():widget_get("missing")
+                    end)
+                    return {
+                        ok = ok,
+                        err_type = type(err),
+                        err = tostring(err),
+                    }
+                "#
+                .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true, "{json:?}");
+        assert_eq!(json["value"]["ok"], false);
+        assert_eq!(json["value"]["err_type"], "string");
+        assert!(
+            json["value"]["err"]
+                .as_str()
+                .is_some_and(|message| message.contains("missing")),
+            "{json:?}"
+        );
     }
 
     #[tokio::test]
@@ -2371,6 +2594,32 @@ mod tests {
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], true);
         assert_eq!(json["value"]["label"], "Ready");
+    }
+
+    #[tokio::test]
+    async fn script_eval_wait_for_widget_closure_compares_integer_values() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("choice", 1, WidgetRole::ComboBox);
+        entry.value = Some(WidgetValue::Int(2));
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"configure({ timeout_ms = 50 }) return root():wait_for_widget("choice", function(widget) return widget.value == 2 end)"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true, "{json:?}");
+        assert_eq!(json["value"]["value"], 2);
     }
 
     #[tokio::test]
@@ -2573,6 +2822,41 @@ return widget:wait_for_visible()"#
             .expect("script eval");
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["type"], "timeout");
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn script_eval_pcall_does_not_catch_script_timeout() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+        let entry = make_entry("status", 1, WidgetRole::Label);
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let started = Instant::now();
+        let result = server
+            .script_eval(
+                r#"
+                    configure({ timeout_ms = 5000, poll_interval_ms = 250 })
+                    local ok = pcall(function()
+                        return root():wait_for_widget("status", function()
+                            return false
+                        end)
+                    end)
+                    return ok
+                "#
+                .to_string(),
+                Some(50),
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], false, "{json:?}");
         assert_eq!(json["error"]["type"], "timeout");
         assert!(started.elapsed() < Duration::from_millis(500));
     }
@@ -2811,6 +3095,28 @@ return widget:wait_for_visible()"#
     }
 
     #[tokio::test]
+    async fn script_eval_reports_assert_widget_exists() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("status", 1, WidgetRole::Label));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval("assert_widget_exists(\"status\")".to_string(), None, None)
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["assertions"][0]["passed"], true);
+        assert_eq!(json["assertions"][0]["message"], "widget exists");
+        assert_eq!(json["assertions"][0]["location"], "script.luau:1");
+    }
+
+    #[tokio::test]
     async fn fixture_apply_applies_handler_without_waiting_for_a_new_frame() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![
@@ -2875,6 +3181,42 @@ return widget:wait_for_visible()"#
             .expect("script eval");
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], true);
+    }
+
+    #[tokio::test]
+    async fn script_eval_returns_sorted_fixtures() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("zeta", "Last fixture.").anchor("status"),
+            FixtureSpec::new("alpha", "First fixture.").anchor("status"),
+        ]);
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let result = server
+            .script_eval(
+                r#"local catalog = fixtures()
+return { first = catalog[1].name, count = #catalog }"#
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], json!({ "first": "alpha", "count": 2 }));
+    }
+
+    #[tokio::test]
+    async fn script_eval_wait_for_frames_returns_frame_count() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval("return wait_for_frames(0)".to_string(), None, None)
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], 0);
     }
 
     #[tokio::test]
@@ -3484,8 +3826,7 @@ return widget:wait_for_visible()"#
         inner.widgets.finalize_registry(viewport_id);
 
         let focused = server
-            .widget_get(None, widget_ref_id("notes"))
-            .await
+            .widget_get_result(None, &widget_ref_id("notes"))
             .expect("widget get")
             .widget
             .focused;
@@ -3618,8 +3959,7 @@ return widget:wait_for_visible()"#
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(inner);
         let result = server
-            .widget_get(None, widget_ref_id("missing"))
-            .await
+            .widget_get_result(None, &widget_ref_id("missing"))
             .expect_err("missing widget");
         assert_eq!(result.code, ErrorCode::NotFound.as_str());
         assert!(result.message.contains("missing"));
@@ -3652,8 +3992,7 @@ return widget:wait_for_visible()"#
         assert_eq!(entry.id, "big");
 
         let fetched = server
-            .widget_get(None, widget_ref_id(&entry.id))
-            .await
+            .widget_get_result(None, &widget_ref_id(&entry.id))
             .expect("widget get");
         assert_eq!(fetched.widget.id, "big");
     }
@@ -3694,8 +4033,7 @@ return widget:wait_for_visible()"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result = server
-            .widget_get(None, widget_ref_id("dup"))
-            .await
+            .widget_get_result(None, &widget_ref_id("dup"))
             .expect_err("duplicate explicit ids should block automation");
         assert_eq!(result.code, ErrorCode::DuplicateWidgetId.as_str());
         let duplicate_ids = result
@@ -3729,8 +4067,7 @@ return widget:wait_for_visible()"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result = server
-            .widget_get(None, widget_ref_id("dup"))
-            .await
+            .widget_get_result(None, &widget_ref_id("dup"))
             .expect_err("ambiguous id");
         assert_eq!(result.code, ErrorCode::Ambiguous.as_str());
         assert_ne!(result.code, ErrorCode::DuplicateWidgetId.as_str());
@@ -3760,8 +4097,7 @@ return widget:wait_for_visible()"#
             .expect("generated widget");
 
         let fetched = server
-            .widget_get(None, widget_ref_id(&entry.id))
-            .await
+            .widget_get_result(None, &widget_ref_id(&entry.id))
             .expect("widget get by generated id");
         assert_eq!(fetched.widget.id, entry.id);
     }
@@ -4695,6 +5031,48 @@ return widget:wait_for_visible()"#
     }
 
     #[tokio::test]
+    async fn script_eval_widget_text_measure_returns_text() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput::default();
+        let text = "Hello".to_string();
+        let _output = ctx.run(raw_input, |ctx| {
+            inner.capture_context(ctx.viewport_id(), ctx);
+            inner.widgets.clear_registry(ctx.viewport_id());
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.label(&text);
+                let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
+                record_widget(
+                    &inner.widgets,
+                    "label".to_string(),
+                    &response,
+                    WidgetMeta {
+                        role: WidgetRole::Label,
+                        label: Some(text.clone()),
+                        value: Some(WidgetValue::Text(text.clone())),
+                        visible,
+                        ..Default::default()
+                    },
+                );
+            });
+            inner.widgets.finalize_registry(ctx.viewport_id());
+        });
+
+        let result = server
+            .script_eval(
+                r#"return root():widget_get("label"):text_measure().text"#.to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], "Hello");
+    }
+
+    #[tokio::test]
     async fn text_measure_uses_widget_viewport_context() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -4810,8 +5188,7 @@ return widget:wait_for_visible()"#
         inner.widgets.finalize_registry(viewport_id);
 
         let result = server
-            .widget_at_point(Pos2 { x: 5.0, y: 5.0 }, Some(true), None)
-            .await
+            .widget_at_point_result(Pos2 { x: 5.0, y: 5.0 }, Some(true), None)
             .expect("widget at point");
         assert_eq!(result.widgets.len(), 2);
         assert_eq!(result.widgets[0].id, "top");

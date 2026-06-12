@@ -22,7 +22,7 @@ serde_json.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
 tmcp.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 eguidev.workspace = true
 eguidev_runtime.workspace = true
 syntect = "5.3.0"
