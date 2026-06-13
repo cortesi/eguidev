@@ -273,7 +273,10 @@ async fn run_script_eval_local(
     let compile_elapsed = compile_start.elapsed();
     let exec_start = Instant::now();
     let outcome = vm
-        .exec_async(&module, CallOptions::new().limits(invocation_limits(timeout_ms)))
+        .exec_async(
+            &module,
+            CallOptions::new().limits(invocation_limits(timeout_ms)),
+        )
         .await;
     let timing = timing(start, compile_elapsed, exec_start.elapsed());
 
@@ -804,8 +807,8 @@ impl NativeModule for EguidevModule {
         "eguidev_initial"
     }
 
-    fn declaration(&self) -> &str {
-        DECLARATION
+    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
+        oxau::decl::DeclSource::Text(DECLARATION)
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
