@@ -9,6 +9,7 @@ use std::{
 use oxau::syntax::{ParseOptions, SyntaxFlags, parse_file_with};
 use oxau::{
     compile::{CompileError, CompileErrorKind, CompileOptions, compile_for},
+    decl::DeclSource,
     embed::{
         FromLua, FromLuaMulti, HostCtx, HostReturn, IntoLuaMulti, MarshaledScriptError,
         MarshaledValue, ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule,
@@ -807,8 +808,8 @@ impl NativeModule for EguidevModule {
         "eguidev_initial"
     }
 
-    fn declaration(&self) -> oxau::decl::DeclSource<'_> {
-        oxau::decl::DeclSource::Text(DECLARATION)
+    fn declaration(&self) -> DeclSource<'_> {
+        DeclSource::Text(DECLARATION)
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {

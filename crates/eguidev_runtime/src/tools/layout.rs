@@ -159,6 +159,9 @@ pub fn check_overlaps(widgets: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
             if first.role == WidgetRole::ScrollArea || second.role == WidgetRole::ScrollArea {
                 continue;
             }
+            if are_ancestor_descendant(first, second, widgets) {
+                continue;
+            }
             if let Some(overlap_rect) = rect_intersection(first.rect, second.rect) {
                 issues.push(LayoutIssue {
                     kind: LayoutIssueKind::Overlap,
@@ -170,6 +173,37 @@ pub fn check_overlaps(widgets: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
         }
     }
     issues
+}
+
+fn are_ancestor_descendant(
+    first: &WidgetRegistryEntry,
+    second: &WidgetRegistryEntry,
+    widgets: &[WidgetRegistryEntry],
+) -> bool {
+    has_ancestor(first, &second.id, widgets) || has_ancestor(second, &first.id, widgets)
+}
+
+fn has_ancestor(
+    descendant: &WidgetRegistryEntry,
+    ancestor_id: &str,
+    widgets: &[WidgetRegistryEntry],
+) -> bool {
+    let mut parent_id = descendant.parent_id.as_deref();
+    let mut visited = 0usize;
+    while let Some(current_parent_id) = parent_id {
+        if current_parent_id == ancestor_id {
+            return true;
+        }
+        visited += 1;
+        if visited > widgets.len() {
+            return false;
+        }
+        parent_id = widgets
+            .iter()
+            .find(|widget| widget.id == current_parent_id)
+            .and_then(|widget| widget.parent_id.as_deref());
+    }
+    false
 }
 
 pub fn check_offscreen(widgets: &[WidgetRegistryEntry], viewport_rect: Rect) -> Vec<LayoutIssue> {
@@ -300,6 +334,33 @@ mod tests {
         );
 
         assert!(check_overlaps(&[scroll, row, hidden]).is_empty());
+    }
+
+    #[test]
+    fn overlap_checks_ignore_ancestor_descendant_widgets() {
+        let mut panel = entry(
+            "panel",
+            WidgetRole::Unknown,
+            rect(0.0, 0.0, 100.0, 100.0),
+            true,
+        );
+        panel.parent_id = None;
+        let child = entry(
+            "child",
+            WidgetRole::Button,
+            rect(10.0, 10.0, 40.0, 30.0),
+            true,
+        );
+        let sibling = entry(
+            "sibling",
+            WidgetRole::Button,
+            rect(20.0, 10.0, 50.0, 30.0),
+            true,
+        );
+
+        let issues = check_overlaps(&[panel, child, sibling]);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].widgets, vec!["child", "sibling"]);
     }
 
     #[test]
