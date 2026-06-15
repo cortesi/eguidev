@@ -148,6 +148,10 @@ impl DevMcp {
         swallow_panic("begin_frame", || {
             let viewport_id = ctx.viewport_id();
             inner.capture_context(viewport_id, ctx);
+            if let Some(hooks) = inner.runtime_hooks() {
+                let events = ctx.input(|input| input.events.clone());
+                hooks.on_raw_input(inner, &events);
+            }
             inner.widgets.clear_registry(viewport_id);
             ACTIVE.with(|active| {
                 if let Ok(mut active) = active.try_borrow_mut() {
@@ -190,6 +194,15 @@ impl DevMcp {
         }
     }
 
+    /// Clear script-visible widgets for a viewport that the app has hidden.
+    pub fn clear_viewport(&self, viewport_id: egui::ViewportId) {
+        let Some(inner) = self.inner() else {
+            return;
+        };
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.finalize_registry(viewport_id);
+    }
+
     /// Inject queued raw input during the raw input hook.
     pub(crate) fn raw_input_hook(&self, ctx: &Context, raw_input: &mut egui::RawInput) {
         let Some(inner) = self.inner() else {
@@ -201,48 +214,74 @@ impl DevMcp {
             if let Some(hooks) = inner.runtime_hooks() {
                 hooks.on_raw_input(inner, &raw_input.events);
             }
-            let actions = inner.actions.drain_actions(viewport_id);
-            if !actions.is_empty() {
-                inner
-                    .last_action_frame
-                    .store(inner.frame_count(), Ordering::Relaxed);
-                if self.verbose_logging_enabled() {
-                    eprintln!(
-                        "eguidev: raw_input_hook viewport={:?} actions={}",
-                        viewport_id,
-                        actions.len()
-                    );
-                }
-            }
-            let base_modifiers = raw_input.modifiers;
-            let mut current_modifiers = base_modifiers;
-            let mut force_focus = false;
-            for action in &actions {
-                if let InputAction::Key {
-                    pressed, modifiers, ..
-                } = action
-                {
-                    current_modifiers = if *pressed {
-                        base_modifiers.plus((*modifiers).into())
-                    } else {
-                        base_modifiers
-                    };
-                }
-                if matches!(
-                    action,
-                    InputAction::Key { .. } | InputAction::Text { .. } | InputAction::Paste { .. }
-                ) {
-                    force_focus = true;
-                }
-            }
-            raw_input.modifiers = current_modifiers;
-            if force_focus {
-                raw_input.focused = true;
-            }
-            for action in actions {
-                action.apply(raw_input);
-            }
+            self.drain_actions_into_raw_input(inner, viewport_id, raw_input);
         });
+    }
+
+    /// Inject queued raw input for an immediate viewport during its render closure.
+    pub(crate) fn raw_input_hook_for_viewport(
+        &self,
+        viewport_id: egui::ViewportId,
+        raw_input: &mut egui::RawInput,
+    ) {
+        let Some(inner) = self.inner() else {
+            return;
+        };
+        swallow_panic("raw_input_hook_for_viewport", || {
+            if let Some(hooks) = inner.runtime_hooks() {
+                hooks.on_raw_input(inner, &raw_input.events);
+            }
+            self.drain_actions_into_raw_input(inner, viewport_id, raw_input);
+        });
+    }
+
+    fn drain_actions_into_raw_input(
+        &self,
+        inner: &Arc<Inner>,
+        viewport_id: egui::ViewportId,
+        raw_input: &mut egui::RawInput,
+    ) {
+        let actions = inner.actions.drain_actions(viewport_id);
+        if !actions.is_empty() {
+            inner
+                .last_action_frame
+                .store(inner.frame_count(), Ordering::Relaxed);
+            if self.verbose_logging_enabled() {
+                eprintln!(
+                    "eguidev: raw_input_hook viewport={:?} actions={}",
+                    viewport_id,
+                    actions.len()
+                );
+            }
+        }
+        let base_modifiers = raw_input.modifiers;
+        let mut current_modifiers = base_modifiers;
+        let mut force_focus = false;
+        for action in &actions {
+            if let InputAction::Key {
+                pressed, modifiers, ..
+            } = action
+            {
+                current_modifiers = if *pressed {
+                    base_modifiers.plus((*modifiers).into())
+                } else {
+                    base_modifiers
+                };
+            }
+            if matches!(
+                action,
+                InputAction::Key { .. } | InputAction::Text { .. } | InputAction::Paste { .. }
+            ) {
+                force_focus = true;
+            }
+        }
+        raw_input.modifiers = current_modifiers;
+        if force_focus {
+            raw_input.focused = true;
+        }
+        for action in actions {
+            action.apply(raw_input);
+        }
     }
 }
 
@@ -274,14 +313,54 @@ pub fn raw_input_hook(devmcp: &DevMcp, ctx: &Context, raw_input: &mut egui::RawI
     devmcp.raw_input_hook(ctx, raw_input);
 }
 
+/// Forward queued input for a specific immediate viewport.
+pub fn raw_input_hook_for_viewport(
+    devmcp: &DevMcp,
+    viewport_id: egui::ViewportId,
+    raw_input: &mut egui::RawInput,
+) {
+    devmcp.raw_input_hook_for_viewport(viewport_id, raw_input);
+}
+
+/// Clear script-visible widgets for a viewport that is no longer rendered.
+pub fn clear_viewport(devmcp: &DevMcp, viewport_id: egui::ViewportId) {
+    devmcp.clear_viewport(viewport_id);
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 #[allow(clippy::tests_outside_test_module)]
 mod inactive_tests {
+    use std::{
+        any::Any,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        },
+    };
+
     use egui::Context;
 
     use super::*;
-    use crate::{instrument, ui_ext::DevUiExt};
+    use crate::{instrument, registry::Inner, ui_ext::DevUiExt};
+
+    #[derive(Default)]
+    struct CountingRuntimeHooks {
+        raw_input_calls: AtomicUsize,
+        raw_input_events: AtomicUsize,
+    }
+
+    impl RuntimeHooks for CountingRuntimeHooks {
+        fn as_any(&self) -> &(dyn Any + Send + Sync) {
+            self
+        }
+
+        fn on_raw_input(&self, _inner: &Inner, events: &[egui::Event]) {
+            self.raw_input_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            self.raw_input_events
+                .fetch_add(events.len(), AtomicOrdering::Relaxed);
+        }
+    }
 
     #[test]
     fn inactive_raw_input_hook_is_a_noop() {
@@ -297,6 +376,61 @@ mod inactive_tests {
 
         assert!(!raw_input.focused);
         assert!(raw_input.events.is_empty());
+    }
+
+    #[test]
+    fn viewport_raw_input_hook_forwards_runtime_events() {
+        let inner = Arc::new(Inner::new());
+        let hooks = Arc::new(CountingRuntimeHooks::default());
+        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
+        let devmcp = DevMcp::new().activate_runtime(inner, runtime_hooks);
+        let viewport_id = egui::ViewportId::from_hash_of("secondary");
+        let mut raw_input = egui::RawInput {
+            viewport_id,
+            events: vec![egui::Event::Text("event".to_string())],
+            ..Default::default()
+        };
+
+        devmcp.raw_input_hook_for_viewport(viewport_id, &mut raw_input);
+
+        assert_eq!(
+            hooks.raw_input_calls.load(AtomicOrdering::Relaxed),
+            1,
+            "viewport raw input hook should notify runtime hooks"
+        );
+        assert_eq!(
+            hooks.raw_input_events.load(AtomicOrdering::Relaxed),
+            1,
+            "viewport raw input hook should forward raw events"
+        );
+    }
+
+    #[test]
+    fn frame_guard_forwards_input_events_to_runtime_hooks() {
+        let inner = Arc::new(Inner::new());
+        let hooks = Arc::new(CountingRuntimeHooks::default());
+        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
+        let devmcp = DevMcp::new().activate_runtime(inner, runtime_hooks);
+        let ctx = Context::default();
+        let raw_input = egui::RawInput {
+            events: vec![egui::Event::Text("event".to_string())],
+            ..Default::default()
+        };
+
+        let _output = ctx.run(raw_input, |ctx| {
+            let _guard = FrameGuard::new(&devmcp, ctx);
+        });
+
+        assert_eq!(
+            hooks.raw_input_calls.load(AtomicOrdering::Relaxed),
+            1,
+            "frame guard should notify runtime hooks about input events"
+        );
+        assert_eq!(
+            hooks.raw_input_events.load(AtomicOrdering::Relaxed),
+            1,
+            "frame guard should forward input events"
+        );
     }
 
     #[test]

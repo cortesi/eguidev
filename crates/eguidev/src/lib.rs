@@ -109,12 +109,14 @@
 //! Apps register fixtures with [`DevMcp::fixtures`] and a handler callback
 //! with [`DevMcp::on_fixture`]. Each fixture must be independently invokable
 //! from any prior state and must leave the app in a baseline that can be
-//! described with readiness anchors. Scripts call `fixture("name")` to apply
-//! the named baseline, wait for fresh captures, and verify those anchors
-//! before returning. Widget and viewport handles resolve fresh across fixture
-//! boundaries, so rebinding `root()` after each fixture is usually unnecessary.
-//! Use `fixture_raw("name")` only when you explicitly want the old
-//! fire-and-forget behavior for debugging or manual setup flows.
+//! described with readiness anchors. Use fixture preconditions for state that
+//! must already be true before the handler runs, such as an external service
+//! connection. Scripts call `fixture("name")` to apply the named baseline, wait
+//! for fresh captures, and verify those anchors before returning. Widget and
+//! viewport handles resolve fresh across fixture boundaries, so rebinding
+//! `root()` after each fixture is usually unnecessary. Use `fixture_raw("name")`
+//! only when you explicitly want the old fire-and-forget behavior for debugging
+//! or manual setup flows.
 //!
 //! # Scripting reference
 //!
@@ -138,10 +140,11 @@ mod viewports;
 mod widget_registry;
 
 pub use crate::{
-    devmcp::{DevMcp, FrameGuard, raw_input_hook},
+    devmcp::{DevMcp, FrameGuard, clear_viewport, raw_input_hook, raw_input_hook_for_viewport},
     fixtures::FixtureHandler,
     instrument::{
-        ContainerGuard, ScrollAreaState, container, id, id_with_meta, track_response_full,
+        ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
+        track_response_full,
     },
     types::{
         Anchor, AnchorCheck, FixtureSpec, RoleState, ScrollAreaMeta, WidgetLayout, WidgetRange,

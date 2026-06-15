@@ -263,6 +263,7 @@ fn sanitize_f32(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
 }
 
+/// Capture layout metadata for an already-rendered custom widget response.
 pub fn capture_layout(ui: &egui::Ui, response: &egui::Response) -> WidgetLayout {
     #[cfg(test)]
     TEST_LAYOUT_CAPTURE_COUNT.with(|count| count.set(count.get() + 1));

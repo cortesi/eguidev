@@ -392,6 +392,21 @@ fn build_duplicate_explicit_id_fault(
 
 impl DuplicateExplicitIdFault {
     fn into_tool_error(self) -> ToolError {
+        let summary = self
+            .duplicate_ids
+            .iter()
+            .take(5)
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if self.duplicate_ids.len() > 5 {
+            format!(", +{} more", self.duplicate_ids.len() - 5)
+        } else {
+            String::new()
+        };
+        let message = format!(
+            "Duplicate explicit widget ids detected: {summary}{suffix}; fix instrumentation before continuing automation"
+        );
         let duplicate_ids = self
             .duplicate_ids
             .into_iter()
@@ -408,11 +423,7 @@ impl DuplicateExplicitIdFault {
                 })
             })
             .collect::<Vec<_>>();
-        ToolError::new(
-            ErrorCode::DuplicateWidgetId,
-            "Duplicate explicit widget ids detected; fix instrumentation before continuing automation",
-        )
-        .with_details(json!({
+        ToolError::new(ErrorCode::DuplicateWidgetId, message).with_details(json!({
             "reason": "duplicate_explicit_widget_ids",
             "duplicate_ids": duplicate_ids,
         }))

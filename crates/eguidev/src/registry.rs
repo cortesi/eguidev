@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -39,6 +39,7 @@ pub struct Inner {
     pub overlays: OverlayManager,
     contexts: Mutex<HashMap<egui::ViewportId, Context>>,
     widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValue>>,
+    widget_click_updates: Mutex<HashSet<WidgetValueKey>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     next_request_id: AtomicU64,
     frame_count: AtomicU64,
@@ -102,6 +103,7 @@ impl Inner {
             overlays: OverlayManager::new(),
             contexts: Mutex::new(HashMap::new()),
             widget_value_updates: Mutex::new(HashMap::new()),
+            widget_click_updates: Mutex::new(HashSet::new()),
             scroll_overrides: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
@@ -193,12 +195,23 @@ impl Inner {
         self.request_repaint_of(viewport_id);
     }
 
+    pub fn queue_widget_click(&self, viewport_id: egui::ViewportId, id: String) {
+        let mut updates = lock(&self.widget_click_updates, "widget click update lock");
+        updates.insert(WidgetValueKey::new(viewport_id, id));
+        self.request_repaint_of(viewport_id);
+    }
+
     pub fn take_widget_value_update(
         &self,
         viewport_id: egui::ViewportId,
         id: &str,
     ) -> Option<WidgetValue> {
         let mut updates = lock(&self.widget_value_updates, "widget value update lock");
+        updates.remove(&WidgetValueKey::new(viewport_id, id))
+    }
+
+    pub fn take_widget_click_update(&self, viewport_id: egui::ViewportId, id: &str) -> bool {
+        let mut updates = lock(&self.widget_click_updates, "widget click update lock");
         updates.remove(&WidgetValueKey::new(viewport_id, id))
     }
 

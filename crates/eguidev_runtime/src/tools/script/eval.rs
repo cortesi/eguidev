@@ -12,6 +12,6 @@ pub async fn run_script_eval(
     source_name: String,
     args: ScriptArgs,
 ) -> ScriptEvalOutcome {
-    super::oxau_adapter::run_script_eval(inner, runtime, script, timeout_ms, source_name, args)
+    super::ruau_adapter::run_script_eval(inner, runtime, script, timeout_ms, source_name, args)
         .await
 }

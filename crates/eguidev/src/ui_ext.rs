@@ -2,7 +2,7 @@
 
 use std::ops::RangeInclusive;
 
-use egui::{collapsing_header::CollapsingResponse, scroll_area::ScrollAreaOutput};
+use egui::{collapsing_header::CollapsingResponse, response::Flags, scroll_area::ScrollAreaOutput};
 
 use crate::{
     instrument::{active_inner, capture_layout, container, swallow_panic},
@@ -244,7 +244,8 @@ impl DevUiExt for egui::Ui {
     ) -> egui::Response {
         let id = id.into();
         let (text, label) = widget_text_parts(text);
-        let response = self.button(text);
+        let mut response = self.button(text);
+        apply_click_override(take_widget_click_override(self, &id), &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -265,7 +266,8 @@ impl DevUiExt for egui::Ui {
     ) -> egui::Response {
         let id = id.into();
         let (text, label) = widget_text_parts(text);
-        let response = self.add(egui::Button::new(text).selected(options.selected));
+        let mut response = self.add(egui::Button::new(text).selected(options.selected));
+        apply_click_override(take_widget_click_override(self, &id), &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -287,7 +289,8 @@ impl DevUiExt for egui::Ui {
     ) -> egui::Response {
         let id = id.into();
         let (text, label) = widget_text_parts(text);
-        let response = self.link(text);
+        let mut response = self.link(text);
+        apply_click_override(take_widget_click_override(self, &id), &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -303,7 +306,8 @@ impl DevUiExt for egui::Ui {
     fn dev_hyperlink(&mut self, id: impl Into<String>, url: impl ToString) -> egui::Response {
         let id = id.into();
         let url = url.to_string();
-        let response = self.hyperlink(url.clone());
+        let mut response = self.hyperlink(url.clone());
+        apply_click_override(take_widget_click_override(self, &id), &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -325,7 +329,8 @@ impl DevUiExt for egui::Ui {
         let id = id.into();
         let (label, text) = widget_text_parts(label);
         let url = url.to_string();
-        let response = self.hyperlink_to(label, url.clone());
+        let mut response = self.hyperlink_to(label, url.clone());
+        apply_click_override(take_widget_click_override(self, &id), &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -389,8 +394,13 @@ impl DevUiExt for egui::Ui {
         if let Some(updated) = take_bool_override(self, &id) {
             *value = updated;
         }
+        let click_override = take_widget_click_override(self, &id);
+        if click_override {
+            *value = !*value;
+        }
         let (text, label) = widget_text_parts(text);
-        let response = self.checkbox(value, text);
+        let mut response = self.checkbox(value, text);
+        apply_click_override(click_override, &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -414,9 +424,14 @@ impl DevUiExt for egui::Ui {
         if let Some(updated) = take_bool_override(self, &id) {
             *value = updated;
         }
+        let click_override = take_widget_click_override(self, &id);
+        if click_override {
+            *value = !*value;
+        }
         let (text, label) = widget_text_parts(text);
-        let response =
+        let mut response =
             self.add(egui::Checkbox::new(value, text).indeterminate(options.indeterminate));
+        apply_click_override(click_override, &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -649,8 +664,13 @@ impl DevUiExt for egui::Ui {
         if let Some(updated) = take_bool_override(self, &id) {
             *selected = updated;
         }
+        let click_override = take_widget_click_override(self, &id);
+        if click_override {
+            *selected = !*selected;
+        }
         let (text, label) = widget_text_parts(text);
-        let response = self.toggle_value(selected, text);
+        let mut response = self.toggle_value(selected, text);
+        apply_click_override(click_override, &mut response);
         record_widget_with_layout(
             self,
             id,
@@ -953,7 +973,12 @@ where
     if take_bool_override(ui, &id).is_some_and(|updated| updated) {
         *current = alternative.clone();
     }
-    let response = add_widget(ui, current, alternative, text);
+    let click_override = take_widget_click_override(ui, &id);
+    if click_override {
+        *current = alternative.clone();
+    }
+    let mut response = add_widget(ui, current, alternative, text);
+    apply_click_override(click_override, &mut response);
     let selected = *current == selected_value;
     record_widget_with_layout(
         ui,
@@ -998,6 +1023,19 @@ fn record_widget_with_layout(
             },
         );
     });
+}
+
+fn take_widget_click_override(ui: &egui::Ui, id: &str) -> bool {
+    let Some(inner) = active_inner() else {
+        return false;
+    };
+    inner.take_widget_click_update(ui.ctx().viewport_id(), id)
+}
+
+fn apply_click_override(clicked: bool, response: &mut egui::Response) {
+    if clicked {
+        response.flags.insert(Flags::FAKE_PRIMARY_CLICKED);
+    }
 }
 
 fn widget_range_from_f32(range: &RangeInclusive<f32>) -> WidgetRange {

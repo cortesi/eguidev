@@ -6,8 +6,8 @@ use std::{
 };
 
 #[cfg(test)]
-use oxau::syntax::{ParseOptions, SyntaxFlags, parse_file_with};
-use oxau::{
+use ruau::syntax::{ParseOptions, SyntaxFlags, parse_file_with};
+use ruau::{
     compile::{CompileError, CompileErrorKind, CompileOptions, compile_for},
     decl::DeclSource,
     embed::{
@@ -180,7 +180,7 @@ fn run_script_eval_blocking(
         Ok(runtime) => runtime,
         Err(error) => {
             return ScriptEvalOutcome::error_only(runtime_error(format!(
-                "failed to build Oxau local runtime: {error}"
+                "failed to build Ruau local runtime: {error}"
             )));
         }
     };
@@ -224,7 +224,7 @@ async fn run_script_eval_local(
             let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
             return build_error_outcome(
                 &script_runtime,
-                runtime_error(format!("failed to build Oxau VM: {error}")),
+                runtime_error(format!("failed to build Ruau VM: {error}")),
                 timing,
             );
         }
@@ -251,7 +251,7 @@ async fn run_script_eval_local(
         let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
         return build_error_outcome(
             &script_runtime,
-            runtime_error(format!("failed to install Oxau sandbox: {error}")),
+            runtime_error(format!("failed to install Ruau sandbox: {error}")),
             timing,
         );
     }
@@ -288,7 +288,7 @@ async fn run_script_eval_local(
         },
         Err(error) => {
             if let Some(error) = error.script_error() {
-                return build_error_outcome(&script_runtime, oxau_script_error_info(error), timing);
+                return build_error_outcome(&script_runtime, ruau_script_error_info(error), timing);
             }
             let rendered_error = error.to_string();
             build_error_outcome(
@@ -301,7 +301,7 @@ async fn run_script_eval_local(
 }
 
 #[cfg(test)]
-fn is_supported_by_initial_oxau_slice(script: &str) -> bool {
+fn is_supported_by_initial_ruau_slice(script: &str) -> bool {
     let result = parse_file_with(script, ParseOptions::default(), SyntaxFlags::all_luau());
     if !result.is_ok() {
         return false;
@@ -425,11 +425,11 @@ async fn run_setup(vm: &mut Vm, setup: &LoadedModule) -> Result<(), ScriptErrorI
     match vm.exec_async(setup, CallOptions::new()).await {
         Ok(values) if values.is_empty() => Ok(()),
         Ok(values) => Err(runtime_error(format!(
-            "Oxau setup returned unexpected values: {values:?}"
+            "Ruau setup returned unexpected values: {values:?}"
         ))),
         Err(error) => {
             if let Some(error) = error.script_error() {
-                return Err(oxau_script_error_info(error));
+                return Err(ruau_script_error_info(error));
             }
             let rendered_error = error.to_string();
             Err(fatal_error_info(error.kind(), &rendered_error, 0))
@@ -447,7 +447,7 @@ fn load(
     let chunk = compile_for(profile, source, &CompileOptions::for_vm_execution())
         .map_err(|error| compile_error_info(&error, source_name))?;
     vm.load_named(&chunk, chunk_name)
-        .map_err(|error| runtime_error(format!("failed to load Oxau chunk: {error}")))
+        .map_err(|error| runtime_error(format!("failed to load Ruau chunk: {error}")))
 }
 
 fn values_to_script_value(
@@ -459,7 +459,7 @@ fn values_to_script_value(
         .map(marshaled_script_value_to_json)
         .map(|value| value.map(normalize_integral_numbers))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| type_error(format!("failed to convert Oxau result to JSON: {error}")))?;
+        .map_err(|error| type_error(format!("failed to convert Ruau result to JSON: {error}")))?;
     let Some(value) = script_return_value_from_json_values(json_values) else {
         return Ok(super::types::ScriptValue::default());
     };
@@ -576,7 +576,7 @@ fn compile_error_info(error: &CompileError, source_name: &str) -> ScriptErrorInf
     }
 }
 
-fn oxau_script_error_info(error: &MarshaledScriptError) -> ScriptErrorInfo {
+fn ruau_script_error_info(error: &MarshaledScriptError) -> ScriptErrorInfo {
     if let Some(mut info) = error.payload_ref::<ScriptErrorInfo>().cloned() {
         if info.backtrace.is_none() {
             info.backtrace = backtrace_lines(error);
@@ -609,7 +609,7 @@ fn fatal_error_info(
     let message = if error_type == "timeout" && timeout_ms > 0 {
         format!("Script timed out after {timeout_ms}ms")
     } else {
-        format!("Oxau VM failed with {kind:?}: {rendered_error}")
+        format!("Ruau VM failed with {kind:?}: {rendered_error}")
     };
     ScriptErrorInfo {
         error_type: error_type.to_string(),
@@ -647,7 +647,7 @@ fn script_eval_task_error(error: &JoinError) -> ScriptEvalOutcome {
     ScriptEvalOutcome::error_only(runtime_error(format!("script task failed: {error}")))
 }
 
-fn oxau_runtime_error_info(error: &RuntimeError) -> ScriptErrorInfo {
+fn ruau_runtime_error_info(error: &RuntimeError) -> ScriptErrorInfo {
     if let Some(info) = error.payload_ref::<ScriptErrorInfo>().cloned() {
         return info;
     }
@@ -661,7 +661,7 @@ fn oxau_runtime_error_info(error: &RuntimeError) -> ScriptErrorInfo {
     }
 }
 
-fn oxau_host_script_error_info(
+fn ruau_host_script_error_info(
     kind: RuntimeErrorKind,
     value: &OwnedValue,
     traceback: Option<&str>,
@@ -2617,13 +2617,13 @@ async fn predicate_matches(
 ) -> ScriptResult<bool> {
     let value = stash_predicate_value(ctx, value)
         .await
-        .map_err(|error| oxau_runtime_error_info(&error))?;
+        .map_err(|error| ruau_runtime_error_info(&error))?;
     let result = ctx
         .call_protected(predicate, PredicateJsonArg { value })
         .await
-        .map_err(|error| oxau_runtime_error_info(&error))?;
+        .map_err(|error| ruau_runtime_error_info(&error))?;
     let result = result.map_err(|error| {
-        oxau_host_script_error_info(error.kind(), error.value(), error.traceback())
+        ruau_host_script_error_info(error.kind(), error.value(), error.traceback())
     })?;
     predicate_bool_result(&result.values)
 }
@@ -3346,7 +3346,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{is_supported_by_initial_oxau_slice, run_script_eval_blocking};
+    use super::{is_supported_by_initial_ruau_slice, run_script_eval_blocking};
     use crate::{
         registry::Inner,
         runtime::Runtime,
@@ -3355,8 +3355,8 @@ mod tests {
     };
 
     #[test]
-    fn initial_oxau_slice_accepts_value_and_log_scripts() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_value_and_log_scripts() {
+        assert!(is_supported_by_initial_ruau_slice(
             r#"assert(type(args) == "table")
 assert_widget_exists("status")
 log("hello")
@@ -3365,8 +3365,8 @@ return { kind = type(args), value = 1 + 1 }"#
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_fixture_globals() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_fixture_globals() {
+        assert!(is_supported_by_initial_ruau_slice(
             r#"configure({ timeout_ms = 20, poll_interval_ms = 1, settle = false })
 fixture_raw("seed")
 fixture("ready")
@@ -3378,24 +3378,24 @@ return catalog[1].name"#
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_root_widget_list() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_root_widget_list() {
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local widgets = root():widget_list({ id_prefix = "status" })
 return widgets[1].id"#
         ));
-        assert!(is_supported_by_initial_oxau_slice(
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local widget = root():widget_get("status")
 return widget:state().role"#
         ));
-        assert!(is_supported_by_initial_oxau_slice(
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local widgets = root():widget_at_point({ x = 1, y = 1 }, true)
 return #widgets"#
         ));
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_widget_actions() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_widget_actions() {
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local viewport = root()
 local first = viewport:widget_get("first")
 local second = viewport:widget_get("second")
@@ -3416,8 +3416,8 @@ return true"#
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_viewport_actions() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_viewport_actions() {
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local viewport = root()
 viewport:wait_for_settle()
 viewport:wait_for_capture()
@@ -3436,8 +3436,8 @@ return true"#
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_visual_methods() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_visual_methods() {
+        assert!(is_supported_by_initial_ruau_slice(
             r##"local viewport = root()
 local widget = viewport:widget_get("status")
 widget:text_measure()
@@ -3461,8 +3461,8 @@ return true"##
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_predicate_methods() {
-        assert!(is_supported_by_initial_oxau_slice(
+    fn initial_ruau_slice_accepts_predicate_methods() {
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local viewport = root()
 local widget = viewport:widget_get("status")
 viewport:wait_for(function(current) return current.frame_count >= 0 end)
@@ -3478,17 +3478,17 @@ return true"#
     }
 
     #[test]
-    fn initial_oxau_slice_accepts_nil_literals() {
-        assert!(is_supported_by_initial_oxau_slice("return { 1, nil, 3 }"));
+    fn initial_ruau_slice_accepts_nil_literals() {
+        assert!(is_supported_by_initial_ruau_slice("return { 1, nil, 3 }"));
     }
 
     #[test]
-    fn initial_oxau_slice_rejects_parse_errors() {
-        assert!(!is_supported_by_initial_oxau_slice("local x ="));
+    fn initial_ruau_slice_rejects_parse_errors() {
+        assert!(!is_supported_by_initial_ruau_slice("local x ="));
     }
 
     #[test]
-    fn initial_oxau_slice_runs_value_and_log_script() {
+    fn initial_ruau_slice_runs_value_and_log_script() {
         let inner = Arc::new(Inner::new());
         let runtime = Runtime::ensure_for_inner(&inner);
         let outcome = run_script_eval_blocking(
@@ -3507,7 +3507,7 @@ return 1 + 1"#
     }
 
     #[test]
-    fn initial_oxau_slice_records_assertion_failures() {
+    fn initial_ruau_slice_records_assertion_failures() {
         let inner = Arc::new(Inner::new());
         let runtime = Runtime::ensure_for_inner(&inner);
         let outcome = run_script_eval_blocking(
@@ -3529,7 +3529,7 @@ return 1 + 1"#
     }
 
     #[test]
-    fn initial_oxau_slice_runs_assert_widget_exists() {
+    fn initial_ruau_slice_runs_assert_widget_exists() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
         inner.widgets.clear_registry(viewport_id);
@@ -3558,7 +3558,7 @@ return true"#
     }
 
     #[test]
-    fn initial_oxau_slice_runs_configure_fixture_raw_and_fixtures() {
+    fn initial_ruau_slice_runs_configure_fixture_raw_and_fixtures() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![
             FixtureSpec::new("zeta", "Z fixture.").anchor("status"),
@@ -3597,7 +3597,7 @@ return { first = catalog[1].name, count = #catalog, frame = frame }"#
     }
 
     #[test]
-    fn initial_oxau_slice_runs_root_widget_list() {
+    fn initial_ruau_slice_runs_root_widget_list() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
         inner.widgets.clear_registry(viewport_id);
@@ -3628,7 +3628,7 @@ return { count = #widgets, id = widgets[1].id, viewport = widgets[1].viewport_id
     }
 
     #[test]
-    fn initial_oxau_slice_runs_widget_handle_reads() {
+    fn initial_ruau_slice_runs_widget_handle_reads() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
         inner.widgets.clear_registry(viewport_id);
@@ -3678,7 +3678,7 @@ return {
     }
 
     #[test]
-    fn initial_oxau_slice_runs_widget_actions() {
+    fn initial_ruau_slice_runs_widget_actions() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
         inner.widgets.clear_registry(viewport_id);
@@ -3720,7 +3720,7 @@ return { viewport = button:viewport().id }"#
     }
 
     #[test]
-    fn initial_oxau_slice_runs_viewport_actions() {
+    fn initial_ruau_slice_runs_viewport_actions() {
         let inner = Arc::new(Inner::new());
         let runtime = Runtime::ensure_for_inner(&inner);
         let outcome = run_script_eval_blocking(
@@ -3748,7 +3748,7 @@ return true"#
     }
 
     #[test]
-    fn initial_oxau_slice_runs_visual_methods_without_screenshots() {
+    fn initial_ruau_slice_runs_visual_methods_without_screenshots() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
         inner.widgets.clear_registry(viewport_id);
@@ -3790,7 +3790,7 @@ return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
     }
 
     #[test]
-    fn initial_oxau_slice_runs_predicate_methods() {
+    fn initial_ruau_slice_runs_predicate_methods() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
         inner.widgets.clear_registry(viewport_id);
@@ -3844,7 +3844,7 @@ return {
     }
 
     #[test]
-    fn initial_oxau_slice_keeps_integer_args_comparable_to_luau_numbers() {
+    fn initial_ruau_slice_keeps_integer_args_comparable_to_luau_numbers() {
         let inner = Arc::new(Inner::new());
         let runtime = Runtime::ensure_for_inner(&inner);
         let outcome = run_script_eval_blocking(

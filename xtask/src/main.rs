@@ -12,7 +12,7 @@ use std::{
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
-use oxau::{
+use ruau::{
     diagnostic::render_diagnostic_summary,
     source::AnalysisMode,
     types::{Checker, CheckerConfig},
@@ -177,12 +177,12 @@ fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Prefix a script with the checked-in declaration surface for Oxau's single-module checker.
+/// Prefix a script with the checked-in declaration surface for Ruau's single-module checker.
 fn source_with_luau_definitions(definitions: &str, source: &str) -> String {
     format!("{definitions}\n\n{source}")
 }
 
-/// Check one Luau source with Oxau's checker and surface any diagnostics.
+/// Check one Luau source with Ruau's checker and surface any diagnostics.
 fn check_luau_source(path: &Path, module_name: &str, source: &str) -> Result<(), Box<dyn Error>> {
     let mut checker = Checker::new();
     let checked = checker.check_source_with_config(source, luau_checker_config());
@@ -432,16 +432,16 @@ fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
         "luau0-src",
         "mlua",
         "mlua-sys",
-        "oxau",
-        "oxau-analysis",
-        "oxau-ast",
-        "oxau-bytecode",
-        "oxau-pretty",
-        "oxau-source",
-        "oxau-stdlib",
-        "oxau-typecheck",
-        "oxau-vm",
-        "oxau-vm-api",
+        "ruau",
+        "ruau-analysis",
+        "ruau-ast",
+        "ruau-bytecode",
+        "ruau-pretty",
+        "ruau-source",
+        "ruau-stdlib",
+        "ruau-typecheck",
+        "ruau-vm",
+        "ruau-vm-api",
         "tmcp",
         "tokio",
     ];

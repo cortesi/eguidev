@@ -121,20 +121,19 @@ impl Runtime {
     }
 
     fn finish_frame(&self, inner: &Inner, ctx: &Context) {
+        let viewport_id = ctx.viewport_id();
         let mut sent_viewport_command = false;
-        for (viewport_id, commands) in inner.actions.drain_all_commands() {
-            for command in commands {
-                sent_viewport_command = true;
-                if let egui::ViewportCommand::Screenshot(user_data) = &command {
-                    let request_id = user_data
-                        .data
-                        .as_ref()
-                        .and_then(|data| data.downcast_ref::<u64>())
-                        .copied();
-                    self.record_screenshot_command_sent(inner, viewport_id, request_id);
-                }
-                ctx.send_viewport_cmd_to(viewport_id, command);
+        for command in inner.actions.drain_commands(viewport_id) {
+            sent_viewport_command = true;
+            if let egui::ViewportCommand::Screenshot(user_data) = &command {
+                let request_id = user_data
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.downcast_ref::<u64>())
+                    .copied();
+                self.record_screenshot_command_sent(inner, viewport_id, request_id);
             }
+            ctx.send_viewport_cmd(command);
         }
         if sent_viewport_command {
             ctx.request_repaint();

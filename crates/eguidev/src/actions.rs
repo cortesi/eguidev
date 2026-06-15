@@ -155,9 +155,9 @@ impl ActionQueue {
         current
     }
 
-    pub fn drain_all_commands(&self) -> Vec<(egui::ViewportId, Vec<egui::ViewportCommand>)> {
+    pub fn drain_commands(&self, viewport_id: egui::ViewportId) -> Vec<egui::ViewportCommand> {
         let mut commands = lock(&self.commands, "commands lock");
-        commands.drain().collect()
+        commands.remove(&viewport_id).unwrap_or_default()
     }
 
     pub fn clear_all(&self) {

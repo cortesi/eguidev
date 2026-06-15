@@ -108,7 +108,7 @@ fn build_image_blocks(runtime: &ScriptRuntime, collector: &ImageReferenceCollect
 
 #[cfg(test)]
 mod tests {
-    use oxau::embed::{MarshaledPair, MarshaledValue, serde::marshaled_to_json};
+    use ruau::embed::{MarshaledPair, MarshaledValue, serde::marshaled_to_json};
     use serde_json::{Value, json};
 
     use super::{script_args_to_json, script_return_value_from_json_values};
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn oxau_owned_values_keep_script_return_shape() {
+    fn ruau_owned_values_keep_script_return_shape() {
         assert_eq!(script_return_value_from_marshaled(&[]), None);
         assert_eq!(
             script_return_value_from_marshaled(&[MarshaledValue::Integer(7)]),
@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn oxau_owned_values_preserve_number_and_table_shape() {
+    fn ruau_owned_values_preserve_number_and_table_shape() {
         let number = script_return_value_from_marshaled(&[MarshaledValue::Number(1.0)])
             .expect("number value");
         assert_eq!(number.as_f64(), Some(1.0));

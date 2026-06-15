@@ -129,6 +129,9 @@ pub struct FixtureSpec {
     pub name: String,
     /// Fixture description.
     pub description: String,
+    /// Declarative readiness anchors that must be satisfied before fixture application.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preconditions: Vec<Anchor>,
     /// Declarative readiness anchors for the fixture baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anchors: Vec<Anchor>,
@@ -172,8 +175,42 @@ impl FixtureSpec {
         Self {
             name: name.into(),
             description: description.into(),
+            preconditions: Vec::new(),
             anchors: Vec::new(),
         }
+    }
+
+    /// Add a visible-widget precondition checked before fixture application.
+    pub fn precondition(self, widget_id: impl Into<String>) -> Self {
+        self.push_precondition(widget_id.into(), None, AnchorCheck::Visible)
+    }
+
+    /// Add a visible-widget precondition scoped to a viewport.
+    pub fn precondition_in(self, widget_id: impl Into<String>, viewport: egui::ViewportId) -> Self {
+        self.push_precondition(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::Visible,
+        )
+    }
+
+    /// Add an exact-value precondition checked before fixture application.
+    pub fn precondition_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
+        self.push_precondition(widget_id.into(), None, AnchorCheck::Value(value))
+    }
+
+    /// Add an exact-value precondition scoped to a viewport.
+    pub fn precondition_value_in(
+        self,
+        widget_id: impl Into<String>,
+        value: WidgetValue,
+        viewport: egui::ViewportId,
+    ) -> Self {
+        self.push_precondition(
+            widget_id.into(),
+            Some(viewport_id_to_string(viewport)),
+            AnchorCheck::Value(value),
+        )
     }
 
     /// Add a visible-widget readiness anchor.
@@ -286,6 +323,11 @@ impl FixtureSpec {
         if self.name.trim().is_empty() {
             return Err("fixture name must not be empty".to_string());
         }
+        for (index, anchor) in self.preconditions.iter().enumerate() {
+            anchor.validate().map_err(|error| {
+                format!("fixture {} precondition {}: {error}", self.name, index + 1)
+            })?;
+        }
         for (index, anchor) in self.anchors.iter().enumerate() {
             anchor
                 .validate()
@@ -302,14 +344,40 @@ impl FixtureSpec {
 
     /// Return a human-readable summary of the readiness contract.
     pub fn describe_readiness(&self) -> String {
-        if self.anchors.is_empty() {
-            return "No readiness anchors declared.".to_string();
-        }
-        self.anchors
+        let preconditions = self
+            .preconditions
             .iter()
             .map(Anchor::describe)
-            .collect::<Vec<_>>()
-            .join("; ")
+            .collect::<Vec<_>>();
+        let anchors = self
+            .anchors
+            .iter()
+            .map(Anchor::describe)
+            .collect::<Vec<_>>();
+        match (preconditions.is_empty(), anchors.is_empty()) {
+            (true, true) => "No readiness anchors declared.".to_string(),
+            (true, false) => anchors.join("; "),
+            (false, true) => format!("preconditions: {}", preconditions.join("; ")),
+            (false, false) => format!(
+                "preconditions: {}; anchors: {}",
+                preconditions.join("; "),
+                anchors.join("; ")
+            ),
+        }
+    }
+
+    fn push_precondition(
+        mut self,
+        widget_id: String,
+        viewport_id: Option<String>,
+        check: AnchorCheck,
+    ) -> Self {
+        self.preconditions.push(Anchor {
+            widget_id,
+            viewport_id,
+            check,
+        });
+        self
     }
 
     fn push_anchor(

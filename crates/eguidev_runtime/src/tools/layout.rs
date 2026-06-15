@@ -149,7 +149,10 @@ pub fn check_overflow(
         .collect()
 }
 
-pub fn check_overlaps(widgets: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+pub fn check_overlaps(
+    widgets: &[WidgetRegistryEntry],
+    viewport_rect: Option<Rect>,
+) -> Vec<LayoutIssue> {
     let mut issues = Vec::new();
     for (i, first) in widgets.iter().enumerate() {
         for second in widgets.iter().skip(i + 1) {
@@ -162,7 +165,13 @@ pub fn check_overlaps(widgets: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
             if are_ancestor_descendant(first, second, widgets) {
                 continue;
             }
-            if let Some(overlap_rect) = rect_intersection(first.rect, second.rect) {
+            let Some(first_rect) = overlap_check_rect(first, viewport_rect) else {
+                continue;
+            };
+            let Some(second_rect) = overlap_check_rect(second, viewport_rect) else {
+                continue;
+            };
+            if let Some(overlap_rect) = rect_intersection(first_rect, second_rect) {
                 issues.push(LayoutIssue {
                     kind: LayoutIssueKind::Overlap,
                     widgets: vec![first.id.clone(), second.id.clone()],
@@ -173,6 +182,15 @@ pub fn check_overlaps(widgets: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
         }
     }
     issues
+}
+
+fn overlap_check_rect(widget: &WidgetRegistryEntry, viewport_rect: Option<Rect>) -> Option<Rect> {
+    if has_nested_clip_region(widget, viewport_rect) {
+        let layout = widget.layout.as_ref()?;
+        rect_intersection(widget.rect, layout.clip_rect)
+    } else {
+        Some(widget.rect)
+    }
 }
 
 fn are_ancestor_descendant(
@@ -333,7 +351,7 @@ mod tests {
             false,
         );
 
-        assert!(check_overlaps(&[scroll, row, hidden]).is_empty());
+        assert!(check_overlaps(&[scroll, row, hidden], None).is_empty());
     }
 
     #[test]
@@ -358,9 +376,38 @@ mod tests {
             true,
         );
 
-        let issues = check_overlaps(&[panel, child, sibling]);
+        let issues = check_overlaps(&[panel, child, sibling], None);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].widgets, vec!["child", "sibling"]);
+    }
+
+    #[test]
+    fn overlap_checks_use_visible_rect_for_scroll_content() {
+        let viewport_rect = rect(0.0, 0.0, 200.0, 200.0);
+        let clip_rect = rect(100.0, 100.0, 180.0, 160.0);
+        let toolbar = entry(
+            "toolbar",
+            WidgetRole::Button,
+            rect(0.0, 0.0, 200.0, 30.0),
+            true,
+        );
+        let mut scroll_text = entry(
+            "scroll_text",
+            WidgetRole::Label,
+            rect(0.0, 0.0, 180.0, 140.0),
+            true,
+        );
+        scroll_text.layout = Some(WidgetLayout {
+            desired_size: egui::vec2(180.0, 140.0).into(),
+            actual_size: egui::vec2(180.0, 140.0).into(),
+            clip_rect,
+            clipped: true,
+            overflow: false,
+            available_rect: viewport_rect,
+            visible_fraction: 0.3,
+        });
+
+        assert!(check_overlaps(&[toolbar, scroll_text], Some(viewport_rect)).is_empty());
     }
 
     #[test]

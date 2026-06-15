@@ -4,8 +4,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 mod eval;
 mod outcome;
-mod oxau_adapter;
 mod parse;
+mod ruau_adapter;
 mod runtime;
 mod types;
 mod value;
