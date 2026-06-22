@@ -108,7 +108,7 @@ fn build_image_blocks(runtime: &ScriptRuntime, collector: &ImageReferenceCollect
 
 #[cfg(test)]
 mod tests {
-    use ruau::embed::{MarshaledPair, MarshaledValue, serde::marshaled_to_json};
+    use ruau::vm::{MarshaledPair, MarshaledValue, serde::marshaled_to_json};
     use serde_json::{Value, json};
 
     use super::{script_args_to_json, script_return_value_from_json_values};

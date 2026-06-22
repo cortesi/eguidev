@@ -3376,6 +3376,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3400,18 +3419,26 @@ name = "ruau"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ruau-abi",
  "ruau-analysis",
  "ruau-ast",
  "ruau-bytecode",
  "ruau-decl",
+ "ruau-runner",
  "ruau-source",
  "ruau-typecheck",
  "ruau-vm",
- "ruau-vm-api",
  "serde",
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "ruau-abi"
+version = "0.1.0"
+dependencies = [
+ "ruau-vm-api",
 ]
 
 [[package]]
@@ -3446,6 +3473,13 @@ name = "ruau-decl"
 version = "0.1.0"
 
 [[package]]
+name = "ruau-runner"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "ruau-source"
 version = "0.1.0"
 
@@ -3464,14 +3498,17 @@ dependencies = [
 name = "ruau-vm"
 version = "0.1.0"
 dependencies = [
- "bincode",
  "blake3",
  "foldhash 0.2.0",
+ "pin-project-lite",
+ "rmp-serde",
+ "ruau-abi",
  "ruau-bytecode",
  "ruau-decl",
  "ruau-source",
  "ruau-vm-api",
  "serde",
+ "serde_json",
  "stacker",
  "tokio",
  "tokio-util",

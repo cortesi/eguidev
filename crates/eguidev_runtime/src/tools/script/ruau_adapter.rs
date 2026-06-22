@@ -6,20 +6,17 @@ use std::{
 };
 
 #[cfg(test)]
-use ruau::syntax::{ParseOptions, SyntaxFlags, parse_file_with};
+use ruau::ast::parse::{ParseOptions, SyntaxFlags, parse_file_with};
 use ruau::{
+    abi::{HostReturn, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue, RuntimeErrorKind},
     compile::{CompileError, CompileErrorKind, CompileOptions, compile_for},
     decl::DeclSource,
-    embed::{
-        FromLua, FromLuaMulti, HostCtx, HostReturn, IntoLuaMulti, MarshaledScriptError,
-        MarshaledValue, ModuleBinding, ModuleBuilder, ModuleBuilderExt, MultiValue, NativeModule,
-        OwnedValue, RuntimeError, Scope, ScopedHostFunction, ScopedValue, SourceLocation,
-        StashedClosure, StashedValue, Table, async_host_fn,
+    vm::{
+        Ambient, CallOptions, Deadline, FromLua, FromLuaMulti, HostCtx, IntoLuaMulti, Limits,
+        LoadedModule, MarshaledScriptError, MarshaledValue, ModuleBuilderExt, MultiValue, Profile,
+        RuntimeError, Scope, ScopedHostFunction, ScopedValue, SourceLocation, StashedClosure,
+        StashedValue, Table, TracebackFrame, Vm, async_host_fn,
         serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
-    },
-    profile::Profile,
-    session::{
-        Ambient, CallOptions, Deadline, Limits, LoadedModule, RuntimeErrorKind, TracebackFrame, Vm,
     },
 };
 use serde_json::Value;

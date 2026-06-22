@@ -13,9 +13,11 @@ use std::{
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
 use ruau::{
-    diagnostic::render_diagnostic_summary,
-    source::AnalysisMode,
-    types::{Checker, CheckerConfig},
+    analysis::source::AnalysisMode,
+    typecheck::{
+        checker::{Checker, CheckerConfig},
+        diagnostic::render_diagnostic_summary,
+    },
 };
 use serde_json::{Value, json};
 use tmcp::{Client, schema::CallToolResult};
@@ -195,10 +197,7 @@ fn check_luau_source(path: &Path, module_name: &str, source: &str) -> Result<(),
 
 /// Return the checker settings used for shipped script validation.
 fn luau_checker_config() -> CheckerConfig {
-    CheckerConfig {
-        source_mode_override: Some(AnalysisMode::Strict),
-        ..CheckerConfig::default()
-    }
+    CheckerConfig::with_source_mode(AnalysisMode::Strict)
 }
 
 /// Enumerate checked-in example scripts that should type-check against the API definitions.
