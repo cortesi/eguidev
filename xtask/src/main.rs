@@ -13,10 +13,9 @@ use std::{
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
 use ruau::{
-    analysis::source::AnalysisMode,
+    analysis::resolve::AnalysisMode,
     typecheck::{
-        checker::{Checker, CheckerConfig},
-        diagnostic::render_diagnostic_summary,
+        checker::{Checker, Config},
     },
 };
 use serde_json::{Value, json};
@@ -189,15 +188,15 @@ fn check_luau_source(path: &Path, module_name: &str, source: &str) -> Result<(),
     let mut checker = Checker::new();
     let checked = checker.check_source_with_config(source, luau_checker_config());
     if checked.has_errors() {
-        let diagnostics = render_diagnostic_summary(module_name, checked.diagnostics());
+        let diagnostics = checked.diagnostics().render(module_name);
         return Err(format!("Luau check failed for {}:\n{diagnostics}", path.display()).into());
     }
     Ok(())
 }
 
 /// Return the checker settings used for shipped script validation.
-fn luau_checker_config() -> CheckerConfig {
-    CheckerConfig::with_source_mode(AnalysisMode::Strict)
+fn luau_checker_config() -> Config {
+    Config::with_source_mode(AnalysisMode::Strict)
 }
 
 /// Enumerate checked-in example scripts that should type-check against the API definitions.
