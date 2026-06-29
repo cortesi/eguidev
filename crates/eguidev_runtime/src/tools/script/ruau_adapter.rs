@@ -444,7 +444,7 @@ fn load(
     source_name: &str,
 ) -> Result<LoadedModule, ScriptErrorInfo> {
     let chunk = runtime_capabilities
-        .compile_source(source, &CompileOptions::for_vm_execution())
+        .compile_source(source, &CompileOptions::new())
         .map_err(|error| compile_error_info(&error, source_name))?;
     vm.load_named(&chunk, chunk_name)
         .map_err(|error| runtime_error(format!("failed to load Ruau chunk: {error}")))
