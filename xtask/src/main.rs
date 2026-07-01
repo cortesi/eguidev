@@ -14,9 +14,7 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
 use ruau::{
     analysis::resolve::AnalysisMode,
-    typecheck::{
-        checker::{Checker, Config},
-    },
+    typecheck::checker::{Checker, Config},
 };
 use serde_json::{Value, json};
 use tmcp::{Client, schema::CallToolResult};

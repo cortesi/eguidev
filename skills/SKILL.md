@@ -1,45 +1,45 @@
 ---
 name: eguidev
-description: AI-assisted egui development -- instrumentation, Luau scripting, smoketests, and iterative workflows.
+description: MCP workflow for driving instrumented egui apps with Luau scripts.
 ---
 
 # eguidev
 
-eguidev instruments egui apps for AI-assisted development. Agents drive the app
-through Luau scripts via `script_eval`; `edev` manages app lifecycle and hosts
-the MCP tool surface.
+eguidev exposes an instrumented egui app through MCP. Agents drive the app with
+complete Luau scripts via `script_eval`; the MCP lifecycle tools manage the app
+process.
 
-Full documentation: https://github.com/cortesi/eguidev
+This skill assumes the eguidev MCP connection already works. It is workflow
+guidance, not an API reference.
 
-**First action:** call the `script_api` MCP tool to load the Luau API
-definitions before doing anything else. The returned `eguidev.d.luau` is the
-canonical reference for all scripting types, functions, and conventions. You
-cannot write correct scripts without it.
+**First action:** call `script_api` before writing Luau. The returned
+`eguidev.d.luau` is the canonical reference for scripting types, functions, and
+conventions.
 
 
-## Setup
+## MCP Surface
 
-The app needs three things: an `eguidev` dependency, widget instrumentation, and
-a `.edev.toml` config. See the project README and `examples/edev.toml` for
-setup details.
+The MCP server exposes six tools:
 
-The MCP server exposes six tools: `start`, `stop`, `restart`, `status`,
-`script_eval`, and `script_api`. Everything else happens inside Luau scripts.
-
+- `start`, `stop`, `restart`, `status` for lifecycle
+- `script_api` for the canonical Luau API
+- `script_eval` for all app inspection, interaction, waits, screenshots, and
+  verification
 
 ## Instrumentation
 
-Tag widgets with `dev_*` helpers from the `DevUiExt` trait to make them visible
-to scripts. Each helper takes an explicit string id that becomes the canonical
-selector. Use `container()` to annotate hierarchy.
+Widget ids are the canonical selectors. Explicit ids must be unique in a
+captured frame; duplicate ids are an instrumentation fault. Generated ids are
+opaque and should not be relied on across restarts.
 
-The `eguidev` crate docs are the canonical Rust API reference. If `ruskel` is
-installed, run `ruskel eguidev` to inspect the public API surface (widget
-helpers, types, instrumentation functions). Use `ruskel eguidev --search <term>`
-to find specific items.
+Use Rust API docs for signatures and details. If `ruskel` is installed, prefer
+`ruskel eguidev` and `ruskel eguidev_runtime` to inspect the current public API;
+use `--search <term>` to find specific items.
 
-For custom widgets, the happy path has two parts:
+When editing instrumentation, prefer established Rust APIs:
 
+- standard widgets: `dev_*` helpers from `DevUiExt`
+- hierarchy: `container()`
 - publish state with `track_response_full(...)` or `id_with_meta(...)`
 - consume queued `set_value(...)` updates with
   `take_widget_value_override(...)` before rendering the widget
@@ -48,7 +48,8 @@ For custom widgets, the happy path has two parts:
 ## Scripting
 
 Write strict Luau. `--!strict` is implicit for all `script_eval` scripts.
-See `docs/luau.md` for Luau syntax quick reference.
+Use `script_api` as the canonical scripting API. See `docs/luau.md` only for
+Luau syntax help.
 
 
 ## Complete Scripts
@@ -77,9 +78,8 @@ assert(remaining ~= nil, "items.count should update")
 return { remaining = remaining.value_text }
 ```
 
-Use `log()` for intermediate diagnostics and return a summary at the end.
-When running under `edev smoke`, the final return value is ignored; only
-assertions/failures and logs affect the suite result.
+Use `log()` for intermediate diagnostics and return a compact summary at the
+end.
 
 
 ## Lifecycle
@@ -87,10 +87,9 @@ assertions/failures and logs affect the suite result.
 - **NEVER** use `pkill`, `kill`, ctrl-c, or shell commands to manage the app.
 - Use `start` to ensure the app is running, `restart` for a fresh process.
 - Call `fixture()` at the start of scripts for a known in-app baseline.
-- Fixtures auto-settle, so the UI is ready for actions after `fixture()`.
-- For `eframe` apps, process fixture requests in `App::update`, not `logic`.
-- Prefer `eframe::Renderer::Glow` for automation runs; `wgpu` can stall idle
-  frames in some integrations.
+- `fixture()` waits for declared readiness anchors on fresh captures; still
+  wait/assert the specific widget or viewport state your script depends on.
+- Use `fixture_raw()` only for manual or debugging setup flows.
 
 
 ## Inspection
@@ -109,27 +108,16 @@ clipping, rendering quality, image content. Returned `ImageRef` values produce
 image blocks in the MCP response.
 
 
-## Smoketests
+## Smoketest Scripts
 
-Smoketests are self-contained `.luau` scripts in a suite directory. The
-configured suite is discovered recursively and executed in lexicographic order
-by relative path. Explicit script arguments to `edev smoke` run in the order
-provided. Each script establishes its own state via `fixture()`, exercises the
-UI, and asserts outcomes.
+Smoketest scripts follow the same shape as good `script_eval` scripts:
 
-```sh
-edev smoke
-edev smoke --verbose
-edev smoke smoketest/*.luau
-edev smoke smoketest/10_basic.luau tmp/ad_hoc_probe.luau
-```
-
-Conventions:
-- Every script must call `fixture()` before interacting with the UI.
+- Call `fixture()` before interacting with the UI.
+- After `fixture()`, wait for state not covered by the fixture's anchors.
 - Assert visible app behavior, not internals.
 - Keep scripts independent -- no reliance on state from earlier tests.
-- Do not rely on the script's final `return` value; `edev smoke` ignores it.
-- Smoketests double as regression tests and executable API documentation.
+- Use assertions for pass/fail and `log()` for diagnostics.
+- Treat smoketests as regression tests and executable API documentation.
 
 
 ## Iterative Development Workflow
