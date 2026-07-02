@@ -20,9 +20,20 @@ use eguidev_runtime::attach as attach_runtime;
 /// Shared result type for the demo binary entry point.
 type MainResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+/// Stable viewport id for the secondary viewport fixture surface.
+fn secondary_viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("eguidev_demo.secondary")
+}
+
+/// Stable viewport id for the smoke-test occluder window.
+fn occluder_viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("eguidev_demo.occluder")
+}
+
 /// Fixture catalog for the demo app.
 fn demo_fixtures() -> Vec<FixtureSpec> {
-    let secondary = egui::ViewportId::from_hash_of("eguidev_demo.secondary");
+    let secondary = secondary_viewport_id();
+    let occluder = occluder_viewport_id();
     vec![
         FixtureSpec::new("basic.default", "Reset to the initial demo state.")
             .anchor_label("basic.status", "Waiting for input.")
@@ -60,6 +71,12 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
         )
         .anchor_label("basic.status", "Fixture: secondary viewport scrolled")
         .anchor_scroll_at_in("viewports.scroll", egui::vec2(0.0, 300.0), 32.0, secondary),
+        FixtureSpec::new(
+            "viewports.occluded",
+            "Cover the root viewport with a dedicated always-on-top test viewport.",
+        )
+        .anchor_label("basic.status", "Fixture: root viewport occluded")
+        .anchor_label_in("viewports.occluder.status", "Occluder active", occluder),
     ]
 }
 
@@ -115,17 +132,24 @@ fn main() -> MainResult<()> {
 struct AppConfig {
     /// Whether DevMCP is enabled for this run.
     enable_mcp: bool,
+    /// Whether the root viewport should stay covered by the smoke-test occluder.
+    force_occluder: bool,
 }
 
 impl AppConfig {
     /// Load configuration from process args.
     fn from_env() -> MainResult<Self> {
         let mut enable_mcp = false;
+        let mut force_occluder = false;
         let args = env::args_os().skip(1);
 
         for arg in args {
             if arg == "--dev-mcp" {
                 enable_mcp = true;
+                continue;
+            }
+            if arg == "--force-occluder" {
+                force_occluder = true;
                 continue;
             }
             return Err(io::Error::new(
@@ -135,7 +159,10 @@ impl AppConfig {
             .into());
         }
 
-        Ok(Self { enable_mcp })
+        Ok(Self {
+            enable_mcp,
+            force_occluder,
+        })
     }
 }
 
@@ -211,6 +238,10 @@ struct DemoState {
     basic_scroll_state: ScrollAreaState,
     /// Whether the secondary viewport is visible.
     show_secondary: bool,
+    /// Whether the test occluder viewport is visible.
+    show_occluder: bool,
+    /// Whether fixture resets should preserve the test occluder viewport.
+    force_occluder: bool,
     /// Selected row index from the secondary viewport list.
     secondary_selected_row: usize,
     /// Accumulated drag offset for the secondary viewport drag region.
@@ -249,7 +280,7 @@ struct DemoApp {
 
 impl DemoState {
     /// Create the default demo state.
-    fn new() -> Self {
+    fn new(force_occluder: bool) -> Self {
         Self {
             name: "Sky".to_string(),
             notes: "Try typing here.".to_string(),
@@ -275,6 +306,8 @@ impl DemoState {
             overlay_probe_input: String::new(),
             basic_scroll_state: ScrollAreaState::default(),
             show_secondary: true,
+            show_occluder: force_occluder,
+            force_occluder,
             secondary_selected_row: 0,
             secondary_drag_offset: egui::Vec2::ZERO,
             secondary_scroll_state: ScrollAreaState::default(),
@@ -316,6 +349,7 @@ impl DemoState {
         self.overlay_probe_input.clear();
         self.basic_scroll_state.reset();
         self.show_secondary = true;
+        self.show_occluder = self.force_occluder;
         self.secondary_selected_row = 0;
         self.secondary_drag_offset = egui::Vec2::ZERO;
         self.secondary_scroll_state.reset();
@@ -369,6 +403,11 @@ impl DemoState {
                 self.status = "Fixture: secondary viewport scrolled".to_string();
                 Ok(())
             }
+            "viewports.occluded" => {
+                self.show_occluder = true;
+                self.status = "Fixture: root viewport occluded".to_string();
+                Ok(())
+            }
             _ => Err(format!("unknown fixture: {name}")),
         }
     }
@@ -377,7 +416,7 @@ impl DemoState {
 impl DemoApp {
     /// Build a new demo app from the parsed configuration.
     fn new(config: AppConfig, ctx: &egui::Context) -> MainResult<Self> {
-        let state = Arc::new(Mutex::new(DemoState::new()));
+        let state = Arc::new(Mutex::new(DemoState::new(config.force_occluder)));
         let devmcp = build_devmcp(config, Arc::clone(&state))?;
         let preview_texture = ctx.load_texture(
             "eguidev_demo.preview",
@@ -848,21 +887,75 @@ impl DemoApp {
             ),
         );
     }
-}
 
-impl App for DemoApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut s = self.state.lock().expect("demo state lock");
-        if s.show_secondary && ctx.viewport_id() == egui::ViewportId::ROOT {
-            let viewport_id = egui::ViewportId::from_hash_of("eguidev_demo.secondary");
-            let builder = egui::ViewportBuilder::default()
-                .with_title("DevMCP secondary viewport")
-                .with_inner_size([480.0, 420.0]);
-            let devmcp = &self.devmcp;
-            ctx.show_viewport_immediate(viewport_id, builder, |ui, class| {
-                Self::render_secondary(&mut s, devmcp, ui, class);
-            });
+    /// Render the optional secondary viewport from the root frame.
+    fn show_secondary_viewport(s: &mut DemoState, devmcp: &DevMcp, ctx: &egui::Context) {
+        if !s.show_secondary || ctx.viewport_id() != egui::ViewportId::ROOT {
+            return;
         }
+        let viewport_id = secondary_viewport_id();
+        let builder = egui::ViewportBuilder::default()
+            .with_title("DevMCP secondary viewport")
+            .with_inner_size([480.0, 420.0]);
+        ctx.show_viewport_immediate(viewport_id, builder, |ui, class| {
+            Self::render_secondary(s, devmcp, ui, class);
+        });
+    }
+
+    /// Render the smoke-test occluder viewport over the root window.
+    fn show_occluder_viewport(s: &mut DemoState, devmcp: &DevMcp, ctx: &egui::Context) {
+        if !s.show_occluder || ctx.viewport_id() != egui::ViewportId::ROOT {
+            return;
+        }
+
+        let root_rect = root_window_rect(ctx);
+        let viewport_id = occluder_viewport_id();
+        let builder = egui::ViewportBuilder::default()
+            .with_title("DevMCP occluder")
+            .with_position(root_rect.min)
+            .with_inner_size(root_rect.size())
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_always_on_top()
+            .with_active(false);
+        ctx.show_viewport_immediate(viewport_id, builder, |ui, _class| {
+            Self::render_occluder(s, devmcp, ui);
+        });
+    }
+
+    /// Render contents inside the occluder viewport.
+    fn render_occluder(s: &mut DemoState, devmcp: &DevMcp, ui: &mut egui::Ui) {
+        let devmcp = devmcp.clone();
+        let ctx = ui.ctx().clone();
+        if devmcp.is_enabled() {
+            ctx.input_mut(|i| eguidev::raw_input_hook(&devmcp, &ctx, &mut i.raw));
+        }
+        let _guard = FrameGuard::new(&devmcp, &ctx);
+
+        if ui.ctx().input(|i| i.viewport().close_requested()) {
+            s.show_occluder = s.force_occluder;
+        }
+
+        egui::Frame::central_panel(ui.style())
+            .fill(Color32::from_rgb(16, 18, 20))
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.4);
+                    ui.heading("Occluder active");
+                    ui.dev_label("viewports.occluder.status", "Occluder active");
+                    if ui
+                        .dev_button("viewports.occluder.dismiss", "Dismiss occluder")
+                        .clicked()
+                    {
+                        s.show_occluder = s.force_occluder;
+                    }
+                });
+            });
+    }
+
+    /// Capture per-frame input state for the demo diagnostics.
+    fn record_frame_input(&self, ctx: &egui::Context) {
+        let mut s = self.state.lock().expect("demo state lock");
         let (
             raw_scroll,
             smooth_scroll,
@@ -929,37 +1022,54 @@ impl App for DemoApp {
         }
         s.last_modifiers = modifiers;
     }
+}
+
+impl App for DemoApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.record_frame_input(ctx);
+        if self.devmcp.is_enabled() {
+            ctx.request_repaint();
+        }
+    }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let devmcp = self.devmcp.clone();
         let ctx = ui.ctx().clone();
-        let _guard = FrameGuard::new(&devmcp, &ctx);
-        let mut s = self.state.lock().expect("demo state lock");
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            Self::render_root(&mut s, &self.preview_texture, ui);
-        });
-        let mut open = s.widget_window_open;
-        if let Some(window) = egui::Window::new("Widget Surface Window")
-            .id(egui::Id::new("basic.window.surface"))
-            .open(&mut open)
-            .default_pos(egui::pos2(540.0, 24.0))
-            .default_size(egui::vec2(220.0, 320.0))
-            .show(&ctx, |ui| {
-                Self::render_widget_surface_window(&mut s, ui);
-            })
         {
-            eguidev::track_response_full(
-                "basic.window.surface",
-                &window.response,
-                eguidev::WidgetMeta {
-                    role: WidgetRole::Window,
-                    label: Some("Widget Surface Window".to_string()),
-                    visible: true,
-                    ..Default::default()
-                },
-            );
+            let _guard = FrameGuard::new(&devmcp, &ctx);
+            let mut s = self.state.lock().expect("demo state lock");
+            egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+                Self::render_root(&mut s, &self.preview_texture, ui);
+            });
+            let mut open = s.widget_window_open;
+            if let Some(window) = egui::Window::new("Widget Surface Window")
+                .id(egui::Id::new("basic.window.surface"))
+                .open(&mut open)
+                .default_pos(egui::pos2(540.0, 24.0))
+                .default_size(egui::vec2(220.0, 320.0))
+                .show(&ctx, |ui| {
+                    Self::render_widget_surface_window(&mut s, ui);
+                })
+            {
+                eguidev::track_response_full(
+                    "basic.window.surface",
+                    &window.response,
+                    eguidev::WidgetMeta {
+                        role: WidgetRole::Window,
+                        label: Some("Widget Surface Window".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            }
+            s.widget_window_open = open;
         }
-        s.widget_window_open = open;
+        let mut s = self.state.lock().expect("demo state lock");
+        Self::show_secondary_viewport(&mut s, &devmcp, &ctx);
+        Self::show_occluder_viewport(&mut s, &devmcp, &ctx);
+        if devmcp.is_enabled() {
+            ctx.request_repaint();
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -975,6 +1085,20 @@ fn format_modifiers(modifiers: egui::Modifiers) -> String {
     )
 }
 
+/// Return the best available root window rectangle in monitor points.
+fn root_window_rect(ctx: &egui::Context) -> egui::Rect {
+    ctx.input(|input| {
+        input
+            .raw
+            .viewports
+            .get(&egui::ViewportId::ROOT)
+            .and_then(|info| info.outer_rect.or(info.inner_rect))
+            .unwrap_or_else(|| {
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 900.0))
+            })
+    })
+}
+
 /// Format a color as the scripting-facing `#RRGGBBAA` string.
 fn format_color(color: Color32) -> String {
     let [r, g, b, a] = color.to_srgba_unmultiplied();
@@ -987,7 +1111,7 @@ mod tests {
 
     #[test]
     fn overlay_reset_probe_fixture_is_idempotent_for_overlay_input() {
-        let mut state = DemoState::new();
+        let mut state = DemoState::new(false);
 
         state.overlay_probe_input = "first".to_string();
         state
@@ -1014,8 +1138,9 @@ mod tests {
 
     #[test]
     fn viewport_fixture_keeps_secondary_viewport_available() {
-        let mut state = DemoState::new();
+        let mut state = DemoState::new(false);
         state.show_secondary = false;
+        state.show_occluder = true;
         state.secondary_selected_row = 9;
 
         state
@@ -1023,6 +1148,29 @@ mod tests {
             .expect("apply fixture");
 
         assert!(state.show_secondary);
+        assert!(!state.show_occluder);
         assert_eq!(state.secondary_selected_row, 0);
+    }
+
+    #[test]
+    fn occluded_fixture_enables_occluder_viewport() {
+        let mut state = DemoState::new(false);
+
+        state
+            .apply_fixture("viewports.occluded")
+            .expect("apply fixture");
+
+        assert!(state.show_occluder);
+        assert_eq!(state.status, "Fixture: root viewport occluded");
+    }
+
+    #[test]
+    fn forced_occluder_survives_fixture_resets() {
+        let mut state = DemoState::new(true);
+        state.show_occluder = false;
+
+        state.apply_fixture("basic.default").expect("apply fixture");
+
+        assert!(state.show_occluder);
     }
 }

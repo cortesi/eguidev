@@ -226,6 +226,7 @@ export type ViewportState = {
     inner_size: Vec,
     focused: boolean,
     minimized: boolean?,
+    occluded: boolean?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_count: number,

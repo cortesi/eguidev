@@ -36,8 +36,14 @@ enum Task {
     Tidy,
     /// Run tests via nextest.
     Test,
+    /// Install this repository's SKILL.md for local coding agents.
+    #[command(name = "install-skill")]
+    InstallSkill,
     /// Run the direct smoketest suite.
     Smoke(SmokeArgs),
+    /// Run the direct smoketest suite with the root viewport occluded.
+    #[command(name = "smoke-occlusion")]
+    SmokeOcclusion(SmokeArgs),
     /// Run the minimal edev transport smoke.
     #[command(name = "smoke-edev", visible_alias = "smoke-edit")]
     SmokeEdev(SmokeArgs),
@@ -52,6 +58,9 @@ struct SmokeArgs {
     /// Run only these smoke scripts, in the order provided.
     #[arg(value_name = "SCRIPT")]
     scripts: Vec<PathBuf>,
+    /// Pass a typed suite-wide script arg.
+    #[arg(long = "arg", value_name = "KEY=VALUE")]
+    script_args: Vec<String>,
     /// Stop the suite after the first smoketest failure.
     #[arg(long)]
     fail_fast: bool,
@@ -64,7 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     match args.command {
         Task::Tidy => tidy(),
         Task::Test => test(),
+        Task::InstallSkill => install_skill(),
         Task::Smoke(args) => smoke(&args),
+        Task::SmokeOcclusion(args) => smoke_occlusion(&args),
         Task::SmokeEdev(args) => smoke_edev(&args),
     }
 }
@@ -131,8 +142,52 @@ fn test() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Install the repository skill into local agent skill directories.
+fn install_skill() -> Result<(), Box<dyn Error>> {
+    let source = workspace_root()?.join("skills").join("SKILL.md");
+    if !source.is_file() {
+        return Err(format!("skill source does not exist: {}", source.display()).into());
+    }
+
+    let home = home_dir()?;
+    for target_root in skill_install_roots(&home) {
+        let target_dir = target_root.join("eguidev");
+        fs::create_dir_all(&target_dir)?;
+        let target = target_dir.join("SKILL.md");
+        let byte_count = fs::copy(&source, &target)?;
+        println!("installed {} ({} bytes)", target.display(), byte_count);
+    }
+
+    Ok(())
+}
+
+/// Return the user's home directory for local skill installs.
+fn home_dir() -> Result<PathBuf, Box<dyn Error>> {
+    let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is not set")?);
+    if home.as_os_str().is_empty() {
+        return Err("HOME is empty".into());
+    }
+    Ok(home)
+}
+
+/// Return the local skill roots used by the major coding agents.
+fn skill_install_roots(home: &Path) -> [PathBuf; 2] {
+    [
+        home.join(".agents").join("skills"),
+        home.join(".claude").join("skills"),
+    ]
+}
+
 /// Run the direct Luau smoketest suite against the demo app.
 fn smoke(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
+    smoke_with_app_command(args, None)
+}
+
+/// Run the direct Luau smoketest suite with an optional app command override.
+fn smoke_with_app_command(
+    args: &SmokeArgs,
+    app_command: Option<&[&str]>,
+) -> Result<(), Box<dyn Error>> {
     let workspace_root = workspace_root()?;
     let mut demo_command = Command::new("cargo");
     demo_command.current_dir(&workspace_root);
@@ -143,12 +198,46 @@ fn smoke(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
     if args.verbose {
         demo_command.arg("--verbose");
     }
+    for script_arg in &args.script_args {
+        demo_command.args(["--arg", script_arg]);
+    }
     demo_command.args(&args.scripts);
+    if let Some(app_command) = app_command {
+        demo_command.arg("--");
+        demo_command.args(app_command);
+    }
     run_prepared_command_with_timeout(
         demo_command,
         "cargo run -p edev -- smoke",
         Some(Duration::from_secs(15 * 60)),
     )
+}
+
+/// Run the full smoke suite with the root viewport covered by the test occluder.
+fn smoke_occlusion(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
+    let mut occlusion_args = args.clone();
+    occlusion_args
+        .script_args
+        .push("force_occluder=true".to_string());
+    smoke_with_app_command(&occlusion_args, Some(&occlusion_demo_command()))
+}
+
+/// Command used by occlusion smoke to launch the demo with a persistent cover viewport.
+fn occlusion_demo_command() -> [&'static str; 12] {
+    [
+        "cargo",
+        "run",
+        "--quiet",
+        "-p",
+        "eguidev_demo",
+        "--features",
+        "devtools",
+        "--bin",
+        "eguidev_demo",
+        "--",
+        "--dev-mcp",
+        "--force-occluder",
+    ]
 }
 
 /// Run the edev transport smoke against the demo app.

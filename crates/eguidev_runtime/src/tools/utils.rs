@@ -588,6 +588,7 @@ pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
         "inner_size": snapshot.inner_size,
         "focused": snapshot.focused,
         "minimized": snapshot.minimized,
+        "occluded": snapshot.occluded,
         "maximized": snapshot.maximized,
         "fullscreen": snapshot.fullscreen,
     })

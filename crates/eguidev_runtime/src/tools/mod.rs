@@ -19,7 +19,7 @@ use tmcp::{
     schema::{CallToolResult, ClientCapabilities, Implementation, InitializeResult},
     tool,
 };
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use crate::{
     actions::{ActionTiming, InputAction},
@@ -664,6 +664,8 @@ impl DevMcpServer {
             .to_pointer_button()
             .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Invalid pointer button"))?;
         let modifiers = modifiers.unwrap_or_default();
+        self.inner
+            .queue_action(viewport_id, InputAction::PointerMove { pos });
         self.inner.queue_action(
             viewport_id,
             InputAction::PointerButton {
@@ -917,6 +919,7 @@ impl DevMcpServer {
             DEFAULT_POLL_INTERVAL_MS,
             None,
             || async {
+                self.inner.request_repaint_all();
                 let current = self.inner.frame_count();
                 Ok::<_, ToolError>((current >= target_frame, None::<()>))
             },
@@ -1010,18 +1013,31 @@ fixture requests are processed in App::update."
         let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
+        let start_capture = self
+            .inner
+            .viewports
+            .capture_snapshot(viewport_id)
+            .map(|snapshot| snapshot.frame_count)
+            .unwrap_or(0);
         let start_frame = self.inner.frame_count();
 
         let (matched, _, elapsed_ms) =
             wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || async {
-                let has_snapshot = self.inner.viewports.input_snapshot(viewport_id).is_some();
+                self.inner.request_repaint_of(viewport_id);
+                let capture = self.inner.viewports.capture_snapshot(viewport_id);
+                let observed_new_capture = capture
+                    .map(|snapshot| snapshot.frame_count > start_capture)
+                    .unwrap_or(false);
+                let observed_settle_frame = if viewport_id == egui::ViewportId::ROOT {
+                    self.inner.frame_count() > start_frame
+                } else {
+                    observed_new_capture
+                };
                 let has_pending_actions = self.inner.actions.has_pending_actions(viewport_id);
                 let has_pending_commands = self.inner.actions.has_pending_commands(viewport_id);
-                let observed_new_frame = self.inner.frame_count() > start_frame;
                 let processed_last_action =
                     self.inner.frame_count() > self.inner.last_action_frame.load(Ordering::Relaxed);
-                let matched = has_snapshot
-                    && observed_new_frame
+                let matched = observed_settle_frame
                     && !has_pending_actions
                     && !has_pending_commands
                     && processed_last_action;
@@ -1042,8 +1058,11 @@ fixture requests are processed in App::update."
             elapsed_ms,
             None,
             viewport_snapshot_for(&self.inner, viewport_id).as_ref(),
-            Some(start_frame),
-            Some(self.inner.frame_count()),
+            Some(start_capture),
+            self.inner
+                .viewports
+                .capture_snapshot(viewport_id)
+                .map(|snapshot| snapshot.frame_count),
         ))
         .into())
     }
@@ -1266,7 +1285,6 @@ fixture requests are processed in App::update."
         let pointer_button = button
             .to_pointer_button()
             .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Invalid pointer button"))?;
-        self.inner.queue_widget_click(viewport_id, widget.id);
         queue_click(
             &self.inner,
             viewport_id,
@@ -1497,7 +1515,7 @@ fixture requests are processed in App::update."
         target: WidgetRef,
         offset: Option<Vec2>,
         align: Option<ScrollAlign>,
-    ) -> ToolResult<()> {
+    ) -> ToolResult<Vec2> {
         let (widget, viewport_id) =
             resolve_widget_and_viewport(&self.inner, viewport_id.as_deref(), &target)?;
         if widget.role != WidgetRole::ScrollArea {
@@ -1548,7 +1566,7 @@ fixture requests are processed in App::update."
             .queue_action(viewport_id, InputAction::PointerMove { pos });
         self.inner
             .set_scroll_override(viewport_id, widget.native_id, target_offset.into());
-        Ok(())
+        Ok(target_offset)
     }
 
     /// Scroll ancestor scroll areas so the target widget becomes visible.
@@ -1828,7 +1846,11 @@ async fn capture_screenshot(
         );
     }
 
-    let start_frame = inner.frame_count();
+    let start_frame = inner
+        .viewports
+        .capture_snapshot(viewport_id)
+        .map(|snapshot| snapshot.frame_count)
+        .unwrap_or(0);
     let request_id = inner.next_request_id();
     let kind_snapshot = kind.clone();
     runtime.insert_screenshot(request_id, ScreenshotState::pending(kind));
@@ -1855,13 +1877,22 @@ async fn ensure_event_loop_active(
     runtime: &Runtime,
     viewport_id: egui::ViewportId,
 ) -> Result<(), ToolError> {
-    let initial_frame = inner.frame_count();
+    let initial_frame = inner
+        .viewports
+        .capture_snapshot(viewport_id)
+        .map(|snapshot| snapshot.frame_count)
+        .unwrap_or(0);
 
     // Wait for at least one frame to process. Use a short poll interval with
     // periodic repaint requests so we recover when the event loop stalls.
     let frame_wait = async {
         loop {
-            if inner.frame_count() > initial_frame {
+            let current_frame = inner
+                .viewports
+                .capture_snapshot(viewport_id)
+                .map(|snapshot| snapshot.frame_count)
+                .unwrap_or(0);
+            if current_frame > initial_frame {
                 return;
             }
             let notified = runtime.frame_notify().notified();
@@ -1903,9 +1934,8 @@ async fn await_screenshot(
     };
 
     let wait_loop = async {
-        let mut requested_followup = false;
+        let mut last_command_frame = start_frame.saturating_add(1);
         loop {
-            let notified = notify.notified();
             if let Some(state) = runtime.screenshot_state(request_id) {
                 if state.is_ready() {
                     break;
@@ -1920,11 +1950,29 @@ async fn await_screenshot(
                         kind,
                     )));
             }
-            if !requested_followup && inner.frame_count() > start_frame {
-                inner.request_repaint_of(viewport_id);
-                requested_followup = true;
+
+            let current_frame = inner
+                .viewports
+                .capture_snapshot(viewport_id)
+                .map(|snapshot| snapshot.frame_count)
+                .unwrap_or(0);
+            if current_frame > last_command_frame {
+                inner.queue_command(
+                    viewport_id,
+                    egui::ViewportCommand::Screenshot(egui::UserData::new(request_id)),
+                );
+                last_command_frame = current_frame;
             }
-            notified.await;
+            if current_frame > start_frame {
+                inner.request_repaint_of(viewport_id);
+            }
+            tokio::select! {
+                _ = notify.notified() => {}
+                _ = runtime.frame_notify().notified() => {}
+                _ = sleep(Duration::from_millis(DEFAULT_POLL_INTERVAL_MS)) => {
+                    inner.request_repaint_of(viewport_id);
+                }
+            }
         }
         Ok(())
     };
@@ -3016,7 +3064,7 @@ return widget:wait_for_visible()"#
                 .viewports
                 .insert(egui::ViewportId::ROOT, Default::default());
             raw_input.viewports.insert(secondary, Default::default());
-            drop(ctx.run(raw_input, |_| {}));
+            drop(ctx.run_ui(raw_input, |_| {}));
         }
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.update_viewports(&ctx);
@@ -3088,7 +3136,7 @@ return widget:wait_for_visible()"#
                 .viewports
                 .insert(egui::ViewportId::ROOT, Default::default());
             raw_input.viewports.insert(secondary, Default::default());
-            drop(ctx.run(raw_input, |_| {}));
+            drop(ctx.run_ui(raw_input, |_| {}));
         }
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.update_viewports(&ctx);
@@ -3169,7 +3217,7 @@ return widget:wait_for_visible()"#
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.capture_input_snapshot(
             &ctx,
@@ -3209,7 +3257,7 @@ return widget:wait_for_visible()"#
         inner.widgets.clear_registry(viewport_id);
         inner.widgets.record_widget(viewport_id, ready);
         inner.widgets.finalize_registry(viewport_id);
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         inner.capture_context(viewport_id, &ctx);
         inner.viewports.capture_input_snapshot(
             &ctx,
@@ -3230,7 +3278,7 @@ return widget:wait_for_visible()"#
                 viewport_id,
                 ..Default::default()
             };
-            drop(ctx_for_update.run(raw_input, |_| {}));
+            drop(ctx_for_update.run_ui(raw_input, |_| {}));
             inner_for_update.capture_context(viewport_id, &ctx_for_update);
             inner_for_update.viewports.capture_input_snapshot(
                 &ctx_for_update,
@@ -3358,7 +3406,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         let entry = make_entry("status", 1, WidgetRole::Label);
         inner.widgets.clear_registry(egui::ViewportId::ROOT);
         inner.widgets.record_widget(egui::ViewportId::ROOT, entry);
@@ -3413,7 +3461,7 @@ return { first = catalog[1].name, count = #catalog }"#
             .viewports
             .insert(egui::ViewportId::ROOT, Default::default());
         root_input.viewports.insert(secondary, Default::default());
-        drop(root_ctx.run(root_input, |_| {}));
+        drop(root_ctx.run_ui(root_input, |_| {}));
         inner.capture_context(egui::ViewportId::ROOT, &root_ctx);
         inner.viewports.update_viewports(&root_ctx);
         capture_test_frame(&inner, &root_ctx);
@@ -3453,7 +3501,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         capture_test_frame(&inner, &ctx);
 
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -3464,7 +3512,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 viewport_id: egui::ViewportId::ROOT,
                 ..Default::default()
             };
-            drop(capture_ctx.run(raw_input, |_| {}));
+            drop(capture_ctx.run_ui(raw_input, |_| {}));
             sleep(Duration::from_millis(20)).await;
             inner_for_capture
                 .widgets
@@ -3516,7 +3564,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         capture_test_frame(&inner, &ctx);
 
         let inner_for_capture = Arc::clone(&inner);
@@ -3527,7 +3575,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 viewport_id: egui::ViewportId::ROOT,
                 ..Default::default()
             };
-            drop(capture_ctx.run(raw_input, |_| {}));
+            drop(capture_ctx.run_ui(raw_input, |_| {}));
             capture_test_frame(&inner_for_capture, &capture_ctx);
         });
 
@@ -3546,7 +3594,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         inner.widgets.clear_registry(egui::ViewportId::ROOT);
         inner.widgets.record_widget(
             egui::ViewportId::ROOT,
@@ -3567,7 +3615,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 viewport_id: egui::ViewportId::ROOT,
                 ..Default::default()
             };
-            drop(capture_ctx.run(raw_input, |_| {}));
+            drop(capture_ctx.run_ui(raw_input, |_| {}));
             sleep(Duration::from_millis(50)).await;
             inner_for_capture
                 .widgets
@@ -3653,7 +3701,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id: egui::ViewportId::ROOT,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
+        drop(ctx.run_ui(raw_input, |_| {}));
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.capture_input_snapshot(
             &ctx,
@@ -3730,7 +3778,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id,
             ..Default::default()
         };
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
                 let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
@@ -3765,7 +3813,7 @@ return { first = catalog[1].name, count = #catalog }"#
             ..Default::default()
         };
         apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
             });
@@ -3776,7 +3824,7 @@ return { first = catalog[1].name, count = #catalog }"#
             ..Default::default()
         };
         apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
             });
@@ -3798,7 +3846,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id,
             ..Default::default()
         };
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = ui.text_edit_multiline(&mut text);
                 let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
@@ -3833,7 +3881,7 @@ return { first = catalog[1].name, count = #catalog }"#
             ..Default::default()
         };
         apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.text_edit_multiline(&mut text);
             });
@@ -3844,7 +3892,7 @@ return { first = catalog[1].name, count = #catalog }"#
             ..Default::default()
         };
         apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.text_edit_multiline(&mut text);
             });
@@ -3902,7 +3950,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id,
             ..Default::default()
         };
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = ui.text_edit_multiline(&mut text);
                 let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
@@ -3932,7 +3980,7 @@ return { first = catalog[1].name, count = #catalog }"#
         };
         apply_actions(&inner, &mut raw_input);
         inner.widgets.clear_registry(viewport_id);
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = ui.text_edit_multiline(&mut text);
                 let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
@@ -4016,7 +4064,7 @@ return { first = catalog[1].name, count = #catalog }"#
         let inner = Arc::new(Inner::new());
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput::default();
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             inner.capture_context(ctx.viewport_id(), ctx);
             inner.widgets.clear_registry(ctx.viewport_id());
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -4238,7 +4286,7 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id,
             ..Default::default()
         };
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = ui.checkbox(&mut checked, "Enabled");
                 let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
@@ -4284,7 +4332,7 @@ return { first = catalog[1].name, count = #catalog }"#
             ..Default::default()
         };
         apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.checkbox(&mut checked, "Enabled");
             });
@@ -4424,7 +4472,7 @@ return { first = catalog[1].name, count = #catalog }"#
 
         let ctx = egui::Context::default();
         let mut offset = egui::Vec2::ZERO;
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let output = egui::ScrollArea::vertical()
                     .max_height(100.0)
@@ -4485,7 +4533,7 @@ return { first = catalog[1].name, count = #catalog }"#
         let raw_input = egui::RawInput::default();
         let mut checked = true;
         let mut intensity = 42.0_f32;
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             inner.capture_context(ctx.viewport_id(), ctx);
             inner.widgets.clear_registry(ctx.viewport_id());
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -4809,18 +4857,13 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
-        inner.capture_context(viewport_id, &ctx);
-        inner.viewports.capture_input_snapshot(
-            &ctx,
-            inner.fixture_epoch(),
-            inner.frame_count() + 1,
-        );
-        let runtime_for_frame = Runtime::ensure_for_inner(&inner);
+        drop(ctx.run_ui(raw_input, |_| {}));
+        capture_test_frame(&inner, &ctx);
+        let inner_for_capture = Arc::clone(&inner);
+        let capture_ctx = ctx.clone();
         tokio::spawn(async move {
             yield_now().await;
-            inner.advance_frame();
-            runtime_for_frame.frame_notify().notify_waiters();
+            capture_test_frame(&inner_for_capture, &capture_ctx);
         });
 
         server
@@ -4840,13 +4883,8 @@ return { first = catalog[1].name, count = #catalog }"#
             viewport_id,
             ..Default::default()
         };
-        drop(ctx.run(raw_input, |_| {}));
-        inner.capture_context(viewport_id, &ctx);
-        inner.viewports.capture_input_snapshot(
-            &ctx,
-            inner.fixture_epoch(),
-            inner.frame_count() + 1,
-        );
+        drop(ctx.run_ui(raw_input, |_| {}));
+        capture_test_frame(&inner, &ctx);
 
         let error = server
             .wait_for_settle(None, Some(10), Some(1))
@@ -5120,7 +5158,7 @@ return { first = catalog[1].name, count = #catalog }"#
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput::default();
         let text = "Hello".to_string();
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             inner.capture_context(ctx.viewport_id(), ctx);
             inner.widgets.clear_registry(ctx.viewport_id());
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -5158,7 +5196,7 @@ return { first = catalog[1].name, count = #catalog }"#
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput::default();
         let text = "Hello".to_string();
-        let _output = ctx.run(raw_input, |ctx| {
+        let _output = ctx.run_ui(raw_input, |ctx| {
             inner.capture_context(ctx.viewport_id(), ctx);
             inner.widgets.clear_registry(ctx.viewport_id());
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -5208,7 +5246,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 .viewports
                 .insert(egui::ViewportId::ROOT, Default::default());
             raw_input.viewports.insert(secondary, Default::default());
-            drop(ctx.run(raw_input, |_| {}));
+            drop(ctx.run_ui(raw_input, |_| {}));
         }
         inner.capture_context(secondary, &ctx);
         inner.viewports.update_viewports(&ctx);
@@ -5245,7 +5283,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 .viewports
                 .insert(egui::ViewportId::ROOT, Default::default());
             raw_input.viewports.insert(secondary, Default::default());
-            drop(ctx.run(raw_input, |_| {}));
+            drop(ctx.run_ui(raw_input, |_| {}));
         }
         inner.capture_context(secondary, &ctx);
         inner.viewports.update_viewports(&ctx);
@@ -5406,7 +5444,7 @@ return { first = catalog[1].name, count = #catalog }"#
 
         let render_widget =
             |inner: &Inner, ctx: &egui::Context, text: &mut String, raw_input: egui::RawInput| {
-                let output = ctx.run(raw_input, |ctx| {
+                let output = ctx.run_ui(raw_input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let response = ui.text_edit_singleline(text);
                         let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
@@ -5492,7 +5530,7 @@ return { first = catalog[1].name, count = #catalog }"#
         // Frame 5: apply Enter and detect lost_focus + key_pressed(Enter).
         let mut raw = no_focus_raw();
         apply_actions(&inner, &mut raw);
-        let _output = ctx.run(raw, |ctx| {
+        let _output = ctx.run_ui(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = ui.text_edit_singleline(&mut text);
                 let visible = ui.is_visible() && ui.is_rect_visible(response.rect);

@@ -1,2 +1,2 @@
 [alias]
-xtask = "run -q -p xtask --"
+xtask = "run -p xtask --"

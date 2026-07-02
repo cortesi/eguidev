@@ -17,9 +17,9 @@ use tokio::time::timeout;
 use super::{
     super::{
         DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode,
-        OverlayDebugOptionsInput, ToolError, capture_screenshot, collect_widget_list,
-        parse_key_combo, resolve_screenshot_viewport, resolve_widget_and_viewport,
-        viewport_snapshot_for, wait_timeout_details,
+        OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError, capture_screenshot,
+        collect_widget_list, parse_key_combo, resolve_screenshot_viewport,
+        resolve_widget_and_viewport, viewport_snapshot_for, wait_timeout_details,
     },
     parse::{
         map_has_any, map_value, parse_modifiers, parse_optional_bool, parse_optional_f32,
@@ -37,7 +37,7 @@ use crate::{
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
     screenshots::ScreenshotKind,
-    types::{Modifiers, Rect, WidgetRef, WidgetRegistryEntry, WidgetState},
+    types::{Modifiers, Rect, Vec2, WidgetRef, WidgetRegistryEntry, WidgetState, WidgetValue},
     viewports::ViewportSnapshot,
 };
 
@@ -399,6 +399,7 @@ impl ScriptRuntime {
                 "inner_size": snapshot.inner_size,
                 "focused": snapshot.focused,
                 "minimized": snapshot.minimized,
+                "occluded": snapshot.occluded,
                 "maximized": snapshot.maximized,
                 "fullscreen": snapshot.fullscreen,
                 "frame_count": self.server.inner.frame_count(),
@@ -462,11 +463,7 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
         viewport_id: Option<String>,
     ) -> ScriptResult<()> {
-        // Per-call settle override takes priority, then global config, then default (true).
-        let settle_enabled = parse_optional_bool(options, "settle")
-            .map_err(|error| self.type_error(pos, error.message))?
-            .unwrap_or_else(|| self.configured_settle());
-        if !settle_enabled {
+        if !self.action_settle_enabled(pos, options)? {
             return Ok(());
         }
         let timeout_ms = self.configured_timeout_ms();
@@ -478,6 +475,16 @@ impl ScriptRuntime {
         )
         .await?;
         Ok(())
+    }
+
+    fn action_settle_enabled(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<bool> {
+        parse_optional_bool(options, "settle")
+            .map_err(|error| self.type_error(pos, error.message))
+            .map(|settle| settle.unwrap_or_else(|| self.configured_settle()))
     }
 
     fn parse_action_target(
@@ -565,14 +572,38 @@ impl ScriptRuntime {
         let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
         let value = widget_value_from_dynamic(value)
             .map_err(|error| self.type_error(pos, error.message))?;
+        let settle_enabled = self.action_settle_enabled(pos, options)?;
         self.await_tool(
             pos,
-            self.server
-                .widget_set_value(Some(action_viewport_id.clone()), target, value),
+            self.server.widget_set_value(
+                Some(action_viewport_id.clone()),
+                target.clone(),
+                value.clone(),
+            ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
-            .await
+        self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
+            .await?;
+        if settle_enabled {
+            let timeout_ms = self.configured_timeout_ms();
+            let poll_interval_ms = self.configured_poll_interval_ms();
+            self.await_tool(
+                pos,
+                self.server.wait_for_widget_state(
+                    Some(action_viewport_id),
+                    target,
+                    timeout_ms,
+                    poll_interval_ms,
+                    |widget| {
+                        widget
+                            .and_then(|widget| widget.value.as_ref())
+                            .is_some_and(|current| widget_values_match(current, &value))
+                    },
+                ),
+            )
+            .await?;
+        }
+        self.to_json(pos, ())
     }
 
     pub(super) fn widget_at_point(
@@ -842,14 +873,43 @@ impl ScriptRuntime {
         if offset.is_none() && align.is_none() {
             return Err(self.type_error(pos, "scroll_to requires either offset or align"));
         }
-        self.await_tool(
-            pos,
-            self.server
-                .action_scroll_to(Some(action_viewport_id.clone()), target, offset, align),
-        )
-        .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
-            .await
+        let target_offset = self
+            .await_tool(
+                pos,
+                self.server.action_scroll_to(
+                    Some(action_viewport_id.clone()),
+                    target.clone(),
+                    offset,
+                    align,
+                ),
+            )
+            .await?;
+        let settle_enabled = self.action_settle_enabled(pos, options)?;
+        self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
+            .await?;
+        if settle_enabled {
+            let timeout_ms = self.configured_timeout_ms();
+            let poll_interval_ms = self.configured_poll_interval_ms();
+            self.await_tool(
+                pos,
+                self.server.wait_for_widget_state(
+                    Some(action_viewport_id),
+                    target,
+                    timeout_ms,
+                    poll_interval_ms,
+                    |widget| {
+                        widget
+                            .and_then(|widget| widget.role_state.as_ref())
+                            .and_then(|state| state.scroll_state())
+                            .is_some_and(|scroll| {
+                                scroll_offsets_match(scroll.offset, target_offset)
+                            })
+                    },
+                ),
+            )
+            .await?;
+        }
+        self.to_json(pos, ())
     }
 
     pub(super) async fn action_scroll_into_view(
@@ -1860,6 +1920,23 @@ impl ScriptRuntime {
         .await?;
         self.assert_result(pos, true, "widget exists".to_string())
     }
+}
+
+fn widget_values_match(current: &WidgetValue, expected: &WidgetValue) -> bool {
+    match (current, expected) {
+        (WidgetValue::Float(current), WidgetValue::Int(expected)) => {
+            (*current - *expected as f64).abs() < f64::EPSILON
+        }
+        (WidgetValue::Int(current), WidgetValue::Float(expected)) => {
+            (*current as f64 - *expected).abs() < f64::EPSILON
+        }
+        _ => current == expected,
+    }
+}
+
+fn scroll_offsets_match(current: Vec2, expected: Vec2) -> bool {
+    (current.x - expected.x).abs() <= SCROLL_STABILITY_TOLERANCE
+        && (current.y - expected.y).abs() <= SCROLL_STABILITY_TOLERANCE
 }
 
 fn image_ref_json(id: String) -> Value {

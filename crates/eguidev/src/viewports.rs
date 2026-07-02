@@ -35,6 +35,7 @@ pub struct ViewportSnapshot {
     pub title: Option<String>,
     pub parent_viewport_id: Option<String>,
     pub minimized: Option<bool>,
+    pub occluded: Option<bool>,
     pub maximized: Option<bool>,
     pub fullscreen: Option<bool>,
 }
@@ -93,6 +94,7 @@ impl ViewportState {
                     title: info.title.clone(),
                     parent_viewport_id: info.parent.map(viewport_id_to_string),
                     minimized: info.minimized,
+                    occluded: info.occluded,
                     maximized: info.maximized,
                     fullscreen: info.fullscreen,
                 },

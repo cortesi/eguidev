@@ -307,7 +307,6 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
         let viewport_id = response.ctx.viewport_id();
         let widget_id = response.id.value();
         let override_offset = inner.take_scroll_override(viewport_id, widget_id);
-        let recorded_offset = override_offset.unwrap_or(output.state.offset);
         if let Some(offset) = override_offset {
             let mut state = State::load(ui.ctx(), output.id).unwrap_or_default();
             state.offset = offset;
@@ -322,7 +321,7 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
                 role: WidgetRole::ScrollArea,
                 layout,
                 role_state: Some(RoleState::ScrollArea {
-                    offset: recorded_offset.into(),
+                    offset: output.state.offset.into(),
                     viewport_size: output.inner_rect.size().into(),
                     content_size: output.content_size.into(),
                 }),

@@ -570,7 +570,10 @@ fn compile_error_info(error: &CompileError, source_name: &str) -> ScriptErrorInf
             line: location.begin.line as usize + 1,
             column: Some(location.begin.column as usize + 1),
         }),
-        backtrace: Some(vec![source_name.to_string()]).filter(|_| error.location().is_some()),
+        backtrace: error
+            .location()
+            .is_some()
+            .then(|| vec![source_name.to_string()]),
         code: None,
         details: None,
     }

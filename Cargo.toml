@@ -15,8 +15,8 @@ keywords = ["egui", "gui", "automation", "testing", "mcp"]
 [workspace.dependencies]
 async-trait = "0.1"
 base64 = "0.22"
-eframe = { version = "0.34", default-features = false, features = ["glow"] }
-egui = "0.34"
+eframe = { version = "0.35", default-features = false, features = ["glow"] }
+egui = "0.35"
 glob = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 libc = "0.2"

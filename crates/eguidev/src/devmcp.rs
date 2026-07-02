@@ -417,8 +417,8 @@ mod inactive_tests {
             ..Default::default()
         };
 
-        let _output = ctx.run(raw_input, |ctx| {
-            let _guard = FrameGuard::new(&devmcp, ctx);
+        let _output = ctx.run_ui(raw_input, |ui| {
+            let _guard = FrameGuard::new(&devmcp, ui.ctx());
         });
 
         assert_eq!(

@@ -43,3 +43,9 @@ Enable verbose transport logging:
 ```sh
 cargo xtask smoke-edev --verbose
 ```
+
+Run the full smoke suite with the root viewport occluded:
+
+```sh
+cargo xtask smoke-occlusion
+```
