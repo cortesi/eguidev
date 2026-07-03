@@ -99,8 +99,8 @@ pub fn repaint_diagnosis_prefix(observation: &WaitObservation) -> Option<&'stati
     if observation.frames_observed == Some(0) {
         return Some(
             "No target viewport frames were observed while waiting. Ensure the app wraps rendered \
-             frames in FrameGuard, wires eguidev::raw_input_hook, leaves runtime keep-alive \
-             enabled, and uses Renderer::Glow when backend idle stalls matter.",
+             frames in FrameGuard, leaves runtime keep-alive enabled, and uses Renderer::Glow \
+             when backend idle stalls matter.",
         );
     }
     None

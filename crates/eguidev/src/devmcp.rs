@@ -50,6 +50,45 @@ impl Default for AutomationOptions {
     }
 }
 
+/// Egui plugin that injects DevMCP-queued input into every pass of every
+/// viewport.
+///
+/// Registered automatically on the first instrumented frame (see
+/// [`DevMcp::begin_frame`]), so apps do not need to wire anything up
+/// themselves. Because `egui::Plugin::input_hook` runs inside the public
+/// `Context::begin_pass` for root, deferred, and immediate viewports alike,
+/// this makes injected input reach immediate viewports, which the old
+/// app-side `raw_input_hook` override could never do (by the time an
+/// immediate viewport's render callback ran, `begin_pass` had already
+/// consumed that pass's `RawInput`).
+///
+/// Holding a `DevMcp` here (which transitively remembers `Context`s through
+/// `Inner::remember_context`) creates a reference cycle with the `Context`
+/// that owns this plugin. That cycle is benign: both live for the process
+/// lifetime and are torn down together at process exit.
+struct InputInjectionPlugin {
+    /// The DevMCP handle whose queued actions should be drained into raw
+    /// input for every pass.
+    devmcp: DevMcp,
+}
+
+impl egui::Plugin for InputInjectionPlugin {
+    fn debug_name(&self) -> &'static str {
+        "eguidev_input_injection"
+    }
+
+    fn input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
+        let Some(inner) = self.devmcp.inner() else {
+            return;
+        };
+        swallow_panic("input_injection_plugin", || {
+            inner.remember_context(raw_input.viewport_id, ctx);
+            self.devmcp
+                .drain_actions_into_raw_input(inner, raw_input.viewport_id, raw_input);
+        });
+    }
+}
+
 /// DevMCP handle stored in app state.
 #[derive(Clone, Default)]
 pub struct DevMcp {
@@ -193,6 +232,11 @@ impl DevMcp {
         let Some(inner) = self.inner() else {
             return;
         };
+        if inner.try_install_input_plugin() {
+            ctx.add_plugin(InputInjectionPlugin {
+                devmcp: self.clone(),
+            });
+        }
         swallow_panic("begin_frame", || {
             let viewport_id = ctx.viewport_id();
             inner.begin_frame(viewport_id);
@@ -259,38 +303,6 @@ impl DevMcp {
         inner.widgets.finalize_registry(viewport_id);
     }
 
-    /// Inject queued raw input during the raw input hook.
-    pub(crate) fn raw_input_hook(&self, ctx: &Context, raw_input: &mut egui::RawInput) {
-        let Some(inner) = self.inner() else {
-            return;
-        };
-        swallow_panic("raw_input_hook", || {
-            let viewport_id = raw_input.viewport_id;
-            inner.remember_context(viewport_id, ctx);
-            if let Some(hooks) = inner.runtime_hooks() {
-                hooks.on_raw_input(inner, &raw_input.events);
-            }
-            self.drain_actions_into_raw_input(inner, viewport_id, raw_input);
-        });
-    }
-
-    /// Inject queued raw input for an immediate viewport during its render closure.
-    pub(crate) fn raw_input_hook_for_viewport(
-        &self,
-        viewport_id: egui::ViewportId,
-        raw_input: &mut egui::RawInput,
-    ) {
-        let Some(inner) = self.inner() else {
-            return;
-        };
-        swallow_panic("raw_input_hook_for_viewport", || {
-            if let Some(hooks) = inner.runtime_hooks() {
-                hooks.on_raw_input(inner, &raw_input.events);
-            }
-            self.drain_actions_into_raw_input(inner, viewport_id, raw_input);
-        });
-    }
-
     fn drain_actions_into_raw_input(
         &self,
         inner: &Arc<Inner>,
@@ -304,7 +316,7 @@ impl DevMcp {
                 .store(inner.frame_count(), Ordering::Relaxed);
             if self.verbose_logging_enabled() {
                 eprintln!(
-                    "eguidev: raw_input_hook viewport={:?} actions={}",
+                    "eguidev: input_hook viewport={:?} actions={}",
                     viewport_id,
                     actions.len()
                 );
@@ -364,20 +376,6 @@ impl Drop for FrameGuard<'_> {
     }
 }
 
-/// Forward the raw input hook into the DevMcp handler.
-pub fn raw_input_hook(devmcp: &DevMcp, ctx: &Context, raw_input: &mut egui::RawInput) {
-    devmcp.raw_input_hook(ctx, raw_input);
-}
-
-/// Forward queued input for a specific immediate viewport.
-pub fn raw_input_hook_for_viewport(
-    devmcp: &DevMcp,
-    viewport_id: egui::ViewportId,
-    raw_input: &mut egui::RawInput,
-) {
-    devmcp.raw_input_hook_for_viewport(viewport_id, raw_input);
-}
-
 /// Clear script-visible widgets for a viewport that is no longer rendered.
 pub fn clear_viewport(devmcp: &DevMcp, viewport_id: egui::ViewportId) {
     devmcp.clear_viewport(viewport_id);
@@ -395,10 +393,10 @@ mod inactive_tests {
         },
     };
 
-    use egui::Context;
+    use egui::{Context, Plugin};
 
     use super::*;
-    use crate::{instrument, registry::Inner, ui_ext::DevUiExt};
+    use crate::{actions::InputAction, instrument, registry::Inner, ui_ext::DevUiExt};
 
     #[derive(Default)]
     struct CountingRuntimeHooks {
@@ -424,45 +422,47 @@ mod inactive_tests {
     }
 
     #[test]
-    fn inactive_raw_input_hook_is_a_noop() {
+    fn inactive_input_hook_plugin_is_a_noop() {
         let devmcp = DevMcp::new();
         let ctx = Context::default();
+        let mut plugin = InputInjectionPlugin { devmcp };
         let mut raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
             focused: false,
             ..Default::default()
         };
 
-        devmcp.raw_input_hook(&ctx, &mut raw_input);
+        plugin.input_hook(&ctx, &mut raw_input);
 
         assert!(!raw_input.focused);
         assert!(raw_input.events.is_empty());
     }
 
     #[test]
-    fn viewport_raw_input_hook_forwards_runtime_events() {
+    fn input_hook_plugin_injects_queued_actions_for_viewport() {
         let inner = Arc::new(Inner::new());
-        let hooks = Arc::new(CountingRuntimeHooks::default());
-        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
-        let devmcp = DevMcp::new().activate_runtime(inner, runtime_hooks);
+        let hooks: Arc<dyn RuntimeHooks> = Arc::new(CountingRuntimeHooks::default());
         let viewport_id = egui::ViewportId::from_hash_of("secondary");
+        inner.queue_action(
+            viewport_id,
+            InputAction::Text {
+                text: "event".to_string(),
+            },
+        );
+        let devmcp = DevMcp::new().activate_runtime(inner, hooks);
+        let mut plugin = InputInjectionPlugin { devmcp };
+        let ctx = Context::default();
         let mut raw_input = egui::RawInput {
             viewport_id,
-            events: vec![egui::Event::Text("event".to_string())],
             ..Default::default()
         };
 
-        devmcp.raw_input_hook_for_viewport(viewport_id, &mut raw_input);
+        plugin.input_hook(&ctx, &mut raw_input);
 
         assert_eq!(
-            hooks.raw_input_calls.load(AtomicOrdering::Relaxed),
-            1,
-            "viewport raw input hook should notify runtime hooks"
-        );
-        assert_eq!(
-            hooks.raw_input_events.load(AtomicOrdering::Relaxed),
-            1,
-            "viewport raw input hook should forward raw events"
+            raw_input.events,
+            vec![egui::Event::Text("event".to_string())],
+            "plugin should inject queued actions for the pass's viewport"
         );
     }
 

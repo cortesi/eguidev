@@ -55,7 +55,7 @@ pub fn install_background_automation() {
     });
 }
 
-pub(crate) fn platform_window_states() -> Vec<PlatformViewportState> {
+pub fn platform_window_states() -> Vec<PlatformViewportState> {
     let Some(states) = WINDOW_STATES.get() else {
         return Vec::new();
     };

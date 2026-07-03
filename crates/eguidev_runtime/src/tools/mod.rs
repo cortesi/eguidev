@@ -2259,8 +2259,9 @@ async fn await_screenshot(
         ToolError::new(
             ErrorCode::Internal,
             "Screenshot timed out waiting for a screenshot event. The screenshot command may \
-                 not have reached the viewport or the frame did not render. Ensure the \
-                 DevMcp raw_input_hook is wired so screenshot events can be captured.",
+                 not have reached the viewport or the frame did not render. Screenshots only \
+                 work for viewports whose backend fulfills ViewportCommand::Screenshot; eframe \
+                 0.35 never does this for immediate viewports, so try the root viewport instead.",
         )
         .with_details(screenshot_request_details_with_frames(
             inner,

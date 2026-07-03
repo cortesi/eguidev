@@ -8,8 +8,8 @@ This document describes the runtime state machine used by `eguidev` automation c
 The automation stack now has three explicit layers:
 
 1. App instrumentation: always-available `eguidev` APIs such as `DevMcp`,
-   `FrameGuard`, `raw_input_hook`, `DevUiExt`, widget metadata types, and
-   fixture registration/collection.
+   `FrameGuard`, `DevUiExt`, widget metadata types, and fixture
+   registration/collection.
 2. Optional embedded runtime: provided by the native-only
    `eguidev_runtime` crate, attached once through
    `eguidev_runtime::attach()`, and responsible for the in-process MCP server,
@@ -51,8 +51,9 @@ Tool hosting:
   `tools/list_changed` notifications.
 
 Fixtures are applied by scripts via `fixture()`, which auto-settles after application.
-For `eframe` apps, the required integration points are `FrameGuard` around rendered frames and
-`eguidev::raw_input_hook(...)` from the app raw-input hook. Fixture handlers registered with
+For `eframe` apps, the required integration point is `FrameGuard` around rendered frames; the
+first `FrameGuard` call registers an egui plugin that injects queued input into every viewport's
+pass, so there is no separate raw-input hook for apps to wire up. Fixture handlers registered with
 `DevMcp::on_fixture()` run directly through the attached runtime, while frame capture and
 wait/screenshot wakeups remain owned by the instrumentation boundary.
 
@@ -71,7 +72,8 @@ Failure points:
 ## Input pipeline (`eguidev`)
 
 1. Tool calls enqueue `InputAction` and `ViewportCommand` events into `ActionQueue`.
-2. `raw_input_hook` drains queued actions for the current viewport and appends egui events.
+2. The `InputInjectionPlugin` egui plugin's `input_hook` drains queued actions for the pass's
+   viewport and appends egui events, running inside `Context::begin_pass` for every viewport.
 3. Frame processing consumes injected egui events.
 4. `end_frame` captures widget/input snapshots, applies viewport commands, invokes the attached
    runtime hooks for frame waiters, screenshot capture, and fixture wakeups, and requests the next

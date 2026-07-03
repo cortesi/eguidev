@@ -8,8 +8,8 @@
 //!
 //! - choose `eframe::Renderer::Glow` for automation runs when possible
 //! - register a fixture handler with [`eguidev::DevMcp::on_fixture`]
-//! - wrap every frame in [`eguidev::FrameGuard`]
-//! - forward raw input through [`eguidev::raw_input_hook`]
+//! - wrap every frame in [`eguidev::FrameGuard`], which registers an egui
+//!   plugin on the first frame to inject input automatically
 //!
 //! The `wgpu` backend can exhibit idle-frame stalls in some `eframe`
 //! integrations, so the demo and examples prefer `Glow`.

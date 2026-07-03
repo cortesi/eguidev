@@ -1,17 +1,20 @@
 //! Cross-target instrumentation for AI-assisted egui development.
 //!
 //! `eguidev` captures widget state at frame boundaries and injects input
-//! through egui's `raw_input_hook`, keeping automation aligned with the app's
-//! real event loop. This crate is the instrumentation half of the automation
-//! stack: it is valid for native and `wasm32` builds, and it intentionally does
-//! not ship the embedded script runtime, MCP server, or screenshot machinery.
+//! through an egui plugin registered on the first instrumented frame, keeping
+//! automation aligned with the app's real event loop. This crate is the
+//! instrumentation half of the automation stack: it is valid for native and
+//! `wasm32` builds, and it intentionally does not ship the embedded script
+//! runtime, MCP server, or screenshot machinery.
 //!
 //! # Quick start
 //!
-//! Add a [`DevMcp`] handle to your app state, wrap each frame with
-//! [`FrameGuard`], and forward raw input to [`raw_input_hook`]. The handle
-//! stays inert until a native app opts into `eguidev_runtime` and attaches the
-//! embedded runtime in one bootstrap location.
+//! Add a [`DevMcp`] handle to your app state and wrap each frame with
+//! [`FrameGuard`]. Input injection is automatic from there: the first
+//! [`FrameGuard`] registers an egui plugin that drains queued input into
+//! every pass of every viewport, so apps do not need any raw-input wiring.
+//! The handle stays inert until a native app opts into `eguidev_runtime` and
+//! attaches the embedded runtime in one bootstrap location.
 //!
 //! ```rust
 //! use eframe::{App, egui};
@@ -42,18 +45,14 @@
 //!             }
 //!         });
 //!     }
-//!
-//!     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-//!         eguidev::raw_input_hook(&self.devmcp, ctx, raw_input);
-//!     }
 //! }
 //! ```
 //!
 //! # Build modes
 //!
 //! - **Cross-target instrumentation**: depend on `eguidev` only. [`DevMcp`],
-//!   [`FrameGuard`], [`raw_input_hook`], widget tagging, and fixtures all
-//!   compile for native and `wasm32` targets.
+//!   [`FrameGuard`], widget tagging, and fixtures all compile for native and
+//!   `wasm32` targets.
 //! - **Native embedded runtime**: add an app-local feature that enables the
 //!   optional `eguidev_runtime` dependency, then call
 //!   `eguidev_runtime::attach(devmcp)` in one bootstrap location. Keep that
@@ -140,10 +139,7 @@ mod viewports;
 mod widget_registry;
 
 pub use crate::{
-    devmcp::{
-        AutomationOptions, DevMcp, FrameGuard, clear_viewport, raw_input_hook,
-        raw_input_hook_for_viewport,
-    },
+    devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport},
     fixtures::FixtureHandler,
     instrument::{
         ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,

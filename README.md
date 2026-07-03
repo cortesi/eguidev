@@ -16,9 +16,10 @@ release updates.
 ## How It Works
 
 eguidev instruments your app from inside the process. It captures widget state
-at frame boundaries and injects input through egui's `raw_input_hook` before
-events are consumed. Automation stays aligned with the real event loop without
-pixel guessing.
+at frame boundaries and injects input through an egui plugin, registered
+automatically on the first instrumented frame, that runs before every
+viewport's pass consumes its input -- root, deferred, and immediate alike.
+Automation stays aligned with the real event loop without pixel guessing.
 
 The agent-facing surface is Luau, not fine-grained RPC. On native builds,
 `eguidev_runtime` runs scripts inside the app process against the latest
@@ -28,8 +29,9 @@ changes, and return structured results in a single round trip.
 ## Structure
 
 - **`eguidev` crate** -- instrument your egui app. Tag widgets with `dev_*`
-  helpers, wrap frames with `FrameGuard`, forward raw input. This is the
-  cross-target instrumentation layer and remains valid for `wasm32`.
+  helpers and wrap frames with `FrameGuard`; input injection is automatic
+  from there. This is the cross-target instrumentation layer and remains
+  valid for `wasm32`.
 - **`eguidev_runtime` crate** -- native-only embedded runtime. Attach it once
   in app bootstrap code to enable script evaluation, screenshots, smoketests,
   and the in-process MCP server.
@@ -50,10 +52,12 @@ For `eframe` apps, there are two practical integration rules:
 
 - Register a fixture handler with `DevMcp::on_fixture()` to apply named
   fixtures directly from the runtime without requiring a frame cycle.
-- Wrap rendered frames with `FrameGuard` and forward raw input through
-  `eguidev::raw_input_hook(...)`. When the runtime is attached, eguidev owns
-  repaint keep-alive at frame end and wait/screenshot paths report frame
-  health when a viewport stalls.
+- Wrap rendered frames with `FrameGuard`. Input injection is automatic from
+  there: the first `FrameGuard` registers an egui plugin that drains queued
+  input into every viewport's pass, so there is no raw-input wiring for apps
+  to do. When the runtime is attached, eguidev owns repaint keep-alive at
+  frame end and wait/screenshot paths report frame health when a viewport
+  stalls.
 - Prefer `eframe::Renderer::Glow` for automation runs. The `wgpu` backend can
   exhibit idle-frame stalls in some `eframe` integrations.
 

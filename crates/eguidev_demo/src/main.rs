@@ -836,9 +836,6 @@ impl DemoApp {
     ) {
         let devmcp = devmcp.clone();
         let ctx = ui.ctx().clone();
-        if devmcp.is_enabled() {
-            ctx.input_mut(|i| eguidev::raw_input_hook(&devmcp, &ctx, &mut i.raw));
-        }
         let _guard = FrameGuard::new(&devmcp, &ctx);
 
         if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -956,9 +953,6 @@ impl DemoApp {
     fn render_occluder(s: &mut DemoState, devmcp: &DevMcp, ui: &mut egui::Ui) {
         let devmcp = devmcp.clone();
         let ctx = ui.ctx().clone();
-        if devmcp.is_enabled() {
-            ctx.input_mut(|i| eguidev::raw_input_hook(&devmcp, &ctx, &mut i.raw));
-        }
         let _guard = FrameGuard::new(&devmcp, &ctx);
 
         if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -1093,10 +1087,6 @@ impl App for DemoApp {
         let mut s = self.state.lock().expect("demo state lock");
         Self::show_secondary_viewport(&mut s, &devmcp, &ctx);
         Self::show_occluder_viewport(&mut s, &devmcp, &ctx);
-    }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        eguidev::raw_input_hook(&self.devmcp, ctx, raw_input);
     }
 }
 
