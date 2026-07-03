@@ -110,7 +110,26 @@ Use `screenshot()` only when the question is genuinely visual: alignment,
 clipping, rendering quality, image content. Returned `ImageRef` values produce
 image blocks in the MCP response.
 Use `sample_pixels()` for exact fixed-color assertions; it samples RGBA data
-before screenshot JPEG encoding.
+before screenshot JPEG encoding. Prefer `hex` for exact color equality. `rgba`
+channels are Luau numbers, so use them for arithmetic thresholds only when that
+is clearer than an exact fixed-color check.
+
+
+## Background Automation
+
+On macOS automation runs, `eguidev_runtime::attach` keeps covered windows
+rendering by making AppKit report the window visible to winit/eframe. This is a
+local runtime shim, not an upstream eframe dependency.
+
+- `ViewportState.occluded` is the egui/winit value after that shim.
+- `ViewportState.os_occluded` is the real platform occlusion state when observed.
+- `ViewportState.os_minimized` is the real platform minimized state when observed.
+- `EGUIDEV_FOREGROUND` disables the background automation tweaks for manual
+  foreground debugging.
+
+Use `os_occluded` for strict occlusion assertions when it is present. Keep
+default smoke and script flows focused on whether frames, widgets, screenshots,
+and pixel samples continue to work while the app is covered.
 
 
 ## Smoketest Scripts

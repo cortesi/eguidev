@@ -54,6 +54,8 @@ pub struct ScriptResult {
     pub message: Option<String>,
     /// Logs emitted by the script.
     pub logs: Vec<String>,
+    /// Verbose failure details from the script runtime.
+    pub details: Option<String>,
 }
 
 impl ScriptResult {
@@ -64,16 +66,28 @@ impl ScriptResult {
             elapsed_ms,
             message: None,
             logs,
+            details: None,
         }
     }
 
     fn fail(path: String, elapsed_ms: u64, message: String, logs: Vec<String>) -> Self {
+        Self::fail_with_details(path, elapsed_ms, message, logs, None)
+    }
+
+    fn fail_with_details(
+        path: String,
+        elapsed_ms: u64,
+        message: String,
+        logs: Vec<String>,
+        details: Option<String>,
+    ) -> Self {
         Self {
             path,
             status: ScriptStatus::Fail,
             elapsed_ms,
             message: Some(message),
             logs,
+            details,
         }
     }
 
@@ -84,6 +98,7 @@ impl ScriptResult {
             elapsed_ms: 0,
             message: Some(message),
             logs: Vec::new(),
+            details: None,
         }
     }
 }
@@ -151,6 +166,9 @@ impl SuiteResult {
                         "[FAIL] {} ({}ms): {}",
                         script.path, script.elapsed_ms, message
                     ));
+                    if verbose && let Some(details) = &script.details {
+                        lines.extend(details.lines().map(|line| format!("DETAIL: {line}")));
+                    }
                 }
                 ScriptStatus::Skip => {
                     lines.push(format!(
@@ -314,11 +332,13 @@ where
         }
 
         let message = script_failure_summary(&outcome);
-        results.push(ScriptResult::fail(
+        let details = script_failure_details(&outcome);
+        results.push(ScriptResult::fail_with_details(
             relative_display,
             elapsed_ms,
             message,
             outcome.logs,
+            details,
         ));
         if config.fail_fast {
             append_skipped(
@@ -448,6 +468,13 @@ fn script_failure_summary(outcome: &ScriptEvalOutcome) -> String {
         Some(location) => format!("{} at{}", error.message, location),
         None => error.message.clone(),
     }
+}
+
+fn script_failure_details(outcome: &ScriptEvalOutcome) -> Option<String> {
+    let details = outcome.error.as_ref()?.details.as_ref()?;
+    serde_json::to_string_pretty(details)
+        .ok()
+        .or_else(|| Some(details.to_string()))
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -701,11 +728,12 @@ mod tests {
                     12,
                     vec!["hello".to_string()],
                 ),
-                super::ScriptResult::fail(
+                super::ScriptResult::fail_with_details(
                     "20_fail.luau".to_string(),
                     18,
                     "boom".to_string(),
                     Vec::new(),
+                    Some("{\n  \"kind\": \"widget\"\n}".to_string()),
                 ),
             ],
             elapsed_ms: 30,
@@ -717,6 +745,11 @@ mod tests {
             lines
                 .iter()
                 .any(|line| line.contains("[FAIL] 20_fail.luau (18ms): boom"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "DETAIL:   \"kind\": \"widget\"")
         );
         assert!(
             lines

@@ -339,13 +339,18 @@ fn promote_integer_numbers_to_luau_numbers(value: &mut Value) {
                 promote_integer_numbers_to_luau_numbers(value);
             }
         }
+        Value::Array(values) => {
+            for value in values {
+                promote_integer_numbers_to_luau_numbers(value);
+            }
+        }
         Value::Number(number) => {
             if let Some(value) = number.as_i64() {
                 *number = serde_json::Number::from_f64(value as f64)
                     .expect("script argument integers convert to finite Luau numbers");
             }
         }
-        Value::Array(_) | Value::Null | Value::Bool(_) | Value::String(_) => {}
+        Value::Null | Value::Bool(_) | Value::String(_) => {}
     }
 }
 
@@ -3413,7 +3418,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{is_supported_by_initial_ruau_slice, run_script_eval_blocking};
+    use super::{
+        is_supported_by_initial_ruau_slice, promote_integer_numbers_to_luau_numbers,
+        run_script_eval_blocking,
+    };
     use crate::{
         registry::Inner,
         runtime::Runtime,
@@ -3930,6 +3938,28 @@ return args.count"#
         );
         assert!(outcome.success, "{outcome:?}");
         assert_eq!(outcome.value, Some(json!(4)));
+    }
+
+    #[test]
+    fn nested_sample_arrays_are_promoted_for_luau_arithmetic() {
+        let mut value = json!({
+            "samples": [
+                {
+                    "position": { "x": 12.5, "y": 8.0 },
+                    "physical": [25, 16],
+                    "rgba": [47, 128, 237, 255],
+                    "hex": "#2f80edff",
+                }
+            ]
+        });
+
+        promote_integer_numbers_to_luau_numbers(&mut value);
+
+        let sample = &value["samples"][0];
+        assert_eq!(sample["rgba"][0].as_f64(), Some(47.0));
+        assert_eq!(sample["rgba"][0].as_i64(), None);
+        assert_eq!(sample["rgba"][0], json!(47.0));
+        assert_eq!(sample["physical"][0].as_f64(), Some(25.0));
     }
 
     fn make_entry(id: &str, native_id: u64, role: WidgetRole) -> WidgetRegistryEntry {

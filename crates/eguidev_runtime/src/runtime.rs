@@ -6,6 +6,8 @@ use egui::Context;
 use eguidev::internal::{devmcp::RuntimeHooks, registry::Inner};
 use tokio::sync::Notify;
 
+#[cfg(target_os = "macos")]
+use crate::macos::platform_window_states;
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
@@ -139,6 +141,10 @@ impl Runtime {
             ctx.request_repaint();
         }
         inner.viewports.update_viewports(ctx);
+        #[cfg(target_os = "macos")]
+        inner
+            .viewports
+            .merge_platform_state(&platform_window_states());
         inner.paint_overlays(ctx);
         self.frame_notify.notify_waiters();
     }

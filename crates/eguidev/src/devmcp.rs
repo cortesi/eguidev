@@ -5,6 +5,7 @@ use std::{
     any::Any,
     fmt,
     sync::{Arc, atomic::Ordering},
+    time::Duration,
 };
 
 use egui::Context;
@@ -16,6 +17,8 @@ use crate::{
     registry::Inner,
     types::FixtureSpec,
 };
+
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, Default)]
 enum DevMcpState {
@@ -192,6 +195,7 @@ impl DevMcp {
         };
         swallow_panic("begin_frame", || {
             let viewport_id = ctx.viewport_id();
+            inner.begin_frame(viewport_id);
             inner.capture_context(viewport_id, ctx);
             if let Some(hooks) = inner.runtime_hooks() {
                 let events = ctx.input(|input| input.events.clone());
@@ -228,16 +232,20 @@ impl DevMcp {
     }
 
     fn finish_frame(&self, inner: &Arc<Inner>, ctx: &Context) {
-        inner.widgets.finalize_registry(ctx.viewport_id());
+        let viewport_id = ctx.viewport_id();
+        inner.widgets.finalize_registry(viewport_id);
         let next_frame = inner.frame_count() + 1;
+        let fixture_epoch = inner
+            .finish_frame_fixture_epoch(viewport_id)
+            .unwrap_or_else(|| inner.fixture_epoch());
         inner
             .viewports
-            .capture_input_snapshot(ctx, inner.fixture_epoch(), next_frame);
+            .capture_input_snapshot(ctx, fixture_epoch, next_frame);
         inner.advance_frame();
         if let Some(hooks) = inner.runtime_hooks() {
             hooks.on_frame_end(inner, ctx);
             if inner.automation_options().keep_alive {
-                ctx.request_repaint();
+                ctx.request_repaint_after(KEEP_ALIVE_INTERVAL);
             }
         }
     }
@@ -382,7 +390,7 @@ mod inactive_tests {
     use std::{
         any::Any,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering as AtomicOrdering},
         },
     };
@@ -492,17 +500,23 @@ mod inactive_tests {
         let hooks: Arc<dyn RuntimeHooks> = Arc::new(CountingRuntimeHooks::default());
         let devmcp = DevMcp::new().activate_runtime(inner, hooks);
         let ctx = Context::default();
-        let repaint_count = Arc::new(AtomicUsize::new(0));
-        let repaint_count_for_callback = Arc::clone(&repaint_count);
-        ctx.set_request_repaint_callback(move |_| {
-            repaint_count_for_callback.fetch_add(1, AtomicOrdering::Relaxed);
+        let repaint_delays = Arc::new(Mutex::new(Vec::new()));
+        let repaint_delays_for_callback = Arc::clone(&repaint_delays);
+        ctx.set_request_repaint_callback(move |info| {
+            repaint_delays_for_callback
+                .lock()
+                .expect("repaint delay lock")
+                .push(info.delay);
         });
 
         {
             let _guard = FrameGuard::new(&devmcp, &ctx);
         }
 
-        assert_eq!(repaint_count.load(AtomicOrdering::Relaxed), 1);
+        let repaint_delays = repaint_delays.lock().expect("repaint delay lock");
+        assert_eq!(repaint_delays.len(), 1);
+        assert!(repaint_delays[0] > Duration::from_millis(200));
+        assert!(repaint_delays[0] <= KEEP_ALIVE_INTERVAL);
     }
 
     #[test]

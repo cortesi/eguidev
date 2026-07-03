@@ -52,6 +52,7 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   scripts can override this with `configure({ animations = true })`.
 - `Viewport:sample_pixels(...)` samples exact `ColorImage` RGBA data before JPEG encoding,
   enabling fixed-color assertions for painter-only regions published with `publish_rect_meta`.
+  Use `hex` for exact color equality; use `rgba` channel arithmetic only for threshold checks.
 
 ## Intentional strict semantics
 

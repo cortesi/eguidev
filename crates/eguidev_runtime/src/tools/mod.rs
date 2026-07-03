@@ -707,7 +707,7 @@ impl DevMcpServer {
             &self.inner,
             timeout_ms,
             DEFAULT_POLL_INTERVAL_MS,
-            None,
+            Some(egui::ViewportId::ROOT),
             None,
             || async {
                 self.inner.request_repaint_all();
@@ -752,14 +752,16 @@ impl DevMcpServer {
                 status_lines.join("\n")
             )
         };
-        Err(
-            ToolError::new(ErrorCode::Timeout, message).with_details(json!({
-                "fixture": fixture_name,
-                "elapsed_ms": elapsed_ms,
-                "statuses": snapshot.statuses,
-                "observation": observation,
-            })),
+        Err(ToolError::new(
+            ErrorCode::Timeout,
+            wait_timeout_message(message, &observation),
         )
+        .with_details(json!({
+            "fixture": fixture_name,
+            "elapsed_ms": elapsed_ms,
+            "statuses": snapshot.statuses,
+            "observation": observation,
+        })))
     }
 
     async fn initialize(
@@ -1092,12 +1094,7 @@ impl DevMcpServer {
         Err(ToolError::new(
             ErrorCode::Timeout,
             wait_timeout_message(
-                format!(
-                    "Timed out waiting for {count} frame(s) after {timeout_ms}ms. \
-Ensure the app wraps rendered frames in FrameGuard, wires \
-eguidev::raw_input_hook, leaves runtime keep-alive enabled, and uses \
-Renderer::Glow when backend idle stalls matter."
-                ),
+                format!("Timed out waiting for {count} frame(s) after {timeout_ms}ms."),
                 &observation,
             ),
         )
@@ -3758,6 +3755,80 @@ return { first = catalog[1].name, count = #catalog }"#
                 .expect("status detail")
                 .contains("post-fixture capture"),
             "timeout details should explain the stale capture"
+        );
+    }
+
+    #[tokio::test]
+    async fn fixture_timeout_reports_zero_frame_observation_once() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("blocked", "Blocked fixture.").anchor("status"),
+        ]);
+        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        let server = DevMcpServer::new(Arc::clone(&inner));
+
+        let result = server
+            .script_eval(
+                "configure({ timeout_ms = 20, poll_interval_ms = 1 }) fixture(\"blocked\")"
+                    .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], false);
+        let message = json["error"]["message"].as_str().expect("timeout message");
+        assert_eq!(
+            message
+                .matches("Ensure the app wraps rendered frames")
+                .count(),
+            1,
+            "guidance sentence should appear once"
+        );
+        let details = &json["error"]["details"];
+        assert_eq!(details["observation"]["target_viewport_id"], "root");
+        assert_eq!(details["observation"]["frames_observed"], 0);
+        assert_eq!(details["observation"]["stalled"], true);
+        assert_eq!(
+            details["observation"]["diagnosis"],
+            "No target viewport frames were observed while waiting."
+        );
+    }
+
+    #[test]
+    fn frame_started_before_fixture_epoch_does_not_satisfy_fixture_capture() {
+        let inner = Arc::new(Inner::new());
+        let ctx = egui::Context::default();
+        let viewport_id = egui::ViewportId::ROOT;
+        let raw_input = egui::RawInput {
+            viewport_id,
+            ..Default::default()
+        };
+        drop(ctx.run_ui(raw_input, |_| {}));
+
+        inner.begin_frame(viewport_id);
+        let fixture_epoch = inner.begin_fixture_epoch();
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("menu.item", 1, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+        inner.viewports.capture_input_snapshot(
+            &ctx,
+            inner
+                .finish_frame_fixture_epoch(viewport_id)
+                .expect("frame start epoch"),
+            inner.frame_count() + 1,
+        );
+
+        let capture = inner
+            .viewports
+            .capture_snapshot(viewport_id)
+            .expect("capture snapshot");
+        assert!(
+            capture.fixture_epoch < fixture_epoch,
+            "mid-frame captures must not be stamped with the new fixture epoch"
         );
     }
 

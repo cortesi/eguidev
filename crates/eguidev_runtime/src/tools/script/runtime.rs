@@ -408,6 +408,8 @@ impl ScriptRuntime {
                 "focused": snapshot.focused,
                 "minimized": snapshot.minimized,
                 "occluded": snapshot.occluded,
+                "os_minimized": snapshot.os_minimized,
+                "os_occluded": snapshot.os_occluded,
                 "maximized": snapshot.maximized,
                 "fullscreen": snapshot.fullscreen,
                 "frame_count": self.server.inner.frame_count(),

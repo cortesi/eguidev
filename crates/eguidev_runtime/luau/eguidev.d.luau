@@ -227,6 +227,12 @@ export type ViewportState = {
     focused: boolean,
     minimized: boolean?,
     occluded: boolean?,
+    --- Real platform minimized state when eguidev can observe it.
+    os_minimized: boolean?,
+    --- Real platform occlusion state when eguidev can observe it. On macOS
+    --- automation runs this can differ from `occluded`, which is forced false
+    --- so eframe keeps rendering in covered windows.
+    os_occluded: boolean?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_count: number,
@@ -237,8 +243,8 @@ export type ViewportState = {
 --- Exact pixel sampled from a fresh viewport capture.
 --- `position` is the requested egui logical point. `physical` is the sampled
 --- pixel coordinate after multiplying by the viewport's pixels-per-point and
---- flooring. `rgba` preserves alpha from the captured ColorImage; `hex` is
---- `#rrggbbaa`.
+--- flooring. `rgba` values are Luau numbers and safe for arithmetic; `hex` is
+--- the preferred exact fixed-color assertion.
 export type PixelSample = {
     position: Pos,
     physical: { number },

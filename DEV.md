@@ -53,6 +53,8 @@ cargo xtask smoke-occlusion
 Smoke scripts should prefer semantic waits and exact visual assertions over frame sleeps.
 Use `Viewport:sample_pixels()` for fixed-color painter checks, and use
 `Viewport:dismiss_popups()` or `fixture()` boundaries to isolate transient menus between tests.
+Use `hex` for exact color equality; `rgba` channels and geometry values are script-facing
+numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
 
 ## Background automation (occluded windows)
 
@@ -64,11 +66,21 @@ can revive it. `eguidev_runtime::attach` therefore installs two macOS process tw
 - `-[NSWindow occlusionState]` is replaced to always report the window visible, so winit
   never emits `Occluded(true)` and eframe keeps running the UI, painting, and servicing
   screenshots in a fully covered background window.
+- The original `occlusionState` and `isMiniaturized` values are still recorded locally.
+  Script and status surfaces expose them as `ViewportState.os_occluded` and
+  `ViewportState.os_minimized`. On macOS automation runs, `ViewportState.occluded` is
+  the spoofed egui/winit value; use `os_occluded` when a test needs the real platform
+  state.
 - The app is demoted to the accessory activation policy and deactivated, so launching an
   instrumented app does not raise its window or steal the developer's focus.
 
 Both tweaks apply only when automation is attached (`--dev-mcp` style runs) and can be
 disabled by setting `EGUIDEV_FOREGROUND` in the app environment. Never work around an
 occlusion stall by raising the app window; developers keep using the machine while
-automation runs. The long-term plan is an upstream eframe `NativeOptions` switch to run
-the UI for occluded windows, which would replace the occlusion tweak.
+automation runs.
+
+The local occlusion workaround is macOS-specific. Linux and Windows background occlusion
+semantics are out of scope until a concrete downstream workflow needs them. Minimized
+macOS windows should be treated separately from covered windows: if `os_minimized` is
+true and captures stop, scripts should report that automation is paused by minimization
+rather than trying to raise the window.

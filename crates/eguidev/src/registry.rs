@@ -41,6 +41,7 @@ pub struct Inner {
     animation_baselines: Mutex<HashMap<egui::ViewportId, f32>>,
     widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValue>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
+    frame_fixture_epochs: Mutex<HashMap<egui::ViewportId, u64>>,
     next_request_id: AtomicU64,
     frame_count: AtomicU64,
     fixture_epoch: AtomicU64,
@@ -106,6 +107,7 @@ impl Inner {
             animation_baselines: Mutex::new(HashMap::new()),
             widget_value_updates: Mutex::new(HashMap::new()),
             scroll_overrides: Mutex::new(HashMap::new()),
+            frame_fixture_epochs: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
             fixture_epoch: AtomicU64::new(0),
@@ -348,6 +350,15 @@ impl Inner {
         lock(&self.widget_value_updates, "widget values lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         self.actions.clear_all();
+    }
+
+    pub fn begin_frame(&self, viewport_id: egui::ViewportId) {
+        let epoch = self.fixture_epoch();
+        lock(&self.frame_fixture_epochs, "frame fixture epochs lock").insert(viewport_id, epoch);
+    }
+
+    pub fn finish_frame_fixture_epoch(&self, viewport_id: egui::ViewportId) -> Option<u64> {
+        lock(&self.frame_fixture_epochs, "frame fixture epochs lock").remove(&viewport_id)
     }
 
     pub fn advance_frame(&self) {

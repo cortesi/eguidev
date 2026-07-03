@@ -108,6 +108,8 @@ repainted. Disable with `settle: #{enabled: false}`.
 
 `Viewport:sample_pixels(...)` captures one viewport image and samples all requested egui logical
 points from the exact `ColorImage` before screenshot JPEG encoding. Scripts use this for fixed-color
-or painter-only assertions. Painter-only regions can be published with
+or painter-only assertions. Use `hex` for exact color equality; `rgba` channels are script-facing
+numbers and can be mixed with geometry in arithmetic threshold checks. Painter-only regions can be
+published with
 `eguidev::publish_rect_meta(ui, id, rect, meta)`, which transforms the rect through the current
 layer and records it as enabled and unfocused by default.

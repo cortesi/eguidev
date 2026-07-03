@@ -25,6 +25,7 @@ use crate::{
 
 const FRAME_DURATION_MS: u64 = 16;
 const STALLED_FRAME_AGE_MS: u64 = 500;
+const NO_TARGET_FRAMES_DIAGNOSIS: &str = "No target viewport frames were observed while waiting.";
 
 #[derive(Debug, Clone)]
 pub struct WaitObservationStart {
@@ -44,6 +45,7 @@ pub struct WaitObservation {
     pub frames_observed: Option<u64>,
     pub last_frame_age_ms: Option<u64>,
     pub stalled: bool,
+    pub diagnosis: Option<&'static str>,
 }
 
 impl WaitObservationStart {
@@ -68,7 +70,9 @@ impl WaitObservationStart {
         let frames_observed = match (self.start_target_capture_frame, end_target_capture_frame) {
             (Some(start), Some(end)) => Some(end.saturating_sub(start)),
             (None, Some(end)) => Some(end),
-            _ => None,
+            (None, None) if self.target_viewport_id.is_some() => Some(0),
+            (None, None) => None,
+            (Some(_), None) => Some(0),
         };
         let last_frame_age_ms = self
             .target_viewport_id
@@ -76,6 +80,7 @@ impl WaitObservationStart {
             .map(|health| health.age().as_millis() as u64);
         let stalled = frames_observed == Some(0)
             || last_frame_age_ms.is_some_and(|age_ms| age_ms >= STALLED_FRAME_AGE_MS);
+        let diagnosis = (frames_observed == Some(0)).then_some(NO_TARGET_FRAMES_DIAGNOSIS);
         WaitObservation {
             target_viewport_id: self.target_viewport_label.clone(),
             start_target_capture_frame: self.start_target_capture_frame,
@@ -85,6 +90,7 @@ impl WaitObservationStart {
             frames_observed,
             last_frame_age_ms,
             stalled,
+            diagnosis,
         }
     }
 }
@@ -706,6 +712,8 @@ pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
         "focused": snapshot.focused,
         "minimized": snapshot.minimized,
         "occluded": snapshot.occluded,
+        "os_minimized": snapshot.os_minimized,
+        "os_occluded": snapshot.os_occluded,
         "maximized": snapshot.maximized,
         "fullscreen": snapshot.fullscreen,
     })

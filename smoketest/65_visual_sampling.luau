@@ -8,6 +8,8 @@ local center = {
 local samples = vp:sample_pixels({ center })
 
 assert(samples[1].hex == "#2f80edff", "sample target color should be exact")
+local channel_math = samples[1].rgba[1] + ((target.rect.max.x - target.rect.min.x) / 2)
+assert(channel_math > samples[1].rgba[1], "sampled rgba values should support arithmetic")
 
 vp:widget_get("basic.menu.actions"):click()
 assert_widget_exists("basic.menu.actions.mark_ready")

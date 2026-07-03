@@ -17,7 +17,13 @@
 //! Set `EGUIDEV_FOREGROUND` in the app environment to skip both tweaks and
 //! get ordinary window behavior under automation.
 
-use std::{env, mem, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    env,
+    ffi::{CStr, c_char},
+    mem,
+    sync::{Mutex, OnceLock},
+};
 
 use objc2::{
     MainThreadMarker, class, msg_send,
@@ -25,10 +31,17 @@ use objc2::{
     sel,
 };
 
+use crate::viewports::PlatformViewportState;
+
 /// `NSWindowOcclusionStateVisible`.
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
 /// `NSApplicationActivationPolicyAccessory`.
 const ACTIVATION_POLICY_ACCESSORY: isize = 1;
+
+type OcclusionStateFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> usize;
+
+static ORIGINAL_OCCLUSION_STATE: OnceLock<OcclusionStateFn> = OnceLock::new();
+static WINDOW_STATES: OnceLock<Mutex<HashMap<usize, PlatformViewportState>>> = OnceLock::new();
 
 /// Install the background-automation tweaks once per process.
 pub fn install_background_automation() {
@@ -42,10 +55,27 @@ pub fn install_background_automation() {
     });
 }
 
+pub(crate) fn platform_window_states() -> Vec<PlatformViewportState> {
+    let Some(states) = WINDOW_STATES.get() else {
+        return Vec::new();
+    };
+    states
+        .lock()
+        .expect("platform window states lock poisoned")
+        .values()
+        .cloned()
+        .collect()
+}
+
 /// Replace `-[NSWindow occlusionState]` so every window always reports
 /// itself visible, keeping eframe rendering when the window is covered.
 fn spoof_occlusion_state() {
-    unsafe extern "C-unwind" fn always_visible(_this: *mut AnyObject, _sel: Sel) -> usize {
+    unsafe extern "C-unwind" fn always_visible(this: *mut AnyObject, sel: Sel) -> usize {
+        let real_state = ORIGINAL_OCCLUSION_STATE
+            .get()
+            .map(|original| unsafe { original(this, sel) })
+            .unwrap_or(OCCLUSION_STATE_VISIBLE);
+        record_window_state(this, real_state);
         OCCLUSION_STATE_VISIBLE
     }
 
@@ -55,15 +85,51 @@ fn spoof_occlusion_state() {
     let Some(method) = class.instance_method(sel!(occlusionState)) else {
         return;
     };
-    let imp = always_visible as unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> usize;
+    let imp = always_visible as OcclusionStateFn;
     // SAFETY: the replacement implementation matches the original method
     // signature (no arguments, returns `NSUInteger`) and never unwinds.
     unsafe {
-        let _ = method.set_implementation(mem::transmute::<
-            unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> usize,
-            Imp,
-        >(imp));
+        let original = method.set_implementation(mem::transmute::<OcclusionStateFn, Imp>(imp));
+        match ORIGINAL_OCCLUSION_STATE.set(mem::transmute::<Imp, OcclusionStateFn>(original)) {
+            Ok(()) | Err(_) => {}
+        }
     }
+}
+
+fn record_window_state(window: *mut AnyObject, real_state: usize) {
+    if window.is_null() {
+        return;
+    }
+    let state = PlatformViewportState {
+        title: unsafe { window_title(window) },
+        os_minimized: Some(unsafe { window_is_minimized(window) }),
+        os_occluded: Some(real_state & OCCLUSION_STATE_VISIBLE == 0),
+    };
+    let states = WINDOW_STATES.get_or_init(|| Mutex::new(HashMap::new()));
+    states
+        .lock()
+        .expect("platform window states lock poisoned")
+        .insert(window as usize, state);
+}
+
+unsafe fn window_is_minimized(window: *mut AnyObject) -> bool {
+    unsafe { msg_send![window, isMiniaturized] }
+}
+
+unsafe fn window_title(window: *mut AnyObject) -> Option<String> {
+    let title: *mut AnyObject = unsafe { msg_send![window, title] };
+    if title.is_null() {
+        return None;
+    }
+    let bytes: *const c_char = unsafe { msg_send![title, UTF8String] };
+    if bytes.is_null() {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(bytes) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Switch the app to the accessory activation policy and drop any activation

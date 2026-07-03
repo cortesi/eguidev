@@ -26,10 +26,17 @@ local function wait_for_occluder(label: string): boolean
     return true
 end
 
+local function effective_occluded(state: ViewportState): boolean
+    if state.os_occluded ~= nil then
+        return state.os_occluded == true
+    end
+    return state.occluded == true
+end
+
 local function root_occlusion_matches(expected_occluded: boolean, label: string): boolean
     local ok, state_or_error = pcall(function()
         return root():wait_for(function(state)
-            return (state.occluded == true) == expected_occluded
+            return effective_occluded(state) == expected_occluded
         end)
     end)
     if not ok then
@@ -37,7 +44,7 @@ local function root_occlusion_matches(expected_occluded: boolean, label: string)
         return false
     end
     local state = state_or_error :: ViewportState
-    return state.occluded == true
+    return effective_occluded(state)
 end
 
 fixture("basic.default")
@@ -55,8 +62,8 @@ if force_occluder then
         assert(initial_occluded, "root viewport should start occluded when the occluder is forced")
     end
 else
-    if normal.occluded == true then
-        log("root viewport started with platform occlusion already reported")
+    if effective_occluded(normal) then
+        log("root viewport started with occlusion already reported")
     end
 end
 
@@ -65,7 +72,7 @@ fixture("viewports.occluded")
 local cover_present = wait_for_occluder("occluder viewport did not appear")
 assert(cover_present, "occluder viewport should be present")
 
-local reported_occlusion = root():state().occluded == true
+local reported_occlusion = effective_occluded(root():state())
 
 if require_occlusion then
     reported_occlusion = root_occlusion_matches(true, "root viewport did not report occluded")
@@ -75,7 +82,7 @@ elseif not reported_occlusion then
 end
 
 fixture("basic.default")
-local reset_occluded = root():state().occluded == true
+local reset_occluded = effective_occluded(root():state())
 if force_occluder then
     assert(
         wait_for_occluder("forced occluder disappeared after reset"),
@@ -86,8 +93,8 @@ if force_occluder then
         assert(reset_occluded, "root viewport should remain occluded while the occluder is forced")
     end
 else
-    if reset_occluded then
-        log("root viewport still reported platform occlusion after reset")
+    if effective_occluded(root():state()) then
+        log("root viewport still reported occlusion after reset")
     end
 end
 

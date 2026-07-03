@@ -57,8 +57,17 @@ pub struct ViewportSnapshot {
     pub parent_viewport_id: Option<String>,
     pub minimized: Option<bool>,
     pub occluded: Option<bool>,
+    pub os_minimized: Option<bool>,
+    pub os_occluded: Option<bool>,
     pub maximized: Option<bool>,
     pub fullscreen: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlatformViewportState {
+    pub title: Option<String>,
+    pub os_minimized: Option<bool>,
+    pub os_occluded: Option<bool>,
 }
 
 pub struct ViewportState {
@@ -106,6 +115,9 @@ impl ViewportState {
             let ppp = info.native_pixels_per_point.unwrap_or(pixels_per_point);
             let focused = info.focused.unwrap_or(focused);
             lookup.insert(viewport_id_str.clone(), viewport_id);
+            let platform = snapshots
+                .get(&viewport_id_str)
+                .map(|snapshot| (snapshot.os_minimized, snapshot.os_occluded));
             snapshots.insert(
                 viewport_id_str.clone(),
                 ViewportSnapshot {
@@ -118,6 +130,8 @@ impl ViewportState {
                     parent_viewport_id: info.parent.map(viewport_id_to_string),
                     minimized: info.minimized,
                     occluded: info.occluded,
+                    os_minimized: platform.and_then(|(minimized, _)| minimized),
+                    os_occluded: platform.and_then(|(_, occluded)| occluded),
                     maximized: info.maximized,
                     fullscreen: info.fullscreen,
                 },
@@ -126,6 +140,31 @@ impl ViewportState {
         let mut ordered = snapshots.into_values().collect::<Vec<_>>();
         ordered.sort_by(|left, right| left.viewport_id.cmp(&right.viewport_id));
         *stored = ordered;
+    }
+
+    pub fn merge_platform_state(&self, states: &[PlatformViewportState]) {
+        if states.is_empty() {
+            return;
+        }
+        let mut stored = lock(&self.viewports_snapshot, "viewports snapshot lock");
+        for snapshot in stored.iter_mut() {
+            let title_match = states.iter().find(|state| {
+                matches!(
+                    (state.title.as_deref(), snapshot.title.as_deref()),
+                    (Some(left), Some(right)) if left == right
+                )
+            });
+            let fallback = (states.len() == 1).then(|| &states[0]);
+            let Some(state) = title_match.or(fallback) else {
+                continue;
+            };
+            if state.os_minimized.is_some() {
+                snapshot.os_minimized = state.os_minimized;
+            }
+            if state.os_occluded.is_some() {
+                snapshot.os_occluded = state.os_occluded;
+            }
+        }
     }
 
     pub fn remember_viewport_id(&self, viewport_id: egui::ViewportId) {
@@ -306,5 +345,38 @@ mod tests {
         assert_eq!(health.frames_observed_since(4), 3);
         assert_eq!(state.frames_observed_since(viewport_id, 8), Some(0));
         assert!(health.age() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn merge_platform_state_matches_viewport_titles() {
+        let state = ViewportState::new();
+        let ctx = Context::default();
+        let mut raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        raw_input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                title: Some("App".to_string()),
+                ..Default::default()
+            },
+        );
+        drop(ctx.run_ui(raw_input, |_| {}));
+        state.update_viewports(&ctx);
+
+        state.merge_platform_state(&[PlatformViewportState {
+            title: Some("App".to_string()),
+            os_minimized: Some(false),
+            os_occluded: Some(true),
+        }]);
+
+        let snapshot = state
+            .viewports_snapshot()
+            .into_iter()
+            .find(|snapshot| snapshot.viewport_id == "root")
+            .expect("root snapshot");
+        assert_eq!(snapshot.os_minimized, Some(false));
+        assert_eq!(snapshot.os_occluded, Some(true));
     }
 }

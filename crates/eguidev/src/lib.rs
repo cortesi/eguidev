@@ -201,7 +201,9 @@ pub mod internal {
     }
 
     pub mod viewports {
-        pub use crate::viewports::{FrameHealth, InputSnapshot, ViewportSnapshot, ViewportState};
+        pub use crate::viewports::{
+            FrameHealth, InputSnapshot, PlatformViewportState, ViewportSnapshot, ViewportState,
+        };
     }
 
     pub mod widget_registry {
