@@ -50,6 +50,10 @@ For `eframe` apps, there are two practical integration rules:
 
 - Register a fixture handler with `DevMcp::on_fixture()` to apply named
   fixtures directly from the runtime without requiring a frame cycle.
+- Wrap rendered frames with `FrameGuard` and forward raw input through
+  `eguidev::raw_input_hook(...)`. When the runtime is attached, eguidev owns
+  repaint keep-alive at frame end and wait/screenshot paths report frame
+  health when a viewport stalls.
 - Prefer `eframe::Renderer::Glow` for automation runs. The `wgpu` backend can
   exhibit idle-frame stalls in some `eframe` integrations.
 
@@ -59,7 +63,8 @@ Use `DevUiExt` for standard egui widgets whenever possible. For hand-rolled
 controls, instrument both directions:
 
 - Record the widget's current state with `track_response_full(...)` or
-  `id_with_meta(...)`.
+  `id_with_meta(...)`. Use `publish_rect_meta(...)` for painter-drawn regions
+  that have no `egui::Response`.
 - Consume queued `set_value(...)` overrides with
   `take_widget_value_override(...)` before rendering the custom control.
 

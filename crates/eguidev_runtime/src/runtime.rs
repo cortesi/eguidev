@@ -1,6 +1,6 @@
 //! Embedded runtime attachment for DevMCP automation.
 
-use std::{any::Any, sync::Arc, time::Duration};
+use std::{any::Any, sync::Arc};
 
 use egui::Context;
 use eguidev::internal::{devmcp::RuntimeHooks, registry::Inner};
@@ -10,7 +10,7 @@ use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
     server::start_server,
-    tools::{DEFAULT_POLL_INTERVAL_MS, DEFAULT_SCRIPT_EVAL_TIMEOUT_MS, script::run_script_eval},
+    tools::{DEFAULT_SCRIPT_EVAL_TIMEOUT_MS, script::run_script_eval},
 };
 
 #[derive(Debug)]
@@ -141,7 +141,6 @@ impl Runtime {
         inner.viewports.update_viewports(ctx);
         inner.paint_overlays(ctx);
         self.frame_notify.notify_waiters();
-        ctx.request_repaint_after(Duration::from_millis(DEFAULT_POLL_INTERVAL_MS));
     }
 }
 
@@ -167,6 +166,12 @@ pub fn attach(devmcp: DevMcp) -> DevMcp {
 fn attach_internal(devmcp: DevMcp, should_start_server: bool) -> DevMcp {
     if devmcp.is_enabled() {
         return devmcp;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use crate::macos::install_background_automation;
+        install_background_automation();
     }
 
     let inner = Arc::new(Inner::new());

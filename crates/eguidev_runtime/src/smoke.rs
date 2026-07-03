@@ -275,13 +275,13 @@ where
             }
         };
 
-        let elapsed_ms = script_start.elapsed().as_millis() as u64;
         let outcome = execute(ScriptRunRequest {
             path: relative_display.clone(),
             source,
             timeout_ms: config.script_timeout.map(duration_to_millis),
             args: config.args.clone(),
         });
+        let elapsed_ms = script_start.elapsed().as_millis() as u64;
 
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -458,9 +458,10 @@ fn normalize_path(path: &Path) -> String {
 mod tests {
     use std::{
         fs,
+        hint::spin_loop,
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use tokio::runtime::Builder;
@@ -645,6 +646,48 @@ mod tests {
         assert_eq!(result.passed(), 1);
         assert_eq!(result.failed(), 1);
         assert_eq!(result.skipped(), 1);
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn run_suite_with_measures_elapsed_after_execution() {
+        let root = test_root("run_suite_with_measures_elapsed_after_execution");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_slow.luau"), "return true").expect("write script");
+
+        let result = run_suite_with(
+            &SuiteConfig {
+                suite_dir,
+                scripts: Vec::new(),
+                suite_timeout: Duration::from_secs(10),
+                script_timeout: None,
+                fail_fast: true,
+                args: ScriptArgs::default(),
+            },
+            |_request: ScriptRunRequest| {
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_millis(5) {
+                    spin_loop();
+                }
+                Ok(serde_json::from_value(serde_json::json!({
+                    "success": true,
+                    "logs": [],
+                    "assertions": [],
+                    "timing": {
+                        "compile_ms": 0,
+                        "exec_ms": 0,
+                        "total_ms": 0
+                    }
+                }))
+                .expect("deserialize success outcome"))
+            },
+        );
+
+        assert_eq!(result.passed(), 1);
+        assert!(result.results[0].elapsed_ms >= 1);
 
         drop(fs::remove_dir_all(&root));
     }

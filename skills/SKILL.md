@@ -98,6 +98,9 @@ Prefer programmatic inspection over screenshots:
 
 - `widget_list`, `widget_get`, `state()`, `children()`, `parent()` for
   structure and values.
+- Use `widget_list({ label = "..." })`, `widget_list({ label_contains = "..." })`,
+  `widget_list({ role = "button" })`, or `widget_list({ id_prefix = "settings" })`
+  to discover widgets without fetching state for every item.
 - `wait_for_widget` with predicates for state readiness -- widget existence
   does not imply state readiness.
 - `check_layout()` for layout problems (clipping, overflow, overlap).
@@ -106,6 +109,8 @@ Prefer programmatic inspection over screenshots:
 Use `screenshot()` only when the question is genuinely visual: alignment,
 clipping, rendering quality, image content. Returned `ImageRef` values produce
 image blocks in the MCP response.
+Use `sample_pixels()` for exact fixed-color assertions; it samples RGBA data
+before screenshot JPEG encoding.
 
 
 ## Smoketest Scripts
@@ -131,10 +136,10 @@ Smoketest scripts follow the same shape as good `script_eval` scripts:
 6. **Smoketest** -- run the suite to confirm nothing else broke.
 
 When debugging:
-- Use `widget_list({ role = "button" })` or `widget_list({ id_prefix = "settings" })`
-  to discover what's available.
 - Use `state()` on a widget handle to inspect current role, value, geometry,
   enabled/visible/focused state.
+- Use `dismiss_popups()` or a fresh `fixture()` when open menus or transient focus
+  might leak between actions.
 - Use `show_debug_overlay("bounds")` to visualize widget rects.
 - Use `check_layout()` to find clipping, overflow, and overlap issues.
 - Use `log()` liberally -- logs appear in the script result payload.

@@ -20,6 +20,7 @@ use super::{
         OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError, capture_screenshot,
         collect_widget_list, parse_key_combo, resolve_screenshot_viewport,
         resolve_widget_and_viewport, viewport_snapshot_for, wait_timeout_details,
+        wait_timeout_message,
     },
     parse::{
         map_has_any, map_value, parse_modifiers, parse_optional_bool, parse_optional_f32,
@@ -126,6 +127,13 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?
         {
             *self.config_settle.lock().unwrap_or_else(|p| p.into_inner()) = Some(settle);
+        }
+        if let Some(animations) = parse_optional_bool(options, "animations")
+            .map_err(|error| self.type_error(pos, error.message))?
+        {
+            let mut automation_options = self.server.inner.automation_options();
+            automation_options.animations = animations;
+            self.server.inner.set_automation_options(automation_options);
         }
         Ok(())
     }
@@ -534,12 +542,18 @@ impl ScriptRuntime {
         };
         let id_prefix = parse_optional_string(options, "id_prefix")
             .map_err(|error| self.type_error(pos, error.message))?;
+        let label = parse_optional_string(options, "label")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let label_contains = parse_optional_string(options, "label_contains")
+            .map_err(|error| self.type_error(pos, error.message))?;
         let widgets = collect_widget_list(
             &self.server.inner,
             viewport_id,
             include_invisible,
             role,
             id_prefix.as_deref(),
+            label.as_deref(),
+            label_contains.as_deref(),
         )
         .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_list_json(pos, &widgets)
@@ -1217,10 +1231,22 @@ impl ScriptRuntime {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
+        let target_viewport = viewport_id
+            .clone()
+            .or_else(|| target.viewport_id.clone())
+            .and_then(|viewport_id| {
+                self.server
+                    .inner
+                    .viewports
+                    .resolve_viewport_id(Some(viewport_id))
+                    .ok()
+            })
+            .or(Some(egui::ViewportId::ROOT));
         let result = super::super::utils::wait_until_condition(
             &self.server.inner,
             timeout_ms,
             poll_interval_ms,
+            target_viewport,
             Some(self.deadline),
             || {
                 let predicate = predicate.clone();
@@ -1253,7 +1279,7 @@ impl ScriptRuntime {
         .await;
 
         match result {
-            Ok((matched, widget, elapsed_ms)) => {
+            Ok((matched, widget, elapsed_ms, observation)) => {
                 if !matched && self.deadline <= Instant::now() {
                     return Err(self.script_timeout_error(pos));
                 }
@@ -1264,7 +1290,12 @@ impl ScriptRuntime {
                         pos,
                         ToolError::new(
                             ErrorCode::Timeout,
-                            format!("Timed out waiting for widget predicate after {timeout_ms}ms"),
+                            wait_timeout_message(
+                                format!(
+                                    "Timed out waiting for widget predicate after {timeout_ms}ms"
+                                ),
+                                &observation,
+                            ),
                         )
                         .with_details(wait_timeout_details(
                             "widget",
@@ -1273,6 +1304,7 @@ impl ScriptRuntime {
                             None,
                             None,
                             None,
+                            &observation,
                         ))
                         .into_tmcp(),
                     ))
@@ -1294,10 +1326,22 @@ impl ScriptRuntime {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
+        let target_viewport = viewport_id
+            .clone()
+            .or_else(|| target.viewport_id.clone())
+            .and_then(|viewport_id| {
+                self.server
+                    .inner
+                    .viewports
+                    .resolve_viewport_id(Some(viewport_id))
+                    .ok()
+            })
+            .or(Some(egui::ViewportId::ROOT));
         let result = super::super::utils::wait_until_condition(
             &self.server.inner,
             timeout_ms,
             poll_interval_ms,
+            target_viewport,
             Some(self.deadline),
             || {
                 let result = match resolve_widget_and_viewport(
@@ -1317,7 +1361,7 @@ impl ScriptRuntime {
         .await;
 
         match result {
-            Ok((matched, widget, elapsed_ms)) => {
+            Ok((matched, widget, elapsed_ms, observation)) => {
                 if !matched && self.deadline <= Instant::now() {
                     return Err(self.script_timeout_error(pos));
                 }
@@ -1335,8 +1379,11 @@ impl ScriptRuntime {
                         pos,
                         ToolError::new(
                             ErrorCode::Timeout,
-                            format!(
-                                "Timed out waiting for widget visibility predicate after {timeout_ms}ms"
+                            wait_timeout_message(
+                                format!(
+                                    "Timed out waiting for widget visibility predicate after {timeout_ms}ms"
+                                ),
+                                &observation,
                             ),
                         )
                         .with_details(wait_timeout_details(
@@ -1346,6 +1393,7 @@ impl ScriptRuntime {
                             None,
                             None,
                             None,
+                            &observation,
                         ))
                         .into_tmcp(),
                     ))
@@ -1367,10 +1415,22 @@ impl ScriptRuntime {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
+        let target_viewport = viewport_id
+            .clone()
+            .or_else(|| target.viewport_id.clone())
+            .and_then(|viewport_id| {
+                self.server
+                    .inner
+                    .viewports
+                    .resolve_viewport_id(Some(viewport_id))
+                    .ok()
+            })
+            .or(Some(egui::ViewportId::ROOT));
         let result = super::super::utils::wait_until_condition(
             &self.server.inner,
             timeout_ms,
             poll_interval_ms,
+            target_viewport,
             Some(self.deadline),
             || {
                 let result = match resolve_widget_and_viewport(
@@ -1390,7 +1450,7 @@ impl ScriptRuntime {
         .await;
 
         match result {
-            Ok((matched, _widget, elapsed_ms)) => {
+            Ok((matched, _widget, elapsed_ms, observation)) => {
                 if !matched && self.deadline <= Instant::now() {
                     return Err(self.script_timeout_error(pos));
                 }
@@ -1401,7 +1461,12 @@ impl ScriptRuntime {
                         pos,
                         ToolError::new(
                             ErrorCode::Timeout,
-                            format!("Timed out waiting for widget absence after {timeout_ms}ms"),
+                            wait_timeout_message(
+                                format!(
+                                    "Timed out waiting for widget absence after {timeout_ms}ms"
+                                ),
+                                &observation,
+                            ),
                         )
                         .with_details(wait_timeout_details(
                             "widget_absent",
@@ -1410,6 +1475,7 @@ impl ScriptRuntime {
                             None,
                             None,
                             None,
+                            &observation,
                         ))
                         .into_tmcp(),
                     ))
@@ -1513,6 +1579,7 @@ impl ScriptRuntime {
             &self.server.inner,
             timeout_ms,
             poll_interval_ms,
+            Some(viewport_id),
             Some(self.deadline),
             || {
                 let predicate = predicate.clone();
@@ -1542,7 +1609,7 @@ impl ScriptRuntime {
         .await;
 
         match result {
-            Ok((matched, viewport, elapsed_ms)) => {
+            Ok((matched, viewport, elapsed_ms, observation)) => {
                 if !matched && self.deadline <= Instant::now() {
                     return Err(self.script_timeout_error(pos));
                 }
@@ -1555,8 +1622,11 @@ impl ScriptRuntime {
                         pos,
                         ToolError::new(
                             ErrorCode::Timeout,
-                            format!(
-                                "Timed out waiting for viewport predicate after {timeout_ms}ms"
+                            wait_timeout_message(
+                                format!(
+                                    "Timed out waiting for viewport predicate after {timeout_ms}ms"
+                                ),
+                                &observation,
                             ),
                         )
                         .with_details(wait_timeout_details(
@@ -1566,6 +1636,7 @@ impl ScriptRuntime {
                             Some(&viewport),
                             None,
                             None,
+                            &observation,
                         ))
                         .into_tmcp(),
                     ))
@@ -1669,6 +1740,27 @@ impl ScriptRuntime {
             rect: None,
         });
         Ok(image_ref_json(id))
+    }
+
+    pub(super) async fn sample_pixels(
+        &self,
+        pos: ScriptPosition,
+        positions: &Value,
+        viewport_id: Option<String>,
+    ) -> ScriptResult<Value> {
+        let positions = positions
+            .as_array()
+            .ok_or_else(|| self.type_error(pos, "sample_pixels expects an array of positions"))?
+            .iter()
+            .map(|value| parse_pos2(value).map_err(|error| self.type_error(pos, error.message)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let samples = self
+            .await_tool(
+                pos,
+                self.server.viewport_sample_pixels(viewport_id, positions),
+            )
+            .await?;
+        self.to_json(pos, samples)
     }
 
     pub(super) async fn check_layout(
@@ -1843,6 +1935,16 @@ impl ScriptRuntime {
         viewport: String,
     ) -> ScriptResult<Value> {
         self.await_tool(pos, self.server.focus_window(viewport))
+            .await?;
+        self.to_json(pos, ())
+    }
+
+    pub(super) async fn viewport_dismiss_popups(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: Option<String>,
+    ) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.viewport_dismiss_popups(viewport_id))
             .await?;
         self.to_json(pos, ())
     }

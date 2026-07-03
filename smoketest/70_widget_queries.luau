@@ -21,6 +21,12 @@ for _, w in ipairs(scroll_rows) do
     assert(string.find(w.id, "basic.scroll.row.", 1, true) == 1, "id should have prefix")
 end
 
+local exact_labels = vp:widget_list({ label = "Actions" }) :: any
+assert(#exact_labels == 1, "label filter should find the menu button")
+assert(exact_labels[1].id == "basic.menu.actions", "label filter should return the menu")
+local contains_labels = vp:widget_list({ label_contains = "Link" }) :: any
+assert(#contains_labels >= 1, "label_contains should find link count label")
+
 -- parent()/children() compose hierarchy queries directly
 local submit = vp:widget_get("basic.submit")
 local ancestors = { submit.id }

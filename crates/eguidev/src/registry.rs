@@ -14,11 +14,11 @@ use egui::{Context, Vec2 as EguiVec2};
 
 use crate::{
     actions::{ActionQueue, ActionTiming, InputAction},
-    devmcp::RuntimeHooks,
+    devmcp::{AutomationOptions, RuntimeHooks},
     fixtures::FixtureManager,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
     types::WidgetValue,
-    viewports::ViewportState,
+    viewports::{FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
 };
 
@@ -38,6 +38,7 @@ pub struct Inner {
     pub widgets: WidgetRegistry,
     pub overlays: OverlayManager,
     contexts: Mutex<HashMap<egui::ViewportId, Context>>,
+    animation_baselines: Mutex<HashMap<egui::ViewportId, f32>>,
     widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValue>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     next_request_id: AtomicU64,
@@ -47,6 +48,7 @@ pub struct Inner {
     verbose_logging: AtomicBool,
     pub fixtures: FixtureManager,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
+    automation_options: Mutex<AutomationOptions>,
 }
 
 impl Default for Inner {
@@ -101,6 +103,7 @@ impl Inner {
             widgets: WidgetRegistry::new(),
             overlays: OverlayManager::new(),
             contexts: Mutex::new(HashMap::new()),
+            animation_baselines: Mutex::new(HashMap::new()),
             widget_value_updates: Mutex::new(HashMap::new()),
             scroll_overrides: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
@@ -110,6 +113,7 @@ impl Inner {
             verbose_logging: AtomicBool::new(false),
             fixtures: FixtureManager::new(),
             runtime_hooks: Mutex::new(None),
+            automation_options: Mutex::new(AutomationOptions::default()),
         }
     }
 
@@ -121,17 +125,44 @@ impl Inner {
         lock(&self.runtime_hooks, "runtime hooks lock").clone()
     }
 
+    pub fn set_automation_options(&self, options: AutomationOptions) {
+        *lock(&self.automation_options, "automation options lock") = options;
+        self.apply_automation_options_to_stored_contexts(options);
+    }
+
+    pub fn automation_options(&self) -> AutomationOptions {
+        *lock(&self.automation_options, "automation options lock")
+    }
+
     /// Apply a named fixture by calling the registered handler.
     pub fn apply_fixture(&self, name: &str) -> Result<(), String> {
         self.fixtures.apply_fixture(name)
     }
 
-    pub fn reset_fixture_transient_state(&self) {
+    pub fn dismiss_transient_ui(&self, viewport_id: Option<egui::ViewportId>) {
         self.actions.clear_all();
         lock(&self.widget_value_updates, "widget value update lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         self.overlays.clear_transient_state();
-        self.request_repaint_all();
+        let contexts = {
+            let contexts = lock(&self.contexts, "contexts lock");
+            contexts
+                .iter()
+                .filter(|(stored_viewport_id, _)| {
+                    viewport_id.is_none_or(|viewport_id| viewport_id == **stored_viewport_id)
+                })
+                .map(|(_, ctx)| ctx.clone())
+                .collect::<Vec<_>>()
+        };
+        for ctx in &contexts {
+            egui::Popup::close_all(ctx);
+            ctx.memory_mut(|memory| memory.stop_text_input());
+        }
+        if let Some(viewport_id) = viewport_id {
+            self.request_repaint_of(viewport_id);
+        } else {
+            self.request_repaint_all();
+        }
     }
 
     pub fn set_verbose_logging(&self, verbose_logging: bool) {
@@ -144,9 +175,51 @@ impl Inner {
     }
 
     pub fn capture_context(&self, viewport_id: egui::ViewportId, ctx: &Context) {
+        self.apply_automation_options_to_context(viewport_id, ctx, self.automation_options());
+        self.remember_context(viewport_id, ctx);
+    }
+
+    pub fn remember_context(&self, viewport_id: egui::ViewportId, ctx: &Context) {
         let mut stored = lock(&self.contexts, "contexts lock");
         stored.insert(viewport_id, ctx.clone());
         self.viewports.remember_viewport_id(viewport_id);
+    }
+
+    fn apply_automation_options_to_stored_contexts(&self, options: AutomationOptions) {
+        let contexts = {
+            let contexts = lock(&self.contexts, "contexts lock");
+            contexts
+                .iter()
+                .map(|(viewport_id, ctx)| (*viewport_id, ctx.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (viewport_id, ctx) in contexts {
+            self.apply_automation_options_to_context(viewport_id, &ctx, options);
+        }
+    }
+
+    fn apply_automation_options_to_context(
+        &self,
+        viewport_id: egui::ViewportId,
+        ctx: &Context,
+        options: AutomationOptions,
+    ) {
+        let target_animation_time = if options.animations {
+            lock(&self.animation_baselines, "animation baselines lock")
+                .get(&viewport_id)
+                .copied()
+        } else {
+            let current_animation_time = ctx.global_style().animation_time;
+            lock(&self.animation_baselines, "animation baselines lock")
+                .entry(viewport_id)
+                .or_insert(current_animation_time);
+            Some(0.0)
+        };
+        if let Some(animation_time) = target_animation_time {
+            ctx.global_style_mut(|style| {
+                style.animation_time = animation_time;
+            });
+        }
     }
 
     pub fn context_for(&self, viewport_id: egui::ViewportId) -> Option<Context> {
@@ -285,6 +358,23 @@ impl Inner {
         self.frame_count.load(Ordering::Relaxed)
     }
 
+    pub fn frame_health(&self, viewport_id: egui::ViewportId) -> Option<FrameHealth> {
+        self.viewports.frame_health(viewport_id)
+    }
+
+    pub fn frame_health_snapshot(&self) -> Vec<FrameHealth> {
+        self.viewports.frame_health_snapshot()
+    }
+
+    pub fn frames_observed_since(
+        &self,
+        viewport_id: egui::ViewportId,
+        start_frame: u64,
+    ) -> Option<u64> {
+        self.viewports
+            .frames_observed_since(viewport_id, start_frame)
+    }
+
     pub fn begin_fixture_epoch(&self) -> u64 {
         self.fixture_epoch.fetch_add(1, Ordering::Relaxed) + 1
     }
@@ -332,6 +422,24 @@ mod tests {
         receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("repaint callback");
+    }
+
+    #[test]
+    fn automation_options_apply_animation_policy_to_contexts() {
+        let inner = Arc::new(new_test_inner());
+        let ctx = Context::default();
+        ctx.global_style_mut(|style| {
+            style.animation_time = 0.25;
+        });
+
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        assert_eq!(ctx.global_style().animation_time, 0.0);
+
+        inner.set_automation_options(AutomationOptions {
+            keep_alive: true,
+            animations: true,
+        });
+        assert_eq!(ctx.global_style().animation_time, 0.25);
     }
 
     fn new_test_inner() -> Inner {

@@ -234,6 +234,18 @@ export type ViewportState = {
     pointer_pos: Pos?,
 }
 
+--- Exact pixel sampled from a fresh viewport capture.
+--- `position` is the requested egui logical point. `physical` is the sampled
+--- pixel coordinate after multiplying by the viewport's pixels-per-point and
+--- flooring. `rgba` preserves alpha from the captured ColorImage; `hex` is
+--- `#rrggbbaa`.
+export type PixelSample = {
+    position: Pos,
+    physical: { number },
+    rgba: { number },
+    hex: string,
+}
+
 export type Viewport = {
     id: string,
     state: (self: Viewport) -> ViewportState,
@@ -262,6 +274,8 @@ export type Viewport = {
     --- Wait until this viewport has produced a fresh captured snapshot.
     --- Throws a timeout error if no new capture arrives in time.
     wait_for_capture: (self: Viewport) -> (),
+    --- Close transient popups/menus and stop active text input for this viewport.
+    dismiss_popups: (self: Viewport) -> (),
     --- Poll this viewport until `predicate` returns true.
     --- The predicate receives the latest viewport snapshot on each poll.
     --- Returns the terminal viewport snapshot that satisfied the predicate.
@@ -318,6 +332,11 @@ export type Viewport = {
     set_inner_size: (self: Viewport, size: Vec) -> (),
     set_resize_options: (self: Viewport, options: ResizeOptions) -> (),
     screenshot: (self: Viewport) -> ImageRef,
+    --- Capture this viewport once and sample all requested logical positions.
+    --- Positions are converted with the viewport DPI and sampled from exact
+    --- RGBA data before any screenshot JPEG encoding. Out-of-bounds positions
+    --- throw an error naming the image bounds and requested physical pixel.
+    sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample },
     -- Checks the current viewport for layout problems.
     check_layout: (self: Viewport) -> { LayoutIssue },
     --- Show a persistent highlight stroke around the given rect. The highlight
@@ -351,6 +370,8 @@ export type WidgetListOptions = {
     include_invisible: boolean?,
     role: WidgetRole?,
     id_prefix: string?,
+    label: string?,
+    label_contains: string?,
 }
 
 export type HoverOptions = {
@@ -498,12 +519,14 @@ export type ScriptOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
     settle: boolean?,
+    animations: boolean?,
 }
 
 -- Logged values are recorded in the script result payload.
 declare function log(message: any): ()
 
---- Configure global script settings: timeout, poll interval, and auto-settle.
+--- Configure global script settings: timeout, poll interval, auto-settle, and
+--- whether egui animations remain enabled while automation is attached.
 --- Unset fields keep their current values.
 declare function configure(options: ScriptOptions): ()
 

@@ -4,6 +4,7 @@ use std::{
 };
 
 use egui::PointerButton;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
@@ -23,6 +24,96 @@ use crate::{
 };
 
 const FRAME_DURATION_MS: u64 = 16;
+const STALLED_FRAME_AGE_MS: u64 = 500;
+
+#[derive(Debug, Clone)]
+pub struct WaitObservationStart {
+    target_viewport_id: Option<egui::ViewportId>,
+    target_viewport_label: Option<String>,
+    start_target_capture_frame: Option<u64>,
+    global_start_frame: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WaitObservation {
+    pub target_viewport_id: Option<String>,
+    pub start_target_capture_frame: Option<u64>,
+    pub end_target_capture_frame: Option<u64>,
+    pub global_start_frame: u64,
+    pub global_end_frame: u64,
+    pub frames_observed: Option<u64>,
+    pub last_frame_age_ms: Option<u64>,
+    pub stalled: bool,
+}
+
+impl WaitObservationStart {
+    pub fn new(inner: &Inner, target_viewport_id: Option<egui::ViewportId>) -> Self {
+        let target_viewport_label = target_viewport_id.map(viewport_id_to_string);
+        let start_target_capture_frame = target_viewport_id
+            .and_then(|viewport_id| inner.viewports.capture_snapshot(viewport_id))
+            .map(|snapshot| snapshot.frame_count);
+        Self {
+            target_viewport_id,
+            target_viewport_label,
+            start_target_capture_frame,
+            global_start_frame: inner.frame_count(),
+        }
+    }
+
+    pub fn finish(&self, inner: &Inner) -> WaitObservation {
+        let end_target_capture_frame = self
+            .target_viewport_id
+            .and_then(|viewport_id| inner.viewports.capture_snapshot(viewport_id))
+            .map(|snapshot| snapshot.frame_count);
+        let frames_observed = match (self.start_target_capture_frame, end_target_capture_frame) {
+            (Some(start), Some(end)) => Some(end.saturating_sub(start)),
+            (None, Some(end)) => Some(end),
+            _ => None,
+        };
+        let last_frame_age_ms = self
+            .target_viewport_id
+            .and_then(|viewport_id| inner.frame_health(viewport_id))
+            .map(|health| health.age().as_millis() as u64);
+        let stalled = frames_observed == Some(0)
+            || last_frame_age_ms.is_some_and(|age_ms| age_ms >= STALLED_FRAME_AGE_MS);
+        WaitObservation {
+            target_viewport_id: self.target_viewport_label.clone(),
+            start_target_capture_frame: self.start_target_capture_frame,
+            end_target_capture_frame,
+            global_start_frame: self.global_start_frame,
+            global_end_frame: inner.frame_count(),
+            frames_observed,
+            last_frame_age_ms,
+            stalled,
+        }
+    }
+}
+
+pub fn repaint_diagnosis_prefix(observation: &WaitObservation) -> Option<&'static str> {
+    if observation.frames_observed == Some(0) {
+        return Some(
+            "No target viewport frames were observed while waiting. Ensure the app wraps rendered \
+             frames in FrameGuard, wires eguidev::raw_input_hook, leaves runtime keep-alive \
+             enabled, and uses Renderer::Glow when backend idle stalls matter.",
+        );
+    }
+    None
+}
+
+pub fn wait_timeout_message(message: impl AsRef<str>, observation: &WaitObservation) -> String {
+    match repaint_diagnosis_prefix(observation) {
+        Some(prefix) => format!("{prefix} {}", message.as_ref()),
+        None => message.as_ref().to_string(),
+    }
+}
+
+pub fn request_wait_repaint(inner: &Inner, target_viewport_id: Option<egui::ViewportId>) {
+    if let Some(viewport_id) = target_viewport_id {
+        inner.request_repaint_of(viewport_id);
+    } else {
+        inner.request_repaint_all();
+    }
+}
 
 pub fn resolve_widget_and_viewport(
     inner: &Inner,
@@ -380,19 +471,23 @@ pub async fn wait_for_frames(
     let mut completed = 0u64;
     let runtime =
         Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
+    let observation_start = WaitObservationStart::new(inner, Some(egui::ViewportId::ROOT));
     while completed < frames {
         let elapsed_ms = start.elapsed().as_millis() as u64;
         if elapsed_ms >= timeout_ms {
+            let observation = observation_start.finish(inner);
             return Err(ToolError::new(
                 ErrorCode::Internal,
-                "Timed out waiting for frame notifications",
-            ));
+                wait_timeout_message("Timed out waiting for frame notifications", &observation),
+            )
+            .with_details(json!({
+                "kind": "frames",
+                "elapsed_ms": elapsed_ms,
+                "observation": observation,
+            })));
         }
-        // Request a repaint and wait for the frame to complete. Use a short
-        // poll interval so we re-request repaint if the event loop stalls
-        // (e.g. macOS throttles a background window).
         let notified = runtime.frame_notify().notified();
-        inner.request_repaint();
+        request_wait_repaint(inner, Some(egui::ViewportId::ROOT));
         let remaining = timeout_ms.saturating_sub(elapsed_ms).max(1);
         let poll = Duration::from_millis(FRAME_DURATION_MS).min(Duration::from_millis(remaining));
         if timeout(poll, notified).await.is_ok() {
@@ -417,9 +512,10 @@ pub async fn wait_until_condition<F, Fut, T, E>(
     inner: &Inner,
     timeout_ms: u64,
     poll_interval_ms: u64,
+    target_viewport_id: Option<egui::ViewportId>,
     deadline: Option<Instant>,
     mut condition: F,
-) -> Result<(bool, Option<T>, u64), E>
+) -> Result<(bool, Option<T>, u64, WaitObservation), E>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<(bool, Option<T>), E>>,
@@ -429,19 +525,25 @@ where
     let mut last_state = None;
     let runtime =
         Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
+    let observation_start = WaitObservationStart::new(inner, target_viewport_id);
 
     loop {
         if let Some(dl) = deadline
             && Instant::now() >= dl
         {
             let elapsed_ms = start.elapsed().as_millis() as u64;
-            return Ok((false, last_state, elapsed_ms));
+            return Ok((
+                false,
+                last_state,
+                elapsed_ms,
+                observation_start.finish(inner),
+            ));
         }
 
         match condition().await {
             Ok((true, state)) => {
                 let elapsed_ms = start.elapsed().as_millis() as u64;
-                return Ok((true, state, elapsed_ms));
+                return Ok((true, state, elapsed_ms, observation_start.finish(inner)));
             }
             Ok((false, state)) => {
                 last_state = state;
@@ -451,7 +553,12 @@ where
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
         if elapsed_ms >= timeout_ms {
-            return Ok((false, last_state, elapsed_ms));
+            return Ok((
+                false,
+                last_state,
+                elapsed_ms,
+                observation_start.finish(inner),
+            ));
         }
 
         // Keep requesting repaints while also allowing plain state changes to
@@ -462,16 +569,26 @@ where
         while Instant::now() < poll_deadline {
             let elapsed_ms = start.elapsed().as_millis() as u64;
             if elapsed_ms >= timeout_ms {
-                return Ok((false, last_state, elapsed_ms));
+                return Ok((
+                    false,
+                    last_state,
+                    elapsed_ms,
+                    observation_start.finish(inner),
+                ));
             }
             if let Some(dl) = deadline
                 && Instant::now() >= dl
             {
-                return Ok((false, last_state, elapsed_ms));
+                return Ok((
+                    false,
+                    last_state,
+                    elapsed_ms,
+                    observation_start.finish(inner),
+                ));
             }
 
             let notified = runtime.frame_notify().notified();
-            inner.request_repaint();
+            request_wait_repaint(inner, target_viewport_id);
 
             let remaining_poll = poll_deadline.saturating_duration_since(Instant::now());
             let remaining_timeout = Duration::from_millis(timeout_ms.saturating_sub(elapsed_ms));
@@ -601,6 +718,7 @@ pub fn wait_timeout_details(
     viewport: Option<&ViewportSnapshot>,
     start_frame: Option<u64>,
     end_frame: Option<u64>,
+    observation: &WaitObservation,
 ) -> Value {
     json!({
         "kind": kind,
@@ -609,6 +727,7 @@ pub fn wait_timeout_details(
         "viewport": viewport.map(viewport_snapshot_json),
         "start_frame": start_frame,
         "end_frame": end_frame,
+        "observation": observation,
     })
 }
 

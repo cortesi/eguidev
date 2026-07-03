@@ -13,7 +13,7 @@ use crate::{
     registry::Inner,
     types::{RoleState, WidgetLayout, WidgetRole, WidgetValue},
     ui_ext::DevScrollAreaExt,
-    widget_registry::{WidgetMeta, record_widget},
+    widget_registry::{WidgetMeta, record_rect_meta, record_widget},
 };
 
 thread_local! {
@@ -110,6 +110,21 @@ pub fn track_response_full(id: impl Into<String>, response: &egui::Response, met
     let id = id.into();
     swallow_panic("track_response_full", || {
         record_widget(&inner.widgets, id, response, meta);
+    });
+}
+
+/// Publish metadata for a painter-drawn rect that has no `egui::Response`.
+///
+/// The rect is interpreted in the current UI layer and transformed to global coordinates.
+/// Response-free entries default to enabled and unfocused; override `visible` through
+/// [`WidgetMeta`].
+pub fn publish_rect_meta(ui: &egui::Ui, id: impl Into<String>, rect: egui::Rect, meta: WidgetMeta) {
+    let Some(inner) = active_inner() else {
+        return;
+    };
+    let id = id.into();
+    swallow_panic("publish_rect_meta", || {
+        record_rect_meta(&inner.widgets, id, ui, rect, meta);
     });
 }
 

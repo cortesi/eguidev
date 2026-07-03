@@ -28,6 +28,8 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - `Viewport:wait_for_settle()` uses a single composite check: InputSettled + RepaintIdle.
 - All high-level actions auto-settle by default, ensuring the UI has processed all queued
   work and repainted before returning. Disable with `settle: #{enabled: false}`.
+- Wait and screenshot timeouts include frame observations for the target viewport,
+  global frame counts, and last-frame age so repaint stalls are diagnosable.
 
 5. Deterministic click completion
 - `click()` auto-settles by default, so the UI processes queued work and repaints
@@ -38,8 +40,18 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 6. Fixture reset contract and boundary cleanup
 - Fixture apply boundaries clear transient DevMCP state (queued input/commands, queued widget
   value updates, scroll overrides, and overlay debug artifacts) to avoid cross-run leakage.
+- The same cleanup closes egui popups/menus and stops active text input on captured
+  contexts. Scripts can call `Viewport:dismiss_popups()` for the same viewport-scoped path.
 - Fixtures are baseline-reset by contract: each fixture must be independently invokable, isolated
   from prior app state, and safe to apply in any order.
+
+7. Runtime-owned repaint and visual determinism
+- `DevMcp::finish_frame` owns runtime keep-alive when hooks are attached and `keep_alive`
+  is enabled.
+- Automation options default to disabling egui animations while the runtime is attached;
+  scripts can override this with `configure({ animations = true })`.
+- `Viewport:sample_pixels(...)` samples exact `ColorImage` RGBA data before JPEG encoding,
+  enabling fixed-color assertions for painter-only regions published with `publish_rect_meta`.
 
 ## Intentional strict semantics
 

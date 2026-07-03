@@ -44,20 +44,25 @@ Tool hosting:
 - `script_eval` is proxied to the running app and is the only app-dependent host tool.
 - `script_api` is served directly by `edev` from checked-in definitions, so it remains callable
   even while the app is stopped.
-- `status` reports the current lifecycle state plus startup failure diagnostics when present.
+- `status` reports the current lifecycle state, startup failure diagnostics, and app frame health
+  when a running app client can answer the app-side `health` tool. Health proxy failures are
+  reported inside the status payload instead of failing the lifecycle call.
 - The host tool list is static for the lifetime of the launcher session; `edev` does not send
   `tools/list_changed` notifications.
 
 Fixtures are applied by scripts via `fixture()`, which auto-settles after application.
-For `eframe` apps, fixture requests should be drained from `App::update`.
-Handling them in `logic` can apply the state change without producing the fresh
-captured UI frame that automation expects afterward.
+For `eframe` apps, the required integration points are `FrameGuard` around rendered frames and
+`eguidev::raw_input_hook(...)` from the app raw-input hook. Fixture handlers registered with
+`DevMcp::on_fixture()` run directly through the attached runtime, while frame capture and
+wait/screenshot wakeups remain owned by the instrumentation boundary.
 
 Renderer note:
 
 - `eframe::Renderer::Glow` is currently the recommended backend for automation.
 - Some `wgpu`-backed `eframe` integrations can stall idle-frame delivery under
-  automation waits, screenshots, or fixture transitions.
+  automation waits, screenshots, or fixture transitions. Wait timeout details include target
+  viewport frame observations and last-frame age to distinguish state mismatches from repaint
+  stalls.
 
 Failure points:
 - Build failure before app handshake.
@@ -68,8 +73,9 @@ Failure points:
 1. Tool calls enqueue `InputAction` and `ViewportCommand` events into `ActionQueue`.
 2. `raw_input_hook` drains queued actions for the current viewport and appends egui events.
 3. Frame processing consumes injected egui events.
-4. `end_frame` captures widget/input snapshots, applies viewport commands, and invokes the
-   attached runtime hooks for frame waiters, screenshot capture, and fixture wakeups.
+4. `end_frame` captures widget/input snapshots, applies viewport commands, invokes the attached
+   runtime hooks for frame waiters, screenshot capture, and fixture wakeups, and requests the next
+   immediate repaint when runtime keep-alive is enabled.
 
 Keyboard delivery modes:
 - Ambient (`key`, `input_key`): routed through normal focus state.
@@ -97,3 +103,11 @@ Both conditions must hold simultaneously. Returns a structured result with `matc
 All high-level actions (`click`, `type_text`, `key`, `hover`, `drag`, `scroll`, `paste`, etc.)
 auto-settle after performing the action, ensuring the UI has fully processed queued work and
 repainted. Disable with `settle: #{enabled: false}`.
+
+## Visual Assertions
+
+`Viewport:sample_pixels(...)` captures one viewport image and samples all requested egui logical
+points from the exact `ColorImage` before screenshot JPEG encoding. Scripts use this for fixed-color
+or painter-only assertions. Painter-only regions can be published with
+`eguidev::publish_rect_meta(ui, id, rect, meta)`, which transforms the rect through the current
+layer and records it as enabled and unfocused by default.

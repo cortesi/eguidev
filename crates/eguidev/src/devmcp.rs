@@ -32,6 +32,21 @@ pub trait RuntimeHooks: Send + Sync {
     fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomationOptions {
+    pub keep_alive: bool,
+    pub animations: bool,
+}
+
+impl Default for AutomationOptions {
+    fn default() -> Self {
+        Self {
+            keep_alive: true,
+            animations: false,
+        }
+    }
+}
+
 /// DevMCP handle stored in app state.
 #[derive(Clone, Default)]
 pub struct DevMcp {
@@ -39,6 +54,7 @@ pub struct DevMcp {
     fixtures: Vec<FixtureSpec>,
     verbose_logging: bool,
     fixture_handler: Option<FixtureHandler>,
+    automation_options: AutomationOptions,
 }
 
 impl fmt::Debug for DevMcp {
@@ -47,6 +63,7 @@ impl fmt::Debug for DevMcp {
             .field("state", &self.state)
             .field("fixtures", &self.fixtures)
             .field("verbose_logging", &self.verbose_logging)
+            .field("automation_options", &self.automation_options)
             .finish()
     }
 }
@@ -62,6 +79,33 @@ impl DevMcp {
         self.verbose_logging = verbose_logging;
         if let Some(inner) = self.inner() {
             inner.set_verbose_logging(verbose_logging);
+        }
+        self
+    }
+
+    /// Configure runtime-owned automation behavior.
+    pub fn automation_options(mut self, options: AutomationOptions) -> Self {
+        self.automation_options = options;
+        if let Some(inner) = self.inner() {
+            inner.set_automation_options(options);
+        }
+        self
+    }
+
+    /// Enable or disable runtime repaint keep-alive while automation is attached.
+    pub fn keep_alive(mut self, keep_alive: bool) -> Self {
+        self.automation_options.keep_alive = keep_alive;
+        if let Some(inner) = self.inner() {
+            inner.set_automation_options(self.automation_options);
+        }
+        self
+    }
+
+    /// Enable or disable egui animations while automation is attached.
+    pub fn animations(mut self, animations: bool) -> Self {
+        self.automation_options.animations = animations;
+        if let Some(inner) = self.inner() {
+            inner.set_automation_options(self.automation_options);
         }
         self
     }
@@ -121,6 +165,7 @@ impl DevMcp {
     pub fn activate_runtime(mut self, inner: Arc<Inner>, hooks: Arc<dyn RuntimeHooks>) -> Self {
         inner.set_runtime_hooks(hooks);
         inner.set_verbose_logging(self.verbose_logging);
+        inner.set_automation_options(self.automation_options);
         if !self.fixtures.is_empty() {
             inner.fixtures.set_fixtures(self.fixtures.clone());
         }
@@ -191,6 +236,9 @@ impl DevMcp {
         inner.advance_frame();
         if let Some(hooks) = inner.runtime_hooks() {
             hooks.on_frame_end(inner, ctx);
+            if inner.automation_options().keep_alive {
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -210,7 +258,7 @@ impl DevMcp {
         };
         swallow_panic("raw_input_hook", || {
             let viewport_id = raw_input.viewport_id;
-            inner.capture_context(viewport_id, ctx);
+            inner.remember_context(viewport_id, ctx);
             if let Some(hooks) = inner.runtime_hooks() {
                 hooks.on_raw_input(inner, &raw_input.events);
             }
@@ -348,6 +396,7 @@ mod inactive_tests {
     struct CountingRuntimeHooks {
         raw_input_calls: AtomicUsize,
         raw_input_events: AtomicUsize,
+        frame_end_calls: AtomicUsize,
     }
 
     impl RuntimeHooks for CountingRuntimeHooks {
@@ -359,6 +408,10 @@ mod inactive_tests {
             self.raw_input_calls.fetch_add(1, AtomicOrdering::Relaxed);
             self.raw_input_events
                 .fetch_add(events.len(), AtomicOrdering::Relaxed);
+        }
+
+        fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {
+            self.frame_end_calls.fetch_add(1, AtomicOrdering::Relaxed);
         }
     }
 
@@ -431,6 +484,48 @@ mod inactive_tests {
             1,
             "frame guard should forward input events"
         );
+    }
+
+    #[test]
+    fn frame_guard_requests_repaint_when_keep_alive_is_enabled() {
+        let inner = Arc::new(Inner::new());
+        let hooks: Arc<dyn RuntimeHooks> = Arc::new(CountingRuntimeHooks::default());
+        let devmcp = DevMcp::new().activate_runtime(inner, hooks);
+        let ctx = Context::default();
+        let repaint_count = Arc::new(AtomicUsize::new(0));
+        let repaint_count_for_callback = Arc::clone(&repaint_count);
+        ctx.set_request_repaint_callback(move |_| {
+            repaint_count_for_callback.fetch_add(1, AtomicOrdering::Relaxed);
+        });
+
+        {
+            let _guard = FrameGuard::new(&devmcp, &ctx);
+        }
+
+        assert_eq!(repaint_count.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[test]
+    fn frame_guard_does_not_request_repaint_when_keep_alive_is_disabled() {
+        let inner = Arc::new(Inner::new());
+        let hooks = Arc::new(CountingRuntimeHooks::default());
+        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
+        let devmcp = DevMcp::new()
+            .keep_alive(false)
+            .activate_runtime(inner, runtime_hooks);
+        let ctx = Context::default();
+        let repaint_count = Arc::new(AtomicUsize::new(0));
+        let repaint_count_for_callback = Arc::clone(&repaint_count);
+        ctx.set_request_repaint_callback(move |_| {
+            repaint_count_for_callback.fetch_add(1, AtomicOrdering::Relaxed);
+        });
+
+        {
+            let _guard = FrameGuard::new(&devmcp, &ctx);
+        }
+
+        assert_eq!(hooks.frame_end_calls.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(repaint_count.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]

@@ -646,6 +646,8 @@ impl State {
             app_present,
             process_group_id,
             startup_output,
+            app_health: None,
+            app_health_error: None,
         }
     }
 }
@@ -1127,10 +1129,22 @@ impl ServerHandler for EdevServer {
                 }
             }
             "status" => {
-                let state = state.lock().await;
-                CallToolResult::new().with_structured_content(
-                    serde_json::to_value(state.status_report()).expect("status report"),
-                )
+                let (report, app_client, log_state) = {
+                    let state = state.lock().await;
+                    let app_client = if matches!(state.status, AppStatus::Running) {
+                        state.app.as_ref().map(|app| Arc::clone(&app.client))
+                    } else {
+                        None
+                    };
+                    (state.status_report(), app_client, state.log_state.clone())
+                };
+                let report = if let Some(client) = app_client {
+                    report.with_app_health(call_app_health(client, log_state).await)
+                } else {
+                    report
+                };
+                CallToolResult::new()
+                    .with_structured_content(serde_json::to_value(report).expect("status report"))
             }
             "script_api" => CallToolResult::new().with_text_content(script_definitions()),
             _ => {
@@ -1163,6 +1177,40 @@ async fn call_proxy_tool(
             tool_error(ErrorKind::ProxyFailed, error.to_string())
         }
     }
+}
+
+/// Query the running app's health tool and normalize the response payload.
+async fn call_app_health(
+    client: Arc<AsyncMutex<tmcp::Client<()>>>,
+    log_state: LogState,
+) -> Result<serde_json::Value, String> {
+    let result = {
+        let client = client.lock().await;
+        client
+            .call_tool("health".to_string(), Arguments::default())
+            .await
+            .map_err(|error| {
+                log_state.record_line(&format!("edev: app health proxy failed: {error}"));
+                error.to_string()
+            })?
+    };
+    let result = normalize_tool_result(result);
+    if result.is_error() {
+        let message = result
+            .text()
+            .map(str::to_string)
+            .or_else(|| result.structured_content.as_ref().map(ToString::to_string))
+            .unwrap_or_else(|| "app health proxy failed".to_string());
+        log_state.record_line(&format!("edev: app health proxy failed: {message}"));
+        return Err(message);
+    }
+    if let Some(content) = result.structured_content {
+        return Ok(content);
+    }
+    let Some(text) = result.text() else {
+        return Err("app health response was empty".to_string());
+    };
+    serde_json::from_str(text).map_err(|error| format!("failed to parse app health: {error}"))
 }
 
 /// Execute the resolved smoke suite by calling `script_eval` for each discovered script.
@@ -1302,6 +1350,19 @@ struct StatusReport {
     app_present: bool,
     process_group_id: Option<i32>,
     startup_output: Option<String>,
+    app_health: Option<serde_json::Value>,
+    app_health_error: Option<String>,
+}
+
+impl StatusReport {
+    /// Attach app health data or a health proxy error to the status report.
+    fn with_app_health(mut self, health: Result<serde_json::Value, String>) -> Self {
+        match health {
+            Ok(health) => self.app_health = Some(health),
+            Err(error) => self.app_health_error = Some(error),
+        }
+        self
+    }
 }
 
 /// Build a successful lifecycle tool result.
@@ -1589,6 +1650,55 @@ mod tests {
         ) -> tmcp::Result<CallToolResponse> {
             if name == "script_eval" {
                 Ok(successful_script_eval_result().into())
+            } else if name == "health" {
+                Ok(CallToolResult::new()
+                    .with_structured_content(serde_json::json!({
+                        "frame_count": 4,
+                        "fixture_epoch": 2,
+                        "known_viewports": ["root"],
+                        "stalled": false,
+                        "viewports": []
+                    }))
+                    .into())
+            } else {
+                Err(McpError::ToolNotFound(name))
+            }
+        }
+    }
+
+    struct HealthFailingServer;
+
+    #[async_trait]
+    impl ServerHandler for HealthFailingServer {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: String,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> tmcp::Result<InitializeResult> {
+            Ok(InitializeResult::new("mock"))
+        }
+
+        async fn list_tools(
+            &self,
+            _context: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> tmcp::Result<ListToolsResult> {
+            Ok(ListToolsResult::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _context: &ServerCtx,
+            name: String,
+            _arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
+        ) -> tmcp::Result<CallToolResponse> {
+            if name == "script_eval" {
+                Ok(successful_script_eval_result().into())
+            } else if name == "health" {
+                Err(McpError::InternalError("health boom".to_string()))
             } else {
                 Err(McpError::ToolNotFound(name))
             }
@@ -1669,6 +1779,36 @@ mod tests {
         };
 
         let server = Server::new(|| FailingServer);
+        let handle = ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .expect("server handle");
+
+        let mut client = Client::new("test", "0.1.0");
+        client
+            .connect_stream_raw(client_reader, client_writer)
+            .await
+            .expect("connect");
+        client.init().await.expect("init");
+
+        let app = AppProcess {
+            child: None,
+            process_group_id: None,
+            client: Arc::new(AsyncMutex::new(client)),
+            stderr_task: None,
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            log_state: LogState::new(false),
+        };
+
+        (app, handle)
+    }
+
+    async fn make_health_failing_app() -> (AppProcess, ServerHandle) {
+        let ((server_reader, server_writer), (client_reader, client_writer)) = {
+            let (sr, sw, cr, cw) = make_duplex_pair();
+            ((sr, sw), (cr, cw))
+        };
+
+        let server = Server::new(|| HealthFailingServer);
         let handle = ServerHandle::from_stream(server, server_reader, server_writer)
             .await
             .expect("server handle");
@@ -1979,6 +2119,7 @@ mod tests {
         let tempdir = test_tempdir();
         let mut state = make_state(&tempdir);
         assert_eq!(state.status_report().state, "not_running");
+        assert!(state.status_report().app_health.is_none());
 
         state.status = AppStatus::Starting;
         assert_eq!(state.status_report().state, "starting");
@@ -1992,6 +2133,77 @@ mod tests {
         let report = state.status_report();
         assert_eq!(report.state, "startup_failed");
         assert_eq!(report.startup_output.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn status_omits_app_health_when_lifecycle_only() {
+        let tempdir = test_tempdir();
+        let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
+        let server = EdevServer { state };
+        let ctx = TestServerContext::new();
+
+        let result = server
+            .call_tool(ctx.ctx(), "status".to_string(), None, None)
+            .await
+            .expect("status")
+            .into_result()
+            .expect("immediate result");
+        let payload = result.structured_content.expect("structured content");
+        assert_eq!(payload["state"], "not_running");
+        assert!(payload["app_health"].is_null());
+        assert!(payload["app_health_error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn status_merges_running_app_health() {
+        let (app, _handle) = make_mock_app().await;
+        let tempdir = test_tempdir();
+        let mut raw_state = make_state(&tempdir);
+        raw_state.status = AppStatus::Running;
+        raw_state.app = Some(app);
+        let state = Arc::new(AsyncMutex::new(raw_state));
+        let server = EdevServer { state };
+        let ctx = TestServerContext::new();
+
+        let result = server
+            .call_tool(ctx.ctx(), "status".to_string(), None, None)
+            .await
+            .expect("status")
+            .into_result()
+            .expect("immediate result");
+        let payload = result.structured_content.expect("structured content");
+        assert_eq!(payload["state"], "running");
+        assert_eq!(payload["app_health"]["frame_count"], 4);
+        assert_eq!(payload["app_health"]["known_viewports"][0], "root");
+        assert!(payload["app_health_error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn status_tolerates_running_app_health_proxy_failure() {
+        let (app, _handle) = make_health_failing_app().await;
+        let tempdir = test_tempdir();
+        let mut raw_state = make_state(&tempdir);
+        raw_state.status = AppStatus::Running;
+        raw_state.app = Some(app);
+        let state = Arc::new(AsyncMutex::new(raw_state));
+        let server = EdevServer { state };
+        let ctx = TestServerContext::new();
+
+        let result = server
+            .call_tool(ctx.ctx(), "status".to_string(), None, None)
+            .await
+            .expect("status")
+            .into_result()
+            .expect("immediate result");
+        let payload = result.structured_content.expect("structured content");
+        assert_eq!(payload["state"], "running");
+        assert!(payload["app_health"].is_null());
+        assert!(
+            payload["app_health_error"]
+                .as_str()
+                .expect("health error")
+                .contains("health boom")
+        );
     }
 
     #[tokio::test]

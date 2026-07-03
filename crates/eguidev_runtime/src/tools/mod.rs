@@ -5,7 +5,7 @@
 //! Luau scripts and internal testing, not as additional top-level MCP tools.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex, atomic::Ordering},
     time::{Duration, Instant},
 };
@@ -40,6 +40,7 @@ use crate::{
 
 pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 16;
+const STALLED_FRAME_AGE_MS: u64 = 500;
 const SCROLL_STABILITY_TOLERANCE: f32 = 0.75;
 mod layout;
 mod results;
@@ -85,6 +86,34 @@ struct ScrollSample {
     frame_count: u64,
     max_offset: Vec2,
     stabilized: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AppHealthReport {
+    frame_count: u64,
+    fixture_epoch: u64,
+    keep_alive: bool,
+    animations: bool,
+    known_viewports: Vec<String>,
+    stalled: bool,
+    viewports: Vec<ViewportHealthReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ViewportHealthReport {
+    viewport_id: String,
+    frame_count: Option<u64>,
+    last_frame_age_ms: Option<u64>,
+    stalled: bool,
+    snapshot: Option<ViewportSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PixelSample {
+    position: Pos2,
+    physical: [usize; 2],
+    rgba: [u8; 4],
+    hex: String,
 }
 
 fn reveal_axis(
@@ -212,6 +241,112 @@ fn update_scroll_stability(
     }
 }
 
+fn app_health_report(inner: &Inner) -> AppHealthReport {
+    let snapshots = inner.viewports.viewports_snapshot();
+    let mut by_viewport = snapshots
+        .into_iter()
+        .map(|snapshot| (snapshot.viewport_id.clone(), (Some(snapshot), None)))
+        .collect::<BTreeMap<_, _>>();
+
+    for health in inner.frame_health_snapshot() {
+        let viewport_id = viewport_id_to_string(health.viewport_id);
+        by_viewport
+            .entry(viewport_id)
+            .and_modify(|(_, stored_health)| *stored_health = Some(health))
+            .or_insert((None, Some(health)));
+    }
+
+    let viewports = by_viewport
+        .into_iter()
+        .map(|(viewport_id, (snapshot, health))| {
+            let last_frame_age_ms = health.map(|health| health.age().as_millis() as u64);
+            let stalled = health.is_none()
+                || last_frame_age_ms.is_some_and(|age| age >= STALLED_FRAME_AGE_MS);
+            ViewportHealthReport {
+                viewport_id,
+                frame_count: health.map(|health| health.frame_count),
+                last_frame_age_ms,
+                stalled,
+                snapshot,
+            }
+        })
+        .collect::<Vec<_>>();
+    let options = inner.automation_options();
+    AppHealthReport {
+        frame_count: inner.frame_count(),
+        fixture_epoch: inner.fixture_epoch(),
+        keep_alive: options.keep_alive,
+        animations: options.animations,
+        known_viewports: viewports
+            .iter()
+            .map(|viewport| viewport.viewport_id.clone())
+            .collect(),
+        stalled: viewports.iter().any(|viewport| viewport.stalled),
+        viewports,
+    }
+}
+
+fn sample_color_image(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    positions: &[Pos2],
+) -> Result<Vec<PixelSample>, ToolError> {
+    if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
+        return Err(ToolError::new(
+            ErrorCode::Internal,
+            "Invalid pixels_per_point for pixel sampling",
+        ));
+    }
+    positions
+        .iter()
+        .map(|position| sample_color_pixel(image, pixels_per_point, *position))
+        .collect()
+}
+
+fn sample_color_pixel(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    position: Pos2,
+) -> Result<PixelSample, ToolError> {
+    let physical_x = (position.x * pixels_per_point).floor();
+    let physical_y = (position.y * pixels_per_point).floor();
+    if !physical_x.is_finite() || !physical_y.is_finite() {
+        return Err(ToolError::new(
+            ErrorCode::InvalidRef,
+            "Sample position must be finite",
+        ));
+    }
+    if physical_x < 0.0
+        || physical_y < 0.0
+        || physical_x >= image.size[0] as f32
+        || physical_y >= image.size[1] as f32
+    {
+        return Err(ToolError::new(
+            ErrorCode::InvalidRef,
+            "Sample position is outside the captured image",
+        )
+        .with_details(json!({
+            "position": position,
+            "physical": [physical_x, physical_y],
+            "image_size": image.size,
+            "pixels_per_point": pixels_per_point,
+        })));
+    }
+    let x = physical_x as usize;
+    let y = physical_y as usize;
+    let pixel = image.pixels[y * image.size[0] + x];
+    let rgba = pixel.to_array();
+    Ok(PixelSample {
+        position,
+        physical: [x, y],
+        rgba,
+        hex: format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            rgba[0], rgba[1], rgba[2], rgba[3]
+        ),
+    })
+}
+
 fn resolve_viewport_id(
     inner: &Inner,
     viewport_id: Option<String>,
@@ -244,6 +379,8 @@ pub fn collect_widget_list(
     include_invisible: Option<bool>,
     role: Option<WidgetRole>,
     id_prefix: Option<&str>,
+    label: Option<&str>,
+    label_contains: Option<&str>,
 ) -> ToolResult<Vec<WidgetRegistryEntry>> {
     ensure_automation_ready(inner)?;
     let viewport_id = resolve_viewport_id(inner, viewport_id)?;
@@ -258,6 +395,17 @@ pub fn collect_widget_list(
 
     if let Some(prefix) = id_prefix {
         widgets.retain(|entry| entry.id.starts_with(prefix));
+    }
+    if let Some(label) = label {
+        widgets.retain(|entry| entry.label.as_deref() == Some(label));
+    }
+    if let Some(needle) = label_contains {
+        widgets.retain(|entry| {
+            entry
+                .label
+                .as_deref()
+                .is_some_and(|label| label.contains(needle))
+        });
     }
 
     Ok(widgets)
@@ -322,10 +470,10 @@ impl DevMcpServer {
 
         self.evaluate_preconditions(&spec, timeout_ms).await?;
         self.inner.clear_all();
-        self.inner.reset_fixture_transient_state();
+        self.inner.dismiss_transient_ui(None);
         let fixture_epoch = self.inner.begin_fixture_epoch();
         let result = self.inner.apply_fixture(name);
-        self.inner.reset_fixture_transient_state();
+        self.inner.dismiss_transient_ui(None);
         if let Err(message) = result {
             return Err(ToolError::new(ErrorCode::Internal, message));
         }
@@ -555,10 +703,11 @@ impl DevMcpServer {
             return Ok(());
         }
         let scroll_samples = Arc::new(Mutex::new(HashMap::new()));
-        let (matched, state, elapsed_ms) = wait_until_condition(
+        let (matched, state, elapsed_ms, observation) = wait_until_condition(
             &self.inner,
             timeout_ms,
             DEFAULT_POLL_INTERVAL_MS,
+            None,
             None,
             || async {
                 self.inner.request_repaint_all();
@@ -608,6 +757,7 @@ impl DevMcpServer {
                 "fixture": fixture_name,
                 "elapsed_ms": elapsed_ms,
                 "statuses": snapshot.statuses,
+                "observation": observation,
             })),
         )
     }
@@ -850,6 +1000,13 @@ impl DevMcpServer {
         Ok(())
     }
 
+    /// Dismiss transient egui UI state for a viewport.
+    async fn viewport_dismiss_popups(&self, viewport_id: Option<String>) -> ToolResult<()> {
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+        self.inner.dismiss_transient_ui(Some(viewport_id));
+        Ok(())
+    }
+
     /// Request a viewport size change (sizes are in egui points).
     async fn viewport_set_inner_size(
         &self,
@@ -913,10 +1070,11 @@ impl DevMcpServer {
         let start_frame = self.inner.frame_count();
         let target_frame = start_frame + count;
 
-        let (matched, _, elapsed_ms) = wait_until_condition(
+        let (matched, _, elapsed_ms, observation) = wait_until_condition(
             &self.inner,
             timeout_ms,
             DEFAULT_POLL_INTERVAL_MS,
+            Some(egui::ViewportId::ROOT),
             None,
             || async {
                 self.inner.request_repaint_all();
@@ -933,10 +1091,14 @@ impl DevMcpServer {
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            format!(
-                "Timed out waiting for {count} frame(s) after {timeout_ms}ms. \
-If this is an eframe app, prefer Renderer::Glow for automation and ensure \
-fixture requests are processed in App::update."
+            wait_timeout_message(
+                format!(
+                    "Timed out waiting for {count} frame(s) after {timeout_ms}ms. \
+Ensure the app wraps rendered frames in FrameGuard, wires \
+eguidev::raw_input_hook, leaves runtime keep-alive enabled, and uses \
+Renderer::Glow when backend idle stalls matter."
+                ),
+                &observation,
             ),
         )
         .with_details(wait_timeout_details(
@@ -946,6 +1108,7 @@ fixture requests are processed in App::update."
             None,
             Some(start_frame),
             Some(end_frame),
+            &observation,
         ))
         .into())
     }
@@ -967,8 +1130,13 @@ fixture requests are processed in App::update."
             .map(|snapshot| snapshot.frame_count)
             .unwrap_or(0);
 
-        let (matched, _, elapsed_ms) =
-            wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || async {
+        let (matched, _, elapsed_ms, observation) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(viewport_id),
+            None,
+            || async {
                 self.inner.request_repaint_of(viewport_id);
                 let current = self
                     .inner
@@ -977,8 +1145,9 @@ fixture requests are processed in App::update."
                     .map(|snapshot| snapshot.frame_count)
                     .unwrap_or(0);
                 Ok::<_, ToolError>((current > start_capture, None::<()>))
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         if matched {
             return Ok(());
@@ -986,7 +1155,10 @@ fixture requests are processed in App::update."
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            format!("Timed out waiting for a fresh capture after {timeout_ms}ms"),
+            wait_timeout_message(
+                format!("Timed out waiting for a fresh capture after {timeout_ms}ms"),
+                &observation,
+            ),
         )
         .with_details(wait_timeout_details(
             "capture",
@@ -998,6 +1170,7 @@ fixture requests are processed in App::update."
                 .viewports
                 .capture_snapshot(viewport_id)
                 .map(|snapshot| snapshot.frame_count),
+            &observation,
         ))
         .into())
     }
@@ -1021,8 +1194,13 @@ fixture requests are processed in App::update."
             .unwrap_or(0);
         let start_frame = self.inner.frame_count();
 
-        let (matched, _, elapsed_ms) =
-            wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || async {
+        let (matched, _, elapsed_ms, observation) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(viewport_id),
+            None,
+            || async {
                 self.inner.request_repaint_of(viewport_id);
                 let capture = self.inner.viewports.capture_snapshot(viewport_id);
                 let observed_new_capture = capture
@@ -1042,8 +1220,9 @@ fixture requests are processed in App::update."
                     && !has_pending_commands
                     && processed_last_action;
                 Ok::<_, ToolError>((matched, None::<()>))
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         if matched {
             return Ok(());
@@ -1051,7 +1230,10 @@ fixture requests are processed in App::update."
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            format!("Timed out waiting for UI to settle after {timeout_ms}ms"),
+            wait_timeout_message(
+                format!("Timed out waiting for UI to settle after {timeout_ms}ms"),
+                &observation,
+            ),
         )
         .with_details(wait_timeout_details(
             "settle",
@@ -1063,6 +1245,7 @@ fixture requests are processed in App::update."
                 .viewports
                 .capture_snapshot(viewport_id)
                 .map(|snapshot| snapshot.frame_count),
+            &observation,
         ))
         .into())
     }
@@ -1079,8 +1262,22 @@ fixture requests are processed in App::update."
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
         let last_sample = Mutex::new(None);
 
-        let (matched, widget, elapsed_ms) =
-            wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || async {
+        let target_viewport = viewport_id
+            .clone()
+            .and_then(|viewport_id| {
+                self.inner
+                    .viewports
+                    .resolve_viewport_id(Some(viewport_id))
+                    .ok()
+            })
+            .or(Some(egui::ViewportId::ROOT));
+        let (matched, widget, elapsed_ms, observation) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            poll_interval_ms,
+            target_viewport,
+            None,
+            || async {
                 let widget = match resolve_widget(&self.inner, viewport_id.as_deref(), &target) {
                     Ok(widget) => widget,
                     Err(error) if error.code == ErrorCode::NotFound => {
@@ -1124,8 +1321,9 @@ fixture requests are processed in App::update."
                     None => false,
                 };
                 Ok((matched, Some(widget)))
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         if matched {
             return Ok(widget);
@@ -1133,7 +1331,10 @@ fixture requests are processed in App::update."
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            format!("Timed out waiting for scroll readiness after {timeout_ms}ms"),
+            wait_timeout_message(
+                format!("Timed out waiting for scroll readiness after {timeout_ms}ms"),
+                &observation,
+            ),
         )
         .with_details(wait_timeout_details(
             "scroll_ready",
@@ -1142,6 +1343,7 @@ fixture requests are processed in App::update."
             None,
             None,
             None,
+            &observation,
         ))
         .into())
     }
@@ -1161,8 +1363,22 @@ fixture requests are processed in App::update."
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
 
-        let (matched, widget, elapsed_ms) =
-            wait_until_condition(&self.inner, timeout_ms, poll_interval_ms, None, || {
+        let target_viewport = viewport_id
+            .clone()
+            .and_then(|viewport_id| {
+                self.inner
+                    .viewports
+                    .resolve_viewport_id(Some(viewport_id))
+                    .ok()
+            })
+            .or(Some(egui::ViewportId::ROOT));
+        let (matched, widget, elapsed_ms, observation) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            poll_interval_ms,
+            target_viewport,
+            None,
+            || {
                 let result = match resolve_widget(&self.inner, viewport_id.as_deref(), &target) {
                     Ok(widget) => {
                         let matched = predicate(Some(&widget));
@@ -1178,8 +1394,9 @@ fixture requests are processed in App::update."
                     }
                 };
                 async move { result }
-            })
-            .await?;
+            },
+        )
+        .await?;
 
         if matched {
             return Ok(widget);
@@ -1187,7 +1404,10 @@ fixture requests are processed in App::update."
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            format!("Timed out waiting for widget predicate after {timeout_ms}ms"),
+            wait_timeout_message(
+                format!("Timed out waiting for widget predicate after {timeout_ms}ms"),
+                &observation,
+            ),
         )
         .with_details(wait_timeout_details(
             "widget",
@@ -1196,6 +1416,7 @@ fixture requests are processed in App::update."
             None,
             None,
             None,
+            &observation,
         ))
         .into())
     }
@@ -1209,6 +1430,8 @@ fixture requests are processed in App::update."
         include_invisible: Option<bool>,
         role: Option<WidgetRole>,
         id_prefix: Option<String>,
+        label: Option<String>,
+        label_contains: Option<String>,
     ) -> ToolResult {
         let widgets = collect_widget_list(
             &self.inner,
@@ -1216,6 +1439,8 @@ fixture requests are processed in App::update."
             include_invisible,
             role,
             id_prefix.as_deref(),
+            label.as_deref(),
+            label_contains.as_deref(),
         )?;
         Ok(CallToolResult::structured(widgets).map_err(|error| {
             ToolError::new(
@@ -1742,6 +1967,23 @@ fixture requests are processed in App::update."
         Ok(())
     }
 
+    /// Capture a viewport once and sample exact RGBA pixels at logical positions.
+    async fn viewport_sample_pixels(
+        &self,
+        viewport_id: Option<String>,
+        positions: Vec<Pos2>,
+    ) -> ToolResult<Vec<PixelSample>> {
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+        let pixels_per_point = self
+            .inner
+            .viewports
+            .input_snapshot(viewport_id)
+            .map(|snapshot| snapshot.pixels_per_point)
+            .unwrap_or(1.0);
+        let image = capture_screenshot_image(&self.inner, &self.runtime, viewport_id).await?;
+        sample_color_image(&image, pixels_per_point, &positions).map_err(Into::into)
+    }
+
     #[tool(defaults)]
     /// Evaluate a Luau script with DevMCP helpers. Scripts are assumed to be strict.
     async fn script_eval(
@@ -1779,6 +2021,19 @@ fixture requests are processed in App::update."
             return resolve_viewport_id(&self.inner, Some(widget.viewport_id));
         }
         resolve_viewport_id(&self.inner, viewport_id)
+    }
+
+    #[tool]
+    /// Report automation frame health for the attached app.
+    async fn health(&self) -> ToolResult<CallToolResult> {
+        Ok(
+            CallToolResult::structured(app_health_report(&self.inner)).map_err(|error| {
+                ToolError::new(
+                    ErrorCode::Internal,
+                    format!("Failed to serialize health report: {error}"),
+                )
+            })?,
+        )
     }
 
     #[tool]
@@ -1823,6 +2078,26 @@ async fn capture_screenshot(
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
 ) -> Result<String, ToolError> {
+    let state = capture_screenshot_state(inner, runtime, viewport_id, kind).await?;
+    build_screenshot_data(&state)
+}
+
+async fn capture_screenshot_image(
+    inner: &Inner,
+    runtime: &Runtime,
+    viewport_id: egui::ViewportId,
+) -> Result<Arc<egui::ColorImage>, ToolError> {
+    let state =
+        capture_screenshot_state(inner, runtime, viewport_id, ScreenshotKind::Viewport).await?;
+    build_screenshot_image(&state)
+}
+
+async fn capture_screenshot_state(
+    inner: &Inner,
+    runtime: &Runtime,
+    viewport_id: egui::ViewportId,
+    kind: ScreenshotKind,
+) -> Result<ScreenshotState, ToolError> {
     // Best-effort wake-up before sending the screenshot command. Some idle windows won't
     // produce a frame until a command is queued, so only treat this as fatal if context
     // capture is not ready yet.
@@ -1860,7 +2135,7 @@ async fn capture_screenshot(
     );
     runtime.record_screenshot_request(inner, request_id, viewport_id, &kind_snapshot);
     inner.request_repaint_of(viewport_id);
-    let state = await_screenshot(
+    await_screenshot(
         inner,
         runtime,
         request_id,
@@ -1868,8 +2143,7 @@ async fn capture_screenshot(
         &kind_snapshot,
         start_frame,
     )
-    .await?;
-    build_screenshot_data(&state)
+    .await
 }
 
 async fn ensure_event_loop_active(
@@ -2018,6 +2292,11 @@ async fn await_screenshot(
 }
 
 fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
+    let image = build_screenshot_image(state)?;
+    encode_jpeg(&image)
+}
+
+fn build_screenshot_image(state: &ScreenshotState) -> Result<Arc<egui::ColorImage>, ToolError> {
     let Some(image) = state.image() else {
         return Err(ToolError::new(
             ErrorCode::Internal,
@@ -2031,7 +2310,7 @@ fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
             pixels_per_point,
         } => crop_image(&image, *rect, *pixels_per_point)?,
     };
-    encode_jpeg(&image)
+    Ok(image)
 }
 
 fn screenshot_error_details(
@@ -2347,7 +2626,38 @@ mod tests {
             .tools;
         let mut names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["script_api", "script_eval"]);
+        assert_eq!(names, vec!["health", "script_api", "script_eval"]);
+    }
+
+    #[test]
+    fn sample_color_image_converts_logical_points_and_preserves_alpha() {
+        let image = egui::ColorImage::new(
+            [2, 2],
+            vec![
+                egui::Color32::BLACK,
+                egui::Color32::from_rgba_premultiplied(0x11, 0x22, 0x33, 0x44),
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(0xaa, 0xbb, 0xcc),
+            ],
+        );
+
+        let samples =
+            sample_color_image(&image, 2.0, &[Pos2 { x: 0.75, y: 0.25 }]).expect("sample");
+
+        assert_eq!(samples[0].physical, [1, 0]);
+        assert_eq!(samples[0].rgba, [0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(samples[0].hex, "#11223344");
+    }
+
+    #[test]
+    fn sample_color_image_rejects_out_of_bounds_positions() {
+        let image = egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]);
+
+        let error =
+            sample_color_image(&image, 1.0, &[Pos2 { x: 1.0, y: 0.0 }]).expect_err("out of bounds");
+
+        assert_eq!(error.code, ErrorCode::InvalidRef);
+        assert!(error.message.contains("outside"));
     }
 
     #[tokio::test]
@@ -2447,19 +2757,27 @@ mod tests {
         let viewport_id = egui::ViewportId::ROOT;
 
         inner.widgets.clear_registry(viewport_id);
-        inner
-            .widgets
-            .record_widget(viewport_id, make_entry("status", 1, WidgetRole::Label));
-        inner
-            .widgets
-            .record_widget(viewport_id, make_entry("other", 2, WidgetRole::Button));
+        let mut status = make_entry("status", 1, WidgetRole::Label);
+        status.label = Some("Ready state".to_string());
+        inner.widgets.record_widget(viewport_id, status);
+        let mut other = make_entry("other", 2, WidgetRole::Button);
+        other.label = Some("Other state".to_string());
+        inner.widgets.record_widget(viewport_id, other);
         inner.widgets.finalize_registry(viewport_id);
 
         let result = server
             .script_eval(
                 r#"local widgets = root():widget_list({ id_prefix = "status" })
-return { count = #widgets, id = widgets[1].id, viewport = widgets[1].viewport_id }"#
-                    .to_string(),
+local exact = root():widget_list({ label = "Ready state" })
+local contains = root():widget_list({ label_contains = "state" })
+return {
+    count = #widgets,
+    id = widgets[1].id,
+    viewport = widgets[1].viewport_id,
+    exact = #exact,
+    contains = #contains,
+}"#
+                .to_string(),
                 None,
                 None,
             )
@@ -2469,7 +2787,7 @@ return { count = #widgets, id = widgets[1].id, viewport = widgets[1].viewport_id
         assert_eq!(json["success"], true);
         assert_eq!(
             json["value"],
-            json!({ "count": 1, "id": "status", "viewport": "root" })
+            json!({ "count": 1, "id": "status", "viewport": "root", "exact": 1, "contains": 2 })
         );
     }
 
@@ -4105,7 +4423,7 @@ return { first = catalog[1].name, count = #catalog }"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(false), None, None)
+            .widget_list(None, Some(false), None, None, None, None)
             .await
             .expect("widget list")
             .structured_as()
@@ -4115,7 +4433,7 @@ return { first = catalog[1].name, count = #catalog }"#
         assert!(!tags.contains(&"hidden"));
 
         let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None)
+            .widget_list(None, Some(true), None, None, None, None)
             .await
             .expect("widget list")
             .structured_as()
@@ -4151,7 +4469,7 @@ return { first = catalog[1].name, count = #catalog }"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         let list: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None)
+            .widget_list(None, Some(true), None, None, None, None)
             .await
             .expect("widget list")
             .structured_as()
@@ -4257,7 +4575,7 @@ return { first = catalog[1].name, count = #catalog }"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         let list: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None)
+            .widget_list(None, Some(true), None, None, None, None)
             .await
             .expect("widget list")
             .structured_as()
@@ -4517,6 +4835,8 @@ return { first = catalog[1].name, count = #catalog }"#
                 Some(true),
                 Some(WidgetRole::Slider),
                 Some("filter.".to_string()),
+                None,
+                None,
             )
             .await
             .expect("widget list")
@@ -4524,6 +4844,54 @@ return { first = catalog[1].name, count = #catalog }"#
             .expect("widget list payload");
         let tags: Vec<_> = result.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(tags, vec!["filter.match"]);
+    }
+
+    #[tokio::test]
+    async fn widget_list_filters_label_and_label_contains() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut ready = make_entry("status.ready", 1, WidgetRole::Label);
+        ready.label = Some("Ready state".to_string());
+        inner.widgets.record_widget(viewport_id, ready);
+        let mut busy = make_entry("status.busy", 2, WidgetRole::Label);
+        busy.label = Some("Busy state".to_string());
+        inner.widgets.record_widget(viewport_id, busy);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let exact: Vec<WidgetRegistryEntry> = server
+            .widget_list(
+                None,
+                Some(true),
+                None,
+                None,
+                Some("Ready state".to_string()),
+                None,
+            )
+            .await
+            .expect("widget list")
+            .structured_as()
+            .expect("widget list payload");
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].id, "status.ready");
+
+        let contains: Vec<WidgetRegistryEntry> = server
+            .widget_list(
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+                Some("state".to_string()),
+            )
+            .await
+            .expect("widget list")
+            .structured_as()
+            .expect("widget list payload");
+        let tags: Vec<_> = contains.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(tags, vec!["status.ready", "status.busy"]);
     }
 
     #[tokio::test]
@@ -4571,7 +4939,7 @@ return { first = catalog[1].name, count = #catalog }"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None)
+            .widget_list(None, Some(true), None, None, None, None)
             .await
             .expect("widget list")
             .structured_as()

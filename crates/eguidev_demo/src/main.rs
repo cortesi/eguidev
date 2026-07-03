@@ -530,6 +530,35 @@ impl DemoApp {
                 ui.dev_image("basic.preview.image", "Preview swatch", preview_texture);
                 ui.dev_spinner("basic.spinner.loading");
             });
+            let (sample_rect, sample_response) =
+                ui.allocate_exact_size(egui::vec2(48.0, 24.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(sample_rect, 0.0, Color32::from_rgb(0x2f, 0x80, 0xed));
+            eguidev::track_response_full(
+                "basic.visual.sample_target",
+                &sample_response,
+                eguidev::WidgetMeta {
+                    role: WidgetRole::Image,
+                    label: Some("Sample target".to_string()),
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+            let (gutter_rect, _) =
+                ui.allocate_exact_size(egui::vec2(16.0, 24.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(gutter_rect, 0.0, Color32::from_rgb(0xe5, 0x48, 0x4d));
+            eguidev::publish_rect_meta(
+                ui,
+                "demo.gutter.error_marker",
+                gutter_rect,
+                eguidev::WidgetMeta {
+                    role: WidgetRole::Unknown,
+                    label: Some("Error marker".to_string()),
+                    visible: true,
+                    ..Default::default()
+                },
+            );
 
             let _menu = ui.dev_menu_button("basic.menu.actions", "Actions", |ui| {
                 if ui
@@ -1027,9 +1056,6 @@ impl DemoApp {
 impl App for DemoApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.record_frame_input(ctx);
-        if self.devmcp.is_enabled() {
-            ctx.request_repaint();
-        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1067,9 +1093,6 @@ impl App for DemoApp {
         let mut s = self.state.lock().expect("demo state lock");
         Self::show_secondary_viewport(&mut s, &devmcp, &ctx);
         Self::show_occluder_viewport(&mut s, &devmcp, &ctx);
-        if devmcp.is_enabled() {
-            ctx.request_repaint();
-        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {

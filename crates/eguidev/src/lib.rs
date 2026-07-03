@@ -140,11 +140,14 @@ mod viewports;
 mod widget_registry;
 
 pub use crate::{
-    devmcp::{DevMcp, FrameGuard, clear_viewport, raw_input_hook, raw_input_hook_for_viewport},
+    devmcp::{
+        AutomationOptions, DevMcp, FrameGuard, clear_viewport, raw_input_hook,
+        raw_input_hook_for_viewport,
+    },
     fixtures::FixtureHandler,
     instrument::{
         ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
-        track_response_full,
+        publish_rect_meta, track_response_full,
     },
     types::{
         Anchor, AnchorCheck, FixtureSpec, RoleState, ScrollAreaMeta, WidgetLayout, WidgetRange,
@@ -163,7 +166,7 @@ pub mod internal {
     }
 
     pub mod devmcp {
-        pub use crate::devmcp::RuntimeHooks;
+        pub use crate::devmcp::{AutomationOptions, RuntimeHooks};
     }
 
     pub mod error {
@@ -198,7 +201,7 @@ pub mod internal {
     }
 
     pub mod viewports {
-        pub use crate::viewports::{InputSnapshot, ViewportSnapshot, ViewportState};
+        pub use crate::viewports::{FrameHealth, InputSnapshot, ViewportSnapshot, ViewportState};
     }
 
     pub mod widget_registry {

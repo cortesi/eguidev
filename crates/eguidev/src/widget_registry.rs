@@ -209,26 +209,93 @@ pub fn record_widget(
     meta: WidgetMeta,
 ) {
     let viewport_id = response.ctx.viewport_id();
-    let value = normalize_widget_value(meta.value);
     let parent_id = widgets.current_container(viewport_id);
-    let (rect, interact_rect) =
-        if let Some(to_global) = response.ctx.layer_transform_to_global(response.layer_id) {
-            (
-                to_global.mul_rect(meta.rect.unwrap_or(response.rect)),
-                to_global.mul_rect(meta.interact_rect.unwrap_or(response.interact_rect)),
-            )
-        } else {
-            (
-                meta.rect.unwrap_or(response.rect),
-                meta.interact_rect.unwrap_or(response.interact_rect),
-            )
-        };
+    record_widget_entry(
+        widgets,
+        WidgetEntryInput {
+            id,
+            ctx: &response.ctx,
+            viewport_id,
+            layer_id: response.layer_id,
+            native_id: response.id.value(),
+            rect: meta.rect.unwrap_or(response.rect),
+            interact_rect: meta.interact_rect.unwrap_or(response.interact_rect),
+            meta,
+            parent_id,
+            enabled: response.enabled(),
+            focused: response.ctx.memory(|mem| mem.has_focus(response.id)),
+        },
+    );
+}
+
+pub fn record_rect_meta(
+    widgets: &WidgetRegistry,
+    id: String,
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    meta: WidgetMeta,
+) {
+    let viewport_id = ui.ctx().viewport_id();
+    let parent_id = widgets.current_container(viewport_id);
+    let native_id = egui::Id::new(id.as_str()).value();
+    record_widget_entry(
+        widgets,
+        WidgetEntryInput {
+            id,
+            ctx: ui.ctx(),
+            viewport_id,
+            layer_id: ui.layer_id(),
+            native_id,
+            rect: meta.rect.unwrap_or(rect),
+            interact_rect: meta.interact_rect.unwrap_or(rect),
+            meta,
+            parent_id,
+            enabled: true,
+            focused: false,
+        },
+    );
+}
+
+struct WidgetEntryInput<'a> {
+    id: String,
+    ctx: &'a egui::Context,
+    viewport_id: egui::ViewportId,
+    layer_id: egui::LayerId,
+    native_id: u64,
+    rect: egui::Rect,
+    interact_rect: egui::Rect,
+    meta: WidgetMeta,
+    parent_id: Option<String>,
+    enabled: bool,
+    focused: bool,
+}
+
+fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
+    let WidgetEntryInput {
+        id,
+        ctx,
+        viewport_id,
+        layer_id,
+        native_id,
+        rect,
+        interact_rect,
+        meta,
+        parent_id,
+        enabled,
+        focused,
+    } = input;
+    let value = normalize_widget_value(meta.value);
+    let (rect, interact_rect) = if let Some(to_global) = ctx.layer_transform_to_global(layer_id) {
+        (to_global.mul_rect(rect), to_global.mul_rect(interact_rect))
+    } else {
+        (rect, interact_rect)
+    };
     let entry = WidgetRegistryEntry {
         id,
         explicit_id: true,
-        native_id: response.id.value(),
+        native_id,
         viewport_id: viewport_id_to_string(viewport_id),
-        layer_id: format!("{:?}", response.layer_id),
+        layer_id: format!("{layer_id:?}"),
         rect: rect.into(),
         interact_rect: interact_rect.into(),
         role: meta.role,
@@ -237,9 +304,9 @@ pub fn record_widget(
         layout: meta.layout,
         role_state: meta.role_state,
         parent_id,
-        enabled: response.enabled(),
+        enabled,
         visible: meta.visible,
-        focused: response.ctx.memory(|mem| mem.has_focus(response.id)),
+        focused,
     };
     widgets.record_widget(viewport_id, entry);
 }

@@ -1,7 +1,11 @@
 //! Viewport and input snapshot state.
 #![allow(missing_docs)]
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use egui::{Context, Vec2 as EguiVec2};
 use serde::{Deserialize, Serialize};
@@ -25,6 +29,23 @@ pub struct CaptureSnapshot {
     pub frame_count: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FrameHealth {
+    pub viewport_id: egui::ViewportId,
+    pub frame_count: u64,
+    pub last_completed: Instant,
+}
+
+impl FrameHealth {
+    pub fn age(&self) -> Duration {
+        self.last_completed.elapsed()
+    }
+
+    pub fn frames_observed_since(&self, start_frame: u64) -> u64 {
+        self.frame_count.saturating_sub(start_frame)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ViewportSnapshot {
     pub viewport_id: String,
@@ -45,6 +66,7 @@ pub struct ViewportState {
     viewport_lookup: Mutex<HashMap<String, egui::ViewportId>>,
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
     capture_snapshot: Mutex<HashMap<egui::ViewportId, CaptureSnapshot>>,
+    frame_health: Mutex<HashMap<egui::ViewportId, FrameHealth>>,
 }
 
 impl Default for ViewportState {
@@ -60,6 +82,7 @@ impl ViewportState {
             viewport_lookup: Mutex::new(HashMap::new()),
             input_snapshot: Mutex::new(HashMap::new()),
             capture_snapshot: Mutex::new(HashMap::new()),
+            frame_health: Mutex::new(HashMap::new()),
         }
     }
 
@@ -137,6 +160,15 @@ impl ViewportState {
                 frame_count,
             },
         );
+        let mut health = lock(&self.frame_health, "frame health lock");
+        health.insert(
+            viewport_id,
+            FrameHealth {
+                viewport_id,
+                frame_count,
+                last_completed: Instant::now(),
+            },
+        );
     }
 
     pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {
@@ -160,6 +192,30 @@ impl ViewportState {
         lock(&self.capture_snapshot, "capture snapshot lock")
             .get(&viewport_id)
             .copied()
+    }
+
+    pub fn frame_health(&self, viewport_id: egui::ViewportId) -> Option<FrameHealth> {
+        lock(&self.frame_health, "frame health lock")
+            .get(&viewport_id)
+            .copied()
+    }
+
+    pub fn frame_health_snapshot(&self) -> Vec<FrameHealth> {
+        let mut health = lock(&self.frame_health, "frame health lock")
+            .values()
+            .copied()
+            .collect::<Vec<_>>();
+        health.sort_by_key(|entry| viewport_id_to_string(entry.viewport_id));
+        health
+    }
+
+    pub fn frames_observed_since(
+        &self,
+        viewport_id: egui::ViewportId,
+        start_frame: u64,
+    ) -> Option<u64> {
+        self.frame_health(viewport_id)
+            .map(|health| health.frames_observed_since(start_frame))
     }
 
     pub fn resolve_viewport_id(
@@ -228,5 +284,27 @@ mod tests {
                 .expect("retained secondary viewport"),
             secondary
         );
+    }
+
+    #[test]
+    fn record_input_snapshot_updates_frame_health() {
+        let state = ViewportState::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        state.record_input_snapshot(
+            viewport_id,
+            InputSnapshot {
+                pixels_per_point: 2.0,
+                pointer_pos: None,
+            },
+            3,
+            7,
+        );
+
+        let health = state.frame_health(viewport_id).expect("frame health");
+        assert_eq!(health.viewport_id, viewport_id);
+        assert_eq!(health.frame_count, 7);
+        assert_eq!(health.frames_observed_since(4), 3);
+        assert_eq!(state.frames_observed_since(viewport_id, 8), Some(0));
+        assert!(health.age() < Duration::from_secs(1));
     }
 }

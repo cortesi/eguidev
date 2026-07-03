@@ -103,6 +103,7 @@ const SUPPORTED_METHODS: &[&str] = &[
     "check_layout",
     "children",
     "click",
+    "dismiss_popups",
     "drag",
     "drag_relative",
     "drag_to",
@@ -118,6 +119,7 @@ const SUPPORTED_METHODS: &[&str] = &[
     "raw_pointer_move",
     "raw_scroll",
     "raw_text",
+    "sample_pixels",
     "screenshot",
     "scroll",
     "scroll_into_view",
@@ -1092,6 +1094,22 @@ impl EguidevModule {
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
+            "dismiss_popups",
+            ModuleBinding::hidden("viewport_methods"),
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .viewport_dismiss_popups(pos, Some(viewport.id))
+                        .await
+                        .map_err(host_script_error)?;
+                    scalar_json_host_return(value)
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
             "key",
             ModuleBinding::hidden("viewport_methods"),
             async_host_fn(
@@ -1295,6 +1313,22 @@ impl EguidevModule {
                     let target = serde_json::json!({ "viewport_id": viewport.id });
                     let value = runtime
                         .screenshot(pos, Some(&target))
+                        .await
+                        .map_err(host_script_error)?;
+                    json_host_return(&ctx, value).await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "sample_pixels",
+            ModuleBinding::hidden("viewport_methods"),
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .sample_pixels(pos, &args.value, Some(args.receiver.id))
                         .await
                         .map_err(host_script_error)?;
                     json_host_return(&ctx, value).await
@@ -3400,7 +3434,7 @@ return { kind = type(args), value = 1 + 1 }"#
     #[test]
     fn initial_ruau_slice_accepts_fixture_globals() {
         assert!(is_supported_by_initial_ruau_slice(
-            r#"configure({ timeout_ms = 20, poll_interval_ms = 1, settle = false })
+            r#"configure({ timeout_ms = 20, poll_interval_ms = 1, settle = false, animations = true })
 fixture_raw("seed")
 fixture("ready")
 wait_for_capture()
@@ -3454,6 +3488,7 @@ return true"#
             r#"local viewport = root()
 viewport:wait_for_settle()
 viewport:wait_for_capture()
+viewport:dismiss_popups()
 viewport:key("enter", { settle = false })
 viewport:paste("hello", { settle = false })
 viewport:raw_pointer_move({ x = 1, y = 2 })
@@ -3482,6 +3517,7 @@ widget:show_debug_overlay("bounds", { show_labels = false })
 widget:hide_debug_overlay()
 viewport:check_layout()
 viewport:screenshot()
+viewport:sample_pixels({ { x = 1, y = 1 } })
 viewport:show_highlight(
     { min = { x = 0, y = 0 }, max = { x = 10, y = 10 } },
     "#00ff00"
@@ -3607,9 +3643,9 @@ return true"#
 
         let runtime = Runtime::ensure_for_inner(&inner);
         let outcome = run_script_eval_blocking(
-            inner,
+            Arc::clone(&inner),
             runtime,
-            r#"configure({ timeout_ms = 20, poll_interval_ms = 1, settle = false })
+            r#"configure({ timeout_ms = 20, poll_interval_ms = 1, settle = false, animations = true })
 fixture_raw("zeta")
 local frame = wait_for_frames(0)
 local catalog = fixtures()
@@ -3627,6 +3663,7 @@ return { first = catalog[1].name, count = #catalog, frame = frame }"#
             outcome.value,
             Some(json!({ "first": "alpha", "count": 2, "frame": 0 }))
         );
+        assert!(inner.automation_options().animations);
     }
 
     #[test]
@@ -3761,6 +3798,7 @@ return { viewport = button:viewport().id }"#
             runtime,
             r#"configure({ settle = false })
 local viewport = root()
+viewport:dismiss_popups()
 viewport:key("enter", { settle = false })
 viewport:paste("hello", { settle = false })
 viewport:raw_pointer_move({ x = 1, y = 2 })
