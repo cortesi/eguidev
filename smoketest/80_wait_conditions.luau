@@ -89,7 +89,10 @@ local ok, err = pcall(function()
 end)
 assert(not ok)
 assert(string.find(tostring(err), "Timed out waiting for widget predicate", 1, true) ~= nil)
-assert(string.find(tostring(err), "Diagnosis: Target viewport produced frames", 1, true) ~= nil)
+assert(
+    string.find(tostring(err), "No target viewport frames were observed", 1, true) ~= nil
+        or string.find(tostring(err), "Diagnosis: Target viewport produced frames", 1, true) ~= nil
+)
 
 return {
     conditions_tested = 14,

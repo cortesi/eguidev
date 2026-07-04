@@ -61,12 +61,14 @@ Smoke scripts should prefer semantic waits and exact visual assertions over fram
 Use `Viewport:sample_pixels()` for fixed-color painter checks, and use
 `Viewport:dismiss_popups()` or `fixture()` boundaries to isolate transient menus between tests.
 Use `viewport({ title = "..." })` or `viewport({ title_contains = "..." })` to find
-secondary windows by title instead of duplicating `viewports()` search loops.
+secondary windows by title instead of duplicating `viewports()` search loops; titles should
+be unique because ambiguous matches throw.
 Use `hex` for exact color equality; `rgba` channels and geometry values are script-facing
 numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
-On macOS, child-viewport screenshots fall back to Quartz window capture only after the
-normal egui screenshot event times out. The fallback needs a recorded window title match and
-macOS Screen Recording permission; root screenshots still use the egui event path directly.
+On macOS, child-viewport screenshots fall back to Quartz window capture after a fresh child
+frame fails to fulfill the normal egui screenshot event. The fallback needs a recorded
+window title match and macOS Screen Recording permission; root screenshots still use the
+egui event path directly.
 
 Run one diagnostic script and keep its return value/images with:
 

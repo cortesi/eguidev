@@ -15,10 +15,7 @@ use ruau::{
         Limits, LoadedModule, MarshaledScriptError, MarshaledValue, ModuleBuilderExt, MultiValue,
         RuntimeCapabilities, RuntimeError, Scope, ScopedHostFunction, ScopedValue, SourceLocation,
         StashedClosure, StashedValue, Table, TracebackFrame, Vm, async_host_fn,
-        serde::{
-            from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json,
-            to_scoped_value,
-        },
+        serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
     },
     vm_api::{
         HostReturn, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue, RuntimeErrorKind,
@@ -333,21 +330,20 @@ fn typed_json_to_luau_scoped_value<'s>(
     value: &Value,
 ) -> Result<ScopedValue<'s>, RuntimeError> {
     let mut value = value.clone();
+    strip_object_null_fields(&mut value);
     promote_integer_numbers_to_luau_numbers(&mut value);
-    to_scoped_value(scope, &value)
+    json_to_scoped_value(scope, &value)
 }
 
-// Typed host returns use natural Luau table semantics for objects, array-shaped
-// host returns preserve array identity, and script args use lossless JSON
-// markers so explicit nulls remain distinguishable from missing fields.
+// Typed host returns strip optional null object fields before lossless JSON
+// conversion, preserving array identity without exposing JSON null sentinels
+// for optional record fields. Script args skip the stripping step so explicit
+// nulls remain distinguishable from missing fields.
 fn typed_json_array_to_luau_scoped_value<'s>(
     scope: &Scope<'s>,
     value: &Value,
 ) -> Result<ScopedValue<'s>, RuntimeError> {
-    let mut value = value.clone();
-    strip_object_null_fields(&mut value);
-    promote_integer_numbers_to_luau_numbers(&mut value);
-    json_to_scoped_value(scope, &value)
+    typed_json_to_luau_scoped_value(scope, value)
 }
 
 fn lossless_json_to_luau_scoped_value<'s>(

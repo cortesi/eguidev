@@ -18,7 +18,7 @@
 //! get ordinary window behavior under automation.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     ffi::{CStr, c_char},
     mem, process,
@@ -32,14 +32,17 @@ use core_foundation::{
     string::{CFString, CFStringRef},
 };
 use core_graphics::{
+    base::{kCGBitmapByteOrder32Little, kCGImageAlphaPremultipliedFirst},
     display::CGRectNull,
     image::CGImage,
+    sys::CGImageRef,
     window::{
         self, CGWindowID, create_image, kCGNullWindowID, kCGWindowImageBestResolution,
         kCGWindowImageBoundsIgnoreFraming, kCGWindowListOptionAll,
         kCGWindowListOptionIncludingWindow, kCGWindowName, kCGWindowNumber, kCGWindowOwnerPID,
     },
 };
+use foreign_types::ForeignTypeRef;
 use objc2::{
     MainThreadMarker, class, msg_send,
     runtime::{AnyClass, AnyObject, Imp, Sel},
@@ -52,11 +55,18 @@ use crate::viewports::PlatformViewportState;
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
 /// `NSApplicationActivationPolicyAccessory`.
 const ACTIVATION_POLICY_ACCESSORY: isize = 1;
+const CG_IMAGE_ALPHA_INFO_MASK: u32 = 0x1f;
+const CG_IMAGE_BYTE_ORDER_MASK: u32 = 0x7000;
 
 type OcclusionStateFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> usize;
 
 static ORIGINAL_OCCLUSION_STATE: OnceLock<OcclusionStateFn> = OnceLock::new();
 static WINDOW_STATES: OnceLock<Mutex<HashMap<usize, PlatformViewportState>>> = OnceLock::new();
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGImageGetBitmapInfo(image: CGImageRef) -> u32;
+}
 
 /// Install the background-automation tweaks once per process.
 pub fn install_background_automation() {
@@ -95,9 +105,16 @@ fn recorded_window_number_for_title(title: &str) -> Result<u32, String> {
     let Some(states) = WINDOW_STATES.get() else {
         return Err("no macOS window state has been recorded yet".to_string());
     };
+    let live_window_numbers = current_process_window_numbers();
+    let mut states = states.lock().expect("platform window states lock poisoned");
+    if let Ok(live_window_numbers) = &live_window_numbers {
+        states.retain(|_, state| {
+            state
+                .window_number
+                .is_none_or(|window_number| live_window_numbers.contains(&window_number))
+        });
+    }
     let window_numbers = states
-        .lock()
-        .expect("platform window states lock poisoned")
         .values()
         .filter(|state| state.title.as_deref() == Some(title))
         .filter_map(|state| state.window_number)
@@ -111,13 +128,43 @@ fn recorded_window_number_for_title(title: &str) -> Result<u32, String> {
     }
 }
 
+fn current_process_window_numbers() -> Result<HashSet<u32>, String> {
+    let Some(window_info) = window::copy_window_info(kCGWindowListOptionAll, kCGNullWindowID)
+    else {
+        return Err("CoreGraphics returned no window metadata".to_string());
+    };
+    let pid = current_process_id_for_window_metadata()?;
+    window_info
+        .get_values(CFRange {
+            location: 0,
+            length: window_info.len(),
+        })
+        .into_iter()
+        .filter_map(|value| unsafe {
+            let info = WindowInfo::wrap_under_get_rule(value.cast());
+            let owner_pid = window_info_number(&info, kCGWindowOwnerPID)?;
+            (owner_pid == pid).then(|| window_info_number(&info, kCGWindowNumber))
+        })
+        .collect::<Option<HashSet<_>>>()
+        .ok_or_else(|| "CoreGraphics window metadata was missing window numbers".to_string())
+        .and_then(|window_numbers| {
+            window_numbers
+                .into_iter()
+                .map(|window_number| {
+                    u32::try_from(window_number).map_err(|error| {
+                        format!("CoreGraphics window number was not a CGWindowID: {error}")
+                    })
+                })
+                .collect()
+        })
+}
+
 fn window_number_from_window_server(title: &str) -> Result<u32, String> {
     let Some(window_info) = window::copy_window_info(kCGWindowListOptionAll, kCGNullWindowID)
     else {
         return Err("CoreGraphics returned no window metadata".to_string());
     };
-    let pid = i32::try_from(process::id())
-        .map_err(|error| format!("process id did not fit CoreGraphics metadata: {error}"))?;
+    let pid = current_process_id_for_window_metadata()?;
     let window_numbers = window_info
         .get_values(CFRange {
             location: 0,
@@ -146,6 +193,11 @@ fn window_number_from_window_server(title: &str) -> Result<u32, String> {
 }
 
 type WindowInfo = CFDictionary<CFString, CFType>;
+
+fn current_process_id_for_window_metadata() -> Result<i32, String> {
+    i32::try_from(process::id())
+        .map_err(|error| format!("process id did not fit CoreGraphics metadata: {error}"))
+}
 
 fn window_info_number(info: &WindowInfo, key: CFStringRef) -> Option<i32> {
     let key = unsafe { CFString::wrap_under_get_rule(key) };
@@ -269,13 +321,9 @@ fn color_image_from_cg_image(image: &CGImage) -> Result<egui::ColorImage, String
     if width == 0 || height == 0 {
         return Err("CoreGraphics returned an empty window image".to_string());
     }
-    if image.bits_per_component() != 8 || image.bits_per_pixel() != 32 {
-        return Err(format!(
-            "unsupported CoreGraphics image format: {} bits/component, {} bits/pixel",
-            image.bits_per_component(),
-            image.bits_per_pixel()
-        ));
-    }
+    validate_cg_image_format(image.bits_per_component(), image.bits_per_pixel(), unsafe {
+        CGImageGetBitmapInfo(image.as_ptr())
+    })?;
     let min_row_bytes = width
         .checked_mul(4)
         .ok_or_else(|| "CoreGraphics image row width overflowed".to_string())?;
@@ -286,6 +334,27 @@ fn color_image_from_cg_image(image: &CGImage) -> Result<egui::ColorImage, String
     }
     let data = image.data();
     color_image_from_bgra_rows(width, height, bytes_per_row, data.bytes())
+}
+
+fn validate_cg_image_format(
+    bits_per_component: usize,
+    bits_per_pixel: usize,
+    bitmap_info: u32,
+) -> Result<(), String> {
+    if bits_per_component != 8 || bits_per_pixel != 32 {
+        return Err(format!(
+            "unsupported CoreGraphics image format: {bits_per_component} bits/component, \
+             {bits_per_pixel} bits/pixel"
+        ));
+    }
+    let alpha_info = bitmap_info & CG_IMAGE_ALPHA_INFO_MASK;
+    let byte_order = bitmap_info & CG_IMAGE_BYTE_ORDER_MASK;
+    if alpha_info != kCGImageAlphaPremultipliedFirst || byte_order != kCGBitmapByteOrder32Little {
+        return Err(format!(
+            "unsupported CoreGraphics image format: bitmap info 0x{bitmap_info:x}"
+        ));
+    }
+    Ok(())
 }
 
 fn color_image_from_bgra_rows(
@@ -358,5 +427,14 @@ mod tests {
             image.pixels[1],
             egui::Color32::from_rgba_premultiplied(10, 20, 30, 128)
         );
+    }
+
+    #[test]
+    fn validate_cg_image_format_rejects_unexpected_bitmap_info() {
+        let expected_info = kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little;
+
+        assert!(validate_cg_image_format(8, 32, expected_info).is_ok());
+        assert!(validate_cg_image_format(16, 32, expected_info).is_err());
+        assert!(validate_cg_image_format(8, 32, kCGImageAlphaPremultipliedFirst).is_err());
     }
 }

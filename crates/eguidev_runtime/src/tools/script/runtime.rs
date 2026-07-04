@@ -77,6 +77,17 @@ fn resolve_viewport_id(
         .map_err(Into::into)
 }
 
+fn unique_viewport_lookup(
+    matches: Vec<&ViewportSnapshot>,
+    selector: String,
+) -> Result<Option<&ViewportSnapshot>, String> {
+    match matches.as_slice() {
+        [] => Ok(None),
+        [snapshot] => Ok(Some(*snapshot)),
+        _ => Err(format!("multiple viewports matched {selector}")),
+    }
+}
+
 impl ScriptRuntime {
     pub(super) fn new(
         inner: Arc<Inner>,
@@ -1046,19 +1057,35 @@ impl ScriptRuntime {
             return Err(self.type_error(pos, "viewport requires title or title_contains"));
         }
         let snapshots = self.server.inner.viewports.viewports_snapshot();
-        let exact = title.as_deref().and_then(|title| {
-            snapshots
+        let exact = if let Some(title) = title.as_deref() {
+            let matches = snapshots
                 .iter()
-                .find(|snapshot| snapshot.title.as_deref() == Some(title))
-        });
-        let contains = title_contains.as_deref().and_then(|needle| {
-            snapshots.iter().find(|snapshot| {
-                snapshot
-                    .title
-                    .as_deref()
-                    .is_some_and(|title| title.contains(needle))
-            })
-        });
+                .filter(|snapshot| snapshot.title.as_deref() == Some(title))
+                .collect::<Vec<_>>();
+            unique_viewport_lookup(matches, format!("title {title:?}"))
+                .map_err(|error| self.runtime_error(pos, error))?
+        } else {
+            None
+        };
+        let contains = if exact.is_none() {
+            if let Some(needle) = title_contains.as_deref() {
+                let matches = snapshots
+                    .iter()
+                    .filter(|snapshot| {
+                        snapshot
+                            .title
+                            .as_deref()
+                            .is_some_and(|title| title.contains(needle))
+                    })
+                    .collect::<Vec<_>>();
+                unique_viewport_lookup(matches, format!("title_contains {needle:?}"))
+                    .map_err(|error| self.runtime_error(pos, error))?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         exact.or(contains).map_or(Ok(Value::Null), |snapshot| {
             self.viewport_handle_json(pos, &snapshot.viewport_id)
         })

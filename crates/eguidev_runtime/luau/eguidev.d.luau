@@ -552,6 +552,7 @@ declare function wait_for_capture(): ()
 declare function root(): Viewport
 --- Find a viewport by title. Exact `title` matches win over `title_contains`.
 --- Returns nil when no viewport matches.
+--- Throws when multiple viewports match the selected title rule.
 declare function viewport(options: ViewportLookupOptions): Viewport?
 declare function viewports(): { Viewport }
 

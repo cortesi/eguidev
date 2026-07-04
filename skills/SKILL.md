@@ -103,7 +103,8 @@ Prefer programmatic inspection over screenshots:
 - `widget_list`, `widget_get`, `state()`, `children()`, `parent()` for
   structure and values.
 - Use `viewport({ title = "..." })` or `viewport({ title_contains = "..." })`
-  to find secondary windows by title instead of hand-rolling `viewports()` loops.
+  to find secondary windows by title instead of hand-rolling `viewports()` loops;
+  keep titles unique because ambiguous matches throw.
 - Use `widget_list({ label = "..." })`, `widget_list({ label_contains = "..." })`,
   `widget_list({ role = "button" })`, or `widget_list({ id_prefix = "settings" })`
   to discover widgets without fetching state for every item.

@@ -2073,6 +2073,11 @@ impl DevMcpServer {
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 const FRAME_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
+enum ScreenshotWaitOutcome {
+    Ready,
+    TryNativeFallback,
+}
+
 fn resolve_screenshot_viewport(
     inner: &Inner,
     viewport_id: Option<String>,
@@ -2220,10 +2225,10 @@ async fn await_screenshot(
 
     let wait_loop = async {
         let mut last_command_frame = start_frame.saturating_add(1);
-        loop {
+        let outcome = loop {
             if let Some(state) = runtime.screenshot_state(request_id) {
                 if state.is_ready() {
-                    break;
+                    break ScreenshotWaitOutcome::Ready;
                 }
             } else {
                 return Err(ToolError::new(ErrorCode::InvalidRef, "Unknown request id")
@@ -2241,6 +2246,9 @@ async fn await_screenshot(
                 .capture_snapshot(viewport_id)
                 .map(|snapshot| snapshot.frame_count)
                 .unwrap_or(0);
+            if should_try_native_screenshot_fallback(viewport_id, current_frame, start_frame) {
+                break ScreenshotWaitOutcome::TryNativeFallback;
+            }
             if current_frame > last_command_frame {
                 inner.queue_command(
                     viewport_id,
@@ -2258,12 +2266,60 @@ async fn await_screenshot(
                     inner.request_repaint_of(viewport_id);
                 }
             }
-        }
-        Ok(())
+        };
+        Ok::<_, ToolError>(outcome)
     };
 
     match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
-        Ok(Ok(())) => {}
+        Ok(Ok(ScreenshotWaitOutcome::Ready)) => {}
+        Ok(Ok(ScreenshotWaitOutcome::TryNativeFallback)) => {
+            runtime.take_screenshot(request_id);
+            let end_frame = inner.frame_count();
+            runtime.log_screenshot(
+                inner,
+                format!(
+                    "native fallback after fresh child frame request_id={request_id} viewport={} \
+                     start_frame={start_frame} end_frame={end_frame}",
+                    viewport_id_to_string(viewport_id),
+                ),
+            );
+            return native_screenshot_fallback(inner, viewport_id, kind)
+                .inspect(|_| {
+                    runtime.log_screenshot(
+                        inner,
+                        format!(
+                            "native fallback succeeded request_id={request_id} viewport={}",
+                            viewport_id_to_string(viewport_id),
+                        ),
+                    );
+                })
+                .map_err(|fallback_error| {
+                    runtime.log_screenshot(
+                        inner,
+                        format!(
+                            "native fallback failed request_id={request_id} viewport={} error={}",
+                            viewport_id_to_string(viewport_id),
+                            fallback_error,
+                        ),
+                    );
+                    ToolError::new(
+                        ErrorCode::Internal,
+                        screenshot_timeout_message(viewport_id, &fallback_error),
+                    )
+                    .with_details(screenshot_timeout_details(
+                        &ScreenshotTimeoutContext {
+                            inner,
+                            runtime,
+                            request_id,
+                            viewport_id,
+                            kind,
+                            start_frame,
+                            end_frame,
+                            fallback_error: &fallback_error,
+                        },
+                    ))
+                });
+        }
         Ok(Err(error)) => return Err(error),
         Err(_) => {
             runtime.take_screenshot(request_id);
@@ -2330,6 +2386,14 @@ async fn await_screenshot(
             ),
         )
     })
+}
+
+fn should_try_native_screenshot_fallback(
+    viewport_id: egui::ViewportId,
+    current_frame: u64,
+    start_frame: u64,
+) -> bool {
+    native_fallback_applies(viewport_id) && current_frame > start_frame
 }
 
 fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
@@ -2846,6 +2910,22 @@ mod tests {
         assert!(!message.contains("attempted for this child viewport"));
     }
 
+    #[test]
+    fn native_screenshot_fallback_waits_for_fresh_child_frame() {
+        let child = egui::ViewportId::from_hash_of("child");
+
+        assert!(!should_try_native_screenshot_fallback(child, 10, 10));
+        assert_eq!(
+            should_try_native_screenshot_fallback(child, 11, 10),
+            cfg!(target_os = "macos")
+        );
+        assert!(!should_try_native_screenshot_fallback(
+            egui::ViewportId::ROOT,
+            11,
+            10
+        ));
+    }
+
     fn parse_script_eval_json(result: &CallToolResult) -> Value {
         let content = result.content.first().expect("content");
         match content {
@@ -3116,6 +3196,55 @@ return {
     }
 
     #[tokio::test]
+    async fn script_eval_viewport_errors_on_ambiguous_title() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let first = egui::ViewportId::from_hash_of("duplicate.lookup.first");
+        let second = egui::ViewportId::from_hash_of("duplicate.lookup.second");
+
+        let mut raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        raw_input
+            .viewports
+            .insert(egui::ViewportId::ROOT, Default::default());
+        for viewport_id in [first, second] {
+            raw_input.viewports.insert(
+                viewport_id,
+                egui::ViewportInfo {
+                    title: Some("Duplicate Lookup".to_string()),
+                    ..Default::default()
+                },
+            );
+        }
+        drop(ctx.run_ui(raw_input, |_| {}));
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        inner.viewports.update_viewports(&ctx);
+        record_test_snapshot(&inner, egui::ViewportId::ROOT);
+
+        let result = server
+            .script_eval(
+                r#"return viewport({ title = "Duplicate Lookup" })"#.to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["type"], "runtime");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("multiple viewports matched title")
+        );
+    }
+
+    #[tokio::test]
     async fn script_eval_widget_get_state_reads_current_snapshot() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -3201,6 +3330,34 @@ return seen
         assert_eq!(json["value"]["labeled"]["value_text"], "true");
         assert_eq!(json["value"]["container"]["label"], "nil");
         assert_eq!(json["value"]["container"]["value_text"], "");
+    }
+
+    #[tokio::test]
+    async fn script_eval_widget_state_preserves_nested_empty_arrays() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("choice", 1, WidgetRole::ComboBox);
+        entry.role_state = Some(RoleState::ComboBox {
+            options: Vec::new(),
+        });
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"return root():widget_get("choice"):state()"#.to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"]["options"], json!([]));
     }
 
     #[tokio::test]

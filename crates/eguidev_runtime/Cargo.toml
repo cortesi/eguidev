@@ -35,4 +35,5 @@ eframe.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.9"
 core-graphics = "0.23"
+foreign-types = "0.5"
 objc2 = "0.6"

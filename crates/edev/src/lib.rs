@@ -1807,7 +1807,7 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use eguidev_runtime::{ScriptErrorInfo, ScriptImageInfo};
+    use eguidev_runtime::{ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo};
     use tempfile::TempDir;
     use tmcp::{
         Client, Server, ServerCtx, ServerHandle, ServerHandler,
@@ -1892,6 +1892,41 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn eval_script_calls_script_eval_with_timeout_and_args() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (app, _handle) = make_recording_eval_app(Arc::clone(&requests)).await;
+        let tempdir = test_tempdir();
+        let config = EvalConfig {
+            launch: test_config(tempdir.path().to_path_buf()),
+            script: tempdir.path().join("probe.luau"),
+            out_dir: tempdir.path().join("eval-out"),
+            timeout: Some(Duration::from_millis(1_234)),
+            args: ScriptArgs::from([(
+                "name".to_string(),
+                ScriptArgValue::String("Sky".to_string()),
+            )]),
+        };
+
+        run_eval_script(
+            Arc::clone(&app.client),
+            &config,
+            "return args.name".to_string(),
+        )
+        .await
+        .expect("eval script");
+
+        let requests = requests.lock().expect("requests lock poisoned");
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.script, "return args.name");
+        assert_eq!(request.timeout_ms, Some(1_234));
+        assert_eq!(
+            request.options.as_ref().expect("options").args.get("name"),
+            Some(&ScriptArgValue::String("Sky".to_string()))
+        );
+    }
+
     #[test]
     fn safe_file_component_keeps_filenames_portable() {
         assert_eq!(safe_file_component("form/result 1"), "form-result-1");
@@ -1947,6 +1982,10 @@ mod tests {
 
     struct HealthFailingServer;
 
+    struct RecordingEvalServer {
+        requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
+    }
+
     #[async_trait]
     impl ServerHandler for HealthFailingServer {
         async fn initialize(
@@ -1981,6 +2020,64 @@ mod tests {
             } else {
                 Err(McpError::ToolNotFound(name))
             }
+        }
+    }
+
+    #[async_trait]
+    impl ServerHandler for RecordingEvalServer {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: String,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> tmcp::Result<InitializeResult> {
+            Ok(InitializeResult::new("recording"))
+        }
+
+        async fn list_tools(
+            &self,
+            _context: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> tmcp::Result<ListToolsResult> {
+            Ok(ListToolsResult::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _context: &ServerCtx,
+            name: String,
+            arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
+        ) -> tmcp::Result<CallToolResponse> {
+            if name != "script_eval" {
+                return Err(McpError::ToolNotFound(name));
+            }
+            let request = arguments
+                .ok_or_else(|| McpError::InternalError("missing arguments".to_string()))?
+                .deserialize::<ScriptEvalRequest>()
+                .map_err(|error| McpError::InternalError(error.to_string()))?;
+            self.requests
+                .lock()
+                .expect("requests lock poisoned")
+                .push(request.clone());
+            Ok(CallToolResult::new()
+                .with_json_text(serde_json::json!({
+                    "success": true,
+                    "value": {
+                        "script": request.script,
+                        "timeout_ms": request.timeout_ms,
+                    },
+                    "logs": [],
+                    "assertions": [],
+                    "timing": {
+                        "compile_ms": 0,
+                        "exec_ms": 0,
+                        "total_ms": 0
+                    }
+                }))
+                .expect("script eval json")
+                .into())
         }
     }
 
@@ -2088,6 +2185,40 @@ mod tests {
         };
 
         let server = Server::new(|| HealthFailingServer);
+        let handle = ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .expect("server handle");
+
+        let mut client = Client::new("test", "0.1.0");
+        client
+            .connect_stream_raw(client_reader, client_writer)
+            .await
+            .expect("connect");
+        client.init().await.expect("init");
+
+        let app = AppProcess {
+            child: None,
+            process_group_id: None,
+            client: Arc::new(AsyncMutex::new(client)),
+            stderr_task: None,
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            log_state: LogState::new(false),
+        };
+
+        (app, handle)
+    }
+
+    async fn make_recording_eval_app(
+        requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
+    ) -> (AppProcess, ServerHandle) {
+        let ((server_reader, server_writer), (client_reader, client_writer)) = {
+            let (sr, sw, cr, cw) = make_duplex_pair();
+            ((sr, sw), (cr, cw))
+        };
+
+        let server = Server::new(move || RecordingEvalServer {
+            requests: Arc::clone(&requests),
+        });
         let handle = ServerHandle::from_stream(server, server_reader, server_writer)
             .await
             .expect("server handle");
