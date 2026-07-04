@@ -44,6 +44,13 @@ Enable verbose transport logging:
 cargo xtask smoke-edev --verbose
 ```
 
+`edev mcp` keeps the launcher alive for the lifetime of the initialized stdio client. The
+`mcp.idle_shutdown_after_secs` setting is a pre-client guard for abandoned launches: if no
+client initializes before the idle window elapses, the launcher exits and cleans up. Once
+the client is attached, stdin EOF or a process signal owns shutdown, and the `status` tool
+reports `idle_shutdown.state = "suspended_while_client_attached"`. Pre-initialize
+`list_tools` probes do not extend the guard; `initialize` is the client lifetime boundary.
+
 Run the full smoke suite with the root viewport occluded:
 
 ```sh
@@ -53,8 +60,26 @@ cargo xtask smoke-occlusion
 Smoke scripts should prefer semantic waits and exact visual assertions over frame sleeps.
 Use `Viewport:sample_pixels()` for fixed-color painter checks, and use
 `Viewport:dismiss_popups()` or `fixture()` boundaries to isolate transient menus between tests.
+Use `viewport({ title = "..." })` or `viewport({ title_contains = "..." })` to find
+secondary windows by title instead of duplicating `viewports()` search loops.
 Use `hex` for exact color equality; `rgba` channels and geometry values are script-facing
 numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
+On macOS, child-viewport screenshots fall back to Quartz window capture only after the
+normal egui screenshot event times out. The fallback needs a recorded window title match and
+macOS Screen Recording permission; root screenshots still use the egui event path directly.
+
+Run one diagnostic script and keep its return value/images with:
+
+```sh
+cargo run -p edev -- eval tmp/probe.luau --out-dir tmp/probe-output --arg name=Sky
+```
+
+`edev eval` launches a one-shot app process from the configured `[app]` command, uses the
+same `script_eval` engine as smoke scripts, prints the structured outcome JSON to stdout,
+exits non-zero on script failure, and writes returned `ImageRef` JPEGs to the script
+directory or `--out-dir`. It uses `[smoke].script_timeout_secs` and `[smoke].args` as
+defaults when the matching eval CLI flags are omitted, then shuts the app down after the
+eval; it does not attach to an already-running `edev mcp` app.
 
 ## Background automation (occluded windows)
 

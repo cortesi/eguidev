@@ -63,6 +63,11 @@ vp:widget_get("basic.select.2"):set_value(true)
 vp:wait_for_widget("basic.select.2", function(widget)
     return widget.value == true
 end)
+vp:widget_get("basic.select.1"):click()
+local select_one = vp:widget_get("basic.select.1"):state()
+local select_two = vp:widget_get("basic.select.2"):state()
+assert(select_one.value == true)
+assert(select_two.value == false)
 
 local progress = vp:widget_get("basic.progress.percent"):state()
 assert(progress.role == "progress_bar")

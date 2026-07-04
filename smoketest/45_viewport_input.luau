@@ -1,12 +1,6 @@
 -- Raw input must reach immediate viewports: click a row in the secondary viewport.
 fixture("viewports.default")
-local secondary: Viewport? = nil
-for _, vp in ipairs(viewports()) do
-    local st = vp:state()
-    if st.title ~= nil and string.find(st.title :: string, "secondary", 1, true) ~= nil then
-        secondary = vp
-    end
-end
+local secondary = viewport({ title = "DevMCP secondary viewport" })
 assert(secondary ~= nil, "secondary viewport present")
 local sv = secondary :: Viewport
 sv:wait_for_widget_visible("viewports.row.0")

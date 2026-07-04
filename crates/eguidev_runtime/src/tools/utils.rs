@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 use crate::{
-    actions::{ActionTiming, InputAction},
+    actions::{ActionQueueStats, ActionTiming, InputAction},
     error::{ErrorCode, ToolError},
     overlay::{OverlayDebugOptions, parse_color},
     registry::{Inner, viewport_id_to_string},
@@ -32,6 +32,7 @@ pub struct WaitObservationStart {
     target_viewport_id: Option<egui::ViewportId>,
     target_viewport_label: Option<String>,
     start_target_capture_frame: Option<u64>,
+    start_action_stats: Option<ActionQueueStats>,
     global_start_frame: u64,
 }
 
@@ -45,7 +46,20 @@ pub struct WaitObservation {
     pub frames_observed: Option<u64>,
     pub last_frame_age_ms: Option<u64>,
     pub stalled: bool,
-    pub diagnosis: Option<&'static str>,
+    pub diagnosis: Option<String>,
+    pub action_queue: Option<WaitActionObservation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WaitActionObservation {
+    pub start_queued_actions: u64,
+    pub end_queued_actions: u64,
+    pub start_drained_actions: u64,
+    pub end_drained_actions: u64,
+    pub queued_during_wait: u64,
+    pub drained_during_wait: u64,
+    pub pending_actions: u64,
+    pub last_drain_frame: Option<u64>,
 }
 
 impl WaitObservationStart {
@@ -54,10 +68,13 @@ impl WaitObservationStart {
         let start_target_capture_frame = target_viewport_id
             .and_then(|viewport_id| inner.viewports.capture_snapshot(viewport_id))
             .map(|snapshot| snapshot.frame_count);
+        let start_action_stats =
+            target_viewport_id.map(|viewport_id| inner.actions.stats(viewport_id));
         Self {
             target_viewport_id,
             target_viewport_label,
             start_target_capture_frame,
+            start_action_stats,
             global_start_frame: inner.frame_count(),
         }
     }
@@ -80,7 +97,25 @@ impl WaitObservationStart {
             .map(|health| health.age().as_millis() as u64);
         let stalled = frames_observed == Some(0)
             || last_frame_age_ms.is_some_and(|age_ms| age_ms >= STALLED_FRAME_AGE_MS);
-        let diagnosis = (frames_observed == Some(0)).then_some(NO_TARGET_FRAMES_DIAGNOSIS);
+        let action_queue = self.target_viewport_id.map(|viewport_id| {
+            WaitActionObservation::new(
+                self.start_action_stats.unwrap_or_default(),
+                inner.actions.stats(viewport_id),
+            )
+        });
+        let diagnosis = (frames_observed == Some(0))
+            .then(|| NO_TARGET_FRAMES_DIAGNOSIS.to_string())
+            .or_else(|| {
+                action_queue.as_ref().and_then(|observation| {
+                    action_diagnosis(observation, self.target_viewport_label.as_deref())
+                })
+            })
+            .or_else(|| {
+                frames_observed.is_some_and(|frames| frames > 0).then(|| {
+                    "Target viewport produced frames, but the wait condition did not complete."
+                        .to_string()
+                })
+            });
         WaitObservation {
             target_viewport_id: self.target_viewport_label.clone(),
             start_target_capture_frame: self.start_target_capture_frame,
@@ -91,8 +126,38 @@ impl WaitObservationStart {
             last_frame_age_ms,
             stalled,
             diagnosis,
+            action_queue,
         }
     }
+}
+
+impl WaitActionObservation {
+    fn new(start: ActionQueueStats, end: ActionQueueStats) -> Self {
+        Self {
+            start_queued_actions: start.queued_actions,
+            end_queued_actions: end.queued_actions,
+            start_drained_actions: start.drained_actions,
+            end_drained_actions: end.drained_actions,
+            queued_during_wait: end.queued_actions.saturating_sub(start.queued_actions),
+            drained_during_wait: end.drained_actions.saturating_sub(start.drained_actions),
+            pending_actions: end.queued_actions.saturating_sub(end.drained_actions),
+            last_drain_frame: end.last_drain_frame,
+        }
+    }
+}
+
+fn action_diagnosis(
+    observation: &WaitActionObservation,
+    viewport_label: Option<&str>,
+) -> Option<String> {
+    if observation.pending_actions == 0 || observation.drained_during_wait > 0 {
+        return None;
+    }
+    let viewport = viewport_label.unwrap_or("unknown");
+    Some(format!(
+        "{} input actions queued for viewport {viewport} were never consumed by any pass - input is not reaching this viewport.",
+        observation.pending_actions
+    ))
 }
 
 pub fn repaint_diagnosis_prefix(observation: &WaitObservation) -> Option<&'static str> {
@@ -109,6 +174,9 @@ pub fn repaint_diagnosis_prefix(observation: &WaitObservation) -> Option<&'stati
 pub fn wait_timeout_message(message: impl AsRef<str>, observation: &WaitObservation) -> String {
     match repaint_diagnosis_prefix(observation) {
         Some(prefix) => format!("{prefix} {}", message.as_ref()),
+        None if let Some(diagnosis) = observation.diagnosis.as_deref() => {
+            format!("{} Diagnosis: {diagnosis}", message.as_ref())
+        }
         None => message.as_ref().to_string(),
     }
 }
@@ -797,6 +865,87 @@ mod tests {
             visible: true,
             focused: false,
         }
+    }
+
+    fn wait_observation(frames_observed: Option<u64>, diagnosis: Option<&str>) -> WaitObservation {
+        WaitObservation {
+            target_viewport_id: Some("root".to_string()),
+            start_target_capture_frame: None,
+            end_target_capture_frame: None,
+            global_start_frame: 0,
+            global_end_frame: 0,
+            frames_observed,
+            last_frame_age_ms: None,
+            stalled: frames_observed == Some(0),
+            diagnosis: diagnosis.map(str::to_string),
+            action_queue: None,
+        }
+    }
+
+    #[test]
+    fn action_diagnosis_reports_pending_actions_when_frames_flow() {
+        let observation = WaitActionObservation {
+            start_queued_actions: 0,
+            end_queued_actions: 2,
+            start_drained_actions: 0,
+            end_drained_actions: 0,
+            queued_during_wait: 2,
+            drained_during_wait: 0,
+            pending_actions: 2,
+            last_drain_frame: None,
+        };
+
+        let diagnosis = action_diagnosis(&observation, Some("secondary")).expect("diagnosis");
+
+        assert!(diagnosis.contains("2 input actions queued for viewport secondary"));
+        assert!(diagnosis.contains("were never consumed by any pass"));
+    }
+
+    #[test]
+    fn wait_observation_prefers_no_frame_diagnosis_over_pending_actions() {
+        let inner = Inner::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        let observation_start = WaitObservationStart::new(&inner, Some(viewport_id));
+
+        inner.queue_action(
+            viewport_id,
+            InputAction::PointerMove {
+                pos: Pos2 { x: 1.0, y: 1.0 },
+            },
+        );
+
+        let observation = observation_start.finish(&inner);
+
+        assert_eq!(observation.frames_observed, Some(0));
+        assert_eq!(
+            observation.diagnosis.as_deref(),
+            Some(NO_TARGET_FRAMES_DIAGNOSIS)
+        );
+        assert_eq!(observation.action_queue.unwrap().pending_actions, 1);
+    }
+
+    #[test]
+    fn wait_timeout_message_appends_structured_diagnosis_to_pcall_text() {
+        let observation = wait_observation(
+            Some(2),
+            Some("Target viewport produced frames, but the wait condition did not complete."),
+        );
+
+        let message = wait_timeout_message("Timed out waiting for widget predicate", &observation);
+
+        assert!(message.contains("Timed out waiting for widget predicate"));
+        assert!(message.contains("Diagnosis: Target viewport produced frames"));
+    }
+
+    #[test]
+    fn wait_timeout_message_keeps_no_frame_repaint_guidance_first() {
+        let observation = wait_observation(Some(0), Some(NO_TARGET_FRAMES_DIAGNOSIS));
+
+        let message = wait_timeout_message("Timed out waiting for widget predicate", &observation);
+
+        assert!(message.starts_with(NO_TARGET_FRAMES_DIAGNOSIS));
+        assert!(message.contains("Timed out waiting for widget predicate"));
+        assert!(!message.contains("Diagnosis:"));
     }
 
     #[test]

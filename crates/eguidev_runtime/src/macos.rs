@@ -21,10 +21,25 @@ use std::{
     collections::HashMap,
     env,
     ffi::{CStr, c_char},
-    mem,
+    mem, process,
     sync::{Mutex, OnceLock},
 };
 
+use core_foundation::{
+    base::{CFRange, CFType, TCFType},
+    dictionary::CFDictionary,
+    number::CFNumber,
+    string::{CFString, CFStringRef},
+};
+use core_graphics::{
+    display::CGRectNull,
+    image::CGImage,
+    window::{
+        self, CGWindowID, create_image, kCGNullWindowID, kCGWindowImageBestResolution,
+        kCGWindowImageBoundsIgnoreFraming, kCGWindowListOptionAll,
+        kCGWindowListOptionIncludingWindow, kCGWindowName, kCGWindowNumber, kCGWindowOwnerPID,
+    },
+};
 use objc2::{
     MainThreadMarker, class, msg_send,
     runtime::{AnyClass, AnyObject, Imp, Sel},
@@ -67,6 +82,99 @@ pub fn platform_window_states() -> Vec<PlatformViewportState> {
         .collect()
 }
 
+/// Return the AppKit window number for a titled window recorded by the occlusion hook.
+pub fn window_number_for_title(title: &str) -> Result<u32, String> {
+    match recorded_window_number_for_title(title) {
+        Ok(window_number) => Ok(window_number),
+        Err(recorded_error) => window_number_from_window_server(title)
+            .map_err(|window_server_error| format!("{recorded_error}; {window_server_error}")),
+    }
+}
+
+fn recorded_window_number_for_title(title: &str) -> Result<u32, String> {
+    let Some(states) = WINDOW_STATES.get() else {
+        return Err("no macOS window state has been recorded yet".to_string());
+    };
+    let window_numbers = states
+        .lock()
+        .expect("platform window states lock poisoned")
+        .values()
+        .filter(|state| state.title.as_deref() == Some(title))
+        .filter_map(|state| state.window_number)
+        .collect::<Vec<_>>();
+    match window_numbers.as_slice() {
+        [window_number] => Ok(*window_number),
+        [] => Err(format!("no recorded macOS window matched title {title:?}")),
+        _ => Err(format!(
+            "multiple recorded macOS windows matched title {title:?}"
+        )),
+    }
+}
+
+fn window_number_from_window_server(title: &str) -> Result<u32, String> {
+    let Some(window_info) = window::copy_window_info(kCGWindowListOptionAll, kCGNullWindowID)
+    else {
+        return Err("CoreGraphics returned no window metadata".to_string());
+    };
+    let pid = i32::try_from(process::id())
+        .map_err(|error| format!("process id did not fit CoreGraphics metadata: {error}"))?;
+    let window_numbers = window_info
+        .get_values(CFRange {
+            location: 0,
+            length: window_info.len(),
+        })
+        .into_iter()
+        .filter_map(|value| unsafe {
+            let info = WindowInfo::wrap_under_get_rule(value.cast());
+            let owner_pid = window_info_number(&info, kCGWindowOwnerPID)?;
+            let window_title = window_info_string(&info, kCGWindowName)?;
+            (owner_pid == pid && window_title == title)
+                .then(|| window_info_number(&info, kCGWindowNumber))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| "CoreGraphics window metadata was missing window numbers".to_string())?;
+    match window_numbers.as_slice() {
+        [window_number] => u32::try_from(*window_number)
+            .map_err(|error| format!("CoreGraphics window number was not a CGWindowID: {error}")),
+        [] => Err(format!(
+            "CoreGraphics found no current-process window titled {title:?}"
+        )),
+        _ => Err(format!(
+            "CoreGraphics found multiple current-process windows titled {title:?}"
+        )),
+    }
+}
+
+type WindowInfo = CFDictionary<CFString, CFType>;
+
+fn window_info_number(info: &WindowInfo, key: CFStringRef) -> Option<i32> {
+    let key = unsafe { CFString::wrap_under_get_rule(key) };
+    info.find(&key)
+        .and_then(|value| value.downcast::<CFNumber>())
+        .and_then(|value| value.to_i32())
+}
+
+fn window_info_string(info: &WindowInfo, key: CFStringRef) -> Option<String> {
+    let key = unsafe { CFString::wrap_under_get_rule(key) };
+    info.find(&key)
+        .and_then(|value| value.downcast::<CFString>())
+        .map(|value| value.to_string())
+}
+
+/// Capture a window directly through Quartz and return an egui-compatible image.
+pub fn capture_window_image(window_number: u32) -> Result<egui::ColorImage, String> {
+    let image_options = kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution;
+    let Some(image) = create_image(
+        unsafe { CGRectNull },
+        kCGWindowListOptionIncludingWindow,
+        window_number as CGWindowID,
+        image_options,
+    ) else {
+        return Err("CoreGraphics returned no window image".to_string());
+    };
+    color_image_from_cg_image(&image)
+}
+
 /// Replace `-[NSWindow occlusionState]` so every window always reports
 /// itself visible, keeping eframe rendering when the window is covered.
 fn spoof_occlusion_state() {
@@ -102,6 +210,7 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
     }
     let state = PlatformViewportState {
         title: unsafe { window_title(window) },
+        window_number: unsafe { window_number(window) },
         os_minimized: Some(unsafe { window_is_minimized(window) }),
         os_occluded: Some(real_state & OCCLUSION_STATE_VISIBLE == 0),
     };
@@ -114,6 +223,11 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
 
 unsafe fn window_is_minimized(window: *mut AnyObject) -> bool {
     unsafe { msg_send![window, isMiniaturized] }
+}
+
+unsafe fn window_number(window: *mut AnyObject) -> Option<u32> {
+    let number: isize = unsafe { msg_send![window, windowNumber] };
+    u32::try_from(number).ok().filter(|number| *number > 0)
 }
 
 unsafe fn window_title(window: *mut AnyObject) -> Option<String> {
@@ -145,5 +259,104 @@ fn demote_activation_policy() {
         let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
         let _: bool = msg_send![app, setActivationPolicy: ACTIVATION_POLICY_ACCESSORY];
         let _: () = msg_send![app, deactivate];
+    }
+}
+
+fn color_image_from_cg_image(image: &CGImage) -> Result<egui::ColorImage, String> {
+    let width = image.width();
+    let height = image.height();
+    let bytes_per_row = image.bytes_per_row();
+    if width == 0 || height == 0 {
+        return Err("CoreGraphics returned an empty window image".to_string());
+    }
+    if image.bits_per_component() != 8 || image.bits_per_pixel() != 32 {
+        return Err(format!(
+            "unsupported CoreGraphics image format: {} bits/component, {} bits/pixel",
+            image.bits_per_component(),
+            image.bits_per_pixel()
+        ));
+    }
+    let min_row_bytes = width
+        .checked_mul(4)
+        .ok_or_else(|| "CoreGraphics image row width overflowed".to_string())?;
+    if bytes_per_row < min_row_bytes {
+        return Err(format!(
+            "CoreGraphics row stride {bytes_per_row} is too small for {width} pixels"
+        ));
+    }
+    let data = image.data();
+    color_image_from_bgra_rows(width, height, bytes_per_row, data.bytes())
+}
+
+fn color_image_from_bgra_rows(
+    width: usize,
+    height: usize,
+    bytes_per_row: usize,
+    data: &[u8],
+) -> Result<egui::ColorImage, String> {
+    let last_row_offset = height
+        .checked_sub(1)
+        .and_then(|row| row.checked_mul(bytes_per_row))
+        .ok_or_else(|| "CoreGraphics image size overflowed".to_string())?;
+    let required_bytes = last_row_offset
+        .checked_add(width.saturating_mul(4))
+        .ok_or_else(|| "CoreGraphics image byte count overflowed".to_string())?;
+    if data.len() < required_bytes {
+        return Err(format!(
+            "CoreGraphics image data is truncated: {} bytes for {required_bytes} required",
+            data.len()
+        ));
+    }
+
+    let mut rgba = Vec::with_capacity(
+        width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "CoreGraphics image pixel count overflowed".to_string())?,
+    );
+    let mut saw_visible_pixel = false;
+    for row in data.chunks(bytes_per_row).take(height) {
+        for pixel in row[..width * 4].chunks_exact(4) {
+            let blue = pixel[0];
+            let green = pixel[1];
+            let red = pixel[2];
+            let alpha = pixel[3];
+            saw_visible_pixel |= alpha != 0;
+            rgba.extend_from_slice(&[red, green, blue, alpha]);
+        }
+    }
+    if !saw_visible_pixel {
+        return Err(
+            "CoreGraphics returned only transparent pixels; Screen Recording permission may be \
+             missing"
+                .to_string(),
+        );
+    }
+
+    Ok(egui::ColorImage::from_rgba_premultiplied(
+        [width, height],
+        &rgba,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_image_from_bgra_rows_converts_to_rgba() {
+        let image =
+            color_image_from_bgra_rows(2, 1, 12, &[3, 2, 1, 255, 30, 20, 10, 128, 0, 0, 0, 0])
+                .expect("image");
+
+        assert_eq!(image.size, [2, 1]);
+        assert_eq!(
+            image.pixels[0],
+            egui::Color32::from_rgba_premultiplied(1, 2, 3, 255)
+        );
+        assert_eq!(
+            image.pixels[1],
+            egui::Color32::from_rgba_premultiplied(10, 20, 30, 128)
+        );
     }
 }

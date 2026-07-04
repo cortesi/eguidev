@@ -37,8 +37,9 @@ command = [
 # Emit verbose launcher lifecycle logs to stderr.
 # verbose = false
 
-# Shut down the launcher after this many seconds of inactivity (no tool
-# calls). Set higher for long interactive sessions; lower for CI.
+# Shut down an abandoned launcher if no MCP client initializes within this
+# many seconds. After a client attaches, stdio EOF or process shutdown controls
+# the launcher lifetime, and `status` reports the idle guard as suspended.
 # idle_shutdown_after_secs = 1200
 
 
@@ -57,9 +58,12 @@ command = [
 # suite_timeout_secs = 600
 
 # Per-script timeout, in seconds.
+# `edev eval` uses this as its default script timeout unless `--script-timeout-secs`
+# is passed.
 # script_timeout_secs = 60
 
 # Typed arguments passed to every script. Values are auto-typed:
 # true/false -> bool, integers -> int, decimals -> float, else string.
-# CLI --arg flags are merged on top of these.
+# `edev smoke` and `edev eval` both use these defaults. CLI --arg flags are
+# merged on top of these.
 # args = { theme = "dark", count = 5 }

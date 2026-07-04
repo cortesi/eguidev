@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -66,6 +66,7 @@ pub struct ViewportSnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct PlatformViewportState {
     pub title: Option<String>,
+    pub window_number: Option<u32>,
     pub os_minimized: Option<bool>,
     pub os_occluded: Option<bool>,
 }
@@ -73,6 +74,7 @@ pub struct PlatformViewportState {
 pub struct ViewportState {
     viewports_snapshot: Mutex<Vec<ViewportSnapshot>>,
     viewport_lookup: Mutex<HashMap<String, egui::ViewportId>>,
+    live_viewports: Mutex<Option<HashSet<egui::ViewportId>>>,
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
     capture_snapshot: Mutex<HashMap<egui::ViewportId, CaptureSnapshot>>,
     frame_health: Mutex<HashMap<egui::ViewportId, FrameHealth>>,
@@ -89,6 +91,7 @@ impl ViewportState {
         Self {
             viewports_snapshot: Mutex::new(Vec::new()),
             viewport_lookup: Mutex::new(HashMap::new()),
+            live_viewports: Mutex::new(None),
             input_snapshot: Mutex::new(HashMap::new()),
             capture_snapshot: Mutex::new(HashMap::new()),
             frame_health: Mutex::new(HashMap::new()),
@@ -98,6 +101,7 @@ impl ViewportState {
     pub fn update_viewports(&self, ctx: &Context) {
         let (viewports, pixels_per_point, focused) =
             ctx.input(|i| (i.raw.viewports.clone(), i.pixels_per_point(), i.focused));
+        let live_viewports = viewports.keys().copied().collect::<HashSet<_>>();
         let mut stored = lock(&self.viewports_snapshot, "viewports snapshot lock");
         let mut snapshots = stored
             .iter()
@@ -140,6 +144,7 @@ impl ViewportState {
         let mut ordered = snapshots.into_values().collect::<Vec<_>>();
         ordered.sort_by(|left, right| left.viewport_id.cmp(&right.viewport_id));
         *stored = ordered;
+        *lock(&self.live_viewports, "live viewports lock") = Some(live_viewports);
     }
 
     pub fn merge_platform_state(&self, states: &[PlatformViewportState]) {
@@ -219,6 +224,15 @@ impl ViewportState {
         lock(&self.viewports_snapshot, "viewports snapshot lock")
             .iter()
             .any(|snapshot| snapshot.viewport_id == id)
+    }
+
+    pub fn is_live_viewport(&self, viewport_id: egui::ViewportId) -> bool {
+        if viewport_id == egui::ViewportId::ROOT {
+            return true;
+        }
+        lock(&self.live_viewports, "live viewports lock")
+            .as_ref()
+            .is_none_or(|viewports| viewports.contains(&viewport_id))
     }
 
     pub fn input_snapshot(&self, viewport_id: egui::ViewportId) -> Option<InputSnapshot> {
@@ -306,6 +320,7 @@ mod tests {
                 .expect("secondary viewport"),
             secondary
         );
+        assert!(state.is_live_viewport(secondary));
 
         let mut root_only = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -323,6 +338,8 @@ mod tests {
                 .expect("retained secondary viewport"),
             secondary
         );
+        assert!(!state.is_live_viewport(secondary));
+        assert!(state.is_live_viewport(egui::ViewportId::ROOT));
     }
 
     #[test]
@@ -367,6 +384,7 @@ mod tests {
 
         state.merge_platform_state(&[PlatformViewportState {
             title: Some("App".to_string()),
+            window_number: Some(12),
             os_minimized: Some(false),
             os_occluded: Some(true),
         }]);

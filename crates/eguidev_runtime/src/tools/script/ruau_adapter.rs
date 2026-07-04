@@ -15,7 +15,10 @@ use ruau::{
         Limits, LoadedModule, MarshaledScriptError, MarshaledValue, ModuleBuilderExt, MultiValue,
         RuntimeCapabilities, RuntimeError, Scope, ScopedHostFunction, ScopedValue, SourceLocation,
         StashedClosure, StashedValue, Table, TracebackFrame, Vm, async_host_fn,
-        serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
+        serde::{
+            from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json,
+            to_scoped_value,
+        },
     },
     vm_api::{
         HostReturn, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue, RuntimeErrorKind,
@@ -56,6 +59,7 @@ declare function fixture_raw(name: string): ()
 declare function fixtures(): any
 declare function log(entry: any): ()
 declare function root(): any
+declare function viewport(options: any): any
 declare function viewports(): any
 declare function wait_for_capture(): ()
 declare function wait_for_frames(count: number?): number
@@ -93,6 +97,7 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "tostring",
     "type",
     "utf8",
+    "viewport",
     "viewports",
     "wait_for_capture",
     "wait_for_frames",
@@ -323,7 +328,29 @@ fn script_args_to_luau_json(args: &ScriptArgs) -> Value {
     value
 }
 
-fn json_to_luau_scoped_value<'s>(
+fn typed_json_to_luau_scoped_value<'s>(
+    scope: &Scope<'s>,
+    value: &Value,
+) -> Result<ScopedValue<'s>, RuntimeError> {
+    let mut value = value.clone();
+    promote_integer_numbers_to_luau_numbers(&mut value);
+    to_scoped_value(scope, &value)
+}
+
+// Typed host returns use natural Luau table semantics for objects, array-shaped
+// host returns preserve array identity, and script args use lossless JSON
+// markers so explicit nulls remain distinguishable from missing fields.
+fn typed_json_array_to_luau_scoped_value<'s>(
+    scope: &Scope<'s>,
+    value: &Value,
+) -> Result<ScopedValue<'s>, RuntimeError> {
+    let mut value = value.clone();
+    strip_object_null_fields(&mut value);
+    promote_integer_numbers_to_luau_numbers(&mut value);
+    json_to_scoped_value(scope, &value)
+}
+
+fn lossless_json_to_luau_scoped_value<'s>(
     scope: &Scope<'s>,
     value: &Value,
 ) -> Result<ScopedValue<'s>, RuntimeError> {
@@ -347,10 +374,27 @@ fn promote_integer_numbers_to_luau_numbers(value: &mut Value) {
         Value::Number(number) => {
             if let Some(value) = number.as_i64() {
                 *number = serde_json::Number::from_f64(value as f64)
-                    .expect("script argument integers convert to finite Luau numbers");
+                    .expect("typed JSON integers convert to finite Luau numbers");
             }
         }
         Value::Null | Value::Bool(_) | Value::String(_) => {}
+    }
+}
+
+fn strip_object_null_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.retain(|_, value| !value.is_null());
+            for value in map.values_mut() {
+                strip_object_null_fields(value);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                strip_object_null_fields(value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 
@@ -892,6 +936,13 @@ impl EguidevModule {
                 runtime: Arc::clone(&self.runtime),
             }),
         );
+        builder.scoped_function(
+            "viewport",
+            ModuleBinding::Global,
+            Box::new(ViewportFn {
+                runtime: Arc::clone(&self.runtime),
+            }),
+        );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
             "viewports",
@@ -904,7 +955,7 @@ impl EguidevModule {
                         .viewports_list(pos, None)
                         .await
                         .map_err(host_script_error)?;
-                    json_array_host_return_with_metatable(&ctx, value, VIEWPORT_METHODS).await
+                    typed_json_array_host_return_with_metatable(&ctx, value, VIEWPORT_METHODS).await
                 }
             }),
         );
@@ -967,7 +1018,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        json_host_return(&ctx, value).await
+                        typed_json_host_return(&ctx, value).await
                     }
                 },
             ),
@@ -990,7 +1041,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1013,7 +1064,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        scalar_json_host_return(value)
+                        typed_scalar_host_return(value)
                     }
                 },
             ),
@@ -1043,7 +1094,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1059,7 +1110,7 @@ impl EguidevModule {
                         .focus_window(pos, viewport.id)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1076,7 +1127,7 @@ impl EguidevModule {
                         .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1093,7 +1144,7 @@ impl EguidevModule {
                         .wait_for_capture(pos, options.as_ref().and_then(Value::as_object))
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1109,7 +1160,7 @@ impl EguidevModule {
                         .viewport_dismiss_popups(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1131,7 +1182,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        scalar_json_host_return(value)
+                        typed_scalar_host_return(value)
                     }
                 },
             ),
@@ -1154,7 +1205,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        scalar_json_host_return(value)
+                        typed_scalar_host_return(value)
                     }
                 },
             ),
@@ -1176,7 +1227,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1202,7 +1253,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        scalar_json_host_return(value)
+                        typed_scalar_host_return(value)
                     }
                 },
             ),
@@ -1227,7 +1278,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1244,7 +1295,7 @@ impl EguidevModule {
                         .raw_text(pos, args.value, options.as_ref().and_then(Value::as_object))
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1266,7 +1317,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        scalar_json_host_return(value)
+                        typed_scalar_host_return(value)
                     }
                 },
             ),
@@ -1283,7 +1334,7 @@ impl EguidevModule {
                         .viewport_set_inner_size(pos, &args.value, Some(args.receiver.id))
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1303,7 +1354,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1320,7 +1371,7 @@ impl EguidevModule {
                         .screenshot(pos, Some(&target))
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1336,7 +1387,7 @@ impl EguidevModule {
                         .sample_pixels(pos, &args.value, Some(args.receiver.id))
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1352,7 +1403,7 @@ impl EguidevModule {
                         .check_layout(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1371,7 +1422,7 @@ impl EguidevModule {
                             .show_highlight_rect(pos, Some(args.receiver.id), rect, args.text)
                             .await
                             .map_err(host_script_error)?;
-                        json_host_return(&ctx, value).await
+                        typed_json_host_return(&ctx, value).await
                     }
                 },
             ),
@@ -1388,7 +1439,7 @@ impl EguidevModule {
                         .hide_highlight_all(pos)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1410,7 +1461,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1426,7 +1477,7 @@ impl EguidevModule {
                         .hide_debug_overlay(pos)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1457,7 +1508,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1478,7 +1529,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1500,7 +1551,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1516,7 +1567,7 @@ impl EguidevModule {
                         .action_focus(pos, &receiver.value)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1538,7 +1589,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1560,7 +1611,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1582,7 +1633,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1604,7 +1655,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1626,7 +1677,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1647,7 +1698,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1668,7 +1719,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1684,7 +1735,7 @@ impl EguidevModule {
                         .text_measure(pos, &receiver.value)
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1700,7 +1751,7 @@ impl EguidevModule {
                         .check_layout_widget(pos, &receiver.value, receiver.viewport_id)
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1716,7 +1767,7 @@ impl EguidevModule {
                         .screenshot(pos, Some(&receiver.value))
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1737,7 +1788,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1753,7 +1804,7 @@ impl EguidevModule {
                         .hide_highlight_widget(pos, &receiver.value, receiver.viewport_id)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1775,7 +1826,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1791,7 +1842,7 @@ impl EguidevModule {
                         .hide_debug_overlay(pos)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1821,7 +1872,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1842,7 +1893,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1863,7 +1914,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    json_host_return(&ctx, value).await
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1884,7 +1935,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -1941,7 +1992,7 @@ impl EguidevModule {
                         .wait_for_frames(pos, &count)
                         .await
                         .map_err(host_script_error)?;
-                    scalar_json_host_return(value)
+                    typed_scalar_host_return(value)
                 }
             }),
         );
@@ -2697,7 +2748,7 @@ async fn stash_predicate_value(
     value: Value,
 ) -> Result<StashedValue, RuntimeError> {
     ctx.scope(move |scope| {
-        let value = json_to_luau_scoped_value(scope, &value)?;
+        let value = typed_json_to_luau_scoped_value(scope, &value)?;
         scope.stash_value(value)
     })
     .await
@@ -2775,7 +2826,7 @@ impl ScopedHostFunction for FixturesFn {
         no_args("fixtures", &args)?;
         let pos = script_position_from_caller(scope);
         let value = self.runtime.fixtures(pos).map_err(host_script_error)?;
-        single_json_return(scope, &value)
+        single_typed_json_return(scope, &value)
     }
 }
 
@@ -2792,7 +2843,32 @@ impl ScopedHostFunction for RootFn {
         no_args("root", &args)?;
         let pos = script_position_from_caller(scope);
         let value = self.runtime.root_viewport(pos).map_err(host_script_error)?;
-        single_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
+        single_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
+    }
+}
+
+struct ViewportFn {
+    runtime: Arc<ScriptRuntime>,
+}
+
+impl ScopedHostFunction for ViewportFn {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let pos = script_position_from_caller(scope);
+        let options = optional_json_arg(scope, "viewport", args)?;
+        let options = match options.as_ref() {
+            None => None,
+            Some(Value::Object(map)) => Some(map),
+            Some(_) => return Err(RuntimeError::runtime("viewport expected an options table")),
+        };
+        let value = self
+            .runtime
+            .viewport_lookup(pos, options)
+            .map_err(host_script_error)?;
+        optional_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
     }
 }
 
@@ -2813,7 +2889,7 @@ impl ScopedHostFunction for ViewportWidgetListFn {
             .runtime
             .widget_list(pos, options.as_ref().and_then(Value::as_object))
             .map_err(host_script_error)?;
-        single_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
+        single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
     }
 }
 
@@ -2833,7 +2909,7 @@ impl ScopedHostFunction for ViewportStateFn {
             .runtime
             .viewport_state(pos, viewport_id)
             .map_err(host_script_error)?;
-        single_json_return(scope, &value)
+        single_typed_json_return(scope, &value)
     }
 }
 
@@ -2856,7 +2932,7 @@ impl ScopedHostFunction for ViewportWidgetGetFn {
             .runtime
             .widget_get(pos, &target, options.as_ref().and_then(Value::as_object))
             .map_err(host_script_error)?;
-        single_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
+        single_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
     }
 }
 
@@ -2878,7 +2954,7 @@ impl ScopedHostFunction for ViewportWidgetAtPointFn {
             .runtime
             .widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object))
             .map_err(host_script_error)?;
-        single_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
+        single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
     }
 }
 
@@ -2899,7 +2975,7 @@ impl ScopedHostFunction for WidgetViewportFn {
             .runtime
             .viewport_handle(pos, viewport_id)
             .map_err(host_script_error)?;
-        single_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
+        single_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
     }
 }
 
@@ -2919,7 +2995,7 @@ impl ScopedHostFunction for WidgetStateFn {
             .runtime
             .widget_state(pos, &target)
             .map_err(host_script_error)?;
-        single_json_return(scope, &value)
+        single_typed_json_return(scope, &value)
     }
 }
 
@@ -2939,7 +3015,7 @@ impl ScopedHostFunction for WidgetParentFn {
             .runtime
             .widget_parent(pos, &target)
             .map_err(host_script_error)?;
-        optional_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
+        optional_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
     }
 }
 
@@ -2959,7 +3035,7 @@ impl ScopedHostFunction for WidgetChildrenFn {
             .runtime
             .widget_children(pos, &target)
             .map_err(host_script_error)?;
-        single_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
+        single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
     }
 }
 
@@ -3038,7 +3114,7 @@ impl ScopedHostFunction for ArgsFn {
         args: MultiValue<'s>,
     ) -> Result<MultiValue<'s>, RuntimeError> {
         no_args("__eguidev_args", &args)?;
-        let value = json_to_luau_scoped_value(scope, &self.args)?;
+        let value = lossless_json_to_luau_scoped_value(scope, &self.args)?;
         let ScopedValue::Table(table) = value else {
             return Err(RuntimeError::runtime(
                 "script args did not convert to a table",
@@ -3223,26 +3299,28 @@ fn inject_viewport_id(viewport_id: String, options: &mut Option<Value>) {
     }
 }
 
-fn single_json_return<'s>(
+fn single_typed_json_return<'s>(
     scope: &Scope<'s>,
     value: &Value,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    Ok(MultiValue::from_values(vec![json_to_luau_scoped_value(
-        scope, value,
-    )?]))
+    let value = match value {
+        Value::Array(_) => typed_json_array_to_luau_scoped_value(scope, value)?,
+        _ => typed_json_to_luau_scoped_value(scope, value)?,
+    };
+    Ok(MultiValue::from_values(vec![value]))
 }
 
-fn single_json_table_return_with_metatable<'s>(
+fn single_typed_json_table_return_with_metatable<'s>(
     scope: &Scope<'s>,
     value: &Value,
     methods: &'static [u8],
 ) -> Result<MultiValue<'s>, RuntimeError> {
     Ok(MultiValue::from_values(vec![
-        json_table_value_with_metatable(scope, value, methods)?,
+        typed_json_table_value_with_metatable(scope, value, methods)?,
     ]))
 }
 
-fn optional_json_table_return_with_metatable<'s>(
+fn optional_typed_json_table_return_with_metatable<'s>(
     scope: &Scope<'s>,
     value: &Value,
     methods: &'static [u8],
@@ -3250,27 +3328,27 @@ fn optional_json_table_return_with_metatable<'s>(
     if value.is_null() {
         return Ok(MultiValue::from_values(vec![ScopedValue::Nil]));
     }
-    single_json_table_return_with_metatable(scope, value, methods)
+    single_typed_json_table_return_with_metatable(scope, value, methods)
 }
 
-fn single_json_array_return_with_metatable<'s>(
+fn single_typed_json_array_return_with_metatable<'s>(
     scope: &Scope<'s>,
     value: &Value,
     methods: &'static [u8],
 ) -> Result<MultiValue<'s>, RuntimeError> {
     Ok(MultiValue::from_values(vec![
-        json_table_array_value_with_metatable(scope, value, methods)?,
+        typed_json_array_value_with_metatable(scope, value, methods)?,
     ]))
 }
 
-async fn json_array_host_return_with_metatable(
+async fn typed_json_array_host_return_with_metatable(
     ctx: &AsyncHostContext,
     value: Value,
     methods: &'static [u8],
 ) -> Result<HostReturn, RuntimeError> {
     let value = ctx
         .scope(move |scope| {
-            let scoped = json_table_array_value_with_metatable(scope, &value, methods)?;
+            let scoped = typed_json_array_value_with_metatable(scope, &value, methods)?;
             Ok(scope.stash_value(scoped)?.into_owned_value())
         })
         .await?;
@@ -3279,15 +3357,15 @@ async fn json_array_host_return_with_metatable(
     })
 }
 
-async fn json_host_return(
+async fn typed_json_host_return(
     ctx: &AsyncHostContext,
     value: Value,
 ) -> Result<HostReturn, RuntimeError> {
     match value {
-        Value::Array(_) | Value::Object(_) => {
+        Value::Array(_) => {
             let value = ctx
                 .scope(move |scope| {
-                    let scoped = json_to_luau_scoped_value(scope, &value)?;
+                    let scoped = typed_json_array_to_luau_scoped_value(scope, &value)?;
                     Ok(scope.stash_value(scoped)?.into_owned_value())
                 })
                 .await?;
@@ -3295,16 +3373,27 @@ async fn json_host_return(
                 values: vec![value],
             })
         }
-        value => scalar_json_host_return(value),
+        Value::Object(_) => {
+            let value = ctx
+                .scope(move |scope| {
+                    let scoped = typed_json_to_luau_scoped_value(scope, &value)?;
+                    Ok(scope.stash_value(scoped)?.into_owned_value())
+                })
+                .await?;
+            Ok(HostReturn {
+                values: vec![value],
+            })
+        }
+        value => typed_scalar_host_return(value),
     }
 }
 
-fn json_table_value_with_metatable<'s>(
+fn typed_json_table_value_with_metatable<'s>(
     scope: &Scope<'s>,
     value: &Value,
     methods: &'static [u8],
 ) -> Result<ScopedValue<'s>, RuntimeError> {
-    let value = json_to_luau_scoped_value(scope, value)?;
+    let value = typed_json_to_luau_scoped_value(scope, value)?;
     let ScopedValue::Table(table) = value else {
         return Err(RuntimeError::runtime(
             "JSON value did not convert to a table handle",
@@ -3314,12 +3403,12 @@ fn json_table_value_with_metatable<'s>(
     Ok(ScopedValue::Table(table))
 }
 
-fn json_table_array_value_with_metatable<'s>(
+fn typed_json_array_value_with_metatable<'s>(
     scope: &Scope<'s>,
     value: &Value,
     methods: &'static [u8],
 ) -> Result<ScopedValue<'s>, RuntimeError> {
-    let value = json_to_luau_scoped_value(scope, value)?;
+    let value = typed_json_array_to_luau_scoped_value(scope, value)?;
     let ScopedValue::Table(table) = value else {
         return Err(RuntimeError::runtime(
             "JSON value did not convert to a table array",
@@ -3359,7 +3448,7 @@ fn optional_luau_number_to_json(value: Option<f64>) -> Result<Value, RuntimeErro
     })
 }
 
-fn scalar_json_host_return(value: Value) -> Result<HostReturn, RuntimeError> {
+fn typed_scalar_host_return(value: Value) -> Result<HostReturn, RuntimeError> {
     let value = match value {
         Value::Null => OwnedValue::Nil,
         Value::Bool(value) => OwnedValue::Boolean(value),
@@ -3426,7 +3515,7 @@ mod tests {
         registry::Inner,
         runtime::Runtime,
         tools::script::types::{ScriptArgValue, ScriptArgs},
-        types::{FixtureSpec, Pos2, Rect, WidgetRegistryEntry, WidgetRole},
+        types::{FixtureSpec, Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetValue},
     };
 
     #[test]
@@ -3794,7 +3883,12 @@ return { viewport = button:viewport().id }"#
         );
         assert!(outcome.success, "{outcome:?}");
         assert_eq!(outcome.value, Some(json!({ "viewport": "root" })));
-        assert!(!inner.actions.drain_actions(viewport_id).is_empty());
+        assert!(
+            !inner
+                .actions
+                .drain_actions(viewport_id, inner.frame_count())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3920,6 +4014,38 @@ return {
             }))
         );
         assert_eq!(outcome.logs, vec!["widget:Ready"]);
+    }
+
+    #[test]
+    fn initial_ruau_slice_keeps_widget_state_numbers_comparable_to_luau_numbers() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("choice", 1, WidgetRole::ComboBox);
+        entry.value = Some(WidgetValue::Int(2));
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+        inner.viewports.update_viewports(&egui::Context::default());
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"configure({ timeout_ms = 20, poll_interval_ms = 1 })
+local viewport = root()
+local current = viewport:widget_get("choice"):state()
+assert(current.value == 2)
+local matched = viewport:wait_for_widget("choice", function(widget)
+    return widget.value == 2
+end)
+return matched.value"#
+                .to_string(),
+            1_000,
+            "widget-state-numbers.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(outcome.value, Some(json!(2)));
     }
 
     #[test]

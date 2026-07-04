@@ -21,6 +21,8 @@ use tmcp::{
 };
 use tokio::time::{sleep, timeout};
 
+#[cfg(target_os = "macos")]
+use crate::macos::{capture_window_image, window_number_for_title};
 use crate::{
     actions::{ActionTiming, InputAction},
     overlay::{
@@ -1173,7 +1175,8 @@ impl DevMcpServer {
     }
 
     /// Wait until the UI has settled: all input actions and viewport commands are drained
-    /// and at least one frame has been processed.
+    /// and at least one clean frame has been captured after the last input drain, unless
+    /// the target child viewport closed while handling the action.
     async fn wait_for_settle(
         &self,
         viewport_id: Option<String>,
@@ -1200,9 +1203,8 @@ impl DevMcpServer {
             || async {
                 self.inner.request_repaint_of(viewport_id);
                 let capture = self.inner.viewports.capture_snapshot(viewport_id);
-                let observed_new_capture = capture
-                    .map(|snapshot| snapshot.frame_count > start_capture)
-                    .unwrap_or(false);
+                let capture_frame = capture.map(|snapshot| snapshot.frame_count);
+                let observed_new_capture = capture_frame.is_some_and(|frame| frame > start_capture);
                 let observed_settle_frame = if viewport_id == egui::ViewportId::ROOT {
                     self.inner.frame_count() > start_frame
                 } else {
@@ -1212,10 +1214,22 @@ impl DevMcpServer {
                 let has_pending_commands = self.inner.actions.has_pending_commands(viewport_id);
                 let processed_last_action =
                     self.inner.frame_count() > self.inner.last_action_frame.load(Ordering::Relaxed);
-                let matched = observed_settle_frame
+                let target_viewport_closed = viewport_id != egui::ViewportId::ROOT
+                    && !self.inner.viewports.is_live_viewport(viewport_id);
+                let observed_clean_action_frame = self
+                    .inner
+                    .actions
+                    .stats(viewport_id)
+                    .last_drain_frame
+                    .is_none_or(|frame| {
+                        capture_frame
+                            .is_some_and(|capture_frame| capture_frame > frame.saturating_add(1))
+                    });
+                let matched = (observed_settle_frame || target_viewport_closed)
                     && !has_pending_actions
                     && !has_pending_commands
-                    && processed_last_action;
+                    && processed_last_action
+                    && (observed_clean_action_frame || target_viewport_closed);
                 Ok::<_, ToolError>((matched, None::<()>))
             },
         )
@@ -2248,31 +2262,60 @@ async fn await_screenshot(
         Ok(())
     };
 
-    timeout(SCREENSHOT_TIMEOUT, wait_loop).await.map_err(|_| {
-        // Clean up the pending screenshot request.
-        runtime.take_screenshot(request_id);
-        runtime.log_screenshot(inner, format!(
-            "timeout request_id={request_id} viewport={} start_frame={start_frame} end_frame={}",
-            viewport_id_to_string(viewport_id),
-            inner.frame_count(),
-        ));
-        ToolError::new(
-            ErrorCode::Internal,
-            "Screenshot timed out waiting for a screenshot event. The screenshot command may \
-                 not have reached the viewport or the frame did not render. Screenshots only \
-                 work for viewports whose backend fulfills ViewportCommand::Screenshot; eframe \
-                 0.35 never does this for immediate viewports, so try the root viewport instead.",
-        )
-        .with_details(screenshot_request_details_with_frames(
-            inner,
-            runtime,
-            request_id,
-            viewport_id,
-            kind,
-            start_frame,
-            inner.frame_count(),
-        ))
-    })??;
+    match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            runtime.take_screenshot(request_id);
+            let end_frame = inner.frame_count();
+            runtime.log_screenshot(
+                inner,
+                format!(
+                    "timeout request_id={request_id} viewport={} start_frame={start_frame} \
+                 end_frame={end_frame}",
+                    viewport_id_to_string(viewport_id),
+                ),
+            );
+            match native_screenshot_fallback(inner, viewport_id, kind) {
+                Ok(state) => {
+                    runtime.log_screenshot(
+                        inner,
+                        format!(
+                            "native fallback succeeded request_id={request_id} viewport={}",
+                            viewport_id_to_string(viewport_id),
+                        ),
+                    );
+                    return Ok(state);
+                }
+                Err(fallback_error) => {
+                    runtime.log_screenshot(
+                        inner,
+                        format!(
+                            "native fallback failed request_id={request_id} viewport={} error={}",
+                            viewport_id_to_string(viewport_id),
+                            fallback_error,
+                        ),
+                    );
+                    return Err(ToolError::new(
+                        ErrorCode::Internal,
+                        screenshot_timeout_message(viewport_id, &fallback_error),
+                    )
+                    .with_details(screenshot_timeout_details(
+                        &ScreenshotTimeoutContext {
+                            inner,
+                            runtime,
+                            request_id,
+                            viewport_id,
+                            kind,
+                            start_frame,
+                            end_frame,
+                            fallback_error: &fallback_error,
+                        },
+                    )));
+                }
+            }
+        }
+    }
 
     runtime.take_screenshot(request_id).ok_or_else(|| {
         ToolError::new(ErrorCode::InvalidRef, "Unknown request id").with_details(
@@ -2311,6 +2354,37 @@ fn build_screenshot_image(state: &ScreenshotState) -> Result<Arc<egui::ColorImag
     Ok(image)
 }
 
+#[cfg(target_os = "macos")]
+fn native_screenshot_fallback(
+    inner: &Inner,
+    viewport_id: egui::ViewportId,
+    kind: &ScreenshotKind,
+) -> Result<ScreenshotState, String> {
+    if viewport_id == egui::ViewportId::ROOT {
+        return Err("native fallback is only used for child viewports".to_string());
+    }
+    let snapshot = viewport_snapshot_for(inner, viewport_id)
+        .ok_or_else(|| "viewport snapshot was unavailable".to_string())?;
+    let title = snapshot
+        .title
+        .as_deref()
+        .ok_or_else(|| "viewport has no title to match a native window".to_string())?;
+    let window_number = window_number_for_title(title)?;
+    let mut state = ScreenshotState::pending(kind.clone());
+    let image = crop_native_capture_to_viewport(capture_window_image(window_number)?, &snapshot)?;
+    state.mark_ready(Arc::new(image));
+    Ok(state)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_screenshot_fallback(
+    _inner: &Inner,
+    _viewport_id: egui::ViewportId,
+    _kind: &ScreenshotKind,
+) -> Result<ScreenshotState, String> {
+    Err("native fallback is only available on macOS".to_string())
+}
+
 fn screenshot_error_details(
     inner: &Inner,
     runtime: &Runtime,
@@ -2339,6 +2413,99 @@ fn screenshot_request_details(
     kind: &ScreenshotKind,
 ) -> Value {
     screenshot_request_details_with_frames(inner, runtime, request_id, viewport_id, kind, 0, 0)
+}
+
+struct ScreenshotTimeoutContext<'a> {
+    inner: &'a Inner,
+    runtime: &'a Runtime,
+    request_id: u64,
+    viewport_id: egui::ViewportId,
+    kind: &'a ScreenshotKind,
+    start_frame: u64,
+    end_frame: u64,
+    fallback_error: &'a str,
+}
+
+fn screenshot_timeout_details(context: &ScreenshotTimeoutContext<'_>) -> Value {
+    let mut details = screenshot_request_details_with_frames(
+        context.inner,
+        context.runtime,
+        context.request_id,
+        context.viewport_id,
+        context.kind,
+        context.start_frame,
+        context.end_frame,
+    );
+    if let Some(map) = details.as_object_mut() {
+        map.insert(
+            "native_fallback".to_string(),
+            json!({
+                "attempted": native_fallback_applies(context.viewport_id),
+                "error": context.fallback_error,
+            }),
+        );
+    }
+    details
+}
+
+fn screenshot_timeout_message(viewport_id: egui::ViewportId, fallback_error: &str) -> String {
+    let base = "Screenshot timed out waiting for a screenshot event. The screenshot command may \
+                not have reached the viewport or the frame did not render.";
+    if native_fallback_applies(viewport_id) {
+        return format!(
+            "{base} A macOS native fallback was attempted for this child viewport and failed: \
+             {fallback_error}."
+        );
+    }
+    format!(
+        "{base} Native screenshot fallback is only available for child viewports on macOS: \
+         {fallback_error}."
+    )
+}
+
+fn native_fallback_applies(viewport_id: egui::ViewportId) -> bool {
+    cfg!(target_os = "macos") && viewport_id != egui::ViewportId::ROOT
+}
+
+fn crop_native_capture_to_viewport(
+    image: egui::ColorImage,
+    snapshot: &ViewportSnapshot,
+) -> Result<egui::ColorImage, String> {
+    let target_width = scaled_viewport_pixels(snapshot.inner_size.x, snapshot.pixels_per_point)?;
+    let target_height = scaled_viewport_pixels(snapshot.inner_size.y, snapshot.pixels_per_point)?;
+    if target_width == 0 || target_height == 0 {
+        return Err("viewport content size is empty".to_string());
+    }
+    if image.size == [target_width, target_height] {
+        return Ok(image);
+    }
+    if image.size[0] < target_width || image.size[1] < target_height {
+        return Err(format!(
+            "native capture {}x{} is smaller than viewport content {}x{}",
+            image.size[0], image.size[1], target_width, target_height
+        ));
+    }
+
+    let x0 = (image.size[0] - target_width) / 2;
+    let y0 = image.size[1] - target_height;
+    let mut pixels = Vec::with_capacity(target_width * target_height);
+    for y in y0..(y0 + target_height) {
+        let row_start = y * image.size[0] + x0;
+        pixels.extend_from_slice(&image.pixels[row_start..row_start + target_width]);
+    }
+    Ok(egui::ColorImage {
+        size: [target_width, target_height],
+        source_size: egui::Vec2::new(target_width as f32, target_height as f32),
+        pixels,
+    })
+}
+
+fn scaled_viewport_pixels(size: f32, pixels_per_point: f32) -> Result<usize, String> {
+    let pixels = size * pixels_per_point;
+    if !pixels.is_finite() || pixels < 0.0 {
+        return Err("viewport content size is not finite".to_string());
+    }
+    Ok(pixels.round() as usize)
 }
 
 fn screenshot_request_details_with_frames(
@@ -2473,7 +2640,9 @@ mod tests {
 
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
         let viewport_id = raw_input.viewport_id;
-        let actions = inner.actions.drain_actions(viewport_id);
+        let actions = inner
+            .actions
+            .drain_actions(viewport_id, inner.frame_count());
         let base_modifiers = raw_input.modifiers;
         let mut current_modifiers = base_modifiers;
         let mut force_focus = false;
@@ -2586,6 +2755,17 @@ mod tests {
             .notify_waiters();
     }
 
+    fn drain_test_actions(inner: &Arc<Inner>, viewport_id: egui::ViewportId) {
+        let actions = inner
+            .actions
+            .drain_actions(viewport_id, inner.frame_count());
+        if !actions.is_empty() {
+            inner
+                .last_action_frame
+                .store(inner.frame_count(), AtomicOrdering::Relaxed);
+        }
+    }
+
     fn record_test_snapshot(inner: &Arc<Inner>, viewport_id: egui::ViewportId) {
         inner.viewports.record_input_snapshot(
             viewport_id,
@@ -2600,6 +2780,70 @@ mod tests {
         Runtime::ensure_for_inner(inner)
             .frame_notify()
             .notify_waiters();
+    }
+
+    fn viewport_snapshot_with_inner_size(inner_size: Vec2) -> ViewportSnapshot {
+        ViewportSnapshot {
+            viewport_id: viewport_id_to_string(egui::ViewportId::ROOT),
+            inner_size,
+            outer_size: Some(inner_size),
+            pixels_per_point: 1.0,
+            focused: true,
+            title: None,
+            parent_viewport_id: None,
+            minimized: Some(false),
+            occluded: Some(false),
+            os_minimized: None,
+            os_occluded: None,
+            maximized: Some(false),
+            fullscreen: Some(false),
+        }
+    }
+
+    #[test]
+    fn native_capture_crop_uses_bottom_center_content_region() {
+        let pixels = (0..16).map(egui::Color32::from_gray).collect::<Vec<_>>();
+        let image = egui::ColorImage {
+            size: [4, 4],
+            source_size: egui::Vec2::new(4.0, 4.0),
+            pixels,
+        };
+        let snapshot = viewport_snapshot_with_inner_size(Vec2 { x: 2.0, y: 2.0 });
+
+        let cropped = crop_native_capture_to_viewport(image, &snapshot).expect("crop");
+
+        assert_eq!(cropped.size, [2, 2]);
+        assert_eq!(
+            cropped.pixels,
+            vec![
+                egui::Color32::from_gray(9),
+                egui::Color32::from_gray(10),
+                egui::Color32::from_gray(13),
+                egui::Color32::from_gray(14),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_capture_crop_rejects_smaller_capture() {
+        let image = egui::ColorImage {
+            size: [1, 2],
+            source_size: egui::Vec2::new(1.0, 2.0),
+            pixels: vec![egui::Color32::BLACK; 2],
+        };
+        let snapshot = viewport_snapshot_with_inner_size(Vec2 { x: 2.0, y: 2.0 });
+
+        let error = crop_native_capture_to_viewport(image, &snapshot).expect_err("too small");
+
+        assert!(error.contains("smaller than viewport content"));
+    }
+
+    #[test]
+    fn root_screenshot_timeout_message_does_not_claim_child_fallback() {
+        let message = screenshot_timeout_message(egui::ViewportId::ROOT, "fallback unavailable");
+
+        assert!(message.contains("Native screenshot fallback is only available"));
+        assert!(!message.contains("attempted for this child viewport"));
     }
 
     fn parse_script_eval_json(result: &CallToolResult) -> Value {
@@ -2813,6 +3057,65 @@ return { frame = state.frame_count, pixels_per_point = state.pixels_per_point }"
     }
 
     #[tokio::test]
+    async fn script_eval_viewport_finds_viewport_by_title() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let secondary = egui::ViewportId::from_hash_of("secondary.lookup");
+
+        for _ in 0..2 {
+            let mut raw_input = egui::RawInput {
+                viewport_id: egui::ViewportId::ROOT,
+                ..Default::default()
+            };
+            raw_input.viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    title: Some("Root Lookup".to_string()),
+                    ..Default::default()
+                },
+            );
+            raw_input.viewports.insert(
+                secondary,
+                egui::ViewportInfo {
+                    title: Some("Secondary Lookup".to_string()),
+                    ..Default::default()
+                },
+            );
+            drop(ctx.run_ui(raw_input, |_| {}));
+        }
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        inner.viewports.update_viewports(&ctx);
+        record_test_snapshot(&inner, egui::ViewportId::ROOT);
+
+        let result = server
+            .script_eval(
+                r#"local exact = viewport({ title = "Secondary Lookup" })
+local exact_wins = viewport({ title = "Secondary Lookup", title_contains = "Root" })
+local contains = viewport({ title_contains = "Secondary" })
+local missing = viewport({ title = "Missing" })
+return {
+    exact = exact ~= nil and exact.id or nil,
+    exact_wins = exact_wins ~= nil and exact_wins.id or nil,
+    contains = contains ~= nil and contains.id or nil,
+    missing = missing == nil,
+}"#
+                .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        let secondary_id = viewport_id_to_string(secondary);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"]["exact"], secondary_id);
+        assert_eq!(json["value"]["exact_wins"], secondary_id);
+        assert_eq!(json["value"]["contains"], secondary_id);
+        assert_eq!(json["value"]["missing"], true);
+    }
+
+    #[tokio::test]
     async fn script_eval_widget_get_state_reads_current_snapshot() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -2841,6 +3144,63 @@ return { role = state.role, label = state.label, focused = state.focused }"#
             json["value"],
             json!({ "role": "button", "label": "Ready", "focused": true })
         );
+    }
+
+    #[tokio::test]
+    async fn script_eval_widget_state_matches_luau_type_contract() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut labeled = make_entry("labeled", 1, WidgetRole::Button);
+        labeled.label = Some("Ready".to_string());
+        labeled.value = Some(WidgetValue::Bool(true));
+        inner.widgets.record_widget(viewport_id, labeled);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("container", 2, WidgetRole::Unknown));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let result = server
+            .script_eval(
+                r#"
+local seen = {}
+for _, widget in ipairs(root():widget_list()) do
+    local state = widget:state()
+    assert(type(state.rect) == "table", "rect must be table")
+    assert(type(state.interact_rect) == "table", "interact_rect must be table")
+    assert(type(state.role) == "string", "role must be string")
+    assert(type(state.value_text) == "string", "value_text must be string")
+    assert(type(state.enabled) == "boolean", "enabled must be boolean")
+    assert(type(state.visible) == "boolean", "visible must be boolean")
+    assert(type(state.focused) == "boolean", "focused must be boolean")
+    assert(state.label == nil or type(state.label) == "string", "label must be nil|string")
+    assert(state.value == nil or type(state.value) ~= "userdata", "value must not be userdata")
+    assert(state.layout == nil or type(state.layout) == "table", "layout must be nil|table")
+    assert(state.scroll_state == nil or type(state.scroll_state) == "table", "scroll_state")
+    assert(state.range == nil or type(state.range) == "table", "range")
+    assert(state.options == nil or type(state.options) == "table", "options")
+    assert(state.selected == nil or type(state.selected) == "boolean", "selected")
+    assert(state.indeterminate == nil or type(state.indeterminate) == "boolean", "indeterminate")
+    assert(state.multiline == nil or type(state.multiline) == "boolean", "multiline")
+    assert(state.password == nil or type(state.password) == "boolean", "password")
+    seen[widget.id] = { label = type(state.label), value_text = state.value_text }
+end
+return seen
+"#
+                .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"]["labeled"]["label"], "string");
+        assert_eq!(json["value"]["labeled"]["value_text"], "true");
+        assert_eq!(json["value"]["container"]["label"], "nil");
+        assert_eq!(json["value"]["container"]["value_text"], "");
     }
 
     #[tokio::test]
@@ -3304,7 +3664,9 @@ return widget:wait_for_visible()"#
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], true);
 
-        let actions = inner.actions.drain_actions(viewport_id);
+        let actions = inner
+            .actions
+            .drain_actions(viewport_id, inner.frame_count());
         let Some(InputAction::PointerMove { pos }) = actions.first() else {
             panic!("expected initial pointer move from drag_relative");
         };
@@ -3483,6 +3845,17 @@ return widget:wait_for_visible()"#
         assert_eq!(json["success"], false);
         assert_eq!(json["error"]["type"], "timeout");
         assert_eq!(json["error"]["details"]["kind"], "settle");
+        let observation = &json["error"]["details"]["observation"];
+        assert_eq!(observation["target_viewport_id"], viewport_selector);
+        assert_eq!(observation["action_queue"]["end_queued_actions"], 3);
+        assert_eq!(observation["action_queue"]["end_drained_actions"], 0);
+        assert_eq!(observation["action_queue"]["pending_actions"], 3);
+        assert!(
+            observation["diagnosis"]
+                .as_str()
+                .expect("diagnosis")
+                .contains("No target viewport frames were observed")
+        );
     }
 
     #[tokio::test]
@@ -4314,7 +4687,9 @@ return { first = catalog[1].name, count = #catalog }"#
             .await
             .expect("action type");
 
-        let actions = inner.actions.drain_actions(viewport_id);
+        let actions = inner
+            .actions
+            .drain_actions(viewport_id, inner.frame_count());
         let click_presses = actions
             .iter()
             .filter(|action| matches!(action, InputAction::PointerButton { pressed: true, .. }))
@@ -4767,7 +5142,9 @@ return { first = catalog[1].name, count = #catalog }"#
             .await
             .expect("focus window");
 
-        let queued_actions = inner.actions.drain_actions(viewport_id);
+        let queued_actions = inner
+            .actions
+            .drain_actions(viewport_id, inner.frame_count());
         assert!(queued_actions.iter().any(|action| {
             matches!(
                 action,
@@ -5331,6 +5708,129 @@ return { first = catalog[1].name, count = #catalog }"#
             .await
             .expect_err("wait_for_settle should time out");
         assert_eq!(error.code, "timeout");
+    }
+
+    #[tokio::test]
+    async fn wait_for_settle_requires_clean_frame_after_action_drain() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let viewport_id = egui::ViewportId::ROOT;
+
+        let raw_input = egui::RawInput {
+            viewport_id,
+            ..Default::default()
+        };
+        drop(ctx.run_ui(raw_input, |_| {}));
+        capture_test_frame(&inner, &ctx);
+        inner.queue_action(
+            viewport_id,
+            InputAction::PointerMove {
+                pos: Pos2 { x: 1.0, y: 1.0 },
+            },
+        );
+
+        let inner_for_capture = Arc::clone(&inner);
+        let capture_ctx = ctx.clone();
+        tokio::spawn(async move {
+            yield_now().await;
+            drain_test_actions(&inner_for_capture, viewport_id);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+        });
+
+        let error = server
+            .wait_for_settle(None, Some(20), Some(1))
+            .await
+            .expect_err("wait_for_settle should require a clean post-action frame");
+        assert_eq!(error.code, "timeout");
+    }
+
+    #[tokio::test]
+    async fn wait_for_settle_matches_clean_frame_after_action_drain() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let viewport_id = egui::ViewportId::ROOT;
+
+        let raw_input = egui::RawInput {
+            viewport_id,
+            ..Default::default()
+        };
+        drop(ctx.run_ui(raw_input, |_| {}));
+        capture_test_frame(&inner, &ctx);
+        inner.queue_action(
+            viewport_id,
+            InputAction::PointerMove {
+                pos: Pos2 { x: 1.0, y: 1.0 },
+            },
+        );
+
+        let inner_for_capture = Arc::clone(&inner);
+        let capture_ctx = ctx.clone();
+        tokio::spawn(async move {
+            yield_now().await;
+            drain_test_actions(&inner_for_capture, viewport_id);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+            yield_now().await;
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+        });
+
+        server
+            .wait_for_settle(None, Some(100), Some(1))
+            .await
+            .expect("wait_for_settle");
+        assert!(inner.frame_count() >= 3);
+    }
+
+    #[tokio::test]
+    async fn wait_for_settle_matches_when_child_viewport_closes_after_action_drain() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let viewport_id = egui::ViewportId::from_hash_of("closing-child");
+
+        let mut raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        raw_input
+            .viewports
+            .insert(egui::ViewportId::ROOT, Default::default());
+        raw_input.viewports.insert(viewport_id, Default::default());
+        drop(ctx.run_ui(raw_input, |_| {}));
+        inner.viewports.update_viewports(&ctx);
+        record_test_snapshot(&inner, viewport_id);
+
+        inner.queue_action(
+            viewport_id,
+            InputAction::PointerMove {
+                pos: Pos2 { x: 1.0, y: 1.0 },
+            },
+        );
+
+        let inner_for_capture = Arc::clone(&inner);
+        let capture_ctx = ctx.clone();
+        tokio::spawn(async move {
+            yield_now().await;
+            drain_test_actions(&inner_for_capture, viewport_id);
+            record_test_snapshot(&inner_for_capture, viewport_id);
+
+            let mut raw_input = egui::RawInput {
+                viewport_id: egui::ViewportId::ROOT,
+                ..Default::default()
+            };
+            raw_input
+                .viewports
+                .insert(egui::ViewportId::ROOT, Default::default());
+            drop(capture_ctx.run_ui(raw_input, |_| {}));
+            inner_for_capture.viewports.update_viewports(&capture_ctx);
+            record_test_snapshot(&inner_for_capture, egui::ViewportId::ROOT);
+        });
+
+        server
+            .wait_for_settle(Some(viewport_id_to_string(viewport_id)), Some(100), Some(1))
+            .await
+            .expect("wait_for_settle should match after child viewport closes");
     }
 
     #[tokio::test]

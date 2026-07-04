@@ -158,7 +158,7 @@ pub use crate::{
 #[doc(hidden)]
 pub mod internal {
     pub mod actions {
-        pub use crate::actions::{ActionQueue, ActionTiming, InputAction};
+        pub use crate::actions::{ActionQueue, ActionQueueStats, ActionTiming, InputAction};
     }
 
     pub mod devmcp {

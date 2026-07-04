@@ -138,6 +138,8 @@ export type Widget = {
     id: string,
     viewport_id: string,
     viewport: (self: Widget) -> Viewport,
+    --- Click waits for input to drain and for a clean post-action capture unless
+    --- `settle = false` is passed.
     click: (self: Widget, options: ActionOptions?) -> (),
     hover: (self: Widget, options: HoverOptions?) -> (),
     type_text: (self: Widget, text: string, options: TypeTextOptions?) -> (),
@@ -528,6 +530,11 @@ export type ScriptOptions = {
     animations: boolean?,
 }
 
+export type ViewportLookupOptions = {
+    title: string?,
+    title_contains: string?,
+}
+
 -- Logged values are recorded in the script result payload.
 declare function log(message: any): ()
 
@@ -543,6 +550,9 @@ declare function wait_for_frames(count: number?): number
 --- Wait until the root viewport has produced a fresh captured snapshot.
 declare function wait_for_capture(): ()
 declare function root(): Viewport
+--- Find a viewport by title. Exact `title` matches win over `title_contains`.
+--- Returns nil when no viewport matches.
+declare function viewport(options: ViewportLookupOptions): Viewport?
 declare function viewports(): { Viewport }
 
 --- Apply a registered fixture and wait until its readiness anchors match fresh captures.

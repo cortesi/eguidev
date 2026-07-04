@@ -309,7 +309,9 @@ impl DevMcp {
         viewport_id: egui::ViewportId,
         raw_input: &mut egui::RawInput,
     ) {
-        let actions = inner.actions.drain_actions(viewport_id);
+        let actions = inner
+            .actions
+            .drain_actions(viewport_id, inner.frame_count());
         if !actions.is_empty() {
             inner
                 .last_action_frame

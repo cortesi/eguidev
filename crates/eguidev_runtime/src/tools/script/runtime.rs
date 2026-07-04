@@ -1033,6 +1033,37 @@ impl ScriptRuntime {
         self.viewport_handle_json(pos, "root")
     }
 
+    pub(super) fn viewport_lookup(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let title = parse_optional_string(options, "title")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let title_contains = parse_optional_string(options, "title_contains")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        if title.is_none() && title_contains.is_none() {
+            return Err(self.type_error(pos, "viewport requires title or title_contains"));
+        }
+        let snapshots = self.server.inner.viewports.viewports_snapshot();
+        let exact = title.as_deref().and_then(|title| {
+            snapshots
+                .iter()
+                .find(|snapshot| snapshot.title.as_deref() == Some(title))
+        });
+        let contains = title_contains.as_deref().and_then(|needle| {
+            snapshots.iter().find(|snapshot| {
+                snapshot
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| title.contains(needle))
+            })
+        });
+        exact.or(contains).map_or(Ok(Value::Null), |snapshot| {
+            self.viewport_handle_json(pos, &snapshot.viewport_id)
+        })
+    }
+
     pub(super) async fn viewports_list(
         &self,
         pos: ScriptPosition,

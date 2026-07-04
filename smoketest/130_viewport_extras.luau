@@ -2,24 +2,10 @@ fixture("viewports.default")
 
 local root_vp = root()
 
-local function secondary_viewport(): Viewport?
-    for _, viewport in ipairs(viewports()) do
-        if viewport.id ~= "root" then
-            local ok = pcall(function()
-                viewport:widget_get("viewports.scroll")
-            end)
-            if ok then
-                return viewport
-            end
-        end
-    end
-    return nil
-end
-
 -- List viewports and find secondary
 local vp_list = viewports()
 assert(#vp_list >= 2, "should have root and secondary viewports")
-local secondary = secondary_viewport()
+local secondary = viewport({ title = "DevMCP secondary viewport" })
 assert(secondary ~= nil, "secondary viewport should be present")
 local secondary_vp = secondary :: Viewport
 

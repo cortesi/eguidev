@@ -81,6 +81,10 @@ return { remaining = remaining.value_text }
 Use `log()` for intermediate diagnostics and return a compact summary at the
 end.
 
+By default, `click()` waits until input has drained and a clean post-action
+capture is available. Still use `wait_for_widget` or `wait_for` predicates for
+state that can update asynchronously or through app work queued after the click.
+
 
 ## Lifecycle
 
@@ -98,6 +102,8 @@ Prefer programmatic inspection over screenshots:
 
 - `widget_list`, `widget_get`, `state()`, `children()`, `parent()` for
   structure and values.
+- Use `viewport({ title = "..." })` or `viewport({ title_contains = "..." })`
+  to find secondary windows by title instead of hand-rolling `viewports()` loops.
 - Use `widget_list({ label = "..." })`, `widget_list({ label_contains = "..." })`,
   `widget_list({ role = "button" })`, or `widget_list({ id_prefix = "settings" })`
   to discover widgets without fetching state for every item.
@@ -109,6 +115,9 @@ Prefer programmatic inspection over screenshots:
 Use `screenshot()` only when the question is genuinely visual: alignment,
 clipping, rendering quality, image content. Returned `ImageRef` values produce
 image blocks in the MCP response.
+On macOS, child viewport screenshots can fall back to native Quartz window capture after the
+egui screenshot event path times out; this requires Screen Recording permission and a unique
+recorded window title.
 Use `sample_pixels()` for exact fixed-color assertions; it samples RGBA data
 before screenshot JPEG encoding. Prefer `hex` for exact color equality. `rgba`
 channels are Luau numbers, so use them for arithmetic thresholds only when that

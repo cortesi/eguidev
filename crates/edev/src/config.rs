@@ -54,7 +54,7 @@ impl LaunchConfig {
 pub struct McpConfig {
     /// Shared app launch settings.
     pub(crate) launch: LaunchConfig,
-    /// Idle shutdown duration for the launcher server.
+    /// Idle guard duration for abandoned pre-client launcher sessions.
     pub(crate) idle_shutdown_after: Duration,
 }
 
@@ -67,6 +67,21 @@ pub struct SmokeConfig {
     pub(crate) suite: SuiteConfig,
     /// Whether to emit verbose smoke output.
     pub(crate) verbose_output: bool,
+}
+
+#[derive(Debug, Clone)]
+/// Resolved configuration for `edev eval`.
+pub struct EvalConfig {
+    /// Shared app launch settings.
+    pub(crate) launch: LaunchConfig,
+    /// Script file to evaluate.
+    pub(crate) script: PathBuf,
+    /// Directory where returned image refs are written.
+    pub(crate) out_dir: PathBuf,
+    /// Per-script timeout, defaulting from `[smoke].script_timeout_secs`.
+    pub(crate) timeout: Option<Duration>,
+    /// Args passed to the script, merged over `[smoke].args`.
+    pub(crate) args: ScriptArgs,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +100,8 @@ pub enum EdevCommand {
     Mcp(McpConfig),
     /// Run the checked-in smoke suite through the launcher.
     Smoke(SmokeConfig),
+    /// Evaluate one Luau script through the launcher.
+    Eval(EvalConfig),
     /// Start the app and list or apply a fixture.
     Fixture(FixtureConfig),
     /// Render scripting API documentation and exit.
@@ -157,6 +174,15 @@ impl EdevCommand {
                     &current_dir,
                 )?))
             }
+            CliCommand::Eval(cli) => {
+                let mut options = EvalCliOptions::from(cli);
+                options.common.command = app_argv;
+                Ok(Self::Eval(resolve_eval_config(
+                    options,
+                    loaded.as_ref(),
+                    &current_dir,
+                )?))
+            }
             CliCommand::Fixture(cli) => {
                 let mut options = FixtureCliOptions::from(cli);
                 options.common.command = app_argv;
@@ -204,6 +230,15 @@ struct SmokeCliOptions {
 }
 
 #[derive(Debug, Default, Clone)]
+struct EvalCliOptions {
+    common: CommonCliOptions,
+    script: PathBuf,
+    out_dir: Option<PathBuf>,
+    script_timeout_secs: Option<u64>,
+    args: ScriptArgs,
+}
+
+#[derive(Debug, Default, Clone)]
 struct FixtureCliOptions {
     common: CommonCliOptions,
     name: Option<String>,
@@ -230,6 +265,8 @@ enum CliCommand {
     Mcp(McpArgs),
     /// Run the smoketest suite and exit.
     Smoke(SmokeArgs),
+    /// Run one Luau script and print the structured result.
+    Eval(EvalArgs),
     /// Start the app and list registered fixtures, then exit.
     Fixtures(FixturesArgs),
     /// Start the app, apply a fixture, and keep running.
@@ -253,7 +290,7 @@ struct CommonArgs {
 struct McpArgs {
     #[command(flatten)]
     common: CommonArgs,
-    /// Override mcp idle shutdown.
+    /// Override the pre-client MCP idle guard.
     #[arg(long = "idle-shutdown-after-secs")]
     idle_shutdown_after_secs: Option<u64>,
 }
@@ -281,6 +318,23 @@ struct SmokeArgs {
     #[arg(long = "script-timeout-secs")]
     script_timeout_secs: Option<u64>,
     /// Pass a typed suite-wide script arg.
+    #[arg(long = "arg", value_parser = parse_script_arg_cli)]
+    args: Vec<(String, ScriptArgValue)>,
+}
+
+#[derive(Debug, Args)]
+struct EvalArgs {
+    /// Script file to evaluate.
+    script: PathBuf,
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Directory for returned image files. Defaults to the script directory.
+    #[arg(long = "out-dir")]
+    out_dir: Option<PathBuf>,
+    /// Override the per-script timeout.
+    #[arg(long = "script-timeout-secs")]
+    script_timeout_secs: Option<u64>,
+    /// Pass a typed script arg.
     #[arg(long = "arg", value_parser = parse_script_arg_cli)]
     args: Vec<(String, ScriptArgValue)>,
 }
@@ -341,6 +395,20 @@ impl From<SmokeArgs> for SmokeCliOptions {
             scripts: args.scripts,
             fail_fast,
             suite_timeout_secs: args.suite_timeout_secs,
+            script_timeout_secs: args.script_timeout_secs,
+            args: script_args,
+        }
+    }
+}
+
+impl From<EvalArgs> for EvalCliOptions {
+    fn from(args: EvalArgs) -> Self {
+        let mut script_args = ScriptArgs::default();
+        script_args.extend(args.args);
+        Self {
+            common: args.common.into(),
+            script: args.script,
+            out_dir: args.out_dir,
             script_timeout_secs: args.script_timeout_secs,
             args: script_args,
         }
@@ -450,6 +518,41 @@ fn resolve_fixture_config(
     Ok(FixtureConfig {
         launch,
         name: cli.name,
+    })
+}
+
+fn resolve_eval_config(
+    cli: EvalCliOptions,
+    loaded: Option<&LoadedConfig>,
+    current_dir: &Path,
+) -> Result<EvalConfig, EdevError> {
+    let launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
+    let file_smoke = loaded.map(|config| &config.file.smoke);
+    let script = absolutize_path(&cli.script, current_dir);
+    let out_dir = cli
+        .out_dir
+        .as_ref()
+        .map(|path| absolutize_path(path, current_dir))
+        .unwrap_or_else(|| {
+            script
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| current_dir.to_path_buf())
+        });
+    let mut args = file_smoke
+        .map(|smoke| smoke.args.clone())
+        .unwrap_or_default();
+    args.extend(cli.args);
+    Ok(EvalConfig {
+        launch,
+        script,
+        out_dir,
+        timeout: Some(Duration::from_secs(
+            cli.script_timeout_secs
+                .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
+                .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
+        )),
+        args,
     })
 }
 
@@ -777,6 +880,69 @@ mod tests {
                 PathBuf::from("tmp/ad_hoc.luau"),
             ]
         );
+    }
+
+    #[test]
+    fn parse_eval_command_parses_script_args_and_output_dir() {
+        let args = os_args(&[
+            "eval",
+            "tmp/probe.luau",
+            "--out-dir",
+            "tmp/eval-output",
+            "--arg",
+            "name=Sky",
+            "--arg",
+            "count=4",
+            "--",
+            "cargo",
+            "run",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Eval(config) = command else {
+            panic!("expected eval command");
+        };
+        assert_eq!(config.script, current_dir.join("tmp/probe.luau"));
+        assert_eq!(config.out_dir, current_dir.join("tmp/eval-output"));
+        assert_eq!(
+            config.args.get("name"),
+            Some(&ScriptArgValue::String("Sky".to_string()))
+        );
+        assert_eq!(config.args.get("count"), Some(&ScriptArgValue::Int(4)));
+        assert_eq!(config.launch.command[0], "cargo");
+    }
+
+    #[test]
+    fn eval_command_uses_smoke_timeout_and_arg_defaults() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        let config_path = repo_root.join(DEFAULT_CONFIG_FILE);
+        fs::write(
+            &config_path,
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[smoke]
+script_timeout_secs = 7
+args = { name = \"File\", count = 4 }
+",
+        )
+        .expect("write config");
+
+        let args = os_args(&["eval", "tmp/probe.luau", "--arg", "name=Cli"]);
+        let command = EdevCommand::parse_args_in_dir(&args, &repo_root).expect("parse command");
+        let EdevCommand::Eval(config) = command else {
+            panic!("expected eval command");
+        };
+
+        assert_eq!(config.timeout, Some(Duration::from_secs(7)));
+        assert_eq!(
+            config.args.get("name"),
+            Some(&ScriptArgValue::String("Cli".to_string()))
+        );
+        assert_eq!(config.args.get("count"), Some(&ScriptArgValue::Int(4)));
     }
 
     #[test]

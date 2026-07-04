@@ -80,6 +80,17 @@ vp:wait_for_widget("basic.name", function(widget)
     return widget.value == "Sky"
 end)
 
+-- timeout diagnostics are catchable through pcall as surfaced error text
+configure({ timeout_ms = 10, poll_interval_ms = 1 })
+local ok, err = pcall(function()
+    return vp:wait_for_widget("basic.missing.timeout", function(_widget)
+        return true
+    end)
+end)
+assert(not ok)
+assert(string.find(tostring(err), "Timed out waiting for widget predicate", 1, true) ~= nil)
+assert(string.find(tostring(err), "Diagnosis: Target viewport produced frames", 1, true) ~= nil)
+
 return {
-    conditions_tested = 13,
+    conditions_tested = 14,
 }

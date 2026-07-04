@@ -1,12 +1,13 @@
 //! Script-first MCP launcher and proxy for eguidev.
 
-#[cfg(test)]
-use std::path::PathBuf;
 use std::{
+    collections::BTreeMap,
     env,
     fmt::Display,
-    future::Future,
+    fs,
+    future::{Future, pending},
     io::{self as std_io, IsTerminal},
+    path::PathBuf,
     pin::Pin,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -30,7 +31,7 @@ use syntect::{
 use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
-        CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
+        CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock, Cursor, Implementation,
         InitializeResult, ListToolsResult, TaskMetadata, Tool, ToolSchema,
     },
 };
@@ -46,7 +47,7 @@ use tokio::{
 mod config;
 mod instance_registry;
 
-use config::{EdevCommand, FixtureConfig, LaunchConfig, McpConfig, SmokeConfig};
+use config::{EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, SmokeConfig};
 
 /// Tool names forwarded from edev to the app MCP server.
 const PROXIED_TOOL_NAMES: &[&str] = &["script_eval"];
@@ -68,6 +69,7 @@ pub async fn run() -> Result<(), EdevError> {
         }
         EdevCommand::Mcp(config) => run_mcp(config).await,
         EdevCommand::Smoke(config) => run_smoke(config).await,
+        EdevCommand::Eval(config) => run_eval(config).await,
         EdevCommand::Fixture(config) => run_fixture(config).await,
     }
 }
@@ -75,10 +77,9 @@ pub async fn run() -> Result<(), EdevError> {
 /// Run the long-lived `edev mcp` launcher server over stdio without starting the app eagerly.
 async fn run_mcp(config: McpConfig) -> Result<(), EdevError> {
     let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let state = Arc::new(AsyncMutex::new(State::new(
-        config.launch,
-        instance_registry,
-    )));
+    let mut raw_state = State::new(config.launch, instance_registry);
+    raw_state.enable_idle_shutdown(config.idle_shutdown_after);
+    let state = Arc::new(AsyncMutex::new(raw_state));
     let server_state = Arc::clone(&state);
     let server = Server::new(move || EdevServer {
         state: Arc::clone(&server_state),
@@ -125,6 +126,59 @@ async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
         }
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
+}
+
+/// Run one Luau script through `script_eval`, print JSON, and write returned images.
+async fn run_eval(config: EvalConfig) -> Result<(), EdevError> {
+    let source = fs::read_to_string(&config.script)?;
+    let instance_registry = InstanceRegistry::register(&config.launch)?;
+    let mut state = State::new(config.launch.clone(), instance_registry);
+    let client = start_proxy_target(&mut state, "eval command could not reach the app").await?;
+
+    let result = run_eval_script(client, &config, source).await;
+    let shutdown_result = state.shutdown().await;
+    match (result, shutdown_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
+}
+
+/// Execute one script against a launched app and emit the eval result.
+async fn run_eval_script(
+    client: Arc<AsyncMutex<tmcp::Client<()>>>,
+    config: &EvalConfig,
+    source: String,
+) -> Result<(), EdevError> {
+    let result = call_script_eval_result(
+        &client,
+        ScriptEvalRequest {
+            script: source,
+            timeout_ms: config.timeout.map(|duration| duration.as_millis() as u64),
+            options: Some(ScriptEvalOptions {
+                source_name: Some(config.script.display().to_string()),
+                args: config.args.clone(),
+            }),
+        },
+    )
+    .await
+    .map_err(EdevError::EvalFailed)?;
+    let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
+    let image_files = write_eval_images(config, &result, &outcome)?;
+    let output = eval_output_value(&outcome, &image_files)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output)
+            .map_err(|error| EdevError::EvalFailed(format!("failed to encode JSON: {error}")))?
+    );
+    if outcome.success {
+        Ok(())
+    } else {
+        Err(EdevError::EvalFailed(script_eval_error_message(
+            outcome.error.as_ref(),
+            "script evaluation failed",
+        )))
     }
 }
 
@@ -212,19 +266,132 @@ async fn call_script_eval(
     script: &str,
     timeout_ms: Option<u64>,
 ) -> Result<ScriptEvalOutcome, String> {
-    let request = script_eval_request_value(ScriptEvalRequest {
-        script: script.to_string(),
-        timeout_ms: timeout_ms.or(Some(10_000)),
-        options: None,
-    });
-    let result = {
-        let client = client.lock().await;
-        client
-            .call_tool("script_eval".to_string(), request)
-            .await
-            .map_err(|error| error.to_string())?
-    };
+    let result = call_script_eval_result(
+        client,
+        ScriptEvalRequest {
+            script: script.to_string(),
+            timeout_ms: timeout_ms.or(Some(10_000)),
+            options: None,
+        },
+    )
+    .await?;
     parse_script_eval_outcome(&result)
+}
+
+/// Call the app-side `script_eval` tool and preserve all returned content blocks.
+async fn call_script_eval_result(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    request: ScriptEvalRequest,
+) -> Result<CallToolResult, String> {
+    let request = script_eval_request_value(request);
+    let client = client.lock().await;
+    client
+        .call_tool("script_eval".to_string(), request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Decode image content blocks from the eval result into deterministic files.
+fn write_eval_images(
+    config: &EvalConfig,
+    result: &CallToolResult,
+    outcome: &ScriptEvalOutcome,
+) -> Result<BTreeMap<String, PathBuf>, EdevError> {
+    let Some(images) = outcome.images.as_ref() else {
+        return Ok(BTreeMap::new());
+    };
+    fs::create_dir_all(&config.out_dir)?;
+    let mut files = BTreeMap::new();
+    let stem = config
+        .script
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("script");
+    for image in images {
+        let block = result.content.get(image.content_index).ok_or_else(|| {
+            EdevError::EvalFailed(format!(
+                "image {} referenced missing content block {}",
+                image.id, image.content_index
+            ))
+        })?;
+        let ContentBlock::Image(content) = block else {
+            return Err(EdevError::EvalFailed(format!(
+                "image {} referenced non-image content block {}",
+                image.id, image.content_index
+            )));
+        };
+        let path = config.out_dir.join(format!(
+            "{}-{}.{}",
+            safe_file_component(stem),
+            safe_file_component(&image.id),
+            image_extension(&content.mime_type)
+        ));
+        let bytes = content.data_bytes().map_err(|error| {
+            EdevError::EvalFailed(format!("failed to decode image {}: {error}", image.id))
+        })?;
+        fs::write(&path, bytes)?;
+        files.insert(image.id.clone(), path);
+    }
+    Ok(files)
+}
+
+/// Add image file paths to the printed eval JSON.
+fn eval_output_value(
+    outcome: &ScriptEvalOutcome,
+    image_files: &BTreeMap<String, PathBuf>,
+) -> Result<serde_json::Value, EdevError> {
+    let mut value = serde_json::to_value(outcome).map_err(|error| {
+        EdevError::EvalFailed(format!("failed to serialize eval outcome: {error}"))
+    })?;
+    let Some(images) = value
+        .get_mut("images")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(value);
+    };
+    for image in images {
+        let Some(id) = image.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(path) = image_files.get(id) else {
+            continue;
+        };
+        if let Some(image) = image.as_object_mut() {
+            image.insert(
+                "file".to_string(),
+                serde_json::Value::String(path.display().to_string()),
+            );
+        }
+    }
+    Ok(value)
+}
+
+/// Convert arbitrary script/image names into portable path components.
+fn safe_file_component(value: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|ch| match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' => ch,
+            _ => '-',
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if safe.is_empty() {
+        "image".to_string()
+    } else {
+        safe
+    }
+}
+
+/// Choose a file extension for an MCP image content MIME type.
+fn image_extension(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        _ => "bin",
+    }
 }
 
 /// Run a fixture-related script and convert script failures into fixture errors.
@@ -324,6 +491,9 @@ pub enum EdevError {
     /// Smoke suite failure.
     #[error("smoke failed: {0}")]
     SmokeFailed(String),
+    /// One-shot script evaluation failure.
+    #[error("eval failed: {0}")]
+    EvalFailed(String),
     /// Fixture operation failure.
     #[error("fixture failed: {0}")]
     FixtureFailed(String),
@@ -404,6 +574,10 @@ struct State {
     status: AppStatus,
     /// Timestamp of the last MCP interaction handled by this launcher.
     last_activity: Instant,
+    /// Configured idle guard for the launcher, if this is an MCP session.
+    idle_shutdown_after: Option<Duration>,
+    /// Whether the stdio MCP client completed initialization.
+    mcp_client_attached: bool,
     /// Logger for launcher lifecycle messages.
     log_state: LogState,
 }
@@ -422,8 +596,15 @@ impl State {
             app: None,
             status: AppStatus::NotRunning,
             last_activity: Instant::now(),
+            idle_shutdown_after: None,
+            mcp_client_attached: false,
             log_state,
         }
+    }
+
+    /// Enable the MCP pre-client idle guard.
+    fn enable_idle_shutdown(&mut self, idle_after: Duration) {
+        self.idle_shutdown_after = Some(idle_after);
     }
 
     /// Record an internal launcher log line into the shared log buffer.
@@ -435,6 +616,12 @@ impl State {
     /// Mark launcher activity from user-visible tool execution.
     fn mark_activity(&mut self) {
         self.last_activity = Instant::now();
+    }
+
+    /// Mark the stdio MCP client as initialized and attached.
+    fn mark_client_attached(&mut self) {
+        self.mcp_client_attached = true;
+        self.mark_activity();
     }
 
     /// Stop the managed app process and reset launcher state without unregistering the launcher.
@@ -646,8 +833,34 @@ impl State {
             app_present,
             process_group_id,
             startup_output,
+            mcp_client_attached: self.mcp_client_attached,
+            idle_shutdown: self.idle_shutdown_report(),
             app_health: None,
             app_health_error: None,
+        }
+    }
+
+    /// Build the user-facing MCP idle guard state.
+    fn idle_shutdown_report(&self) -> IdleShutdownReport {
+        let Some(idle_after) = self.idle_shutdown_after else {
+            return IdleShutdownReport {
+                state: "disabled",
+                configured_secs: None,
+                remaining_secs: None,
+            };
+        };
+        if self.mcp_client_attached {
+            return IdleShutdownReport {
+                state: "suspended_while_client_attached",
+                configured_secs: Some(idle_after.as_secs()),
+                remaining_secs: None,
+            };
+        }
+        let elapsed = self.last_activity.elapsed();
+        IdleShutdownReport {
+            state: "waiting_for_initial_client",
+            configured_secs: Some(idle_after.as_secs()),
+            remaining_secs: Some(idle_after.saturating_sub(elapsed).as_secs()),
         }
     }
 }
@@ -927,24 +1140,40 @@ async fn shutdown_signal() {
     let _ctrl_c = tokio::signal::ctrl_c().await;
 }
 
-/// Wait until launcher inactivity exceeds the configured timeout.
+/// Wait until pre-client launcher inactivity exceeds the configured timeout.
 async fn wait_for_idle_shutdown(state: Arc<AsyncMutex<State>>, idle_after: Duration) {
     loop {
-        let (sleep_for, should_shutdown) = {
+        let action = {
             let state = state.lock().await;
-            let elapsed = state.last_activity.elapsed();
-            if elapsed >= idle_after {
-                state.log_edev(format!("idle for {}s; shutting down", idle_after.as_secs()));
-                (Duration::from_secs(0), true)
+            if state.mcp_client_attached {
+                state.log_edev("MCP client attached; idle shutdown suspended");
+                IdleShutdownAction::Suspend
             } else {
-                (idle_after - elapsed, false)
+                let elapsed = state.last_activity.elapsed();
+                if elapsed >= idle_after {
+                    state.log_edev(format!("idle for {}s; shutting down", idle_after.as_secs()));
+                    IdleShutdownAction::Shutdown
+                } else {
+                    IdleShutdownAction::Sleep(idle_after - elapsed)
+                }
             }
         };
-        if should_shutdown {
-            return;
+        match action {
+            IdleShutdownAction::Sleep(sleep_for) => sleep(sleep_for).await,
+            IdleShutdownAction::Suspend => pending::<()>().await,
+            IdleShutdownAction::Shutdown => return,
         }
-        sleep(sleep_for).await;
     }
+}
+
+/// Next step for the MCP idle shutdown guard.
+enum IdleShutdownAction {
+    /// Re-check idle state after this duration.
+    Sleep(Duration),
+    /// A client is attached, so the guard should stay pending until stdio exits.
+    Suspend,
+    /// No client attached before the idle budget elapsed.
+    Shutdown,
 }
 
 /// Drain buffered stderr output into a string.
@@ -1033,6 +1262,10 @@ impl ServerHandler for EdevServer {
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {
+        {
+            let mut state = self.state.lock().await;
+            state.mark_client_attached();
+        }
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(InitializeResult::new("edev")
             .with_version(version)
@@ -1350,8 +1583,18 @@ struct StatusReport {
     app_present: bool,
     process_group_id: Option<i32>,
     startup_output: Option<String>,
+    mcp_client_attached: bool,
+    idle_shutdown: IdleShutdownReport,
     app_health: Option<serde_json::Value>,
     app_health_error: Option<String>,
+}
+
+#[allow(clippy::missing_docs_in_private_items)]
+#[derive(Debug, Clone, Serialize)]
+struct IdleShutdownReport {
+    state: &'static str,
+    configured_secs: Option<u64>,
+    remaining_secs: Option<u64>,
 }
 
 impl StatusReport {
@@ -1564,7 +1807,7 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use eguidev_runtime::ScriptErrorInfo;
+    use eguidev_runtime::{ScriptErrorInfo, ScriptImageInfo};
     use tempfile::TempDir;
     use tmcp::{
         Client, Server, ServerCtx, ServerHandle, ServerHandler,
@@ -1617,6 +1860,42 @@ mod tests {
                 .expect("script eval json"),
         )
         .expect("script eval outcome")
+    }
+
+    #[test]
+    fn eval_output_value_adds_image_files() {
+        let mut outcome = successful_outcome(&serde_json::json!({
+            "capture": {
+                "type": "image_ref",
+                "id": "image-0"
+            }
+        }));
+        outcome.images = Some(vec![ScriptImageInfo {
+            id: "image-0".to_string(),
+            content_index: 1,
+            kind: "viewport".to_string(),
+            viewport_id: Some("root".to_string()),
+            target: None,
+            rect: None,
+            metadata: None,
+        }]);
+        let files = BTreeMap::from([(
+            "image-0".to_string(),
+            PathBuf::from("/tmp/eval/capture-image-0.jpg"),
+        )]);
+
+        let output = eval_output_value(&outcome, &files).expect("eval output");
+
+        assert_eq!(
+            output["images"][0]["file"],
+            serde_json::json!("/tmp/eval/capture-image-0.jpg")
+        );
+    }
+
+    #[test]
+    fn safe_file_component_keeps_filenames_portable() {
+        assert_eq!(safe_file_component("form/result 1"), "form-result-1");
+        assert_eq!(safe_file_component("***"), "image");
     }
 
     struct MockServer;
@@ -2119,6 +2398,7 @@ mod tests {
         let tempdir = test_tempdir();
         let mut state = make_state(&tempdir);
         assert_eq!(state.status_report().state, "not_running");
+        assert_eq!(state.status_report().idle_shutdown.state, "disabled");
         assert!(state.status_report().app_health.is_none());
 
         state.status = AppStatus::Starting;
@@ -2133,6 +2413,29 @@ mod tests {
         let report = state.status_report();
         assert_eq!(report.state, "startup_failed");
         assert_eq!(report.startup_output.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn status_report_covers_mcp_idle_state() {
+        let tempdir = test_tempdir();
+        let mut state = make_state(&tempdir);
+        state.enable_idle_shutdown(Duration::from_secs(30));
+
+        let report = state.status_report();
+        assert!(!report.mcp_client_attached);
+        assert_eq!(report.idle_shutdown.state, "waiting_for_initial_client");
+        assert_eq!(report.idle_shutdown.configured_secs, Some(30));
+        assert!(matches!(report.idle_shutdown.remaining_secs, Some(0..=30)));
+
+        state.mark_client_attached();
+        let report = state.status_report();
+        assert!(report.mcp_client_attached);
+        assert_eq!(
+            report.idle_shutdown.state,
+            "suspended_while_client_attached"
+        );
+        assert_eq!(report.idle_shutdown.configured_secs, Some(30));
+        assert_eq!(report.idle_shutdown.remaining_secs, None);
     }
 
     #[tokio::test]
@@ -2279,6 +2582,27 @@ mod tests {
 
         sleep(Duration::from_millis(60)).await;
         assert!(waiter.is_finished());
+    }
+
+    #[tokio::test]
+    async fn idle_shutdown_stays_pending_while_client_attached() {
+        let tempdir = test_tempdir();
+        let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
+        {
+            let mut state_guard = state.lock().await;
+            state_guard.last_activity = Instant::now() - Duration::from_millis(250);
+            state_guard.mark_client_attached();
+        }
+
+        let wait_result = timeout(
+            Duration::from_millis(20),
+            wait_for_idle_shutdown(Arc::clone(&state), Duration::from_millis(100)),
+        )
+        .await;
+        assert!(
+            wait_result.is_err(),
+            "attached MCP clients should suspend idle shutdown"
+        );
     }
 
     #[tokio::test]
