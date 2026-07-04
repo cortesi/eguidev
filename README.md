@@ -6,144 +6,103 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Like [Playwright](https://playwright.dev/) for [egui](https://github.com/emilk/egui)
-apps. eguidev lets AI agents drive your UI end-to-end -- taking screenshots of
-entire windows or individual widgets, inspecting widget state, and injecting
-input -- all from inside the process with no pixel guessing.
+apps. eguidev lets AI agents drive your UI end-to-end -- inspecting widget
+state, injecting input, taking screenshots of windows or individual widgets --
+all from inside the process with no pixel guessing.
 
 Join the [Discord server](https://discord.gg/fHmRmuBDxF) for discussion and
 release updates.
 
-## How It Works
+## How it works
 
-eguidev instruments your app from inside the process. It captures widget state
-at frame boundaries and injects input through an egui plugin, registered
-automatically on the first instrumented frame, that runs before every
-viewport's pass consumes its input -- root, deferred, and immediate alike.
-Automation stays aligned with the real event loop without pixel guessing.
+eguidev instruments your app from the inside. You tag widgets with string ids,
+and eguidev captures their state (role, label, value, geometry) at every frame
+boundary and injects input in step with the real event loop.
 
-The agent-facing surface is Luau, not fine-grained RPC. On native builds,
-`eguidev_runtime` runs scripts inside the app process against the latest
-captured frame, so one script can inspect widgets, queue input, wait for state
-changes, and return structured results in a single round trip.
+Agents talk to the app through MCP, and the agent-facing surface is
+[Luau](https://luau.org/) scripts rather than fine-grained RPC: a single
+`script_eval` call can inspect widgets, click and type, wait for state changes,
+take screenshots, and return structured results in one round trip.
 
-## Structure
+Three pieces make this work:
 
-- **`eguidev` crate** -- instrument your egui app. Tag widgets with `dev_*`
-  helpers and wrap frames with `FrameGuard`; input injection is automatic
-  from there. This is the cross-target instrumentation layer and remains
-  valid for `wasm32`.
-- **`eguidev_runtime` crate** -- native-only embedded runtime. Attach it once
-  in app bootstrap code to enable script evaluation, screenshots, smoketests,
-  and the in-process MCP server.
-- **`edev` binary** -- the MCP launcher. Starts and stops the app, proxies
-  `script_eval`, serves the Luau API definition. Run it with
-  `edev mcp -- <cargo args>`.
+- **`eguidev`** -- the instrumentation library your app depends on. Compiles
+  for native and `wasm32`.
+- **`eguidev_runtime`** -- the native-only embedded runtime: script evaluation,
+  screenshots, and the in-process MCP server. Attached once at app startup.
+- **`edev`** -- the CLI. It launches your app, proxies MCP to the agent, and
+  runs scripts, fixtures, and smoketest suites directly.
 
-## Build modes
+## Getting started
 
-- **Instrumentation only**: depend on `eguidev` alone. This works for native
-  and `wasm32` targets.
-- **Native embedded runtime**: add an app-local feature such as
-  `devtools = ["dep:eguidev_runtime"]`, then call
-  `eguidev_runtime::attach(devmcp)` in one bootstrap location. Keep widget code
-  unconditional.
+**1. Instrument your app.** Add `eguidev` as a dependency, create a `DevMcp`
+handle, wrap each frame with `FrameGuard`, and tag widgets with the `dev_*`
+helpers:
 
-For `eframe` apps, there are two practical integration rules:
-
-- Register a fixture handler with `DevMcp::on_fixture()` to apply named
-  fixtures directly from the runtime without requiring a frame cycle.
-- Wrap rendered frames with `FrameGuard`. Input injection is automatic from
-  there: the first `FrameGuard` registers an egui plugin that drains queued
-  input into every viewport's pass, so there is no raw-input wiring for apps
-  to do. When the runtime is attached, eguidev owns repaint keep-alive at
-  frame end and wait/screenshot paths report frame health when a viewport
-  stalls.
-- Prefer `eframe::Renderer::Glow` for automation runs. The `wgpu` backend can
-  exhibit idle-frame stalls in some `eframe` integrations.
-
-## Custom widgets
-
-Use `DevUiExt` for standard egui widgets whenever possible. For hand-rolled
-controls, instrument both directions:
-
-- Record the widget's current state with `track_response_full(...)` or
-  `id_with_meta(...)`. Use `publish_rect_meta(...)` for painter-drawn regions
-  that have no `egui::Response`.
-- Consume queued `set_value(...)` overrides with
-  `take_widget_value_override(...)` before rendering the custom control.
-
-That override step is what lets scripts drive custom combo boxes, sliders, and
-other widgets that are not built through the stock `dev_*` helpers.
-
-## Configuration
-
-`edev` reads `.edev.toml` from the current directory upward, stopping at the
-nearest git root. All subcommands share this config; CLI flags override file
-values. See [`examples/edev.toml`](./examples/edev.toml) for a commented
-reference with all options.
-
-The only required field is `app.command` -- the full argv to launch the app
-with DevMCP enabled. `edev` does not synthesize cargo flags. The command can
-also be passed after `--` on any subcommand.
-
-## Fixtures
-
-List registered fixtures or launch the app from a known baseline for manual
-testing:
-
-```sh
-edev fixtures                  # start app, print fixtures, exit
-edev fixture basic.default     # start app, apply fixture, keep running
+```rust
+let _guard = FrameGuard::new(&self.devmcp, &ctx);
+ui.dev_text_edit("app.name", &mut self.name);
+if ui.dev_button("app.submit", "Submit").clicked() { /* ... */ }
 ```
 
-`edev fixture` applies the named fixture and blocks until ctrl-c. Use it to
-get the app into a repeatable state for interactive work.
+**2. Attach the runtime.** Put `eguidev_runtime` behind an app feature and
+enable it in one bootstrap location:
 
-Fixtures are applied synchronously to app state through `DevMcp::on_fixture()`.
-That guarantees the baseline state change has happened, but it does not imply
-the next frame has already rebuilt the widget registry for the new pane. In
-scripts and smoketests, follow `fixture("name")` with a concrete readiness wait
-such as `wait_for_widget_visible(...)` for the first widget you depend on.
-
-## Smoketests
-
-eguidev includes a built-in smoketest runner. A smoketest suite is a directory
-of self-contained `.luau` scripts. The configured suite is discovered
-recursively and executed in lexicographic order by relative path. Explicit
-script arguments to `edev smoke` run in the order provided. Every script
-establishes its own state via `fixture()`, exercises the UI, and asserts
-outcomes. After `fixture()`, wait for the widget or viewport state the script
-actually depends on before reading pane-specific widgets.
-
-```sh
-edev smoke
-edev smoke --verbose
-edev smoke smoketest/*.luau
-edev smoke smoketest/10_basic.luau tmp/ad_hoc_probe.luau
+```toml
+[features]
+devtools = ["dep:eguidev_runtime"]
 ```
 
-Smoketests run against the live app through the same `script_eval` path agents
-use. They double as regression tests and as executable documentation for your
-scripting surface.
+```rust
+let devmcp = eguidev_runtime::attach(devmcp);
+```
 
-In smoke mode, success is assertion-driven: `edev smoke` treats a script as
-passing when it finishes without throwing. Final return values are ignored by
-the smoke runner. Use `assert(...)` for checks and `log(...)` for diagnostics.
+The `DevMcp` handle is inert until the runtime is attached, so widget code
+stays unconditional and `wasm32` builds are unaffected.
 
-## API Reference
+**3. Tell `edev` how to launch your app.** Install the CLI with
+`cargo install edev`, then drop a `.edev.toml` next to your project with the
+full launch command:
 
-The canonical scripting reference is
-[`eguidev.d.luau`](./crates/eguidev_runtime/luau/eguidev.d.luau) -- a strict
-Luau type definition covering viewports, widgets, actions, waits, fixtures,
-and assertions. Fetch it at any time with `script_api` or `edev --script-docs`.
+```toml
+[app]
+command = ["cargo", "run", "-p", "myapp", "--features", "devtools"]
+```
 
-For the Rust API, run `ruskel eguidev` or see the crate-level doc comments.
+See [`examples/edev.toml`](./examples/edev.toml) for a commented reference of
+all options.
 
-The repo also ships a ready-to-use agent skill at
-[`skills/SKILL.md`](./skills/SKILL.md). For Codex-style setups, install it by
-copying or symlinking it into your local skills directory as
-`~/.codex/skills/eguidev/SKILL.md`, then invoke the `eguidev` skill in your
-agent workflow.
+**4. Connect your agent.** Register `edev mcp` as an MCP server -- for
+example, with Claude Code:
+
+```sh
+claude mcp add eguidev -- edev mcp
+```
+
+The agent gets tools to start, stop, and observe the app, plus `script_eval`
+to drive it. The repo also ships an agent skill at
+[`skills/SKILL.md`](./skills/SKILL.md) that teaches agents the workflow.
+
+## Beyond the MCP server
+
+The same scripting surface powers developer-facing tooling:
+
+- `edev smoke` runs a directory of self-contained `.luau` smoketests against
+  the live app -- regression tests that double as executable documentation of
+  your UI.
+- `edev eval` runs a single script and prints the structured result.
+- `edev fixtures` / `edev fixture <name>` list registered fixtures and launch
+  the app in a known baseline state for manual testing.
+
+Run `edev --help` for the details.
+
+## Documentation
+
+- Luau scripting API: `edev docs`, or the `script_api` MCP tool. The
+  definition file is
+  [`eguidev.d.luau`](./crates/eguidev_runtime/luau/eguidev.d.luau).
+- Rust API: [docs.rs/eguidev](https://docs.rs/eguidev), including integration
+  details for custom widgets, fixtures, and multi-viewport apps.
 
 ## License
 
