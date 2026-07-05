@@ -4,7 +4,7 @@
 use std::{
     any::Any,
     fmt,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, Mutex, atomic::Ordering},
     time::Duration,
 };
 
@@ -13,10 +13,10 @@ use egui::Context;
 use crate::{
     actions::InputAction,
     diagnostics::{DevMcpConfigError, DiagnosticRegistry, DiagnosticResult},
-    fixtures::FixtureHandler,
+    fixtures::{FixtureHandler, RuntimeFixtureHandler, UiFixtureHandler},
     instrument::{ACTIVE, container, swallow_panic},
     registry::Inner,
-    types::FixtureSpec,
+    types::{FixtureCall, FixtureResult, FixtureSpec},
 };
 
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(250);
@@ -164,20 +164,34 @@ impl DevMcp {
         self
     }
 
-    /// Register a callback that applies named fixtures to app state.
-    ///
-    /// The handler is called directly from the tokio runtime when a fixture
-    /// tool call arrives, removing the need for frame-driven polling.
-    pub fn on_fixture<F>(mut self, handler: F) -> Self
+    /// Register a runtime-thread fixture handler.
+    pub fn on_fixture_runtime<F>(mut self, handler: F) -> Result<Self, DevMcpConfigError>
     where
-        F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+        F: Fn(&FixtureCall) -> FixtureResult + Send + Sync + 'static,
     {
-        let handler: FixtureHandler = Arc::new(handler);
+        self.ensure_no_fixture_handler()?;
+        let handler: RuntimeFixtureHandler = Arc::new(handler);
+        let handler = FixtureHandler::Runtime(handler);
         if let Some(inner) = self.inner() {
-            inner.fixtures.set_fixture_handler(handler.clone());
+            inner.fixtures.set_handler(handler.clone())?;
         }
         self.fixture_handler = Some(handler);
-        self
+        Ok(self)
+    }
+
+    /// Register a UI-thread fixture handler.
+    pub fn on_fixture_ui<F>(mut self, handler: F) -> Result<Self, DevMcpConfigError>
+    where
+        F: FnMut(&Context, &FixtureCall) -> FixtureResult + Send + 'static,
+    {
+        self.ensure_no_fixture_handler()?;
+        let handler: UiFixtureHandler = Arc::new(Mutex::new(Box::new(handler)));
+        let handler = FixtureHandler::Ui(handler);
+        if let Some(inner) = self.inner() {
+            inner.fixtures.set_handler(handler.clone())?;
+        }
+        self.fixture_handler = Some(handler);
+        Ok(self)
     }
 
     /// Register a named diagnostic provider that runs on the automation runtime thread.
@@ -232,6 +246,16 @@ impl DevMcp {
             .map_or(self.verbose_logging, |inner| inner.verbose_logging())
     }
 
+    fn ensure_no_fixture_handler(&self) -> Result<(), DevMcpConfigError> {
+        if self.fixture_handler.is_some() {
+            return Err(DevMcpConfigError::new(
+                "duplicate_fixture_handler",
+                "fixture handler is already registered",
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn context_for(&self, viewport_id: egui::ViewportId) -> Option<Context> {
         self.inner()
@@ -247,7 +271,10 @@ impl DevMcp {
             inner.fixtures.set_fixtures(self.fixtures.clone());
         }
         if let Some(handler) = &self.fixture_handler {
-            inner.fixtures.set_fixture_handler(handler.clone());
+            inner
+                .fixtures
+                .set_handler(handler.clone())
+                .expect("fixture handler was validated before runtime activation");
         }
         inner.diagnostics.set_providers_from(&self.diagnostics);
         self.state = DevMcpState::Active(inner);
@@ -278,6 +305,7 @@ impl DevMcp {
             inner.begin_frame(viewport_id);
             inner.capture_context(viewport_id, ctx);
             if viewport_id == egui::ViewportId::ROOT {
+                inner.fixtures.drain_ui(ctx);
                 inner.diagnostics.drain_ui(ctx);
             }
             if let Some(hooks) = inner.runtime_hooks() {

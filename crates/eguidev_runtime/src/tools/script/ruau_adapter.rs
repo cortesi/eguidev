@@ -101,8 +101,8 @@ declare function diagnostic(name: string): any
 declare function diagnostics(): any
 declare function dump(options: any?): any
 declare function dump_text(options: any?): string
-declare function fixture(name: string): ()
-declare function fixture_raw(name: string): ()
+declare function fixture(name: string, params: any?): any
+declare function fixture_raw(name: string, params: any?): ()
 declare function fixtures(): any
 declare function log(entry: any): ()
 declare function root(): any
@@ -946,15 +946,15 @@ impl EguidevModule {
         builder.async_function(
             "fixture",
             ModuleBinding::Global,
-            async_host_fn(move |ctx: AsyncHostContext, name: String| {
+            async_host_fn(move |ctx: AsyncHostContext, args: FixtureArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    runtime
-                        .fixture(pos, name)
+                    let value = runtime
+                        .fixture(pos, args.name, args.params)
                         .await
                         .map_err(host_script_error)?;
-                    Ok(HostReturn::default())
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -962,12 +962,12 @@ impl EguidevModule {
         builder.async_function(
             "fixture_raw",
             ModuleBinding::Global,
-            async_host_fn(move |ctx: AsyncHostContext, name: String| {
+            async_host_fn(move |ctx: AsyncHostContext, args: FixtureArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     runtime
-                        .fixture_raw(pos, name)
+                        .fixture_raw(pos, args.name, args.params)
                         .await
                         .map_err(host_script_error)?;
                     Ok(HostReturn::default())
@@ -2150,6 +2150,26 @@ impl<'s> FromLuaMulti<'s> for OptionalJsonArg {
                 "expected at most one argument, got {got}"
             ))),
         }
+    }
+}
+
+struct FixtureArgs {
+    name: String,
+    params: Option<Value>,
+}
+
+impl<'s> FromLuaMulti<'s> for FixtureArgs {
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec();
+        if !(1..=2).contains(&values.len()) {
+            return Err(RuntimeError::runtime(format!(
+                "fixture expected name and optional params, got {} arguments",
+                values.len()
+            )));
+        }
+        let name = String::from_lua(values.remove(0), scope)?;
+        let params = optional_json_value(scope, values.pop())?;
+        Ok(Self { name, params })
     }
 }
 
@@ -3674,10 +3694,14 @@ mod tests {
     };
     use crate::{
         DevMcp,
+        fixtures::FixtureHandler,
         registry::Inner,
         runtime::{self, Runtime},
         tools::script::types::{ScriptArgValue, ScriptArgs},
-        types::{FixtureSpec, Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetValue},
+        types::{
+            FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, WidgetRegistryEntry,
+            WidgetRole, WidgetValue,
+        },
     };
 
     #[test]
@@ -4012,27 +4036,37 @@ return true"#
     fn initial_ruau_slice_runs_configure_fixture_raw_and_fixtures() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![
-            FixtureSpec::new("zeta", "Z fixture.").anchor("status"),
+            FixtureSpec::new("zeta", "Z fixture.")
+                .anchor("status")
+                .param(
+                    FixtureParam::text("mode", "Selection mode.")
+                        .default("fast")
+                        .choices(["fast", "slow"]),
+                ),
             FixtureSpec::new("alpha", "A fixture.").anchor("status"),
         ]);
         let applied = Arc::new(AtomicBool::new(false));
         let applied_c = Arc::clone(&applied);
-        inner.fixtures.set_fixture_handler(Arc::new(move |name| {
-            assert_eq!(name, "zeta");
-            applied_c.store(true, Ordering::SeqCst);
-            Ok(())
-        }));
+        inner
+            .fixtures
+            .set_handler(FixtureHandler::Runtime(Arc::new(move |call| {
+                assert_eq!(call.name, "zeta");
+                assert_eq!(call.params.text("mode"), "slow");
+                applied_c.store(true, Ordering::SeqCst);
+                Ok(FixtureResponse::new())
+            })))
+            .expect("fixture handler");
 
         let runtime = Runtime::ensure_for_inner(&inner);
         let outcome = run_script_eval_blocking(
             Arc::clone(&inner),
             runtime,
             r#"configure({ timeout_ms = 20, poll_interval_ms = 1, settle = false, animations = true })
-fixture_raw("zeta")
-local frame = wait_for_frames(0)
-local catalog = fixtures()
-log(catalog[1].name)
-return { first = catalog[1].name, count = #catalog, frame = frame }"#
+	fixture_raw("zeta", { mode = "slow" })
+	local frame = wait_for_frames(0)
+	local catalog = fixtures()
+	log(catalog[1].name)
+	return { first = catalog[1].name, count = #catalog, frame = frame, params = catalog[2].params[1].name }"#
                 .to_string(),
             1_000,
             "fixtures.luau".to_string(),
@@ -4043,10 +4077,13 @@ return { first = catalog[1].name, count = #catalog, frame = frame }"#
         assert_eq!(outcome.logs, vec!["alpha"]);
         assert_eq!(outcome.fixtures.len(), 1);
         assert_eq!(outcome.fixtures[0].name, "zeta");
-        assert!(outcome.fixtures[0].params.is_empty());
+        assert_eq!(
+            outcome.fixtures[0].params.get("mode"),
+            Some(&WidgetValue::Text("slow".to_string()))
+        );
         assert_eq!(
             outcome.value,
-            Some(json!({ "first": "alpha", "count": 2, "frame": 0 }))
+            Some(json!({ "first": "alpha", "count": 2, "frame": 0, "params": "mode" }))
         );
         assert!(inner.automation_options().animations);
     }

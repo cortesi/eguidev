@@ -7,7 +7,8 @@
 //! For `eframe` applications, the most reliable integration pattern is:
 //!
 //! - choose `eframe::Renderer::Glow` for automation runs when possible
-//! - register a fixture handler with [`eguidev::DevMcp::on_fixture`]
+//! - register a fixture handler with [`eguidev::DevMcp::on_fixture_runtime`] or
+//!   [`eguidev::DevMcp::on_fixture_ui`]
 //! - wrap every frame in [`eguidev::FrameGuard`], which registers an egui
 //!   plugin on the first frame to inject input automatically
 //!
@@ -36,6 +37,10 @@ pub(crate) mod actions {
 
 pub(crate) mod diagnostics {
     pub use eguidev::internal::diagnostics::*;
+}
+
+pub(crate) mod fixtures {
+    pub use eguidev::internal::fixtures::*;
 }
 
 pub(crate) mod overlay {

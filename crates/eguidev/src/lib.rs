@@ -105,17 +105,20 @@
 //!
 //! # Fixtures
 //!
-//! Apps register fixtures with [`DevMcp::fixtures`] and a handler callback
-//! with [`DevMcp::on_fixture`]. Each fixture must be independently invokable
-//! from any prior state and must leave the app in a baseline that can be
-//! described with readiness anchors. Use fixture preconditions for state that
-//! must already be true before the handler runs, such as an external service
-//! connection. Scripts call `fixture("name")` to apply the named baseline, wait
-//! for fresh captures, and verify those anchors before returning. Widget and
-//! viewport handles resolve fresh across fixture boundaries, so rebinding
-//! `root()` after each fixture is usually unnecessary. Use `fixture_raw("name")`
-//! only when you explicitly want the old fire-and-forget behavior for debugging
-//! or manual setup flows.
+//! Apps register fixtures with [`DevMcp::fixtures`] and exactly one handler:
+//! [`DevMcp::on_fixture_runtime`] for automation-thread setup or
+//! [`DevMcp::on_fixture_ui`] for setup that must run on the egui UI thread.
+//! Each fixture must be independently invokable from any prior state and must
+//! leave the app in a baseline that can be described with readiness anchors.
+//! Use typed fixture params for controlled variants, preconditions for state
+//! that must already be true before the handler runs, and handler-returned
+//! values or anchors for dynamic fixture outcomes. Scripts call
+//! `fixture("name", params?)` to apply the named baseline, wait for fresh
+//! captures, verify static plus returned anchors, and receive the returned
+//! values. Widget and viewport handles resolve fresh across fixture boundaries,
+//! so rebinding `root()` after each fixture is usually unnecessary. Use
+//! `fixture_raw("name", params?)` only when you explicitly want the
+//! fire-and-forget behavior for debugging or manual setup flows.
 //!
 //! # Scripting reference
 //!
@@ -142,15 +145,15 @@ mod widget_registry;
 pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
-    fixtures::FixtureHandler,
     instrument::{
         ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
         name_viewport, publish_rect_meta, track_response_full,
     },
     types::{
-        Anchor, AnchorCheck, FixtureSpec, RoleState, ScrollAreaMeta, ViewportNameError,
-        ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange, WidgetRole, WidgetState,
-        WidgetValue,
+        Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
+        FixtureResponse, FixtureResult, FixtureSpec, ParamKind, RoleState, ScrollAreaMeta,
+        ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange,
+        WidgetRole, WidgetState, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -170,6 +173,10 @@ pub mod internal {
 
     pub mod diagnostics {
         pub use crate::diagnostics::{DiagnosticExecution, DiagnosticRegistry};
+    }
+
+    pub mod fixtures {
+        pub use crate::fixtures::{FixtureExecution, FixtureHandler};
     }
 
     pub mod error {
@@ -193,9 +200,11 @@ pub mod internal {
 
     pub mod types {
         pub use crate::types::{
-            Anchor, AnchorCheck, FixtureSpec, Modifiers, Pos2, Rect, RoleState, ScrollAreaMeta,
-            Vec2, ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange,
-            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
+            Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
+            FixtureResponse, FixtureResult, FixtureSpec, Modifiers, ParamKind, Pos2, Rect,
+            RoleState, ScrollAreaMeta, Vec2, ViewportNameError, ViewportSel, ViewportSelParseError,
+            WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState,
+            WidgetValue,
         };
     }
 

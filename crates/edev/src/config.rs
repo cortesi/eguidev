@@ -92,8 +92,10 @@ pub struct EvalConfig {
 pub struct DumpConfig {
     /// Shared app launch settings.
     pub(crate) launch: LaunchConfig,
-    /// Optional name-only fixture to apply before dumping.
+    /// Optional fixture to apply before dumping.
     pub(crate) fixture: Option<String>,
+    /// Params passed to the pre-dump fixture.
+    pub(crate) params: BTreeMap<String, ScriptArgValue>,
     /// Optional viewport selector to dump.
     pub(crate) viewport: Option<String>,
     /// Whether to wait for a fresh capture before dumping when no fixture is set.
@@ -113,6 +115,16 @@ pub struct FixtureConfig {
     pub(crate) launch: LaunchConfig,
     /// Fixture name to apply. `None` means list-only mode (`edev fixtures`).
     pub(crate) name: Option<String>,
+    /// Params passed to `edev fixture NAME`.
+    pub(crate) params: BTreeMap<String, ScriptArgValue>,
+    /// Emit fixture list as JSON.
+    pub(crate) json: bool,
+    /// Emit fixture list as Markdown.
+    pub(crate) markdown: bool,
+    /// Print `dump_text()` after applying a fixture.
+    pub(crate) dump: bool,
+    /// Apply without waiting for readiness anchors.
+    pub(crate) no_wait: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +289,7 @@ struct EvalCliOptions {
 struct DumpCliOptions {
     common: CommonCliOptions,
     fixture: Option<String>,
+    params: BTreeMap<String, ScriptArgValue>,
     viewport: Option<String>,
     script_timeout_secs: Option<u64>,
     json: bool,
@@ -287,6 +300,11 @@ struct DumpCliOptions {
 struct FixtureCliOptions {
     common: CommonCliOptions,
     name: Option<String>,
+    params: BTreeMap<String, ScriptArgValue>,
+    json: bool,
+    markdown: bool,
+    dump: bool,
+    no_wait: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -399,6 +417,9 @@ struct DumpArgs {
     /// Apply this fixture before dumping.
     #[arg(long)]
     fixture: Option<String>,
+    /// Pass a typed fixture param as KEY=VALUE.
+    #[arg(long = "param", value_parser = parse_fixture_param_cli)]
+    params: Vec<(String, ScriptArgValue)>,
     /// Restrict the dump to one viewport selector.
     #[arg(long)]
     viewport: Option<String>,
@@ -417,6 +438,12 @@ struct DumpArgs {
 struct FixturesArgs {
     #[command(flatten)]
     common: CommonArgs,
+    /// Emit structured JSON.
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "markdown")]
+    json: bool,
+    /// Emit Markdown.
+    #[arg(long, action = ArgAction::SetTrue)]
+    markdown: bool,
 }
 
 #[derive(Debug, Args)]
@@ -425,6 +452,15 @@ struct FixtureArgs {
     name: String,
     #[command(flatten)]
     common: CommonArgs,
+    /// Pass a typed fixture param as KEY=VALUE.
+    #[arg(long = "param", value_parser = parse_fixture_param_cli)]
+    params: Vec<(String, ScriptArgValue)>,
+    /// Print `dump_text()` after applying the fixture.
+    #[arg(long, action = ArgAction::SetTrue)]
+    dump: bool,
+    /// Apply the fixture without waiting for readiness anchors.
+    #[arg(long = "no-wait", action = ArgAction::SetTrue)]
+    no_wait: bool,
 }
 
 impl From<CommonArgs> for CommonCliOptions {
@@ -496,6 +532,7 @@ impl From<DumpArgs> for DumpCliOptions {
         Self {
             common: args.common.into(),
             fixture: args.fixture,
+            params: args.params.into_iter().collect(),
             viewport: args.viewport,
             script_timeout_secs: args.script_timeout_secs,
             json: args.json,
@@ -509,6 +546,11 @@ impl From<FixturesArgs> for FixtureCliOptions {
         Self {
             common: args.common.into(),
             name: None,
+            params: BTreeMap::new(),
+            json: args.json,
+            markdown: args.markdown,
+            dump: false,
+            no_wait: false,
         }
     }
 }
@@ -518,6 +560,11 @@ impl From<FixtureArgs> for FixtureCliOptions {
         Self {
             common: args.common.into(),
             name: Some(args.name),
+            params: args.params.into_iter().collect(),
+            json: false,
+            markdown: false,
+            dump: args.dump,
+            no_wait: args.no_wait,
         }
     }
 }
@@ -552,6 +599,10 @@ fn split_cli_args_and_app_argv<S: AsRef<OsStr>>(
 
 fn parse_script_arg_cli(raw: &str) -> Result<(String, ScriptArgValue), String> {
     parse_script_arg_flag(raw).map_err(|error| error.to_string())
+}
+
+fn parse_fixture_param_cli(raw: &str) -> Result<(String, ScriptArgValue), String> {
+    parse_fixture_param_flag(raw).map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
@@ -608,6 +659,11 @@ fn resolve_fixture_config(
     Ok(FixtureConfig {
         launch,
         name: cli.name,
+        params: cli.params,
+        json: cli.json,
+        markdown: cli.markdown,
+        dump: cli.dump,
+        no_wait: cli.no_wait,
     })
 }
 
@@ -618,10 +674,16 @@ fn resolve_dump_config(
 ) -> Result<DumpConfig, EdevError> {
     let launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
     let file_smoke = loaded.map(|config| &config.file.smoke);
+    if cli.fixture.is_none() && !cli.params.is_empty() {
+        return Err(EdevError::InvalidArgs(
+            "`edev dump --param` requires `--fixture`".to_string(),
+        ));
+    }
     let wait_for_capture = cli.fixture.is_none();
     Ok(DumpConfig {
         launch,
         fixture: cli.fixture,
+        params: cli.params,
         viewport: cli.viewport,
         wait_for_capture,
         json: cli.json,
@@ -832,15 +894,26 @@ fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
 }
 
 fn parse_script_arg_flag(raw: &str) -> Result<(String, ScriptArgValue), EdevError> {
+    parse_typed_key_value_flag(raw, "--arg")
+}
+
+fn parse_fixture_param_flag(raw: &str) -> Result<(String, ScriptArgValue), EdevError> {
+    parse_typed_key_value_flag(raw, "--param")
+}
+
+fn parse_typed_key_value_flag(
+    raw: &str,
+    flag_name: &'static str,
+) -> Result<(String, ScriptArgValue), EdevError> {
     let Some((key, raw_value)) = raw.split_once('=') else {
-        return Err(EdevError::InvalidArgs(
-            "--arg requires KEY=VALUE".to_string(),
-        ));
+        return Err(EdevError::InvalidArgs(format!(
+            "{flag_name} requires KEY=VALUE"
+        )));
     };
     if key.is_empty() {
-        return Err(EdevError::InvalidArgs(
-            "--arg requires a non-empty key".to_string(),
-        ));
+        return Err(EdevError::InvalidArgs(format!(
+            "{flag_name} requires a non-empty key"
+        )));
     }
     Ok((key.to_string(), parse_script_arg_value(raw_value)))
 }
@@ -1068,6 +1141,10 @@ mod tests {
             "dump",
             "--fixture",
             "basic.default",
+            "--param",
+            "offset=180",
+            "--param",
+            "enabled=true",
             "--viewport",
             "secondary",
             "--script-timeout-secs",
@@ -1085,6 +1162,11 @@ mod tests {
             panic!("expected dump command");
         };
         assert_eq!(config.fixture.as_deref(), Some("basic.default"));
+        assert_eq!(config.params.get("offset"), Some(&ScriptArgValue::Int(180)));
+        assert_eq!(
+            config.params.get("enabled"),
+            Some(&ScriptArgValue::Bool(true))
+        );
         assert_eq!(config.viewport.as_deref(), Some("secondary"));
         assert!(!config.wait_for_capture);
         assert!(config.json);
@@ -1103,6 +1185,19 @@ mod tests {
         };
 
         assert!(config.wait_for_capture);
+    }
+
+    #[test]
+    fn parse_dump_rejects_param_without_fixture() {
+        let args = os_args(&["dump", "--param", "offset=180", "--", "cargo", "run"]);
+        let current_dir = env::current_dir().unwrap();
+        let error = EdevCommand::parse_args_in_dir(&args, &current_dir)
+            .expect_err("dump param without fixture should fail");
+        let EdevError::InvalidArgs(message) = error else {
+            panic!("expected invalid args");
+        };
+        assert!(message.contains("--param"));
+        assert!(message.contains("--fixture"));
     }
 
     #[test]
@@ -1313,6 +1408,29 @@ filter = \"10_*\"
     }
 
     #[test]
+    fn parse_fixtures_command_accepts_json_and_markdown() {
+        let current_dir = env::current_dir().unwrap();
+
+        let command =
+            EdevCommand::parse_args_in_dir(&os_args(&["fixtures", "--json"]), &current_dir)
+                .expect("parse command");
+        let EdevCommand::Fixture(config) = command else {
+            panic!("expected fixture command");
+        };
+        assert!(config.json);
+        assert!(!config.markdown);
+
+        let command =
+            EdevCommand::parse_args_in_dir(&os_args(&["fixtures", "--markdown"]), &current_dir)
+                .expect("parse command");
+        let EdevCommand::Fixture(config) = command else {
+            panic!("expected fixture command");
+        };
+        assert!(config.markdown);
+        assert!(!config.json);
+    }
+
+    #[test]
     fn parse_fixture_command_accepts_name() {
         let args = os_args(&["fixture", "basic.default", "--", "cargo", "run"]);
         let current_dir = env::current_dir().unwrap();
@@ -1321,6 +1439,33 @@ filter = \"10_*\"
             panic!("expected fixture command");
         };
         assert_eq!(config.name.as_deref(), Some("basic.default"));
+    }
+
+    #[test]
+    fn parse_fixture_command_accepts_params_and_dump() {
+        let args = os_args(&[
+            "fixture",
+            "basic.scrolled",
+            "--param",
+            "offset=180",
+            "--param",
+            "enabled=true",
+            "--dump",
+            "--no-wait",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Fixture(config) = command else {
+            panic!("expected fixture command");
+        };
+        assert_eq!(config.name.as_deref(), Some("basic.scrolled"));
+        assert_eq!(config.params.get("offset"), Some(&ScriptArgValue::Int(180)));
+        assert_eq!(
+            config.params.get("enabled"),
+            Some(&ScriptArgValue::Bool(true))
+        );
+        assert!(config.dump);
+        assert!(config.no_wait);
     }
 
     #[test]

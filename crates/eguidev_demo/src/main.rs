@@ -11,8 +11,9 @@ use std::{
 use eframe::{App, egui};
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::ScrollBarVisibility};
 use eguidev::{
-    ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureSpec,
-    ProgressBarOptions, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRole,
+    Anchor, ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall,
+    FixtureError, FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, ProgressBarOptions,
+    ScrollAreaState, TextEditOptions, ViewportSel, WidgetRole,
 };
 #[cfg(feature = "devtools")]
 use eguidev_runtime::attach as attach_runtime;
@@ -50,7 +51,14 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "Jump the scroll area down to a later row.",
         )
         .anchor_label("basic.status", "Fixture: scrolled")
-        .anchor_scroll_at("basic.scroll", egui::vec2(0.0, 300.0), 0.75),
+        .anchor_scroll("basic.scroll")
+        .param(
+            FixtureParam::float("offset", "Vertical scroll offset in points.")
+                .default(300.0)
+                .range(0.0, 600.0),
+        )
+        .tag("basic")
+        .tag("scroll"),
         FixtureSpec::new(
             "basic.overlay_reset_probe",
             "Reset probe for overlay-local fixture input.",
@@ -76,7 +84,14 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "Jump the secondary viewport list down to a later row.",
         )
         .anchor_label("basic.status", "Fixture: secondary viewport scrolled")
-        .anchor_scroll_at_in("viewports.scroll", egui::vec2(0.0, 300.0), 32.0, secondary),
+        .anchor_scroll_in("viewports.scroll", secondary)
+        .param(
+            FixtureParam::float("offset", "Vertical scroll offset in points.")
+                .default(300.0)
+                .range(0.0, 600.0),
+        )
+        .tag("viewport")
+        .tag("scroll"),
         FixtureSpec::new(
             "viewports.occluded",
             "Cover the root viewport with a dedicated always-on-top test viewport.",
@@ -98,10 +113,10 @@ fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<
     let ui_diagnostic_state = Arc::clone(state);
     let devmcp = DevMcp::new()
         .fixtures(demo_fixtures())
-        .on_fixture(move |name| {
+        .on_fixture_ui(move |_ctx, call| {
             let mut s = fixture_state.lock().expect("demo state lock");
-            s.apply_fixture(name)
-        })
+            s.apply_fixture(call)
+        })?
         .diagnostic("demo.runtime", move || {
             let s = runtime_diagnostic_state
                 .lock()
@@ -409,10 +424,10 @@ impl DemoState {
     }
 
     /// Apply a named fixture to the demo state.
-    fn apply_fixture(&mut self, name: &str) -> Result<(), String> {
+    fn apply_fixture(&mut self, call: &FixtureCall) -> FixtureResult {
         self.reset_state();
-        match name {
-            "basic.default" => Ok(()),
+        match call.name.as_str() {
+            "basic.default" => Ok(FixtureResponse::new()),
             "basic.empty" => {
                 self.name.clear();
                 self.notes.clear();
@@ -430,36 +445,52 @@ impl DemoState {
                 self.selected_item = 2;
                 self.accent_color = Color32::from_rgba_unmultiplied(224, 96, 96, 255);
                 self.status = "Fixture: empty".to_string();
-                Ok(())
+                Ok(FixtureResponse::new())
             }
             "basic.scrolled" => {
-                self.basic_scroll_state.jump_to(egui::vec2(0.0, 300.0));
+                let offset = call.params.float("offset");
+                self.basic_scroll_state
+                    .jump_to(egui::vec2(0.0, offset as f32));
                 self.status = "Fixture: scrolled".to_string();
-                Ok(())
+                Ok(FixtureResponse::new()
+                    .value("offset", offset)
+                    .anchor(Anchor::scroll_at(
+                        "basic.scroll",
+                        egui::vec2(0.0, offset as f32),
+                        0.75,
+                    )))
             }
             "basic.overlay_reset_probe" => {
                 self.status = "Fixture: overlay reset probe".to_string();
-                Ok(())
+                Ok(FixtureResponse::new())
             }
-            "viewports.default" => Ok(()),
+            "viewports.default" => Ok(FixtureResponse::new()),
             "viewports.scrolled" => {
-                self.secondary_scroll_state.jump_to(egui::vec2(0.0, 300.0));
+                let offset = call.params.float("offset");
+                self.secondary_scroll_state
+                    .jump_to(egui::vec2(0.0, offset as f32));
                 self.status = "Fixture: secondary viewport scrolled".to_string();
-                Ok(())
+                Ok(FixtureResponse::new().value("offset", offset).anchor(
+                    Anchor::scroll_at("viewports.scroll", egui::vec2(0.0, offset as f32), 32.0)
+                        .in_viewport(ViewportSel::name("secondary").expect("valid viewport name")),
+                ))
             }
             "viewports.occluded" => {
                 self.show_occluder = true;
                 self.status = "Fixture: root viewport occluded".to_string();
-                Ok(())
+                Ok(FixtureResponse::new())
             }
             "viewports.duplicate_names" => {
                 self.show_secondary = true;
                 self.show_occluder = true;
                 self.duplicate_viewport_names = true;
                 self.status = "Fixture: duplicate viewport names".to_string();
-                Ok(())
+                Ok(FixtureResponse::new())
             }
-            _ => Err(format!("unknown fixture: {name}")),
+            _ => Err(FixtureError::new(
+                "unknown_fixture",
+                format!("unknown fixture: {}", call.name),
+            )),
         }
     }
 }
@@ -1179,7 +1210,41 @@ fn format_color(color: Color32) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    fn fixture_call(name: &str) -> FixtureCall {
+        let spec = demo_fixtures()
+            .into_iter()
+            .find(|fixture| fixture.name == name)
+            .expect("demo fixture");
+        FixtureCall {
+            name: name.to_string(),
+            params: spec
+                .validate_params(BTreeMap::new())
+                .expect("validated params"),
+        }
+    }
+
+    fn fixture_call_with_params<I, V>(name: &str, params: I) -> FixtureCall
+    where
+        I: IntoIterator<Item = (&'static str, V)>,
+        V: Into<eguidev::WidgetValue>,
+    {
+        let spec = demo_fixtures()
+            .into_iter()
+            .find(|fixture| fixture.name == name)
+            .expect("demo fixture");
+        let params = params
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.into()))
+            .collect();
+        FixtureCall {
+            name: name.to_string(),
+            params: spec.validate_params(params).expect("validated params"),
+        }
+    }
 
     #[test]
     fn overlay_reset_probe_fixture_is_idempotent_for_overlay_input() {
@@ -1187,13 +1252,13 @@ mod tests {
 
         state.overlay_probe_input = "first".to_string();
         state
-            .apply_fixture("basic.overlay_reset_probe")
+            .apply_fixture(&fixture_call("basic.overlay_reset_probe"))
             .expect("apply fixture");
         assert!(state.overlay_probe_input.is_empty());
 
         state.overlay_probe_input = "second".to_string();
         state
-            .apply_fixture("basic.overlay_reset_probe")
+            .apply_fixture(&fixture_call("basic.overlay_reset_probe"))
             .expect("apply fixture");
         assert!(state.overlay_probe_input.is_empty());
     }
@@ -1201,11 +1266,30 @@ mod tests {
     #[test]
     fn overlay_reset_probe_fixture_is_listed() {
         let fixtures = demo_fixtures();
-        assert!(
-            fixtures
-                .iter()
-                .any(|fixture| fixture.name == "basic.overlay_reset_probe")
+        let fixture = fixtures
+            .iter()
+            .find(|fixture| fixture.name == "basic.overlay_reset_probe")
+            .expect("overlay reset fixture");
+        assert!(fixture.params.is_empty());
+    }
+
+    #[test]
+    fn scrolled_fixture_accepts_offset_param_and_returns_dynamic_anchor() {
+        let mut state = DemoState::new(false);
+        let response = state
+            .apply_fixture(&fixture_call_with_params(
+                "basic.scrolled",
+                [("offset", 180.0)],
+            ))
+            .expect("apply fixture");
+
+        assert_eq!(state.status, "Fixture: scrolled");
+        assert_eq!(
+            response.values.get("offset"),
+            Some(&eguidev::WidgetValue::Float(180.0))
         );
+        assert_eq!(response.anchors.len(), 1);
+        assert_eq!(response.anchors[0].widget_id, "basic.scroll");
     }
 
     #[test]
@@ -1216,7 +1300,7 @@ mod tests {
         state.secondary_selected_row = 9;
 
         state
-            .apply_fixture("viewports.default")
+            .apply_fixture(&fixture_call("viewports.default"))
             .expect("apply fixture");
 
         assert!(state.show_secondary);
@@ -1229,7 +1313,7 @@ mod tests {
         let mut state = DemoState::new(false);
 
         state
-            .apply_fixture("viewports.occluded")
+            .apply_fixture(&fixture_call("viewports.occluded"))
             .expect("apply fixture");
 
         assert!(state.show_occluder);
@@ -1241,7 +1325,7 @@ mod tests {
         let mut state = DemoState::new(false);
 
         state
-            .apply_fixture("viewports.duplicate_names")
+            .apply_fixture(&fixture_call("viewports.duplicate_names"))
             .expect("apply fixture");
 
         assert!(state.show_secondary);
@@ -1255,7 +1339,9 @@ mod tests {
         let mut state = DemoState::new(true);
         state.show_occluder = false;
 
-        state.apply_fixture("basic.default").expect("apply fixture");
+        state
+            .apply_fixture(&fixture_call("basic.default"))
+            .expect("apply fixture");
 
         assert!(state.show_occluder);
     }

@@ -549,10 +549,29 @@ export type TextMeasure = {
     ellipsis: boolean,
 }
 
+export type FixtureParamKind = "bool" | "int" | "float" | "text"
+
+export type FixtureParam = {
+    name: string,
+    kind: FixtureParamKind,
+    description: string,
+    default: WidgetValue?,
+    choices: { WidgetValue }?,
+    min: number?,
+    max: number?,
+}
+
+export type FixtureParams = { [string]: WidgetValue }
+
+export type FixtureValues = { [string]: WidgetValue }
+
 export type Fixture = {
     name: string,
     description: string,
+    preconditions: { Anchor }?,
     anchors: { Anchor },
+    params: { FixtureParam }?,
+    tags: { string }?,
 }
 
 export type AnchorCheck =
@@ -637,9 +656,10 @@ declare function dump_text(options: DumpOptions?): string
 --- Apply a registered fixture and wait until its readiness anchors match fresh captures.
 --- Widget and viewport handles resolve fresh across fixture boundaries, so rebinding `root()`
 --- after each fixture is usually unnecessary.
-declare function fixture(name: string): ()
+--- Returns values supplied by the fixture handler.
+declare function fixture(name: string, params: FixtureParams?): FixtureValues
 --- Apply a registered fixture without waiting for readiness.
-declare function fixture_raw(name: string): ()
+declare function fixture_raw(name: string, params: FixtureParams?): ()
 -- Fixtures are independent baseline setups and must be safe to invoke in any order.
 declare function fixtures(): { Fixture }
 

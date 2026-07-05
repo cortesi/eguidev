@@ -174,7 +174,7 @@ pub struct ScriptImageInfo {
 pub struct FixtureApplication {
     /// Fixture name passed to `fixture(...)` or `fixture_raw(...)`.
     pub name: String,
-    /// Validated fixture parameters. Stage 3 records name-only applications.
+    /// Validated fixture parameters, including defaults supplied by the fixture spec.
     #[serde(default)]
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, WidgetValue>,

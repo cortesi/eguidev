@@ -15,10 +15,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use eguidev::Anchor;
+use eguidev::{FixtureParam, FixtureSpec, ParamKind, WidgetValue};
 use eguidev_runtime::{
-    ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest,
-    script_definitions,
+    ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
+    ScriptEvalRequest, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, run_suite_with},
 };
 use instance_registry::InstanceRegistry;
@@ -222,7 +222,12 @@ async fn run_dump_script(
 fn dump_script(config: &DumpConfig) -> String {
     let mut lines = Vec::new();
     if let Some(fixture) = &config.fixture {
-        lines.push(format!("fixture({})", luau_string(fixture)));
+        let fixture = luau_string(fixture);
+        if let Some(params) = luau_fixture_params(&config.params) {
+            lines.push(format!("fixture({fixture}, {params})"));
+        } else {
+            lines.push(format!("fixture({fixture})"));
+        }
     } else if config.wait_for_capture {
         lines.push("wait_for_capture()".to_string());
     }
@@ -270,6 +275,29 @@ fn luau_string(value: &str) -> String {
     serde_json::to_string(value).expect("string serialization cannot fail")
 }
 
+/// Render typed fixture params as a Luau table literal.
+fn luau_fixture_params(params: &BTreeMap<String, ScriptArgValue>) -> Option<String> {
+    if params.is_empty() {
+        return None;
+    }
+    let entries = params
+        .iter()
+        .map(|(key, value)| format!("[{}] = {}", luau_string(key), luau_scalar(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("{{ {entries} }}"))
+}
+
+/// Render one typed scalar as a Luau literal.
+fn luau_scalar(value: &ScriptArgValue) -> String {
+    match value {
+        ScriptArgValue::String(value) => luau_string(value),
+        ScriptArgValue::Int(value) => value.to_string(),
+        ScriptArgValue::Float(value) => value.to_string(),
+        ScriptArgValue::Bool(value) => value.to_string(),
+    }
+}
+
 /// Execute one script against a launched app and emit the eval result.
 async fn run_eval_script(
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
@@ -310,7 +338,7 @@ async fn run_eval_script(
 /// Start the app, list or apply a fixture, then either exit or wait for ctrl-c.
 async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
     let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let mut state = State::new(config.launch, instance_registry);
+    let mut state = State::new(config.launch.clone(), instance_registry);
     let client = start_proxy_target(&mut state, "fixture command could not reach the app").await?;
 
     // Query registered fixtures.
@@ -327,39 +355,337 @@ async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
         };
 
     if fixtures.is_empty() {
-        println!("No fixtures registered.");
+        if config.json || config.markdown {
+            print_fixture_list(&config, &fixtures)?;
+        } else {
+            println!("No fixtures registered.");
+        }
         state.shutdown().await?;
         return Ok(());
     }
 
     let Some(name) = config.name else {
         // List-only mode.
-        print_fixture_table(&fixtures);
+        print_fixture_list(&config, &fixtures)?;
         state.shutdown().await?;
         return Ok(());
     };
 
     // Validate the fixture name exists.
-    if !fixtures.iter().any(|f| f.name == name) {
+    let Some(fixture) = fixtures.iter().find(|f| f.name == name) else {
         eprintln!("error: unknown fixture \"{name}\"\n");
         print_fixture_table(&fixtures);
         state.shutdown().await?;
         return Err(EdevError::FixtureFailed(format!("unknown fixture: {name}")));
+    };
+
+    let report = match call_fixture_tool(&client, &name, &config.params, !config.no_wait).await {
+        Ok(report) => report,
+        Err(error) => {
+            state.shutdown().await?;
+            return Err(error);
+        }
+    };
+    print_fixture_apply_report(fixture, &report);
+    if config.no_wait {
+        println!("anchors: not waited (--no-wait)");
     }
 
-    // Apply the fixture.
-    let apply_script = format!("fixture_raw({:?})", name);
-    if let Err(error) =
-        eval_fixture_script(&client, &apply_script, "fixture application failed").await
-    {
-        state.shutdown().await?;
-        return Err(error);
+    if config.dump {
+        match eval_fixture_script(&client, "return dump_text()", "post-fixture dump failed").await {
+            Ok(outcome) => print_fixture_dump(outcome)?,
+            Err(error) => {
+                state.shutdown().await?;
+                return Err(error);
+            }
+        }
     }
 
     eprintln!("Fixture \"{name}\" applied. Press ctrl-c to stop.");
     shutdown_signal().await;
     state.shutdown().await?;
     Ok(())
+}
+
+/// Apply one fixture through the target app's typed MCP fixture tool.
+async fn call_fixture_tool(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    name: &str,
+    params: &BTreeMap<String, ScriptArgValue>,
+    wait_for_anchors: bool,
+) -> Result<FixtureApplyReport, EdevError> {
+    let request = FixtureToolRequest {
+        name,
+        params: fixture_param_values(params),
+        timeout_ms: None,
+    };
+    let tool_name = if wait_for_anchors {
+        "fixture"
+    } else {
+        "fixture_apply"
+    };
+    let arguments = Arguments::from_struct(request).map_err(|error| {
+        EdevError::FixtureFailed(format!("failed to encode fixture request: {error}"))
+    })?;
+    let result = client
+        .lock()
+        .await
+        .call_tool(tool_name.to_string(), arguments)
+        .await
+        .map_err(|error| EdevError::FixtureFailed(error.to_string()))?;
+    if result.is_error() {
+        return Err(EdevError::FixtureFailed(tool_result_error_message(
+            &result,
+            "fixture application failed",
+        )));
+    }
+    parse_structured_tool_result(&result, tool_name).map_err(|error| {
+        EdevError::FixtureFailed(format!("failed to decode fixture result: {error}"))
+    })
+}
+
+/// Convert CLI scalar args into typed fixture values.
+fn fixture_param_values(
+    params: &BTreeMap<String, ScriptArgValue>,
+) -> BTreeMap<String, WidgetValue> {
+    params
+        .iter()
+        .map(|(key, value)| (key.clone(), script_arg_to_widget_value(value)))
+        .collect()
+}
+
+/// Convert one parsed CLI scalar into the fixture value wire type.
+fn script_arg_to_widget_value(value: &ScriptArgValue) -> WidgetValue {
+    match value {
+        ScriptArgValue::String(value) => WidgetValue::Text(value.clone()),
+        ScriptArgValue::Int(value) => WidgetValue::Int(*value),
+        ScriptArgValue::Float(value) => WidgetValue::Float(*value),
+        ScriptArgValue::Bool(value) => WidgetValue::Bool(*value),
+    }
+}
+
+/// Extract a useful message from an errored tool result.
+fn tool_result_error_message(result: &CallToolResult, fallback_message: &str) -> String {
+    result
+        .text()
+        .map(str::to_string)
+        .or_else(|| {
+            result
+                .structured_content
+                .as_ref()
+                .and_then(extract_error_message)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| fallback_message.to_string())
+}
+
+/// Decode a structured MCP tool result, accepting text JSON as a fallback.
+fn parse_structured_tool_result<T: DeserializeOwned>(
+    result: &CallToolResult,
+    tool_name: &str,
+) -> Result<T, String> {
+    let payload = if let Some(structured) = &result.structured_content {
+        structured.clone()
+    } else {
+        let Some(text) = result.text() else {
+            return Err(format!("{tool_name} response was missing JSON content"));
+        };
+        serde_json::from_str(text)
+            .map_err(|error| format!("failed to parse {tool_name} response: {error}"))?
+    };
+    serde_json::from_value(payload)
+        .map_err(|error| format!("failed to decode {tool_name} response: {error}"))
+}
+
+/// Print the textual dump returned by `dump_text()`.
+fn print_fixture_dump(outcome: ScriptEvalOutcome) -> Result<(), EdevError> {
+    let value = outcome
+        .value
+        .ok_or_else(|| EdevError::FixtureFailed("dump_text() returned no value".to_string()))?;
+    let text = value.as_str().ok_or_else(|| {
+        EdevError::FixtureFailed("dump_text() returned a non-string value".to_string())
+    })?;
+    println!();
+    println!("{text}");
+    Ok(())
+}
+
+/// Print the typed fixture application report.
+fn print_fixture_apply_report(fixture: &FixtureSpec, report: &FixtureApplyReport) {
+    println!("Fixture: {}", fixture.name);
+    if !fixture.description.is_empty() {
+        println!("{}", fixture.description);
+    }
+    if !report.params.is_empty() {
+        println!("params:");
+        for (name, value) in &report.params {
+            println!("  {name}: {}", format_widget_value(value));
+        }
+    }
+    if !report.values.is_empty() {
+        println!("values:");
+        for (name, value) in &report.values {
+            println!("  {name}: {}", format_widget_value(value));
+        }
+    }
+    if !report.anchors.is_empty() {
+        println!("anchors:");
+        for anchor in &report.anchors {
+            println!("  {}", format_anchor_report(anchor));
+        }
+    }
+}
+
+/// Format one readiness anchor returned by the fixture tool.
+fn format_anchor_report(anchor: &FixtureAnchorReport) -> String {
+    let state = if anchor.satisfied { "ok" } else { "pending" };
+    let target = match &anchor.viewport_id {
+        Some(viewport_id) => format!("{} in {}", anchor.widget_id, viewport_id),
+        None => anchor.widget_id.clone(),
+    };
+    format!("[{state}] {target} {} - {}", anchor.check, anchor.detail)
+}
+
+/// Print fixture metadata in the requested list format.
+fn print_fixture_list(config: &FixtureConfig, fixtures: &[FixtureSpec]) -> Result<(), EdevError> {
+    if config.json {
+        println!("{}", pretty_json(&fixtures)?);
+    } else if config.markdown {
+        print_fixture_markdown(fixtures);
+    } else {
+        print_fixture_table(fixtures);
+    }
+    Ok(())
+}
+
+/// Print fixture metadata as a Markdown table.
+fn print_fixture_markdown(fixtures: &[FixtureSpec]) {
+    println!("| Fixture | Description | Params | Tags | Anchors |");
+    println!("| --- | --- | --- | --- | --- |");
+    for fixture in fixtures {
+        println!(
+            "| {} | {} | {} | {} | {} |",
+            markdown_cell(&fixture.name),
+            markdown_cell(&fixture.description),
+            markdown_cell(&fixture_params_summary(&fixture.params)),
+            markdown_cell(&fixture.tags.join(", ")),
+            fixture.anchors.len()
+        );
+    }
+}
+
+/// Escape a Markdown table cell.
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
+
+/// Request sent to the app-side `fixture` MCP tool.
+#[derive(Debug, Serialize)]
+struct FixtureToolRequest<'a> {
+    /// Fixture name to apply.
+    name: &'a str,
+    /// Validated user-supplied fixture params.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    params: BTreeMap<String, WidgetValue>,
+    /// Optional app-side wait timeout override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+}
+
+/// Structured response from the app-side `fixture` MCP tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FixtureApplyReport {
+    /// Validated params used by the fixture handler.
+    #[serde(default)]
+    params: BTreeMap<String, WidgetValue>,
+    /// Values returned by the fixture handler.
+    #[serde(default)]
+    values: BTreeMap<String, WidgetValue>,
+    /// Final readiness state for static and dynamic anchors.
+    #[serde(default)]
+    anchors: Vec<FixtureAnchorReport>,
+}
+
+/// Readiness state for one anchor after applying a fixture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FixtureAnchorReport {
+    /// Target widget id.
+    widget_id: String,
+    /// Optional target viewport id.
+    #[serde(default)]
+    viewport_id: Option<String>,
+    /// Anchor check kind.
+    check: String,
+    /// Whether the check was satisfied.
+    satisfied: bool,
+    /// Human-readable state detail.
+    detail: String,
+    /// Raw state snapshot, when available.
+    #[serde(default)]
+    current_state: Option<serde_json::Value>,
+}
+
+/// Summarize all declared fixture params for table output.
+fn fixture_params_summary(params: &[FixtureParam]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    params
+        .iter()
+        .map(fixture_param_summary)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Summarize one declared fixture param for table output.
+fn fixture_param_summary(param: &FixtureParam) -> String {
+    let mut parts = vec![format!("{}: {}", param.name, param_kind_name(param.kind))];
+    if let Some(default) = &param.default {
+        parts.push(format!("default {}", format_widget_value(default)));
+    }
+    if !param.choices.is_empty() {
+        parts.push(format!(
+            "choices {}",
+            param
+                .choices
+                .iter()
+                .map(format_widget_value)
+                .collect::<Vec<_>>()
+                .join("/")
+        ));
+    }
+    if param.min.is_some() || param.max.is_some() {
+        parts.push(format!(
+            "range {}..{}",
+            param
+                .min
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-inf".to_string()),
+            param
+                .max
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "inf".to_string())
+        ));
+    }
+    parts.join(" ")
+}
+
+/// Return the CLI display name for a fixture param kind.
+fn param_kind_name(kind: ParamKind) -> &'static str {
+    match kind {
+        ParamKind::Bool => "bool",
+        ParamKind::Int => "int",
+        ParamKind::Float => "float",
+        ParamKind::Text => "text",
+    }
+}
+
+/// Format a fixture value for human-readable CLI output.
+fn format_widget_value(value: &WidgetValue) -> String {
+    match value {
+        WidgetValue::Text(value) => format!("{value:?}"),
+        WidgetValue::Bool(_) | WidgetValue::Float(_) | WidgetValue::Int(_) => value.to_text(),
+    }
 }
 
 /// Start the app and resolve the proxied client, shutting down on startup failures.
@@ -1034,8 +1360,8 @@ async fn eval_fixture_script(
     }
 }
 
-/// Decode the `fixtures()` result into the edev-side display shape.
-fn parse_fixture_list(outcome: ScriptEvalOutcome) -> Result<Vec<FixtureInfo>, EdevError> {
+/// Decode the `fixtures()` result into the checked-in fixture metadata shape.
+fn parse_fixture_list(outcome: ScriptEvalOutcome) -> Result<Vec<FixtureSpec>, EdevError> {
     serde_json::from_value(
         outcome
             .value
@@ -1052,21 +1378,8 @@ fn script_eval_error_message(error: Option<&ScriptErrorInfo>, fallback_message: 
         .to_string()
 }
 
-/// Fixture metadata deserialized from a `fixtures()` script result.
-#[derive(Debug, Clone, serde::Deserialize, Default)]
-struct FixtureInfo {
-    /// Fixture name used in `fixture("name")` calls.
-    name: String,
-    /// Human-readable description of the fixture baseline.
-    #[serde(default)]
-    description: String,
-    /// Declarative readiness anchors reported by the app.
-    #[serde(default)]
-    anchors: Vec<Anchor>,
-}
-
 /// Print a formatted fixture table to stdout.
-fn print_fixture_table(fixtures: &[FixtureInfo]) {
+fn print_fixture_table(fixtures: &[FixtureSpec]) {
     let max_name = fixtures
         .iter()
         .map(|f| f.name.len())
@@ -1074,23 +1387,37 @@ fn print_fixture_table(fixtures: &[FixtureInfo]) {
         .unwrap_or(0)
         .max(4);
     for f in fixtures {
-        let readiness = if f.anchors.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " [{} anchor{}]",
+        let mut details = Vec::new();
+        if !f.params.is_empty() {
+            details.push(format!(
+                "{} param{}",
+                f.params.len(),
+                if f.params.len() == 1 { "" } else { "s" }
+            ));
+        }
+        if !f.tags.is_empty() {
+            details.push(format!("tags: {}", f.tags.join(", ")));
+        }
+        if !f.anchors.is_empty() {
+            details.push(format!(
+                "{} anchor{}",
                 f.anchors.len(),
                 if f.anchors.len() == 1 { "" } else { "s" }
-            )
+            ));
+        }
+        let details = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", details.join("; "))
         };
         if f.description.is_empty() {
-            println!("  {}{}", f.name, readiness);
+            println!("  {}{}", f.name, details);
         } else {
             println!(
                 "  {:width$}  {}{}",
                 f.name,
                 f.description,
-                readiness,
+                details,
                 width = max_name
             );
         }
@@ -2544,6 +2871,7 @@ mod tests {
         DumpConfig {
             launch: test_config(tempdir.path().to_path_buf()),
             fixture: None,
+            params: BTreeMap::new(),
             viewport: None,
             wait_for_capture: true,
             json: false,
@@ -2575,6 +2903,29 @@ mod tests {
         assert_eq!(
             dump_script(&config),
             "fixture(\"basic.default\")\nreturn dump()"
+        );
+    }
+
+    #[test]
+    fn dump_script_passes_fixture_params() {
+        let tempdir = test_tempdir();
+        let mut config = dump_config(&tempdir);
+        config.fixture = Some("basic.scrolled".to_string());
+        config
+            .params
+            .insert("enabled".to_string(), ScriptArgValue::Bool(true));
+        config.params.insert(
+            "label".to_string(),
+            ScriptArgValue::String("A|B".to_string()),
+        );
+        config
+            .params
+            .insert("offset".to_string(), ScriptArgValue::Int(180));
+        config.wait_for_capture = false;
+
+        assert_eq!(
+            dump_script(&config),
+            "fixture(\"basic.scrolled\", { [\"enabled\"] = true, [\"label\"] = \"A|B\", [\"offset\"] = 180 })\nreturn dump_text()"
         );
     }
 
@@ -2648,7 +2999,10 @@ mod tests {
                         "location": "fail.luau:3"
                     }],
                     "fixtures": [{
-                        "name": "basic.default"
+                        "name": "basic.default",
+                        "params": {
+                            "offset": 180
+                        }
                     }],
                     "timing": {
                         "compile_ms": 0,
@@ -2684,6 +3038,7 @@ mod tests {
         assert_eq!(meta["script"]["path"], "nested/fail.luau");
         assert_eq!(meta["script"]["args"]["name"], "Sky");
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
+        assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
         assert_eq!(meta["failure"]["details"]["widget"], "basic.status");
 
         let text = failure_text(&outcome).expect("failure text");
@@ -2816,6 +3171,7 @@ mod tests {
                 .expect("meta json");
         assert_eq!(meta["script"]["args"]["name"], "Sky");
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
+        assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
 
         fs::write(script_dir.join("stale.txt"), "stale").expect("write stale");
         let second = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
@@ -3137,7 +3493,10 @@ mod tests {
                         "location": "10_fail.luau:1"
                     }],
                     "fixtures": [{
-                        "name": "basic.default"
+                        "name": "basic.default",
+                        "params": {
+                            "offset": 180
+                        }
                     }],
                     "timing": {
                         "compile_ms": 0,
@@ -3553,7 +3912,17 @@ mod tests {
         let fixtures = parse_fixture_list(successful_outcome(&serde_json::json!([
             {
                 "name": "basic.default",
-                "description": "baseline"
+                "description": "baseline",
+                "anchors": [{ "widget_id": "basic.status", "check": "Visible" }],
+                "params": [{
+                    "name": "offset",
+                    "kind": "float",
+                    "description": "Scroll offset.",
+                    "default": 300.0,
+                    "min": 0.0,
+                    "max": 600.0
+                }],
+                "tags": ["scroll"]
             }
         ])))
         .expect("fixtures");
@@ -3561,6 +3930,9 @@ mod tests {
         assert_eq!(fixtures.len(), 1);
         assert_eq!(fixtures[0].name, "basic.default");
         assert_eq!(fixtures[0].description, "baseline");
+        assert_eq!(fixtures[0].anchors.len(), 1);
+        assert_eq!(fixtures[0].params[0].name, "offset");
+        assert_eq!(fixtures[0].tags, vec!["scroll"]);
     }
 
     #[test]

@@ -103,6 +103,16 @@ fn dump_options(
         .map_err(|error| format!("invalid dump options: {error}"))
 }
 
+fn fixture_params(params: Option<Value>) -> Result<BTreeMap<String, WidgetValue>, String> {
+    let Some(params) = params else {
+        return Ok(BTreeMap::new());
+    };
+    if params.is_null() {
+        return Ok(BTreeMap::new());
+    }
+    serde_json::from_value(params).map_err(|error| format!("invalid fixture params: {error}"))
+}
+
 impl ScriptRuntime {
     pub(super) fn new(
         inner: Arc<Inner>,
@@ -215,15 +225,12 @@ impl ScriptRuntime {
             .clone()
     }
 
-    fn record_fixture(&self, name: String) {
+    fn record_fixture(&self, name: String, params: BTreeMap<String, WidgetValue>) {
         let mut fixtures = self
             .fixtures
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        fixtures.push(FixtureApplication {
-            name,
-            params: BTreeMap::new(),
-        });
+        fixtures.push(FixtureApplication { name, params });
     }
 
     fn record_assertion(&self, passed: bool, message: String, pos: ScriptPosition) {
@@ -2079,22 +2086,35 @@ impl ScriptRuntime {
         self.to_json(pos, ())
     }
 
-    pub(super) async fn fixture(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
+    pub(super) async fn fixture(
+        &self,
+        pos: ScriptPosition,
+        name: String,
+        params: Option<Value>,
+    ) -> ScriptResult<Value> {
         let timeout_ms = self.configured_timeout_ms();
-        self.await_tool(pos, self.server.fixture(name.clone(), timeout_ms))
+        let params = fixture_params(params).map_err(|message| self.type_error(pos, message))?;
+        let outcome = self
+            .await_tool(
+                pos,
+                self.server.fixture(name.clone(), Some(params), timeout_ms),
+            )
             .await?;
-        self.record_fixture(name);
-        self.to_json(pos, ())
+        self.record_fixture(name, outcome.params.clone());
+        self.to_json(pos, outcome.values)
     }
 
     pub(super) async fn fixture_raw(
         &self,
         pos: ScriptPosition,
         name: String,
+        params: Option<Value>,
     ) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.fixture_apply(name.clone()))
+        let params = fixture_params(params).map_err(|message| self.type_error(pos, message))?;
+        let outcome = self
+            .await_tool(pos, self.server.fixture_apply(name.clone(), Some(params)))
             .await?;
-        self.record_fixture(name);
+        self.record_fixture(name, outcome.params);
         self.to_json(pos, ())
     }
 

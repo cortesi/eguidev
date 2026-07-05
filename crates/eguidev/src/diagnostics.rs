@@ -73,23 +73,39 @@ impl DiagnosticError {
 }
 
 /// Configuration error returned while building a [`crate::DevMcp`] handle.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Error)]
 #[error("{message}")]
 pub struct DevMcpConfigError {
-    message: String,
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional machine-readable error details.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 impl DevMcpConfigError {
-    fn duplicate_diagnostic(name: &str) -> Self {
+    pub(crate) fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            message: format!("duplicate diagnostic provider: {name}"),
+            code: code.into(),
+            message: message.into(),
+            details: None,
         }
     }
 
-    fn empty_diagnostic_name() -> Self {
-        Self {
-            message: "diagnostic provider name must not be empty".to_string(),
-        }
+    pub(crate) fn duplicate_diagnostic(name: &str) -> Self {
+        Self::new(
+            "duplicate_diagnostic",
+            format!("duplicate diagnostic provider: {name}"),
+        )
+    }
+
+    pub(crate) fn empty_diagnostic_name() -> Self {
+        Self::new(
+            "empty_diagnostic_name",
+            "diagnostic provider name must not be empty",
+        )
     }
 }
 

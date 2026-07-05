@@ -1,6 +1,12 @@
 //! Data types used by DevMCP tooling.
 
-use std::{borrow::Cow, error::Error, fmt};
+use std::{
+    any::Any,
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
 use egui::{Rect as EguiRect, Vec2 as EguiVec2};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -298,10 +304,16 @@ pub struct FixtureSpec {
     /// Declarative readiness anchors for the fixture baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anchors: Vec<Anchor>,
+    /// Typed scalar params accepted by this fixture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<FixtureParam>,
+    /// Searchable fixture categories used by docs and CLI output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// A single readiness anchor for a fixture baseline.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Anchor {
     /// Widget id to resolve from the registry.
     pub widget_id: String,
@@ -313,7 +325,7 @@ pub struct Anchor {
 }
 
 /// Declarative readiness checks for fixture anchors.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum AnchorCheck {
     /// Widget exists and is visible.
     Visible,
@@ -332,6 +344,82 @@ pub enum AnchorCheck {
     },
 }
 
+/// Supported scalar kinds for fixture parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamKind {
+    /// Boolean fixture parameter.
+    Bool,
+    /// Signed integer fixture parameter.
+    Int,
+    /// Floating-point fixture parameter.
+    Float,
+    /// String fixture parameter.
+    Text,
+}
+
+/// One typed fixture parameter in a fixture catalog entry.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FixtureParam {
+    /// Parameter name.
+    pub name: String,
+    /// Parameter scalar kind.
+    pub kind: ParamKind,
+    /// Human-readable parameter description.
+    pub description: String,
+    /// Optional default. Missing default means the caller must supply the param.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<WidgetValue>,
+    /// Optional exact allowed values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<WidgetValue>,
+    /// Optional inclusive minimum for int/float params.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Optional inclusive maximum for int/float params.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+/// Validated fixture params passed to a handler.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FixtureParams(BTreeMap<String, WidgetValue>);
+
+/// Fixture call passed to a registered handler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FixtureCall {
+    /// Fixture name.
+    pub name: String,
+    /// Validated params with defaults filled in.
+    pub params: FixtureParams,
+}
+
+/// Successful fixture handler response.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FixtureResponse {
+    /// Handler-returned values exposed to scripts and CLI output.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, WidgetValue>,
+    /// Handler-returned dynamic anchors waited on together with the spec anchors.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<Anchor>,
+}
+
+/// Result returned by a fixture handler.
+pub type FixtureResult = Result<FixtureResponse, FixtureError>;
+
+/// Structured fixture handler failure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FixtureError {
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional machine-readable error details.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
 impl FixtureSpec {
     /// Create a new fixture specification.
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
@@ -340,6 +428,8 @@ impl FixtureSpec {
             description: description.into(),
             preconditions: Vec::new(),
             anchors: Vec::new(),
+            params: Vec::new(),
+            tags: Vec::new(),
         }
     }
 
@@ -485,10 +575,49 @@ impl FixtureSpec {
         )
     }
 
+    /// Add a typed fixture parameter.
+    pub fn param(mut self, param: FixtureParam) -> Self {
+        self.params.push(param);
+        self
+    }
+
+    /// Add a fixture tag used by CLI/docs output.
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tags.push(tag.into());
+        self
+    }
+
     /// Validate fixture metadata and readiness anchors.
     pub fn validate(&self, require_anchors: bool) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("fixture name must not be empty".to_string());
+        }
+        if self.description.trim().is_empty() {
+            return Err(format!(
+                "fixture {} description must not be empty",
+                self.name
+            ));
+        }
+        let mut param_names = BTreeSet::new();
+        for (index, param) in self.params.iter().enumerate() {
+            param
+                .validate()
+                .map_err(|error| format!("fixture {} param {}: {error}", self.name, index + 1))?;
+            if !param_names.insert(param.name.as_str()) {
+                return Err(format!(
+                    "fixture {} duplicate param name: {}",
+                    self.name, param.name
+                ));
+            }
+        }
+        let mut tags = BTreeSet::new();
+        for tag in &self.tags {
+            if tag.trim().is_empty() {
+                return Err(format!("fixture {} tag must not be empty", self.name));
+            }
+            if !tags.insert(tag.as_str()) {
+                return Err(format!("fixture {} duplicate tag: {tag}", self.name));
+            }
         }
         for (index, anchor) in self.preconditions.iter().enumerate() {
             anchor.validate().map_err(|error| {
@@ -507,6 +636,54 @@ impl FixtureSpec {
             ));
         }
         Ok(())
+    }
+
+    /// Validate and normalize a caller-supplied param map.
+    pub fn validate_params(
+        &self,
+        mut supplied: BTreeMap<String, WidgetValue>,
+    ) -> Result<FixtureParams, FixtureError> {
+        let mut values = BTreeMap::new();
+        if let Some(name) = supplied
+            .keys()
+            .find(|name| !self.params.iter().any(|param| param.name == **name))
+            .cloned()
+        {
+            return Err(FixtureError::new(
+                "unknown_param",
+                format!("unknown param {name:?} for fixture {}", self.name),
+            )
+            .details(serde_json::json!({
+                "fixture": self.name,
+                "param": name,
+                "allowed": self.params.iter().map(|param| param.name.as_str()).collect::<Vec<_>>(),
+            })));
+        }
+        for param in &self.params {
+            let value = match supplied.remove(&param.name) {
+                Some(value) => value,
+                None => match &param.default {
+                    Some(value) => value.clone(),
+                    None => {
+                        return Err(FixtureError::new(
+                            "missing_param",
+                            format!(
+                                "missing required param {:?} for fixture {}",
+                                param.name, self.name
+                            ),
+                        )
+                        .details(serde_json::json!({
+                            "fixture": self.name,
+                            "param": param.name,
+                            "kind": param.kind.as_str(),
+                        })));
+                    }
+                },
+            };
+            let value = param.normalize_value(value)?;
+            values.insert(param.name.clone(), value);
+        }
+        Ok(FixtureParams(values))
     }
 
     /// Return a human-readable summary of the readiness contract.
@@ -562,7 +739,365 @@ impl FixtureSpec {
     }
 }
 
+impl FixtureParam {
+    /// Create a boolean fixture parameter.
+    pub fn bool(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(name, ParamKind::Bool, description)
+    }
+
+    /// Create an integer fixture parameter.
+    pub fn int(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(name, ParamKind::Int, description)
+    }
+
+    /// Create a floating-point fixture parameter.
+    pub fn float(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(name, ParamKind::Float, description)
+    }
+
+    /// Create a text fixture parameter.
+    pub fn text(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self::new(name, ParamKind::Text, description)
+    }
+
+    fn new(name: impl Into<String>, kind: ParamKind, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            description: description.into(),
+            default: None,
+            choices: Vec::new(),
+            min: None,
+            max: None,
+        }
+    }
+
+    /// Set this parameter's default value.
+    pub fn default(mut self, value: impl Into<WidgetValue>) -> Self {
+        self.default = Some(self.normalize_literal(value.into()));
+        self
+    }
+
+    /// Restrict this parameter to exact choices.
+    pub fn choices<I, V>(mut self, values: I) -> Self
+    where
+        I: IntoIterator<Item = V>,
+        V: Into<WidgetValue>,
+    {
+        self.choices = values
+            .into_iter()
+            .map(Into::into)
+            .map(|value| self.normalize_literal(value))
+            .collect();
+        self
+    }
+
+    /// Set an inclusive numeric range.
+    pub fn range(mut self, min: f64, max: f64) -> Self {
+        self.min = Some(min);
+        self.max = Some(max);
+        self
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("name must not be empty".to_string());
+        }
+        if self.description.trim().is_empty() {
+            return Err(format!("param {} description must not be empty", self.name));
+        }
+        if (self.min.is_some() || self.max.is_some())
+            && !matches!(self.kind, ParamKind::Int | ParamKind::Float)
+        {
+            return Err(format!(
+                "param {} has a range but is not numeric",
+                self.name
+            ));
+        }
+        if let (Some(min), Some(max)) = (self.min, self.max) {
+            if !min.is_finite() || !max.is_finite() {
+                return Err(format!("param {} range must be finite", self.name));
+            }
+            if min > max {
+                return Err(format!("param {} range min exceeds max", self.name));
+            }
+        }
+        if let Some(default) = &self.default {
+            self.normalize_value(default.clone())
+                .map_err(|error| error.message)?;
+        }
+        for choice in &self.choices {
+            self.normalize_value(choice.clone())
+                .map_err(|error| error.message)?;
+        }
+        Ok(())
+    }
+
+    fn normalize_literal(&self, value: WidgetValue) -> WidgetValue {
+        match (self.kind, value) {
+            (ParamKind::Float, WidgetValue::Int(value)) => WidgetValue::Float(value as f64),
+            (_, value) => value,
+        }
+    }
+
+    fn validate_value(&self, value: &WidgetValue) -> Result<(), FixtureError> {
+        if !self.kind.matches(value) {
+            return Err(FixtureError::new(
+                "invalid_param_type",
+                format!(
+                    "param {:?} expected {}, got {}",
+                    self.name,
+                    self.kind.as_str(),
+                    value.kind_name()
+                ),
+            )
+            .details(serde_json::json!({
+                "param": self.name,
+                "expected": self.kind.as_str(),
+                "actual": value.kind_name(),
+            })));
+        }
+        if !self.choices.is_empty() && !self.choices.iter().any(|choice| choice == value) {
+            return Err(FixtureError::new(
+                "invalid_param_choice",
+                format!(
+                    "param {:?} value is not one of its allowed choices",
+                    self.name
+                ),
+            )
+            .details(serde_json::json!({
+                "param": self.name,
+                "value": value,
+                "choices": self.choices,
+            })));
+        }
+        if let Some(number) = value.as_f64() {
+            if let Some(min) = self.min
+                && number < min
+            {
+                return Err(FixtureError::new(
+                    "param_below_min",
+                    format!("param {:?} must be >= {min}", self.name),
+                )
+                .details(serde_json::json!({
+                    "param": self.name,
+                    "value": value,
+                    "min": min,
+                })));
+            }
+            if let Some(max) = self.max
+                && number > max
+            {
+                return Err(FixtureError::new(
+                    "param_above_max",
+                    format!("param {:?} must be <= {max}", self.name),
+                )
+                .details(serde_json::json!({
+                    "param": self.name,
+                    "value": value,
+                    "max": max,
+                })));
+            }
+        }
+        Ok(())
+    }
+
+    fn normalize_value(&self, value: WidgetValue) -> Result<WidgetValue, FixtureError> {
+        let value = self.normalize_literal(value);
+        self.validate_value(&value)?;
+        Ok(value)
+    }
+}
+
+impl ParamKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Text => "text",
+        }
+    }
+
+    fn matches(self, value: &WidgetValue) -> bool {
+        matches!(
+            (self, value),
+            (Self::Bool, WidgetValue::Bool(_))
+                | (Self::Int, WidgetValue::Int(_))
+                | (Self::Float, WidgetValue::Float(_))
+                | (Self::Text, WidgetValue::Text(_))
+        )
+    }
+}
+
+impl FixtureParams {
+    /// Get a bool param by name.
+    pub fn bool(&self, name: &str) -> bool {
+        match self.0.get(name) {
+            Some(WidgetValue::Bool(value)) => *value,
+            Some(_) => panic!("fixture param {name:?} is not a bool"),
+            None => panic!("fixture param {name:?} is not declared"),
+        }
+    }
+
+    /// Get an int param by name.
+    pub fn int(&self, name: &str) -> i64 {
+        match self.0.get(name) {
+            Some(WidgetValue::Int(value)) => *value,
+            Some(_) => panic!("fixture param {name:?} is not an int"),
+            None => panic!("fixture param {name:?} is not declared"),
+        }
+    }
+
+    /// Get a float param by name.
+    pub fn float(&self, name: &str) -> f64 {
+        match self.0.get(name) {
+            Some(WidgetValue::Float(value)) => *value,
+            Some(_) => panic!("fixture param {name:?} is not a float"),
+            None => panic!("fixture param {name:?} is not declared"),
+        }
+    }
+
+    /// Get a text param by name.
+    pub fn text(&self, name: &str) -> &str {
+        match self.0.get(name) {
+            Some(WidgetValue::Text(value)) => value,
+            Some(_) => panic!("fixture param {name:?} is not text"),
+            None => panic!("fixture param {name:?} is not declared"),
+        }
+    }
+
+    /// Get a param by name.
+    pub fn get(&self, name: &str) -> Option<&WidgetValue> {
+        self.0.get(name)
+    }
+
+    /// Return the validated params as a map.
+    pub fn as_map(&self) -> &BTreeMap<String, WidgetValue> {
+        &self.0
+    }
+
+    /// Consume this wrapper into the validated param map.
+    pub fn into_map(self) -> BTreeMap<String, WidgetValue> {
+        self.0
+    }
+}
+
+impl FixtureResponse {
+    /// Create an empty fixture response.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a handler-returned value.
+    pub fn value(mut self, name: impl Into<String>, value: impl Into<WidgetValue>) -> Self {
+        self.values.insert(name.into(), value.into());
+        self
+    }
+
+    /// Add a handler-returned dynamic anchor.
+    pub fn anchor(mut self, anchor: Anchor) -> Self {
+        self.anchors.push(anchor);
+        self
+    }
+}
+
+impl FixtureError {
+    /// Create a fixture error.
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// Attach structured error details.
+    pub fn details<T: serde::Serialize>(mut self, details: T) -> Self {
+        self.details = serde_json::to_value(details).ok();
+        self
+    }
+
+    pub(crate) fn handler_panic(name: &str, panic: &(dyn Any + Send)) -> Self {
+        Self::new(
+            "panic",
+            format!(
+                "fixture handler {name:?} panicked: {}",
+                panic_message(panic)
+            ),
+        )
+    }
+}
+
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
 impl Anchor {
+    /// Create a visible-widget anchor.
+    pub fn visible(widget_id: impl Into<String>) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            check: AnchorCheck::Visible,
+        }
+    }
+
+    /// Create an exact-label anchor.
+    pub fn label(widget_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            check: AnchorCheck::Label(label.into()),
+        }
+    }
+
+    /// Create an exact-value anchor.
+    pub fn value(widget_id: impl Into<String>, value: impl Into<WidgetValue>) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            check: AnchorCheck::Value(value.into()),
+        }
+    }
+
+    /// Create a scroll-readiness anchor.
+    pub fn scroll_ready(widget_id: impl Into<String>) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            check: AnchorCheck::ScrollReady,
+        }
+    }
+
+    /// Create a scroll-position anchor.
+    pub fn scroll_at(
+        widget_id: impl Into<String>,
+        offset: impl Into<Vec2>,
+        tolerance: f32,
+    ) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            check: AnchorCheck::ScrollAt {
+                offset: offset.into(),
+                tolerance,
+            },
+        }
+    }
+
+    /// Scope this anchor to a viewport selector.
+    pub fn in_viewport(mut self, viewport: impl Into<ViewportSel>) -> Self {
+        self.viewport_id = Some(viewport.into().to_selector_string());
+        self
+    }
+
     /// Return a human-readable description of the anchor.
     pub fn describe(&self) -> String {
         let target = match &self.viewport_id {
@@ -697,6 +1232,53 @@ impl WidgetValue {
             Self::Int(v) => v.to_string(),
             Self::Text(v) => v.clone(),
         }
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Bool(_) => "bool",
+            Self::Float(_) => "float",
+            Self::Int(_) => "int",
+            Self::Text(_) => "text",
+        }
+    }
+
+    fn as_f64(&self) -> Option<f64> {
+        match self {
+            Self::Float(value) => Some(*value),
+            Self::Int(value) => Some(*value as f64),
+            Self::Bool(_) | Self::Text(_) => None,
+        }
+    }
+}
+
+impl From<bool> for WidgetValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<i64> for WidgetValue {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<f64> for WidgetValue {
+    fn from(value: f64) -> Self {
+        Self::Float(value)
+    }
+}
+
+impl From<String> for WidgetValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<&str> for WidgetValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_string())
     }
 }
 
@@ -1009,7 +1591,32 @@ impl RoleState {
 
 #[cfg(test)]
 mod tests {
-    use super::{RoleState, Vec2, ViewportSel, WidgetValue, validate_viewport_name};
+    use std::collections::BTreeMap;
+
+    use super::{
+        FixtureParam, FixtureSpec, RoleState, Vec2, ViewportSel, WidgetValue,
+        validate_viewport_name,
+    };
+
+    fn fixture_param_map<const N: usize>(
+        entries: [(&str, WidgetValue); N],
+    ) -> BTreeMap<String, WidgetValue> {
+        entries
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect()
+    }
+
+    fn param_spec() -> FixtureSpec {
+        FixtureSpec::new("param.demo", "Parameterized fixture")
+            .param(
+                FixtureParam::text("mode", "Mode to apply.")
+                    .default("fast")
+                    .choices(["fast", "slow"]),
+            )
+            .param(FixtureParam::float("offset", "Offset in points.").range(0.0, 10.0))
+            .param(FixtureParam::int("count", "Item count."))
+    }
 
     #[test]
     fn widget_value_deserializes_tagged_object() {
@@ -1036,6 +1643,102 @@ mod tests {
     fn widget_value_serialization() {
         let v = WidgetValue::Bool(true);
         assert_eq!(serde_json::to_string(&v).unwrap(), "true");
+    }
+
+    #[test]
+    fn fixture_params_validate_defaults_and_int_to_float() {
+        let params = param_spec()
+            .validate_params(fixture_param_map([
+                ("offset", WidgetValue::Int(3)),
+                ("count", WidgetValue::Int(2)),
+            ]))
+            .expect("valid params");
+
+        assert_eq!(params.text("mode"), "fast");
+        assert_eq!(params.float("offset"), 3.0);
+        assert_eq!(params.int("count"), 2);
+        assert_eq!(
+            params.as_map().get("offset"),
+            Some(&WidgetValue::Float(3.0))
+        );
+    }
+
+    #[test]
+    fn fixture_float_param_choices_normalize_int_literals() {
+        let spec = FixtureSpec::new("float.choice", "Float choice fixture").param(
+            FixtureParam::float("scale", "Scale factor.")
+                .default(1_i64)
+                .choices([1_i64, 2_i64]),
+        );
+
+        let defaults = spec
+            .validate_params(BTreeMap::new())
+            .expect("default params");
+        assert_eq!(defaults.float("scale"), 1.0);
+
+        let explicit = spec
+            .validate_params(fixture_param_map([("scale", WidgetValue::Int(2))]))
+            .expect("explicit params");
+        assert_eq!(explicit.float("scale"), 2.0);
+    }
+
+    #[test]
+    fn fixture_params_reject_unknown_and_missing_params() {
+        let unknown = param_spec()
+            .validate_params(fixture_param_map([
+                ("offset", WidgetValue::Float(3.0)),
+                ("count", WidgetValue::Int(2)),
+                ("extra", WidgetValue::Bool(true)),
+            ]))
+            .expect_err("unknown param rejected");
+        assert_eq!(unknown.code, "unknown_param");
+
+        let missing = param_spec()
+            .validate_params(fixture_param_map([(
+                "mode",
+                WidgetValue::Text("fast".to_string()),
+            )]))
+            .expect_err("missing param rejected");
+        assert_eq!(missing.code, "missing_param");
+    }
+
+    #[test]
+    fn fixture_params_reject_type_choice_and_range_errors() {
+        let wrong_type = param_spec()
+            .validate_params(fixture_param_map([
+                ("mode", WidgetValue::Text("fast".to_string())),
+                ("offset", WidgetValue::Text("three".to_string())),
+                ("count", WidgetValue::Int(2)),
+            ]))
+            .expect_err("type rejected");
+        assert_eq!(wrong_type.code, "invalid_param_type");
+
+        let bad_choice = param_spec()
+            .validate_params(fixture_param_map([
+                ("mode", WidgetValue::Text("medium".to_string())),
+                ("offset", WidgetValue::Float(3.0)),
+                ("count", WidgetValue::Int(2)),
+            ]))
+            .expect_err("choice rejected");
+        assert_eq!(bad_choice.code, "invalid_param_choice");
+
+        let below_min = param_spec()
+            .validate_params(fixture_param_map([
+                ("mode", WidgetValue::Text("fast".to_string())),
+                ("offset", WidgetValue::Float(-1.0)),
+                ("count", WidgetValue::Int(2)),
+            ]))
+            .expect_err("range min rejected");
+        assert_eq!(below_min.code, "param_below_min");
+
+        let above_max = param_spec()
+            .validate_params(fixture_param_map([
+                ("mode", WidgetValue::Text("fast".to_string())),
+                ("offset", WidgetValue::Float(11.0)),
+                ("count", WidgetValue::Int(2)),
+            ]))
+            .expect_err("range max rejected");
+        assert_eq!(above_max.code, "param_above_max");
     }
 
     #[test]

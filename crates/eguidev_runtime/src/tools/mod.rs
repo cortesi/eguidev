@@ -1,8 +1,10 @@
 //! Internal egui automation helpers plus the script-first MCP facade.
 //!
-//! The supported embedded MCP surface is intentionally narrow: `script_eval`
-//! and `script_api`. The broader helper set in this module exists to support
-//! Luau scripts and internal testing, not as additional top-level MCP tools.
+//! The supported embedded MCP surface stays script-first: `script_eval` and
+//! `script_api` are the general automation entry points, while `fixture` and
+//! `fixture_apply` exist as structured handoff helpers for `edev fixture`.
+//! The broader helper set in this module supports Luau scripts and internal
+//! testing, not additional top-level MCP tools.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -17,14 +19,18 @@ use serde_json::{Value, json};
 use tmcp::{
     ServerCtx, ToolResult, mcp_server,
     schema::{CallToolResult, ClientCapabilities, Implementation, InitializeResult},
-    tool,
+    tool, tool_result,
 };
-use tokio::time::{sleep, timeout};
+use tokio::{
+    task::spawn_blocking,
+    time::{sleep, timeout},
+};
 
 #[cfg(target_os = "macos")]
 use crate::macos::{capture_window_image, window_number_for_title};
 use crate::{
     actions::{ActionTiming, InputAction},
+    fixtures::FixtureExecution,
     overlay::{
         OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry, parse_color,
     },
@@ -34,8 +40,8 @@ use crate::{
     script_definitions,
     tree::collect_subtree,
     types::{
-        Anchor, AnchorCheck, FixtureSpec, Modifiers, Pos2, Rect, RoleState, Vec2, WidgetRef,
-        WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
+        Anchor, AnchorCheck, FixtureCall, FixtureResponse, FixtureSpec, Modifiers, Pos2, Rect,
+        RoleState, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
     },
     viewports::ViewportSnapshot,
 };
@@ -68,20 +74,28 @@ fn scroll_state(widget: &WidgetRegistryEntry) -> Option<crate::ScrollAreaMeta> {
     widget.role_state.as_ref().and_then(RoleState::scroll_state)
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct AnchorStatus {
-    widget_id: String,
-    viewport_id: Option<String>,
-    check: String,
-    satisfied: bool,
-    detail: String,
-    current_state: Option<WidgetState>,
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct AnchorStatus {
+    pub widget_id: String,
+    pub viewport_id: Option<String>,
+    pub check: String,
+    pub satisfied: bool,
+    pub detail: String,
+    pub current_state: Option<WidgetState>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct AnchorEvaluationSnapshot {
     fixture: String,
     statuses: Vec<AnchorStatus>,
+}
+
+#[derive(Debug, Clone)]
+#[tool_result]
+pub struct FixtureApplyOutcome {
+    pub params: BTreeMap<String, WidgetValue>,
+    pub values: BTreeMap<String, WidgetValue>,
+    pub anchors: Vec<AnchorStatus>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -198,6 +212,31 @@ fn format_anchor_status(status: &AnchorStatus) -> String {
         None => status.widget_id.clone(),
     };
     format!("{marker} {target} {} — {}", status.check, status.detail)
+}
+
+fn fixture_error_to_tool(error: eguidev::FixtureError) -> ToolError {
+    let code = match error.code.as_str() {
+        "timeout" => ErrorCode::Timeout,
+        "unknown_param"
+        | "missing_param"
+        | "invalid_param_type"
+        | "invalid_param_choice"
+        | "param_below_min"
+        | "param_above_max" => ErrorCode::InvalidRef,
+        _ => ErrorCode::Internal,
+    };
+    let mut tool_error = ToolError::new(code, error.message);
+    if let Some(details) = error.details {
+        tool_error = tool_error.with_details(json!({
+            "code": error.code,
+            "details": details,
+        }));
+    } else {
+        tool_error = tool_error.with_details(json!({
+            "code": error.code,
+        }));
+    }
+    tool_error
 }
 
 fn update_scroll_stability(
@@ -462,25 +501,60 @@ impl DevMcpServer {
     async fn fixture_apply_internal(
         &self,
         name: &str,
+        params: BTreeMap<String, WidgetValue>,
+        wait_for_anchors: bool,
         timeout_ms: u64,
-    ) -> Result<(FixtureSpec, u64), ToolError> {
+    ) -> Result<FixtureApplyOutcome, ToolError> {
         let Some(spec) = self.inner.fixtures.fixture(name) else {
             return Err(ToolError::new(
                 ErrorCode::NotFound,
                 format!("Unknown fixture: {name}"),
             ));
         };
+        let params = spec
+            .validate_params(params)
+            .map_err(fixture_error_to_tool)?;
+        let validated_params = params.as_map().clone();
+        let call = FixtureCall {
+            name: name.to_string(),
+            params,
+        };
 
         self.evaluate_preconditions(&spec, timeout_ms).await?;
         self.inner.clear_all();
         self.inner.dismiss_transient_ui(None);
         let fixture_epoch = self.inner.begin_fixture_epoch();
-        let result = self.inner.apply_fixture(name);
+        let result = match self.inner.start_fixture(call) {
+            FixtureExecution::Ready(result) => result,
+            FixtureExecution::Queued(receiver) => {
+                self.inner.request_repaint();
+                spawn_blocking(move || receiver.recv_timeout(Duration::from_millis(timeout_ms)))
+                    .await
+                    .map_err(|error| {
+                        ToolError::new(
+                            ErrorCode::Internal,
+                            format!("fixture wait task failed: {error}"),
+                        )
+                    })?
+            }
+        };
         self.inner.dismiss_transient_ui(None);
-        if let Err(message) = result {
-            return Err(ToolError::new(ErrorCode::Internal, message));
+        let response = result.map_err(fixture_error_to_tool)?;
+        if !wait_for_anchors {
+            return Ok(FixtureApplyOutcome {
+                params: validated_params,
+                values: response.values,
+                anchors: Vec::new(),
+            });
         }
-        Ok((spec, fixture_epoch))
+        let anchors = self
+            .evaluate_fixture_anchors(&spec, &response, fixture_epoch, timeout_ms)
+            .await?;
+        Ok(FixtureApplyOutcome {
+            params: validated_params,
+            values: response.values,
+            anchors,
+        })
     }
 
     fn evaluate_anchor(
@@ -676,22 +750,37 @@ impl DevMcpServer {
             timeout_ms,
         )
         .await
+        .map(|_| ())
     }
 
     async fn evaluate_anchors(
         &self,
         spec: &FixtureSpec,
+        anchors: &[Anchor],
         fixture_epoch: u64,
         timeout_ms: u64,
-    ) -> Result<(), ToolError> {
+    ) -> Result<Vec<AnchorStatus>, ToolError> {
         self.evaluate_anchor_list(
             &format!("fixture \"{}\"", spec.name),
             &spec.name,
-            &spec.anchors,
+            anchors,
             Some(fixture_epoch),
             timeout_ms,
         )
         .await
+    }
+
+    async fn evaluate_fixture_anchors(
+        &self,
+        spec: &FixtureSpec,
+        response: &FixtureResponse,
+        fixture_epoch: u64,
+        timeout_ms: u64,
+    ) -> Result<Vec<AnchorStatus>, ToolError> {
+        let mut anchors = spec.anchors.clone();
+        anchors.extend(response.anchors.clone());
+        self.evaluate_anchors(spec, &anchors, fixture_epoch, timeout_ms)
+            .await
     }
 
     async fn evaluate_anchor_list(
@@ -701,9 +790,9 @@ impl DevMcpServer {
         anchors: &[Anchor],
         fixture_epoch: Option<u64>,
         timeout_ms: u64,
-    ) -> Result<(), ToolError> {
+    ) -> Result<Vec<AnchorStatus>, ToolError> {
         if anchors.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let scroll_samples = Arc::new(Mutex::new(HashMap::new()));
         let (matched, state, elapsed_ms, observation) = wait_until_condition(
@@ -735,7 +824,7 @@ impl DevMcpServer {
         .await?;
 
         if matched {
-            return Ok(());
+            return Ok(state.map(|state| state.statuses).unwrap_or_default());
         }
 
         let snapshot = state.unwrap_or_else(|| AnchorEvaluationSnapshot {
@@ -2056,20 +2145,35 @@ impl DevMcpServer {
         Ok(CallToolResult::new().with_text_content(script_definitions()))
     }
 
+    #[tool(defaults)]
     /// Apply an app-defined fixture without waiting for readiness.
-    async fn fixture_apply(&self, name: String) -> ToolResult<()> {
-        self.fixture_apply_internal(&name, DEFAULT_WAIT_TIMEOUT_MS)
-            .await?;
-        Ok(())
+    async fn fixture_apply(
+        &self,
+        name: String,
+        params: Option<BTreeMap<String, WidgetValue>>,
+    ) -> ToolResult<FixtureApplyOutcome> {
+        Ok(self
+            .fixture_apply_internal(
+                &name,
+                params.unwrap_or_default(),
+                false,
+                DEFAULT_WAIT_TIMEOUT_MS,
+            )
+            .await?)
     }
 
+    #[tool(defaults)]
     /// Navigate to an app-defined fixture by name and wait for readiness anchors.
-    async fn fixture(&self, name: String, timeout_ms: Option<u64>) -> ToolResult<()> {
+    async fn fixture(
+        &self,
+        name: String,
+        params: Option<BTreeMap<String, WidgetValue>>,
+        timeout_ms: Option<u64>,
+    ) -> ToolResult<FixtureApplyOutcome> {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
-        let (spec, fixture_epoch) = self.fixture_apply_internal(&name, timeout_ms).await?;
-        self.evaluate_anchors(&spec, fixture_epoch, timeout_ms)
-            .await
-            .map_err(Into::into)
+        Ok(self
+            .fixture_apply_internal(&name, params.unwrap_or_default(), true, timeout_ms)
+            .await?)
     }
 }
 
@@ -2686,7 +2790,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use eguidev::FixtureSpec;
+    use eguidev::{FixtureCall, FixtureError, FixtureResponse, FixtureResult, FixtureSpec};
     use serde_json::{Value, json};
     use tmcp::schema::ContentBlock;
     use tokio::{task::yield_now, time::sleep};
@@ -2694,6 +2798,7 @@ mod tests {
     use super::*;
     use crate::{
         actions::InputAction,
+        fixtures::FixtureHandler,
         overlay::{OverlayDebugConfig, OverlayDebugMode},
         registry::{Inner, viewport_id_to_string},
         runtime::Runtime,
@@ -2704,6 +2809,20 @@ mod tests {
         viewports::InputSnapshot,
         widget_registry::{WidgetMeta, record_widget},
     };
+
+    fn set_runtime_fixture_handler<F>(inner: &Inner, handler: F)
+    where
+        F: Fn(&FixtureCall) -> FixtureResult + Send + Sync + 'static,
+    {
+        inner
+            .fixtures
+            .set_handler(FixtureHandler::Runtime(Arc::new(handler)))
+            .expect("fixture handler");
+    }
+
+    fn fixture_ok() -> FixtureResult {
+        Ok(FixtureResponse::new())
+    }
 
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
         let viewport_id = raw_input.viewport_id;
@@ -2940,7 +3059,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_contains_only_script_eval_and_script_api() {
+    async fn tools_list_contains_script_and_fixture_handoff_tools() {
         use tmcp::{ServerHandler, schema::Cursor, testutils::TestServerContext};
 
         let inner = Arc::new(Inner::new());
@@ -2953,7 +3072,16 @@ mod tests {
             .tools;
         let mut names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["health", "script_api", "script_eval"]);
+        assert_eq!(
+            names,
+            vec![
+                "fixture",
+                "fixture_apply",
+                "health",
+                "script_api",
+                "script_eval"
+            ]
+        );
     }
 
     #[test]
@@ -4178,7 +4306,7 @@ return widget:wait_for_visible()"#
         inner.fixtures.set_fixtures(vec![
             FixtureSpec::new("test_fixture", "Test fixture.").anchor("status"),
         ]);
-        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -4193,7 +4321,7 @@ return widget:wait_for_visible()"#
         );
         let server = DevMcpServer::new(Arc::clone(&inner));
         server
-            .fixture_apply("test_fixture".to_string())
+            .fixture_apply("test_fixture".to_string(), None)
             .await
             .expect("fixture_apply result");
     }
@@ -4208,10 +4336,10 @@ return widget:wait_for_visible()"#
         ]);
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_for_fixture = Arc::clone(&handler_called);
-        inner.fixtures.set_fixture_handler(Arc::new(move |_name| {
+        set_runtime_fixture_handler(&inner, move |_call| {
             handler_called_for_fixture.store(true, AtomicOrdering::Relaxed);
-            Ok(())
-        }));
+            fixture_ok()
+        });
 
         let ctx = egui::Context::default();
         let viewport_id = egui::ViewportId::ROOT;
@@ -4256,7 +4384,7 @@ return widget:wait_for_visible()"#
 
         let server = DevMcpServer::new(Arc::clone(&inner));
         server
-            .fixture_apply("delayed".to_string())
+            .fixture_apply("delayed".to_string(), None)
             .await
             .expect("fixture_apply result");
         assert!(handler_called.load(AtomicOrdering::Relaxed));
@@ -4272,13 +4400,13 @@ return widget:wait_for_visible()"#
         ]);
         let handler_called = Arc::new(AtomicBool::new(false));
         let handler_called_for_fixture = Arc::clone(&handler_called);
-        inner.fixtures.set_fixture_handler(Arc::new(move |_name| {
+        set_runtime_fixture_handler(&inner, move |_call| {
             handler_called_for_fixture.store(true, AtomicOrdering::Relaxed);
-            Ok(())
-        }));
+            fixture_ok()
+        });
 
         let server = DevMcpServer::new(Arc::clone(&inner));
-        let result = server.fixture("blocked".to_string(), Some(20)).await;
+        let result = server.fixture("blocked".to_string(), None, Some(20)).await;
         assert!(result.is_err());
         assert!(!handler_called.load(AtomicOrdering::Relaxed));
     }
@@ -4291,9 +4419,12 @@ return widget:wait_for_visible()"#
         ]);
         inner
             .fixtures
-            .set_fixture_handler(Arc::new(|_name| Err("fixture failed".to_string())));
+            .set_handler(FixtureHandler::Runtime(Arc::new(|_call| {
+                Err(FixtureError::new("fixture_failed", "fixture failed"))
+            })))
+            .expect("fixture handler");
         let server = DevMcpServer::new(Arc::clone(&inner));
-        let result = server.fixture("broken".to_string(), None).await;
+        let result = server.fixture("broken".to_string(), None, None).await;
         assert!(result.is_err());
     }
 
@@ -4304,7 +4435,7 @@ return widget:wait_for_visible()"#
             FixtureSpec::new("no_handler", "No handler fixture.").anchor("status"),
         ]);
         let server = DevMcpServer::new(Arc::clone(&inner));
-        let result = server.fixture("no_handler".to_string(), None).await;
+        let result = server.fixture("no_handler".to_string(), None, None).await;
         assert!(result.is_err());
     }
 
@@ -4314,7 +4445,7 @@ return widget:wait_for_visible()"#
         inner.fixtures.set_fixtures(vec![
             FixtureSpec::new("slow", "Slow fixture.").anchor("status"),
         ]);
-        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
         let server = DevMcpServer::new(Arc::clone(&inner));
         let result = server
             .script_eval("fixture_raw(\"slow\")".to_string(), Some(20), None)
@@ -4366,7 +4497,7 @@ return { first = catalog[1].name, count = #catalog }"#
         inner.fixtures.set_fixtures(vec![
             FixtureSpec::new("stale", "Stale fixture.").anchor("status"),
         ]);
-        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
 
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
@@ -4416,7 +4547,7 @@ return { first = catalog[1].name, count = #catalog }"#
         inner.fixtures.set_fixtures(vec![
             FixtureSpec::new("blocked", "Blocked fixture.").anchor("status"),
         ]);
-        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
         let server = DevMcpServer::new(Arc::clone(&inner));
 
         let result = server
@@ -4491,7 +4622,7 @@ return { first = catalog[1].name, count = #catalog }"#
         inner.fixtures.set_fixtures(vec![
             FixtureSpec::new("multi", "Multi viewport fixture.").anchor_in("status", secondary),
         ]);
-        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
 
         let root_ctx = egui::Context::default();
         let mut root_input = egui::RawInput {
@@ -4520,7 +4651,7 @@ return { first = catalog[1].name, count = #catalog }"#
         });
 
         server
-            .fixture("multi".to_string(), Some(200))
+            .fixture("multi".to_string(), None, Some(200))
             .await
             .expect("fixture");
     }
@@ -4535,7 +4666,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 1.0,
             ),
         ]);
-        inner.fixtures.set_fixture_handler(Arc::new(|_name| Ok(())));
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
 
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
@@ -4591,7 +4722,7 @@ return { first = catalog[1].name, count = #catalog }"#
         });
 
         server
-            .fixture("scroll".to_string(), Some(250))
+            .fixture("scroll".to_string(), None, Some(250))
             .await
             .expect("fixture");
     }
@@ -4709,7 +4840,7 @@ return { first = catalog[1].name, count = #catalog }"#
             FixtureSpec::new("known", "Known fixture.").anchor("status"),
         ]);
         let server = DevMcpServer::new(Arc::clone(&inner));
-        let result = server.fixture("unknown".to_string(), None).await;
+        let result = server.fixture("unknown".to_string(), None, None).await;
         assert!(result.is_err());
     }
 
@@ -4733,10 +4864,10 @@ return { first = catalog[1].name, count = #catalog }"#
         ]);
         let applied = Arc::new(AtomicBool::new(false));
         let applied_handler = Arc::clone(&applied);
-        inner.fixtures.set_fixture_handler(Arc::new(move |_name| {
+        set_runtime_fixture_handler(&inner, move |_call| {
             applied_handler.store(true, AtomicOrdering::Relaxed);
-            Ok(())
-        }));
+            fixture_ok()
+        });
         let ctx = egui::Context::default();
         let raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -4789,7 +4920,7 @@ return { first = catalog[1].name, count = #catalog }"#
         });
         let server = DevMcpServer::new(Arc::clone(&inner));
         server
-            .fixture_apply("reset".to_string())
+            .fixture_apply("reset".to_string(), None)
             .await
             .expect("fixture result");
 

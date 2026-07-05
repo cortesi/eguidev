@@ -51,11 +51,12 @@ Tool hosting:
 - The host tool list is static for the lifetime of the launcher session; `edev` does not send
   `tools/list_changed` notifications.
 
-Fixtures are applied by scripts via `fixture()`, which auto-settles after application.
-Scripts can also call `dump()` / `dump_text()` to capture the current widget tree across live
-viewports. The `edev dump` command launches the app, optionally applies a name-only fixture, waits
-for a fresh capture when no fixture is applied, and then evaluates those same helpers, so
-command-line dumps and script dumps share one runtime implementation.
+Fixtures are applied by scripts via `fixture(name, params?)`, which validates typed params,
+waits for static and handler-returned anchors, and returns handler values. Scripts can also call
+`dump()` / `dump_text()` to capture the current widget tree across live viewports. The `edev dump`
+command launches the app, optionally applies a fixture with `--param` values, waits for a fresh
+capture when no fixture is applied, and then evaluates those same helpers, so command-line dumps
+and script dumps share one runtime implementation.
 Apps can register runtime-thread and UI-thread diagnostics through `DevMcp::diagnostic(...)` and
 `DevMcp::diagnostic_ui(...)`. Scripts read those providers with `diagnostic(name)` for one payload
 or `diagnostics()` for an all-provider snapshot whose provider errors are captured in an `errors`
@@ -77,9 +78,11 @@ Failure bundles:
 
 For `eframe` apps, the required integration point is `FrameGuard` around rendered frames; the
 first `FrameGuard` call registers an egui plugin that injects queued input into every viewport's
-pass, so there is no separate raw-input hook for apps to wire up. Fixture handlers registered with
-`DevMcp::on_fixture()` run directly through the attached runtime, while frame capture and
-wait/screenshot wakeups remain owned by the instrumentation boundary.
+pass, so there is no separate raw-input hook for apps to wire up. Runtime-thread fixture handlers
+registered with `DevMcp::on_fixture_runtime()` run through the attached runtime; UI-thread handlers
+registered with `DevMcp::on_fixture_ui()` are queued and drained before the root registry is cleared
+for the next frame. Frame capture and wait/screenshot wakeups remain owned by the instrumentation
+boundary.
 
 Renderer note:
 

@@ -16,9 +16,9 @@ use crate::{
     actions::{ActionQueue, ActionTiming, InputAction},
     devmcp::{AutomationOptions, RuntimeHooks},
     diagnostics::DiagnosticRegistry,
-    fixtures::FixtureManager,
+    fixtures::{FixtureExecution, FixtureManager},
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
-    types::WidgetValue,
+    types::{FixtureCall, WidgetValue},
     viewports::{FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
 };
@@ -154,9 +154,9 @@ impl Inner {
         *lock(&self.automation_options, "automation options lock")
     }
 
-    /// Apply a named fixture by calling the registered handler.
-    pub fn apply_fixture(&self, name: &str) -> Result<(), String> {
-        self.fixtures.apply_fixture(name)
+    /// Start applying a validated fixture by calling the registered handler.
+    pub fn start_fixture(&self, call: FixtureCall) -> FixtureExecution {
+        self.fixtures.start_fixture(call)
     }
 
     pub fn dismiss_transient_ui(&self, viewport_id: Option<egui::ViewportId>) {
