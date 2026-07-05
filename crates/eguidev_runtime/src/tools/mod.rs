@@ -81,6 +81,8 @@ pub struct AnchorStatus {
     pub check: String,
     pub satisfied: bool,
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
     pub current_state: Option<WidgetState>,
 }
 
@@ -96,6 +98,44 @@ pub struct FixtureApplyOutcome {
     pub params: BTreeMap<String, WidgetValue>,
     pub values: BTreeMap<String, WidgetValue>,
     pub anchors: Vec<AnchorStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct SettleReport {
+    pub settled: bool,
+    pub elapsed_ms: u64,
+    pub phases: Vec<SettlePhaseStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct SettlePhaseStatus {
+    pub phase: SettlePhase,
+    pub complete: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlePhase {
+    InputDrained,
+    CommandsDrained,
+    ActionFrameProcessed,
+    CleanCapture,
+    FreshFrame,
+    AppIdle,
+}
+
+impl SettlePhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InputDrained => "input_drained",
+            Self::CommandsDrained => "commands_drained",
+            Self::ActionFrameProcessed => "action_frame_processed",
+            Self::CleanCapture => "clean_capture",
+            Self::FreshFrame => "fresh_frame",
+            Self::AppIdle => "app_idle",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -195,12 +235,23 @@ fn anchor_status(
     detail: impl Into<String>,
     current_state: Option<WidgetState>,
 ) -> AnchorStatus {
+    anchor_status_with_details(anchor, satisfied, detail, None, current_state)
+}
+
+fn anchor_status_with_details(
+    anchor: &Anchor,
+    satisfied: bool,
+    detail: impl Into<String>,
+    details: Option<Value>,
+    current_state: Option<WidgetState>,
+) -> AnchorStatus {
     AnchorStatus {
         widget_id: anchor.widget_id.clone(),
         viewport_id: anchor.viewport_id.clone(),
         check: anchor.check.to_string(),
         satisfied,
         detail: detail.into(),
+        details,
         current_state,
     }
 }
@@ -212,6 +263,150 @@ fn format_anchor_status(status: &AnchorStatus) -> String {
         None => status.widget_id.clone(),
     };
     format!("{marker} {target} {} — {}", status.check, status.detail)
+}
+
+fn settle_report(
+    inner: &Inner,
+    viewport_id: egui::ViewportId,
+    start_capture: u64,
+    start_frame: u64,
+    elapsed_ms: u64,
+) -> SettleReport {
+    let capture = inner.viewports.capture_snapshot(viewport_id);
+    let capture_frame = capture.map(|snapshot| snapshot.frame_count);
+    let observed_new_capture = capture_frame.is_some_and(|frame| frame > start_capture);
+    let target_viewport_closed =
+        viewport_id != egui::ViewportId::ROOT && !inner.viewports.is_live_viewport(viewport_id);
+    let observed_settle_frame = if viewport_id == egui::ViewportId::ROOT {
+        inner.frame_count() > start_frame
+    } else {
+        observed_new_capture
+    };
+    let pending_actions = inner.actions.pending_action_count(viewport_id);
+    let pending_commands = inner.actions.pending_command_count(viewport_id);
+    let last_action_frame = inner.last_action_frame.load(Ordering::Relaxed);
+    let processed_last_action = inner.frame_count() > last_action_frame;
+    let action_stats = inner.actions.stats(viewport_id);
+    let observed_clean_action_frame = action_stats.last_drain_frame.is_none_or(|frame| {
+        capture_frame.is_some_and(|capture_frame| capture_frame > frame.saturating_add(1))
+    });
+
+    let mut phases = vec![
+        SettlePhaseStatus {
+            phase: SettlePhase::InputDrained,
+            complete: pending_actions == 0,
+            detail: if pending_actions == 0 {
+                "no pending input actions".to_string()
+            } else {
+                format!("{pending_actions} input action(s) pending")
+            },
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::CommandsDrained,
+            complete: pending_commands == 0,
+            detail: if pending_commands == 0 {
+                "no pending viewport commands".to_string()
+            } else {
+                format!("{pending_commands} viewport command(s) pending")
+            },
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::ActionFrameProcessed,
+            complete: processed_last_action,
+            detail: format!(
+                "last action frame {last_action_frame}, current frame {}",
+                inner.frame_count()
+            ),
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::CleanCapture,
+            complete: observed_clean_action_frame || target_viewport_closed,
+            detail: if target_viewport_closed {
+                "target viewport closed after action drain".to_string()
+            } else {
+                format!(
+                    "last drain frame {}, latest capture {}",
+                    action_stats
+                        .last_drain_frame
+                        .map(|frame| frame.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    capture_frame
+                        .map(|frame| frame.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            },
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::FreshFrame,
+            complete: observed_settle_frame || target_viewport_closed,
+            detail: if target_viewport_closed {
+                "target viewport closed during wait".to_string()
+            } else {
+                format!(
+                    "start frame {start_frame}, current frame {}, start capture {start_capture}, latest capture {}",
+                    inner.frame_count(),
+                    capture_frame
+                        .map(|frame| frame.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            },
+        },
+    ];
+
+    if let Some(idle) = inner.idle.status() {
+        phases.push(SettlePhaseStatus {
+            phase: SettlePhase::AppIdle,
+            complete: idle.idle,
+            detail: idle.detail,
+        });
+    }
+
+    let settled = phases.iter().all(|phase| phase.complete);
+    SettleReport {
+        settled,
+        elapsed_ms,
+        phases,
+    }
+}
+
+fn settle_timeout_message(timeout_ms: u64, report: &SettleReport) -> String {
+    let incomplete = report
+        .phases
+        .iter()
+        .filter(|phase| !phase.complete)
+        .map(|phase| format!("{} ({})", phase.phase.as_str(), phase.detail))
+        .collect::<Vec<_>>();
+    if incomplete.is_empty() {
+        format!("Timed out waiting for UI to settle after {timeout_ms}ms")
+    } else {
+        format!(
+            "Timed out waiting for UI to settle after {timeout_ms}ms; incomplete: {}",
+            incomplete.join(", ")
+        )
+    }
+}
+
+fn settle_timeout_details(
+    elapsed_ms: u64,
+    viewport: Option<&ViewportSnapshot>,
+    start_capture: u64,
+    end_capture: Option<u64>,
+    observation: &WaitObservation,
+    report: &SettleReport,
+) -> Value {
+    let mut details = wait_timeout_details(
+        "settle",
+        elapsed_ms,
+        None,
+        viewport,
+        Some(start_capture),
+        end_capture,
+        observation,
+    );
+    if let Some(map) = details.as_object_mut() {
+        map.insert("phases".to_string(), json!(report.phases));
+    }
+    details
 }
 
 fn fixture_error_to_tool(error: eguidev::FixtureError) -> ToolError {
@@ -453,6 +648,47 @@ pub fn collect_widget_list(
     Ok(widgets)
 }
 
+fn invisible_interaction_error(
+    inner: &Inner,
+    widget: &WidgetRegistryEntry,
+    viewport_id: egui::ViewportId,
+) -> Option<ToolError> {
+    let visible_fraction = widget
+        .layout
+        .as_ref()
+        .map(|layout| layout.visible_fraction)
+        .unwrap_or(1.0);
+    if widget.visible && visible_fraction > 0.0 {
+        return None;
+    }
+    let viewport = viewport_snapshot_for(inner, viewport_id);
+    let reason = if !widget.visible {
+        "widget is not visible"
+    } else {
+        "widget visible_fraction is 0"
+    };
+    Some(
+        ToolError::new(
+            ErrorCode::InvisibleInteraction,
+            format!(
+                "Cannot interact with widget {:?}: {reason}; call scroll_into_view() or check clipping",
+                widget.id
+            ),
+        )
+        .with_details(json!({
+            "reason": "invisible_interaction",
+            "hint": "call scroll_into_view() or check clipping",
+            "widget": WidgetState::from(widget),
+            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
+                json!({
+                    "id": viewport_id_to_string(viewport_id),
+                })
+            }),
+            "layout": widget.layout.clone(),
+        })),
+    )
+}
+
 #[mcp_server(initialize_fn = initialize)]
 impl DevMcpServer {
     #[cfg(test)]
@@ -465,35 +701,14 @@ impl DevMcpServer {
         Self { inner, runtime }
     }
 
-    async fn resolve_widget_for_pointer(
+    fn resolve_widget_for_pointer(
         &self,
-        viewport_id: Option<String>,
+        viewport_id: Option<&str>,
         target: &WidgetRef,
     ) -> ToolResult<(WidgetRegistryEntry, egui::ViewportId)> {
-        let (widget, viewport_id) =
-            resolve_widget_and_viewport(&self.inner, viewport_id.as_deref(), target)?;
-        if widget.visible {
-            return Ok((widget, viewport_id));
-        }
-
-        let viewport_id = viewport_id_to_string(viewport_id);
-        let wait_result = self
-            .wait_for_widget_state(
-                Some(viewport_id.clone()),
-                target.clone(),
-                None,
-                None,
-                |widget| widget.is_some_and(|widget| widget.visible),
-            )
-            .await?;
-        if wait_result.is_none() {
-            return Err(ToolError::new(ErrorCode::NotFound, "Widget is not visible").into());
-        }
-
-        let (widget, viewport_id) =
-            resolve_widget_and_viewport(&self.inner, Some(&viewport_id), target)?;
-        if !widget.visible {
-            return Err(ToolError::new(ErrorCode::NotFound, "Widget is not visible").into());
+        let (widget, viewport_id) = resolve_widget_and_viewport(&self.inner, viewport_id, target)?;
+        if let Some(error) = invisible_interaction_error(&self.inner, &widget, viewport_id) {
+            return Err(error.into());
         }
         Ok((widget, viewport_id))
     }
@@ -567,7 +782,13 @@ impl DevMcpServer {
         let widget = match resolve_widget(&self.inner, None, &target) {
             Ok(widget) => widget,
             Err(error) if error.code == ErrorCode::NotFound => {
-                return Ok(anchor_status(anchor, false, "widget not found", None));
+                return Ok(anchor_status_with_details(
+                    anchor,
+                    false,
+                    "widget not found",
+                    error.details,
+                    None,
+                ));
             }
             Err(error) => return Err(error),
         };
@@ -1005,8 +1226,7 @@ impl DevMcpServer {
         timeout_ms: Option<u64>,
     ) -> Result<(WidgetRegistryEntry, egui::ViewportId), ToolError> {
         let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, target)
-            .await
+            .resolve_widget_for_pointer(viewport_id.as_deref(), target)
             .map_err(|error| ToolError::new(ErrorCode::InvalidRef, error.message))?;
         if !widget.enabled {
             return Err(ToolError::new(
@@ -1274,7 +1494,7 @@ impl DevMcpServer {
         viewport_id: Option<String>,
         timeout_ms: Option<u64>,
         poll_interval_ms: Option<u64>,
-    ) -> ToolResult<()> {
+    ) -> ToolResult<SettleReport> {
         let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let poll_interval_ms = poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS);
@@ -1285,70 +1505,56 @@ impl DevMcpServer {
             .map(|snapshot| snapshot.frame_count)
             .unwrap_or(0);
         let start_frame = self.inner.frame_count();
+        let start = Instant::now();
 
-        let (matched, _, elapsed_ms, observation) = wait_until_condition(
+        let (matched, report, elapsed_ms, observation) = wait_until_condition(
             &self.inner,
             timeout_ms,
             poll_interval_ms,
             Some(viewport_id),
             None,
             || async {
-                self.inner.request_repaint_of(viewport_id);
-                let capture = self.inner.viewports.capture_snapshot(viewport_id);
-                let capture_frame = capture.map(|snapshot| snapshot.frame_count);
-                let observed_new_capture = capture_frame.is_some_and(|frame| frame > start_capture);
-                let observed_settle_frame = if viewport_id == egui::ViewportId::ROOT {
-                    self.inner.frame_count() > start_frame
-                } else {
-                    observed_new_capture
-                };
-                let has_pending_actions = self.inner.actions.has_pending_actions(viewport_id);
-                let has_pending_commands = self.inner.actions.has_pending_commands(viewport_id);
-                let processed_last_action =
-                    self.inner.frame_count() > self.inner.last_action_frame.load(Ordering::Relaxed);
-                let target_viewport_closed = viewport_id != egui::ViewportId::ROOT
-                    && !self.inner.viewports.is_live_viewport(viewport_id);
-                let observed_clean_action_frame = self
-                    .inner
-                    .actions
-                    .stats(viewport_id)
-                    .last_drain_frame
-                    .is_none_or(|frame| {
-                        capture_frame
-                            .is_some_and(|capture_frame| capture_frame > frame.saturating_add(1))
-                    });
-                let matched = (observed_settle_frame || target_viewport_closed)
-                    && !has_pending_actions
-                    && !has_pending_commands
-                    && processed_last_action
-                    && (observed_clean_action_frame || target_viewport_closed);
-                Ok::<_, ToolError>((matched, None::<()>))
+                self.inner.request_repaint_all();
+                let report = settle_report(
+                    &self.inner,
+                    viewport_id,
+                    start_capture,
+                    start_frame,
+                    start.elapsed().as_millis() as u64,
+                );
+                Ok::<_, ToolError>((report.settled, Some(report)))
             },
         )
         .await?;
 
+        let mut report = report.unwrap_or_else(|| {
+            settle_report(
+                &self.inner,
+                viewport_id,
+                start_capture,
+                start_frame,
+                elapsed_ms,
+            )
+        });
+        report.elapsed_ms = elapsed_ms;
         if matched {
-            return Ok(());
+            return Ok(report);
         }
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            wait_timeout_message(
-                format!("Timed out waiting for UI to settle after {timeout_ms}ms"),
-                &observation,
-            ),
+            wait_timeout_message(settle_timeout_message(timeout_ms, &report), &observation),
         )
-        .with_details(wait_timeout_details(
-            "settle",
+        .with_details(settle_timeout_details(
             elapsed_ms,
-            None,
             viewport_snapshot_for(&self.inner, viewport_id).as_ref(),
-            Some(start_capture),
+            start_capture,
             self.inner
                 .viewports
                 .capture_snapshot(viewport_id)
                 .map(|snapshot| snapshot.frame_count),
             &observation,
+            &report,
         ))
         .into())
     }
@@ -1484,8 +1690,31 @@ impl DevMcpServer {
             || {
                 let result = match resolve_widget(&self.inner, viewport_id.as_deref(), &target) {
                     Ok(widget) => {
-                        let matched = predicate(Some(&widget));
-                        Ok::<_, ToolError>((matched, Some(widget)))
+                        if let Ok(resolved_viewport_id) = self
+                            .inner
+                            .viewports
+                            .resolve_viewport_id(Some(widget.viewport_id.clone()))
+                        {
+                            if let Some(value) = widget.value.as_ref() {
+                                self.inner.clear_widget_value_update_if_matches(
+                                    resolved_viewport_id,
+                                    &widget.id,
+                                    value,
+                                );
+                            }
+                            if let Some(error) = self.inner.expired_widget_value_update_error(
+                                resolved_viewport_id,
+                                Some(&widget.id),
+                            ) {
+                                Err(error.into())
+                            } else {
+                                let matched = predicate(Some(&widget));
+                                Ok::<_, ToolError>((matched, Some(widget)))
+                            }
+                        } else {
+                            let matched = predicate(Some(&widget));
+                            Ok::<_, ToolError>((matched, Some(widget)))
+                        }
                     }
                     Err(error) => {
                         if error.code == ErrorCode::NotFound {
@@ -1596,9 +1825,8 @@ impl DevMcpServer {
         modifiers: Option<Modifiers>,
         click_count: Option<u8>,
     ) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let pos = widget.interact_rect.center();
         let modifiers = modifiers.unwrap_or_default();
         let button = button.unwrap_or_default();
@@ -1632,9 +1860,8 @@ impl DevMcpServer {
         position: Option<Vec2>,
         duration_ms: Option<u64>,
     ) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let pos = if let Some(position) = position {
             resolve_relative_pos(widget.interact_rect, position)?
         } else {
@@ -1659,9 +1886,8 @@ impl DevMcpServer {
         enter: Option<bool>,
         clear: Option<bool>,
     ) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let pos = widget.interact_rect.center();
         let queue_for_next_frame = !widget.focused;
         if queue_for_next_frame {
@@ -1697,7 +1923,7 @@ impl DevMcpServer {
             queue_key_press(egui::Key::A, modifiers);
             queue_key_press(egui::Key::Backspace, Modifiers::default());
         }
-        queue_action(InputAction::Text { text: text.clone() });
+        queue_action(InputAction::Text { text });
         let enter = enter.unwrap_or(false);
         if enter {
             queue_key_press(egui::Key::Enter, Modifiers::default());
@@ -1707,9 +1933,8 @@ impl DevMcpServer {
 
     /// Focus a widget by clicking on it.
     async fn action_focus(&self, viewport_id: Option<String>, target: WidgetRef) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let pos = widget.interact_rect.center();
         queue_primary_click(&self.inner, viewport_id, pos);
         Ok(())
@@ -1723,9 +1948,8 @@ impl DevMcpServer {
         to: Pos2,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let start = widget.interact_rect.center();
         queue_drag(
             &self.inner,
@@ -1746,9 +1970,8 @@ impl DevMcpServer {
         to: Vec2,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let start_relative = from.unwrap_or(Vec2 { x: 0.5, y: 0.5 });
         let start = resolve_relative_pos(widget.interact_rect, start_relative)?;
         let end = resolve_relative_pos(widget.interact_rect, to)?;
@@ -1770,10 +1993,9 @@ impl DevMcpServer {
         to: WidgetRef,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let (from_widget, from_viewport) = self
-            .resolve_widget_for_pointer(viewport_id.clone(), &from)
-            .await?;
-        let (to_widget, to_viewport) = self.resolve_widget_for_pointer(viewport_id, &to).await?;
+        let viewport_id = viewport_id.as_deref();
+        let (from_widget, from_viewport) = self.resolve_widget_for_pointer(viewport_id, &from)?;
+        let (to_widget, to_viewport) = self.resolve_widget_for_pointer(viewport_id, &to)?;
         if from_viewport != to_viewport {
             return Err(ToolError::new(
                 ErrorCode::InvalidRef,
@@ -1802,9 +2024,8 @@ impl DevMcpServer {
         delta: Vec2,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
-        let (widget, viewport_id) = self
-            .resolve_widget_for_pointer(viewport_id, &target)
-            .await?;
+        let (widget, viewport_id) =
+            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let pos = widget.interact_rect.center();
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
@@ -2790,7 +3011,9 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use eguidev::{FixtureCall, FixtureError, FixtureResponse, FixtureResult, FixtureSpec};
+    use eguidev::{
+        DevMcp, FixtureCall, FixtureError, FixtureResponse, FixtureResult, FixtureSpec, FrameGuard,
+    };
     use serde_json::{Value, json};
     use tmcp::schema::ContentBlock;
     use tokio::{task::yield_now, time::sleep};
@@ -2801,10 +3024,11 @@ mod tests {
         fixtures::FixtureHandler,
         overlay::{OverlayDebugConfig, OverlayDebugMode},
         registry::{Inner, viewport_id_to_string},
-        runtime::Runtime,
+        runtime::{Runtime, attach_for_tests},
         tools::types::LayoutIssueKind,
         types::{
-            Modifiers, Pos2, Rect, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetValue,
+            Modifiers, Pos2, Rect, RoleState, Vec2, WidgetLayout, WidgetRange, WidgetRef,
+            WidgetRegistryEntry, WidgetRole, WidgetValue,
         },
         viewports::InputSnapshot,
         widget_registry::{WidgetMeta, record_widget},
@@ -2967,6 +3191,26 @@ mod tests {
         Runtime::ensure_for_inner(inner)
             .frame_notify()
             .notify_waiters();
+    }
+
+    fn run_instrumented_test_frame(
+        devmcp: &DevMcp,
+        ctx: &egui::Context,
+        viewport_id: egui::ViewportId,
+        live_viewports: &[egui::ViewportId],
+    ) {
+        let mut raw_input = egui::RawInput {
+            viewport_id,
+            ..Default::default()
+        };
+        for live_viewport in live_viewports {
+            raw_input
+                .viewports
+                .insert(*live_viewport, Default::default());
+        }
+        drop(ctx.run_ui(raw_input, |ctx| {
+            let _guard = FrameGuard::new(devmcp, ctx);
+        }));
     }
 
     fn viewport_snapshot_with_inner_size(inner_size: Vec2) -> ViewportSnapshot {
@@ -3451,8 +3695,20 @@ return {
         raw_input
             .viewports
             .insert(egui::ViewportId::ROOT, Default::default());
-        raw_input.viewports.insert(first, Default::default());
-        raw_input.viewports.insert(second, Default::default());
+        raw_input.viewports.insert(
+            first,
+            egui::ViewportInfo {
+                title: Some("Duplicate First".to_string()),
+                ..Default::default()
+            },
+        );
+        raw_input.viewports.insert(
+            second,
+            egui::ViewportInfo {
+                title: Some("Duplicate Second".to_string()),
+                ..Default::default()
+            },
+        );
         drop(ctx.run_ui(raw_input, |_| {}));
         inner
             .viewports
@@ -3475,8 +3731,32 @@ return {
         let json = parse_script_eval_json(&result);
 
         assert_eq!(json["success"], false);
-        assert_eq!(json["error"]["code"], ErrorCode::DuplicateWidgetId.as_str());
+        assert_eq!(json["error"]["code"], ErrorCode::ViewportNameFault.as_str());
         assert_eq!(json["error"]["details"]["reason"], "viewport_name_faults");
+        let duplicate_viewports = json["error"]["details"]["duplicate_names"][0]["viewports"]
+            .as_array()
+            .expect("duplicate viewport contexts");
+        assert_eq!(duplicate_viewports.len(), 2);
+        assert!(
+            duplicate_viewports.iter().any(|viewport| {
+                viewport.get("title").and_then(Value::as_str) == Some("Duplicate First")
+                    && viewport.get("id").and_then(Value::as_str).is_some()
+                    && viewport.get("name").is_some()
+                    && viewport.get("parent_viewport_id").is_some()
+                    && viewport.get("focused").is_some()
+            }),
+            "duplicate fault should include first viewport context"
+        );
+        assert!(
+            duplicate_viewports.iter().any(|viewport| {
+                viewport.get("title").and_then(Value::as_str) == Some("Duplicate Second")
+                    && viewport.get("id").and_then(Value::as_str).is_some()
+                    && viewport.get("name").is_some()
+                    && viewport.get("parent_viewport_id").is_some()
+                    && viewport.get("focused").is_some()
+            }),
+            "duplicate fault should include second viewport context"
+        );
     }
 
     #[tokio::test]
@@ -5112,6 +5392,68 @@ return { first = catalog[1].name, count = #catalog }"#
     }
 
     #[tokio::test]
+    async fn action_click_rejects_invisible_widget() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("hidden", 1, WidgetRole::Button);
+        entry.visible = false;
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let error = server
+            .action_click(None, widget_ref_id("hidden"), None, None, None)
+            .await
+            .expect_err("hidden widget should not be clicked");
+
+        assert_eq!(error.code, ErrorCode::InvisibleInteraction.as_str());
+        assert!(error.message.contains("scroll_into_view"));
+    }
+
+    #[tokio::test]
+    async fn action_click_rejects_fully_clipped_widget() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+        let rect = Rect {
+            min: Pos2 { x: 0.0, y: 0.0 },
+            max: Pos2 { x: 10.0, y: 10.0 },
+        };
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("clipped", 1, WidgetRole::Button);
+        entry.layout = Some(WidgetLayout {
+            desired_size: Vec2 { x: 10.0, y: 10.0 },
+            actual_size: Vec2 { x: 10.0, y: 10.0 },
+            clip_rect: rect,
+            clipped: true,
+            overflow: false,
+            available_rect: rect,
+            visible_fraction: 0.0,
+        });
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let error = server
+            .action_click(None, widget_ref_id("clipped"), None, None, None)
+            .await
+            .expect_err("fully clipped widget should not be clicked");
+
+        assert_eq!(error.code, ErrorCode::InvisibleInteraction.as_str());
+        assert!(error.message.contains("scroll_into_view"));
+        let details = error
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .expect("details");
+        assert_eq!(details["reason"], "invisible_interaction");
+        assert_eq!(details["layout"]["visible_fraction"], 0.0);
+    }
+
+    #[tokio::test]
     async fn action_focus_updates_widget_focus_after_frame() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -5302,12 +5644,112 @@ return { first = catalog[1].name, count = #catalog }"#
     #[tokio::test]
     async fn widget_get_missing_returns_error() {
         let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        for (index, id) in [
+            "basic.abort",
+            "basic.account",
+            "basic.archive",
+            "basic.cancel",
+            "basic.delete",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            inner.widgets.record_widget(
+                viewport_id,
+                make_entry(id, index as u64 + 1, WidgetRole::Button),
+            );
+        }
+        inner.widgets.record_widget(
+            viewport_id,
+            make_entry("basic.submit", 20, WidgetRole::Button),
+        );
+        inner.widgets.finalize_registry(viewport_id);
+
         let server = DevMcpServer::new(inner);
         let result = server
-            .widget_get_result(None, &widget_ref_id("missing"))
+            .widget_get_result(None, &widget_ref_id("basic.submt"))
             .expect_err("missing widget");
         assert_eq!(result.code, ErrorCode::NotFound.as_str());
-        assert!(result.message.contains("missing"));
+        assert!(result.message.contains("basic.submt"));
+        let suggestions = result
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .and_then(|details| details.get("search"))
+            .and_then(|search| search.get("suggestions"))
+            .and_then(Value::as_array)
+            .expect("suggestions");
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion.as_str() == Some("basic.submit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn widget_get_missing_reports_exact_match_in_other_viewport() {
+        let inner = Arc::new(Inner::new());
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+
+        let ctx = egui::Context::default();
+        let mut raw_input = egui::RawInput {
+            viewport_id: root,
+            ..Default::default()
+        };
+        raw_input.viewports.insert(root, Default::default());
+        raw_input.viewports.insert(secondary, Default::default());
+        drop(ctx.run_ui(raw_input, |_| {}));
+        inner
+            .viewports
+            .name_viewport(secondary, "secondary".to_string());
+        inner.viewports.update_viewports(&ctx);
+
+        inner.widgets.clear_registry(root);
+        inner.widgets.finalize_registry(root);
+        inner.widgets.clear_registry(secondary);
+        inner.widgets.record_widget(
+            secondary,
+            make_entry("viewports.unwired.value", 1, WidgetRole::Slider),
+        );
+        inner.widgets.finalize_registry(secondary);
+
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .widget_get_result(None, &widget_ref_id("viewports.unwired.value"))
+            .expect_err("root-scoped lookup should miss secondary widget");
+        assert_eq!(result.code, ErrorCode::NotFound.as_str());
+        let search = result
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .and_then(|details| details.get("search"))
+            .expect("search details");
+        let exact_matches = search
+            .get("exact_matches")
+            .and_then(Value::as_array)
+            .expect("exact matches");
+        assert!(exact_matches.iter().any(|entry| {
+            entry.get("id").and_then(Value::as_str) == Some("viewports.unwired.value")
+                && entry
+                    .get("viewport")
+                    .and_then(|viewport| viewport.get("name"))
+                    .and_then(Value::as_str)
+                    == Some("secondary")
+        }));
+        let suggestions = search
+            .get("suggestions")
+            .and_then(Value::as_array)
+            .expect("suggestions");
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion.as_str() == Some("viewports.unwired.value"))
+        );
     }
 
     #[tokio::test]
@@ -5393,6 +5835,18 @@ return { first = catalog[1].name, count = #catalog }"#
         assert_eq!(
             duplicate_ids[0].get("id").and_then(Value::as_str),
             Some("dup")
+        );
+        let parent_chain = duplicate_ids[0]
+            .get("candidates")
+            .and_then(Value::as_array)
+            .and_then(|candidates| candidates.first())
+            .and_then(|candidate| candidate.get("parent_chain"))
+            .and_then(Value::as_array)
+            .expect("parent chain");
+        assert!(
+            parent_chain
+                .iter()
+                .any(|parent| parent.as_str() == Some("left"))
         );
     }
 
@@ -6117,6 +6571,119 @@ return { first = catalog[1].name, count = #catalog }"#
             .await
             .expect_err("wait_for_settle should time out");
         assert_eq!(error.code, "timeout");
+        let phases = error
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .and_then(|details| details.get("phases"))
+            .and_then(Value::as_array)
+            .expect("settle phases");
+        assert!(
+            phases
+                .iter()
+                .any(|phase| phase.get("phase").and_then(Value::as_str) == Some("fresh_frame"))
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_settle_reports_busy_runtime_idle_phase() {
+        let idle = Arc::new(AtomicBool::new(false));
+        let idle_for_provider = Arc::clone(&idle);
+        let devmcp = attach_for_tests(
+            DevMcp::new()
+                .keep_alive(false)
+                .on_idle(move || idle_for_provider.load(AtomicOrdering::Relaxed))
+                .expect("idle provider"),
+        );
+        let inner = devmcp.inner_arc().expect("attached inner");
+        let runtime = Runtime::for_devmcp(&devmcp).expect("attached runtime");
+        let server = DevMcpServer::with_runtime(Arc::clone(&inner), runtime);
+        let ctx = egui::Context::default();
+
+        run_instrumented_test_frame(
+            &devmcp,
+            &ctx,
+            egui::ViewportId::ROOT,
+            &[egui::ViewportId::ROOT],
+        );
+        let devmcp_for_frame = devmcp.clone();
+        let ctx_for_frame = ctx.clone();
+        tokio::spawn(async move {
+            yield_now().await;
+            run_instrumented_test_frame(
+                &devmcp_for_frame,
+                &ctx_for_frame,
+                egui::ViewportId::ROOT,
+                &[egui::ViewportId::ROOT],
+            );
+        });
+
+        let error = server
+            .wait_for_settle(None, Some(20), Some(1))
+            .await
+            .expect_err("busy app idle provider should block settle");
+        let phases = error
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .and_then(|details| details.get("phases"))
+            .and_then(Value::as_array)
+            .expect("settle phases");
+        assert!(phases.iter().any(|phase| {
+            phase.get("phase").and_then(Value::as_str) == Some("app_idle")
+                && phase.get("complete").and_then(Value::as_bool) == Some(false)
+        }));
+    }
+
+    #[tokio::test]
+    async fn wait_for_settle_observes_ui_idle_on_child_viewport() {
+        let idle = Arc::new(AtomicBool::new(false));
+        let idle_for_provider = Arc::clone(&idle);
+        let devmcp = attach_for_tests(
+            DevMcp::new()
+                .keep_alive(false)
+                .on_idle_ui(move |_| idle_for_provider.load(AtomicOrdering::Relaxed))
+                .expect("UI idle provider"),
+        );
+        let inner = devmcp.inner_arc().expect("attached inner");
+        let runtime = Runtime::for_devmcp(&devmcp).expect("attached runtime");
+        let server = DevMcpServer::with_runtime(Arc::clone(&inner), runtime);
+        let root_ctx = egui::Context::default();
+        let child_ctx = egui::Context::default();
+        let child = egui::ViewportId::from_hash_of("ui-idle-child");
+        let live_viewports = [egui::ViewportId::ROOT, child];
+
+        run_instrumented_test_frame(&devmcp, &root_ctx, egui::ViewportId::ROOT, &live_viewports);
+        run_instrumented_test_frame(&devmcp, &child_ctx, child, &live_viewports);
+
+        idle.store(true, AtomicOrdering::Relaxed);
+
+        let devmcp_for_frame = devmcp.clone();
+        let root_ctx_for_frame = root_ctx.clone();
+        let child_ctx_for_frame = child_ctx.clone();
+        let frame_task = tokio::spawn(async move {
+            yield_now().await;
+            run_instrumented_test_frame(
+                &devmcp_for_frame,
+                &root_ctx_for_frame,
+                egui::ViewportId::ROOT,
+                &live_viewports,
+            );
+            run_instrumented_test_frame(
+                &devmcp_for_frame,
+                &child_ctx_for_frame,
+                child,
+                &live_viewports,
+            );
+        });
+
+        let result = server
+            .wait_for_settle(Some(viewport_id_to_string(child)), Some(100), Some(1))
+            .await;
+        frame_task.await.expect("frame task");
+        result.expect("child settle should refresh root UI idle state");
     }
 
     #[tokio::test]
@@ -6184,10 +6751,17 @@ return { first = catalog[1].name, count = #catalog }"#
             capture_test_frame(&inner_for_capture, &capture_ctx);
         });
 
-        server
+        let report = server
             .wait_for_settle(None, Some(100), Some(1))
             .await
             .expect("wait_for_settle");
+        assert!(report.settled);
+        assert!(
+            report
+                .phases
+                .iter()
+                .any(|phase| matches!(phase.phase, SettlePhase::CleanCapture))
+        );
         assert!(inner.frame_count() >= 3);
     }
 
@@ -6290,6 +6864,55 @@ return { first = catalog[1].name, count = #catalog }"#
             .take_widget_value_update(viewport_id, "advanced")
             .expect("queued update");
         assert_eq!(updated, WidgetValue::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn widget_set_value_reports_unconsumed_custom_override() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let viewport_id = egui::ViewportId::ROOT;
+
+        record_test_snapshot(&inner, viewport_id);
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("custom.value", 1, WidgetRole::Slider);
+        entry.value = Some(WidgetValue::Int(0));
+        entry.role_state = Some(RoleState::Slider {
+            range: WidgetRange {
+                min: 0.0,
+                max: 10.0,
+            },
+        });
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        server
+            .widget_set_value(None, widget_ref_id("custom.value"), WidgetValue::Int(5))
+            .await
+            .expect("queue set_value");
+
+        let inner_for_capture = Arc::clone(&inner);
+        tokio::spawn(async move {
+            yield_now().await;
+            record_test_snapshot(&inner_for_capture, viewport_id);
+            yield_now().await;
+            record_test_snapshot(&inner_for_capture, viewport_id);
+        });
+
+        let error = server
+            .wait_for_widget_state(
+                None,
+                widget_ref_id("custom.value"),
+                Some(100),
+                Some(1),
+                |_| false,
+            )
+            .await
+            .expect_err("unconsumed override should fail");
+
+        assert_eq!(error.code, ErrorCode::OverrideNotConsumed.as_str());
+        assert!(error.message.contains("take_widget_value_override"));
+        drop(ctx);
     }
 
     #[tokio::test]

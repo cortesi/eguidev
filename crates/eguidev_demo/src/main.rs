@@ -13,7 +13,7 @@ use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::Scro
 use eguidev::{
     Anchor, ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall,
     FixtureError, FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, ProgressBarOptions,
-    ScrollAreaState, TextEditOptions, ViewportSel, WidgetRole,
+    RoleState, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange, WidgetRole, WidgetValue,
 };
 #[cfg(feature = "devtools")]
 use eguidev_runtime::attach as attach_runtime;
@@ -142,7 +142,8 @@ fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<
                 "focused": focused,
                 "secondary_visible": s.show_secondary,
             }))
-        })?;
+        })?
+        .on_idle_ui(|_ctx| true)?;
     #[cfg(feature = "devtools")]
     {
         if config.enable_mcp {
@@ -305,6 +306,8 @@ struct DemoState {
     secondary_drag_offset: egui::Vec2,
     /// Scroll state for the secondary viewport list.
     secondary_scroll_state: ScrollAreaState,
+    /// Value advertised by the intentionally unwired secondary custom widget.
+    secondary_unwired_value: i64,
     /// Last observed raw scroll delta.
     last_raw_scroll: egui::Vec2,
     /// Last observed smooth scroll delta.
@@ -369,6 +372,7 @@ impl DemoState {
             secondary_selected_row: 0,
             secondary_drag_offset: egui::Vec2::ZERO,
             secondary_scroll_state: ScrollAreaState::default(),
+            secondary_unwired_value: 0,
             last_raw_scroll: egui::Vec2::ZERO,
             last_smooth_scroll: egui::Vec2::ZERO,
             last_pointer_pos: None,
@@ -412,6 +416,7 @@ impl DemoState {
         self.secondary_selected_row = 0;
         self.secondary_drag_offset = egui::Vec2::ZERO;
         self.secondary_scroll_state.reset();
+        self.secondary_unwired_value = 0;
         self.last_raw_scroll = egui::Vec2::ZERO;
         self.last_smooth_scroll = egui::Vec2::ZERO;
         self.last_pointer_pos = None;
@@ -996,6 +1001,36 @@ impl DemoApp {
                     "Drag offset: {:.1}, {:.1}",
                     s.secondary_drag_offset.x, s.secondary_drag_offset.y
                 ),
+            );
+
+            ui.separator();
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(160.0, 28.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 4.0, egui::Color32::from_rgb(72, 91, 160));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("Unwired: {}", s.secondary_unwired_value),
+                egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+            );
+            eguidev::track_response_full(
+                "viewports.unwired.value",
+                &response,
+                eguidev::WidgetMeta {
+                    role: WidgetRole::Slider,
+                    label: Some("unwired custom value".to_string()),
+                    value: Some(WidgetValue::Int(s.secondary_unwired_value)),
+                    role_state: Some(RoleState::Slider {
+                        range: WidgetRange {
+                            min: 0.0,
+                            max: 10.0,
+                        },
+                    }),
+                    visible: true,
+                    ..Default::default()
+                },
             );
         });
     }

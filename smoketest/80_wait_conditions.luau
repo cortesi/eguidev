@@ -64,7 +64,31 @@ end)
 assert(focus_result ~= nil and focus_result.focused)
 
 -- wait_for_settle
-vp:wait_for_settle()
+local settle_report = vp:wait_for_settle()
+assert(settle_report.settled, "wait_for_settle should return a settled report")
+assert(#settle_report.phases >= 5, "settle report should include phase status")
+local saw_app_idle = false
+for _, phase in ipairs(settle_report.phases) do
+    if phase.phase == "app_idle" then
+        saw_app_idle = true
+        assert(phase.complete, "demo app idle provider should report idle")
+    end
+end
+assert(saw_app_idle, "demo should expose app_idle settle phase")
+
+-- unconsumed custom widget overrides fail with a typed, actionable error
+fixture("viewports.default")
+local secondary = viewport({ name = "secondary" })
+assert(secondary ~= nil, "secondary viewport should exist")
+local override_ok, override_err = pcall(function()
+    (secondary :: Viewport):widget_get("viewports.unwired.value"):set_value(5)
+end)
+assert(not override_ok, "unwired custom widget should reject unconsumed set_value override")
+assert(
+    string.find(tostring(override_err), "take_widget_value_override", 1, true) ~= nil,
+    "unconsumed override error should name the missing consumer"
+)
+fixture("basic.default")
 
 -- assert_widget_exists
 assert_widget_exists("basic.submit")
@@ -95,5 +119,5 @@ assert(
 )
 
 return {
-    conditions_tested = 14,
+    conditions_tested = 16,
 }

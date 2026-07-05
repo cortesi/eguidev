@@ -110,7 +110,8 @@ end, { timeout_ms = 1000 })
 vp:wait_for_widget("status", function(widget)
     return widget ~= nil and widget.label == "Ready"
 end, { timeout_ms = 1000 })
-vp:wait_for_settle({ timeout_ms = 1000 })
+local report = vp:wait_for_settle({ timeout_ms = 1000 })
+assert(report.settled)
 ```
 
 ## Assertions

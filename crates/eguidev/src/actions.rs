@@ -206,8 +206,29 @@ impl ActionQueue {
         })
     }
 
+    pub fn pending_action_count(&self, viewport_id: egui::ViewportId) -> usize {
+        [
+            ActionTiming::Current,
+            ActionTiming::Next,
+            ActionTiming::AfterNext,
+        ]
+        .into_iter()
+        .map(|timing| {
+            pending_count(
+                &self.staged_actions[timing.index()],
+                timing.label(),
+                viewport_id,
+            )
+        })
+        .sum()
+    }
+
     pub fn has_pending_commands(&self, viewport_id: egui::ViewportId) -> bool {
         has_pending(&self.commands, "commands lock", viewport_id)
+    }
+
+    pub fn pending_command_count(&self, viewport_id: egui::ViewportId) -> usize {
+        pending_count(&self.commands, "commands lock", viewport_id)
     }
 
     fn take_staged_actions(
@@ -264,10 +285,15 @@ fn has_pending<T>(
     label: &'static str,
     viewport_id: egui::ViewportId,
 ) -> bool {
-    let queue = lock(queue, label);
-    queue
-        .get(&viewport_id)
-        .is_some_and(|items| !items.is_empty())
+    pending_count(queue, label, viewport_id) > 0
+}
+
+fn pending_count<T>(
+    queue: &Mutex<HashMap<egui::ViewportId, Vec<T>>>,
+    label: &'static str,
+    viewport_id: egui::ViewportId,
+) -> usize {
+    lock(queue, label).get(&viewport_id).map_or(0, Vec::len)
 }
 
 #[cfg(test)]

@@ -120,18 +120,30 @@ Keyboard delivery modes:
 
 ### `wait_for_settle`
 
-A single composite check combining:
-- **InputSettled**: no pending input/command queue and input snapshot available.
-- **RepaintIdle**: no repaint requested for viewport.
+Returns a `SettleReport` with `settled`, `elapsed_ms`, and per-phase status. All phases must be
+complete simultaneously:
 
-Both conditions must hold simultaneously. Returns a structured result with `matched` and
-`elapsed_ms`.
+- **input_drained**: no pending input actions remain for the target viewport.
+- **commands_drained**: no pending viewport commands remain.
+- **action_frame_processed**: a frame has run after the latest drained input action.
+- **clean_capture**: a capture newer than the action drain has been observed.
+- **fresh_frame**: the wait observed a new frame or capture after it started.
+- **app_idle**: the optional app idle hook reports idle.
+
+Apps register idle hooks with `DevMcp::on_idle(...)` for runtime-thread state or
+`DevMcp::on_idle_ui(...)` for UI-thread state. UI idle runs at root frame end and the runtime
+settle loop reads the cached result. Settle timeout details include `phases`, so failures identify
+the exact phase that remained incomplete.
 
 ### Auto-settle
 
 All high-level actions (`click`, `type_text`, `key`, `hover`, `drag`, `scroll`, `paste`, etc.)
 auto-settle after performing the action, ensuring the UI has fully processed queued work and
-repainted. Disable with `settle: #{enabled: false}`.
+repainted. Disable with `{ settle = false }`.
+
+Pointer actions fail fast with `invisible_interaction` when the target widget is hidden or fully
+clipped. Scripts should wait for visibility explicitly or call `scroll_into_view()` before
+interacting with content that may be outside the viewport.
 
 ## Visual Assertions
 

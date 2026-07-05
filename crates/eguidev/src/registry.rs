@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -11,12 +11,15 @@ use std::{
 };
 
 use egui::{Context, Vec2 as EguiVec2};
+use serde_json::json;
 
 use crate::{
     actions::{ActionQueue, ActionTiming, InputAction},
     devmcp::{AutomationOptions, RuntimeHooks},
     diagnostics::DiagnosticRegistry,
+    error::{ErrorCode, ToolError},
     fixtures::{FixtureExecution, FixtureManager},
+    idle::IdleRegistry,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
     types::{FixtureCall, WidgetValue},
     viewports::{FrameHealth, ViewportState},
@@ -40,7 +43,8 @@ pub struct Inner {
     pub overlays: OverlayManager,
     contexts: Mutex<HashMap<egui::ViewportId, Context>>,
     animation_baselines: Mutex<HashMap<egui::ViewportId, f32>>,
-    widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValue>>,
+    widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValueUpdate>>,
+    widget_value_consumers: Mutex<HashSet<WidgetValueKey>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     frame_fixture_epochs: Mutex<HashMap<egui::ViewportId, u64>>,
     next_request_id: AtomicU64,
@@ -50,6 +54,7 @@ pub struct Inner {
     verbose_logging: AtomicBool,
     pub fixtures: FixtureManager,
     pub diagnostics: DiagnosticRegistry,
+    pub idle: IdleRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     automation_options: Mutex<AutomationOptions>,
     /// Whether the egui input-injection plugin has already been registered
@@ -78,6 +83,13 @@ struct WidgetValueKey {
     id: String,
 }
 
+#[derive(Debug, Clone)]
+struct WidgetValueUpdate {
+    value: WidgetValue,
+    queued_frame: u64,
+    consumer_seen: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct ScrollAreaKey {
     viewport_id: egui::ViewportId,
@@ -103,6 +115,8 @@ impl ScrollAreaKey {
 }
 
 impl Inner {
+    pub const UNCONSUMED_OVERRIDE_FRAME_GRACE: u64 = 2;
+
     pub fn new() -> Self {
         Self {
             actions: ActionQueue::new(),
@@ -112,6 +126,7 @@ impl Inner {
             contexts: Mutex::new(HashMap::new()),
             animation_baselines: Mutex::new(HashMap::new()),
             widget_value_updates: Mutex::new(HashMap::new()),
+            widget_value_consumers: Mutex::new(HashSet::new()),
             scroll_overrides: Mutex::new(HashMap::new()),
             frame_fixture_epochs: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
@@ -121,6 +136,7 @@ impl Inner {
             verbose_logging: AtomicBool::new(false),
             fixtures: FixtureManager::new(),
             diagnostics: DiagnosticRegistry::new(),
+            idle: IdleRegistry::new(),
             runtime_hooks: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
             input_plugin_installed: AtomicBool::new(false),
@@ -162,6 +178,7 @@ impl Inner {
     pub fn dismiss_transient_ui(&self, viewport_id: Option<egui::ViewportId>) {
         self.actions.clear_all();
         lock(&self.widget_value_updates, "widget value update lock").clear();
+        lock(&self.widget_value_consumers, "widget value consumers lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         self.overlays.clear_transient_state();
         let contexts = {
@@ -281,9 +298,29 @@ impl Inner {
         id: String,
         value: WidgetValue,
     ) {
+        let queued_frame = self
+            .viewports
+            .capture_snapshot(viewport_id)
+            .map(|snapshot| snapshot.frame_count)
+            .unwrap_or_else(|| self.frame_count());
+        let key = WidgetValueKey::new(viewport_id, id);
+        let consumer_seen =
+            lock(&self.widget_value_consumers, "widget value consumers lock").contains(&key);
         let mut updates = lock(&self.widget_value_updates, "widget value update lock");
-        updates.insert(WidgetValueKey::new(viewport_id, id), value);
+        updates.insert(
+            key,
+            WidgetValueUpdate {
+                value,
+                queued_frame,
+                consumer_seen,
+            },
+        );
         self.request_repaint_of(viewport_id);
+    }
+
+    pub fn mark_widget_value_consumer(&self, viewport_id: egui::ViewportId, id: &str) {
+        lock(&self.widget_value_consumers, "widget value consumers lock")
+            .insert(WidgetValueKey::new(viewport_id, id));
     }
 
     pub fn take_widget_value_update(
@@ -292,7 +329,96 @@ impl Inner {
         id: &str,
     ) -> Option<WidgetValue> {
         let mut updates = lock(&self.widget_value_updates, "widget value update lock");
-        updates.remove(&WidgetValueKey::new(viewport_id, id))
+        updates
+            .remove(&WidgetValueKey::new(viewport_id, id))
+            .map(|update| update.value)
+    }
+
+    pub fn clear_widget_value_update_if_matches(
+        &self,
+        viewport_id: egui::ViewportId,
+        id: &str,
+        value: &WidgetValue,
+    ) {
+        let key = WidgetValueKey::new(viewport_id, id);
+        let mut updates = lock(&self.widget_value_updates, "widget value update lock");
+        if updates
+            .get(&key)
+            .is_some_and(|update| &update.value == value)
+        {
+            updates.remove(&key);
+        }
+    }
+
+    pub fn expired_widget_value_update_error(
+        &self,
+        viewport_id: egui::ViewportId,
+        widget_id: Option<&str>,
+    ) -> Option<ToolError> {
+        let current_frame = self
+            .viewports
+            .capture_snapshot(viewport_id)
+            .map(|snapshot| snapshot.frame_count)
+            .unwrap_or_else(|| self.frame_count());
+        let expired = {
+            let updates = lock(&self.widget_value_updates, "widget value update lock");
+            updates
+                .iter()
+                .filter(|(key, _)| key.viewport_id == viewport_id)
+                .filter(|(key, _)| widget_id.is_none_or(|widget_id| key.id == widget_id))
+                .find_map(|(key, update)| {
+                    let age = current_frame.saturating_sub(update.queued_frame);
+                    (age >= Self::UNCONSUMED_OVERRIDE_FRAME_GRACE && !update.consumer_seen)
+                        .then(|| (key.id.clone(), update.queued_frame, age))
+                })
+        }?;
+        let (id, queued_frame, age) = expired;
+        let viewport = self
+            .viewports
+            .viewports_snapshot()
+            .into_iter()
+            .find(|snapshot| snapshot.viewport_id == viewport_id_to_string(viewport_id));
+        let viewport_label = viewport
+            .as_ref()
+            .and_then(|snapshot| snapshot.name.as_deref())
+            .unwrap_or_else(|| {
+                if viewport_id == egui::ViewportId::ROOT {
+                    "root"
+                } else {
+                    "unnamed viewport"
+                }
+            });
+        Some(
+            ToolError::new(
+                ErrorCode::OverrideNotConsumed,
+                format!(
+                    "Widget value override for {id:?} in {viewport_label} was not consumed; \
+                     call take_widget_value_override before rendering the custom widget"
+                ),
+            )
+            .with_details(json!({
+                "reason": "override_not_consumed",
+                "viewport": viewport.map(|snapshot| {
+                    json!({
+                        "id": snapshot.viewport_id,
+                        "name": snapshot.name,
+                        "title": snapshot.title,
+                    })
+                }).unwrap_or_else(|| {
+                    json!({
+                        "id": viewport_id_to_string(viewport_id),
+                        "name": null,
+                        "title": null,
+                    })
+                }),
+                "widget_id": id,
+                "queued_frame": queued_frame,
+                "current_frame": current_frame,
+                "captures_since_queue": age,
+                "grace_captures": Self::UNCONSUMED_OVERRIDE_FRAME_GRACE,
+                "consumer": "take_widget_value_override",
+            })),
+        )
     }
 
     pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
@@ -366,6 +492,7 @@ impl Inner {
 
     pub fn clear_all(&self) {
         lock(&self.widget_value_updates, "widget values lock").clear();
+        lock(&self.widget_value_consumers, "widget value consumers lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         self.actions.clear_all();
     }
@@ -469,6 +596,48 @@ mod tests {
             animations: true,
         });
         assert_eq!(ctx.global_style().animation_time, 0.25);
+    }
+
+    #[test]
+    fn clear_all_resets_widget_value_consumer_cache() {
+        let inner = new_test_inner();
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.mark_widget_value_consumer(viewport_id, "custom.value");
+        inner.clear_all();
+        inner.queue_widget_value_update(
+            viewport_id,
+            "custom.value".to_string(),
+            WidgetValue::Int(7),
+        );
+        inner.advance_frame();
+        inner.advance_frame();
+
+        let error = inner
+            .expired_widget_value_update_error(viewport_id, Some("custom.value"))
+            .expect("unwired widget should fault after reset");
+        assert_eq!(error.code(), ErrorCode::OverrideNotConsumed);
+    }
+
+    #[test]
+    fn dismiss_transient_ui_resets_widget_value_consumer_cache() {
+        let inner = new_test_inner();
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.mark_widget_value_consumer(viewport_id, "custom.value");
+        inner.dismiss_transient_ui(Some(viewport_id));
+        inner.queue_widget_value_update(
+            viewport_id,
+            "custom.value".to_string(),
+            WidgetValue::Int(7),
+        );
+        inner.advance_frame();
+        inner.advance_frame();
+
+        let error = inner
+            .expired_widget_value_update_error(viewport_id, Some("custom.value"))
+            .expect("unwired widget should fault after popup dismissal");
+        assert_eq!(error.code(), ErrorCode::OverrideNotConsumed);
     }
 
     fn new_test_inner() -> Inner {

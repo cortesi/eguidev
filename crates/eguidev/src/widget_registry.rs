@@ -1,7 +1,7 @@
 //! Widget registry for tracking egui widgets across frames.
 #![allow(missing_docs)]
 
-use std::{collections::HashMap, error::Error, fmt, sync::Mutex};
+use std::{collections::HashMap, error::Error, fmt, mem, sync::Mutex};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -10,7 +10,7 @@ use crate::{
     error::{ErrorCode, ToolError},
     registry::{lock, viewport_id_to_string},
     types::{RoleState, WidgetLayout, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetValue},
-    viewports::ViewportState,
+    viewports::{ViewportSnapshot, ViewportState},
 };
 
 /// Metadata for a widget used during tracking and layout analysis.
@@ -83,6 +83,7 @@ impl Error for WidgetDataError {}
 #[derive(Debug, Clone)]
 struct DuplicateExplicitIdFault {
     duplicate_ids: Vec<DuplicateExplicitIdEntry>,
+    snapshot: Vec<WidgetRegistryEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +93,13 @@ struct DuplicateExplicitIdEntry {
 }
 
 const MAX_CANDIDATE_SUMMARIES: usize = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CandidateScore {
+    rank: usize,
+    distance: usize,
+    length_delta: usize,
+}
 
 pub struct WidgetRegistry {
     registry_current: Mutex<HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>>,
@@ -167,13 +175,13 @@ impl WidgetRegistry {
             .unwrap_or_default()
     }
 
-    pub fn duplicate_explicit_id_error(&self) -> Option<ToolError> {
+    pub fn duplicate_explicit_id_error(&self, viewports: &ViewportState) -> Option<ToolError> {
         lock(
             &self.duplicate_explicit_id_fault,
             "duplicate explicit id fault lock",
         )
         .clone()
-        .map(|fault| fault.into_tool_error())
+        .map(|fault| fault.into_tool_error(viewports))
     }
 
     pub fn resolve_widget(
@@ -182,7 +190,7 @@ impl WidgetRegistry {
         viewport_id: Option<&str>,
         target: &WidgetRef,
     ) -> Result<WidgetRegistryEntry, ToolError> {
-        if let Some(error) = self.duplicate_explicit_id_error() {
+        if let Some(error) = self.duplicate_explicit_id_error(viewports) {
             return Err(error);
         }
         let tool_viewport = viewport_id;
@@ -233,6 +241,8 @@ impl WidgetRegistry {
                 target,
                 tool_viewport,
                 &resolved_viewport,
+                &registry,
+                viewports,
             ));
         }
         if matches.len() > 1 {
@@ -477,16 +487,18 @@ fn not_found_error(
     target: &WidgetRef,
     tool_viewport: Option<&str>,
     resolved_viewport: &str,
+    registry: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
+    viewports: &ViewportState,
 ) -> ToolError {
     let message = format!(
         "{message} (id={:?}, viewport={resolved_viewport})",
         target.id.as_deref()
     );
-    ToolError::new(ErrorCode::NotFound, message).with_details(selector_details(
-        target,
-        tool_viewport,
-        Some(resolved_viewport),
-    ))
+    let details = selector_details(target, tool_viewport, Some(resolved_viewport));
+    ToolError::new(ErrorCode::NotFound, message).with_details(json!({
+        "selectors": selectors_value(&details),
+        "search": missing_widget_search(target, resolved_viewport, registry, viewports),
+    }))
 }
 
 fn summarize_candidates(candidates: &[WidgetRegistryEntry]) -> (Vec<serde_json::Value>, bool) {
@@ -518,6 +530,7 @@ fn build_duplicate_explicit_id_fault(
             .or_default()
             .push(entry.clone());
     }
+    let snapshot = snapshot.values().flatten().cloned().collect::<Vec<_>>();
 
     let mut duplicate_ids = by_id
         .into_iter()
@@ -526,37 +539,44 @@ fn build_duplicate_explicit_id_fault(
         })
         .collect::<Vec<_>>();
     duplicate_ids.sort_by(|left, right| left.id.cmp(&right.id));
-    (!duplicate_ids.is_empty()).then_some(DuplicateExplicitIdFault { duplicate_ids })
+    (!duplicate_ids.is_empty()).then_some(DuplicateExplicitIdFault {
+        duplicate_ids,
+        snapshot,
+    })
 }
 
 impl DuplicateExplicitIdFault {
-    fn into_tool_error(self) -> ToolError {
-        let summary = self
-            .duplicate_ids
+    fn into_tool_error(self, viewports: &ViewportState) -> ToolError {
+        let Self {
+            duplicate_ids,
+            snapshot,
+        } = self;
+        let summary = duplicate_ids
             .iter()
             .take(5)
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let suffix = if self.duplicate_ids.len() > 5 {
-            format!(", +{} more", self.duplicate_ids.len() - 5)
+        let suffix = if duplicate_ids.len() > 5 {
+            format!(", +{} more", duplicate_ids.len() - 5)
         } else {
             String::new()
         };
         let message = format!(
-            "Duplicate explicit widget ids detected: {summary}{suffix}; fix instrumentation before continuing automation"
+            "Duplicate explicit widget ids detected: {summary}{suffix}; make ids unique or scope one side with container() before continuing automation"
         );
-        let duplicate_ids = self
-            .duplicate_ids
+        let duplicate_ids = duplicate_ids
             .into_iter()
             .map(|entry| {
                 json!({
                     "id": entry.id,
                     "candidates": entry.candidates.into_iter().map(|candidate| {
                         json!({
-                            "viewport_id": candidate.viewport_id,
+                            "viewport": viewport_summary(viewports, &candidate.viewport_id),
                             "role": candidate.role,
+                            "label": candidate.label,
                             "rect": candidate.rect,
+                            "parent_chain": parent_chain_for(&candidate, &snapshot),
                         })
                     }).collect::<Vec<_>>(),
                 })
@@ -567,6 +587,194 @@ impl DuplicateExplicitIdFault {
             "duplicate_ids": duplicate_ids,
         }))
     }
+}
+
+fn missing_widget_search(
+    target: &WidgetRef,
+    resolved_viewport: &str,
+    registry: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
+    viewports: &ViewportState,
+) -> serde_json::Value {
+    let Some(target_id) = target.id.as_deref() else {
+        return json!({
+            "viewports": [],
+            "suggestions": [],
+        });
+    };
+    let restrict_to = (resolved_viewport != "root").then_some(resolved_viewport);
+    let mut all_candidates: Vec<(CandidateScore, String)> = Vec::new();
+    let mut exact_matches = Vec::new();
+    let mut summaries = registry
+        .iter()
+        .filter_map(|(viewport_id, entries)| {
+            let viewport_id = viewport_id_to_string(*viewport_id);
+            if restrict_to.is_some_and(|resolved| resolved != viewport_id) {
+                return None;
+            }
+            let mut candidates = entries
+                .iter()
+                .filter_map(|entry| {
+                    scored_candidate(target_id, &entry.id).map(|score| (score, entry))
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by(|(left_score, left), (right_score, right)| {
+                left_score
+                    .cmp(right_score)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            for (score, entry) in &candidates {
+                all_candidates.push((*score, entry.id.clone()));
+            }
+            let near_misses = candidates
+                .into_iter()
+                .take(MAX_CANDIDATE_SUMMARIES)
+                .map(|(score, entry)| {
+                    if score.rank == 0 {
+                        exact_matches.push(json!({
+                            "viewport": viewport_summary(viewports, &viewport_id),
+                            "id": entry.id,
+                            "role": entry.role,
+                            "label": entry.label,
+                        }));
+                    }
+                    json!({
+                        "id": entry.id,
+                        "role": entry.role,
+                        "label": entry.label,
+                        "match": candidate_match_kind(score),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Some(json!({
+                "viewport": viewport_summary(viewports, &viewport_id),
+                "widget_count": entries.len(),
+                "near_misses": near_misses,
+            }))
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        left["viewport"]["id"]
+            .as_str()
+            .cmp(&right["viewport"]["id"].as_str())
+    });
+    exact_matches.sort_by(|left, right| {
+        left["viewport"]["id"]
+            .as_str()
+            .cmp(&right["viewport"]["id"].as_str())
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
+    all_candidates.sort_by(|(left_score, left), (right_score, right)| {
+        left_score.cmp(right_score).then_with(|| left.cmp(right))
+    });
+    let mut suggestions = Vec::new();
+    for (_, id) in all_candidates {
+        if !suggestions.contains(&id) {
+            suggestions.push(id);
+        }
+        if suggestions.len() >= MAX_CANDIDATE_SUMMARIES {
+            break;
+        }
+    }
+    json!({
+        "viewports": summaries,
+        "exact_matches": exact_matches.into_iter().take(MAX_CANDIDATE_SUMMARIES).collect::<Vec<_>>(),
+        "suggestions": suggestions,
+    })
+}
+
+fn scored_candidate(target: &str, candidate: &str) -> Option<CandidateScore> {
+    if target == candidate {
+        return Some(CandidateScore {
+            rank: 0,
+            distance: 0,
+            length_delta: 0,
+        });
+    }
+    if let Some(distance) = edit_distance_at_most(target, candidate, 2) {
+        return Some(CandidateScore {
+            rank: 1,
+            distance,
+            length_delta: target.len().abs_diff(candidate.len()),
+        });
+    }
+    if target.starts_with(candidate) || candidate.starts_with(target) {
+        return Some(CandidateScore {
+            rank: 2,
+            distance: usize::MAX,
+            length_delta: target.len().abs_diff(candidate.len()),
+        });
+    }
+    None
+}
+
+fn candidate_match_kind(score: CandidateScore) -> &'static str {
+    match score.rank {
+        0 => "exact",
+        1 => "edit_distance",
+        _ => "prefix",
+    }
+}
+
+fn edit_distance_at_most(left: &str, right: &str, limit: usize) -> Option<usize> {
+    if left.len().abs_diff(right.len()) > limit {
+        return None;
+    }
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
+    for (i, left_byte) in left.bytes().enumerate() {
+        current[0] = i + 1;
+        let mut row_min = current[0];
+        for (j, right_byte) in right.bytes().enumerate() {
+            let substitution = previous[j] + usize::from(left_byte != right_byte);
+            let insertion = current[j] + 1;
+            let deletion = previous[j + 1] + 1;
+            current[j + 1] = substitution.min(insertion).min(deletion);
+            row_min = row_min.min(current[j + 1]);
+        }
+        if row_min > limit {
+            return None;
+        }
+        mem::swap(&mut previous, &mut current);
+    }
+    let distance = previous[right.len()];
+    (distance <= limit).then_some(distance)
+}
+
+fn parent_chain_for(
+    candidate: &WidgetRegistryEntry,
+    snapshot: &[WidgetRegistryEntry],
+) -> Vec<String> {
+    let by_id = snapshot
+        .iter()
+        .filter(|entry| entry.viewport_id == candidate.viewport_id)
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect::<HashMap<_, _>>();
+    let mut chain = Vec::new();
+    let mut parent_id = candidate.parent_id.as_deref();
+    while let Some(id) = parent_id {
+        chain.push(id.to_string());
+        parent_id = by_id.get(id).and_then(|entry| entry.parent_id.as_deref());
+    }
+    chain
+}
+
+fn viewport_summary(viewports: &ViewportState, viewport_id: &str) -> serde_json::Value {
+    let snapshot = viewports
+        .viewports_snapshot()
+        .into_iter()
+        .find(|snapshot| snapshot.viewport_id == viewport_id);
+    viewport_summary_value(viewport_id, snapshot.as_ref())
+}
+
+fn viewport_summary_value(
+    viewport_id: &str,
+    snapshot: Option<&ViewportSnapshot>,
+) -> serde_json::Value {
+    json!({
+        "id": viewport_id,
+        "name": snapshot.and_then(|snapshot| snapshot.name.clone()),
+        "title": snapshot.and_then(|snapshot| snapshot.title.clone()),
+    })
 }
 
 fn resolve_viewport_id(

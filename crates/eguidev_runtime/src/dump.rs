@@ -121,7 +121,7 @@ pub fn build_tree_dump(inner: &Inner, options: &DumpOptions) -> Result<TreeDump,
 }
 
 fn ensure_dump_ready(inner: &Inner) -> Result<(), ToolError> {
-    if let Some(error) = inner.widgets.duplicate_explicit_id_error() {
+    if let Some(error) = inner.widgets.duplicate_explicit_id_error(&inner.viewports) {
         return Err(error.into());
     }
     if let Some(error) = inner.viewports.viewport_name_error() {

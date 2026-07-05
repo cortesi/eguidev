@@ -14,6 +14,7 @@ use crate::{
     actions::InputAction,
     diagnostics::{DevMcpConfigError, DiagnosticRegistry, DiagnosticResult},
     fixtures::{FixtureHandler, RuntimeFixtureHandler, UiFixtureHandler},
+    idle::IdleRegistry,
     instrument::{ACTIVE, container, swallow_panic},
     registry::Inner,
     types::{FixtureCall, FixtureResult, FixtureSpec},
@@ -96,6 +97,7 @@ pub struct DevMcp {
     state: DevMcpState,
     fixtures: Vec<FixtureSpec>,
     diagnostics: DiagnosticRegistry,
+    idle: IdleRegistry,
     verbose_logging: bool,
     fixture_handler: Option<FixtureHandler>,
     automation_options: AutomationOptions,
@@ -107,6 +109,7 @@ impl fmt::Debug for DevMcp {
             .field("state", &self.state)
             .field("fixtures", &self.fixtures)
             .field("diagnostics", &self.diagnostics)
+            .field("idle", &self.idle)
             .field("verbose_logging", &self.verbose_logging)
             .field("automation_options", &self.automation_options)
             .finish()
@@ -226,6 +229,30 @@ impl DevMcp {
         Ok(self)
     }
 
+    /// Register an app-level idle check that runs on the automation runtime thread.
+    pub fn on_idle<F>(self, is_idle: F) -> Result<Self, DevMcpConfigError>
+    where
+        F: Fn() -> bool + Send + Sync + 'static,
+    {
+        self.idle.insert_runtime(is_idle)?;
+        if let Some(inner) = self.inner() {
+            inner.idle.set_from(&self.idle);
+        }
+        Ok(self)
+    }
+
+    /// Register an app-level idle check that runs on the UI thread at root frame end.
+    pub fn on_idle_ui<F>(self, is_idle: F) -> Result<Self, DevMcpConfigError>
+    where
+        F: FnMut(&Context) -> bool + Send + 'static,
+    {
+        self.idle.insert_ui(is_idle)?;
+        if let Some(inner) = self.inner() {
+            inner.idle.set_from(&self.idle);
+        }
+        Ok(self)
+    }
+
     /// Returns true if DevMCP automation is attached.
     pub fn is_enabled(&self) -> bool {
         matches!(self.state, DevMcpState::Active(_))
@@ -277,6 +304,7 @@ impl DevMcp {
                 .expect("fixture handler was validated before runtime activation");
         }
         inner.diagnostics.set_providers_from(&self.diagnostics);
+        inner.idle.set_from(&self.idle);
         self.state = DevMcpState::Active(inner);
         self
     }
@@ -352,6 +380,9 @@ impl DevMcp {
         inner
             .viewports
             .capture_input_snapshot(ctx, fixture_epoch, next_frame);
+        if viewport_id == egui::ViewportId::ROOT {
+            inner.idle.update_ui(ctx, next_frame);
+        }
         inner.advance_frame();
         if let Some(hooks) = inner.runtime_hooks() {
             hooks.on_frame_end(inner, ctx);

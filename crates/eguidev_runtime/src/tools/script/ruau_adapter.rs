@@ -1222,7 +1222,7 @@ impl EguidevModule {
                         .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );

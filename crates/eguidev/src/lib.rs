@@ -133,6 +133,7 @@ mod devmcp;
 mod diagnostics;
 mod error;
 mod fixtures;
+mod idle;
 mod instrument;
 mod overlay;
 mod registry;
@@ -177,6 +178,10 @@ pub mod internal {
 
     pub mod fixtures {
         pub use crate::fixtures::{FixtureExecution, FixtureHandler};
+    }
+
+    pub mod idle {
+        pub use crate::idle::{IdleRegistry, IdleStatus};
     }
 
     pub mod error {

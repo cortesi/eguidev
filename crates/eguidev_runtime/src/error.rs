@@ -67,6 +67,9 @@ pub enum ErrorCode {
     FocusNotAcquired,
     TargetDetached,
     DuplicateWidgetId,
+    ViewportNameFault,
+    InvisibleInteraction,
+    OverrideNotConsumed,
     Timeout,
     Internal,
 }
@@ -81,6 +84,9 @@ impl ErrorCode {
             Self::FocusNotAcquired => "focus_not_acquired",
             Self::TargetDetached => "target_detached",
             Self::DuplicateWidgetId => "duplicate_widget_id",
+            Self::ViewportNameFault => "viewport_name_fault",
+            Self::InvisibleInteraction => "invisible_interaction",
+            Self::OverrideNotConsumed => "override_not_consumed",
             Self::Timeout => "timeout",
             Self::Internal => "internal",
         }
@@ -97,6 +103,9 @@ impl From<base_error::ErrorCode> for ErrorCode {
             base_error::ErrorCode::FocusNotAcquired => Self::FocusNotAcquired,
             base_error::ErrorCode::TargetDetached => Self::TargetDetached,
             base_error::ErrorCode::DuplicateWidgetId => Self::DuplicateWidgetId,
+            base_error::ErrorCode::ViewportNameFault => Self::ViewportNameFault,
+            base_error::ErrorCode::InvisibleInteraction => Self::InvisibleInteraction,
+            base_error::ErrorCode::OverrideNotConsumed => Self::OverrideNotConsumed,
             base_error::ErrorCode::Timeout => Self::Timeout,
             base_error::ErrorCode::Internal => Self::Internal,
         }

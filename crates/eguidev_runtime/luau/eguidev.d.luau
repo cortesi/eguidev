@@ -321,9 +321,9 @@ export type Viewport = {
     --- Throws a timeout error if the widget does not disappear in time.
     wait_for_widget_absent: (self: Viewport, id: string) -> (),
     --- Wait until the viewport has processed pending actions and commands and
-    --- observed a fresh frame.
+    --- observed a fresh frame. Returns per-phase settle status.
     --- Throws a timeout error if the viewport does not settle in time.
-    wait_for_settle: (self: Viewport) -> (),
+    wait_for_settle: (self: Viewport) -> SettleReport,
     --- Wait until this viewport has produced a fresh captured snapshot.
     --- Throws a timeout error if no new capture arrives in time.
     wait_for_capture: (self: Viewport) -> (),
@@ -564,6 +564,26 @@ export type FixtureParam = {
 export type FixtureParams = { [string]: WidgetValue }
 
 export type FixtureValues = { [string]: WidgetValue }
+
+export type SettlePhase =
+    "input_drained"
+    | "commands_drained"
+    | "action_frame_processed"
+    | "clean_capture"
+    | "fresh_frame"
+    | "app_idle"
+
+export type SettlePhaseStatus = {
+    phase: SettlePhase,
+    complete: boolean,
+    detail: string,
+}
+
+export type SettleReport = {
+    settled: boolean,
+    elapsed_ms: number,
+    phases: { SettlePhaseStatus },
+}
 
 export type Fixture = {
     name: string,

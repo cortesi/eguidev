@@ -808,7 +808,7 @@ impl DevUiExt for egui::Ui {
         let (heading, label) = widget_text_parts(heading);
         let output = egui::CollapsingHeader::new(heading)
             .id_salt(id.as_str())
-            .open(Some(*open))
+            .open(Some(open_state))
             .show(self, |ui| container(ui, body_tag, add_contents));
         if output.header_response.clicked() {
             open_state = !open_state;
@@ -873,9 +873,14 @@ impl DevScrollAreaExt for egui::ScrollArea {
 }
 
 /// Consume a queued widget value override for a custom instrumented widget.
+///
+/// Call this every frame that the custom widget is instrumented. The runtime uses that
+/// call to distinguish wired custom widgets from widgets that publish a settable value but
+/// never consume queued overrides.
 pub fn take_widget_value_override(ui: &egui::Ui, id: &str) -> Option<WidgetValue> {
     let inner = active_inner()?;
     let viewport_id = ui.ctx().viewport_id();
+    inner.mark_widget_value_consumer(viewport_id, id);
     inner.take_widget_value_update(viewport_id, id)
 }
 

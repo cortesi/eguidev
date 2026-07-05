@@ -1657,13 +1657,14 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
-        self.await_tool(
-            pos,
-            self.server
-                .wait_for_settle(viewport_id, timeout_ms, poll_interval_ms),
-        )
-        .await?;
-        self.to_json(pos, ())
+        let report = self
+            .await_tool(
+                pos,
+                self.server
+                    .wait_for_settle(viewport_id, timeout_ms, poll_interval_ms),
+            )
+            .await?;
+        self.to_json(pos, report)
     }
 
     pub(super) async fn wait_for_scroll_ready(

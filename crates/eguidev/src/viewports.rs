@@ -352,8 +352,13 @@ impl ViewportState {
             .collect::<Vec<_>>();
         let live_viewports = lock(&self.live_viewports, "live viewports lock").clone();
         let names = lock(&self.viewport_names, "viewport names lock").clone();
+        let snapshots = self
+            .viewports_snapshot()
+            .into_iter()
+            .map(|snapshot| (snapshot.viewport_id.clone(), snapshot))
+            .collect::<HashMap<_, _>>();
         build_viewport_name_fault(invalid_names, &names, live_viewports.as_ref())
-            .map(ViewportNameFault::into_tool_error)
+            .map(|fault| fault.into_tool_error(&snapshots))
     }
 }
 
@@ -405,7 +410,7 @@ fn build_viewport_name_fault(
 }
 
 impl ViewportNameFault {
-    fn into_tool_error(self) -> ToolError {
+    fn into_tool_error(self, snapshots: &HashMap<String, ViewportSnapshot>) -> ToolError {
         let mut labels = self
             .invalid_names
             .iter()
@@ -424,11 +429,12 @@ impl ViewportNameFault {
         let message = format!(
             "Viewport name instrumentation faults detected: {summary}{suffix}; fix instrumentation before continuing automation"
         );
-        ToolError::new(ErrorCode::DuplicateWidgetId, message).with_details(json!({
+        ToolError::new(ErrorCode::ViewportNameFault, message).with_details(json!({
             "reason": "viewport_name_faults",
             "invalid_names": self.invalid_names.into_iter().map(|entry| {
+                let viewport_id = viewport_id_to_string(entry.viewport_id);
                 json!({
-                    "viewport_id": viewport_id_to_string(entry.viewport_id),
+                    "viewport": viewport_fault_context(&viewport_id, snapshots),
                     "name": entry.name,
                     "code": entry.code,
                     "message": entry.message,
@@ -437,11 +443,28 @@ impl ViewportNameFault {
             "duplicate_names": self.duplicate_names.into_iter().map(|entry| {
                 json!({
                     "name": entry.name,
-                    "viewport_ids": entry.viewport_ids.into_iter().map(viewport_id_to_string).collect::<Vec<_>>(),
+                    "viewports": entry.viewport_ids.into_iter().map(|viewport_id| {
+                        let viewport_id = viewport_id_to_string(viewport_id);
+                        viewport_fault_context(&viewport_id, snapshots)
+                    }).collect::<Vec<_>>(),
                 })
             }).collect::<Vec<_>>(),
         }))
     }
+}
+
+fn viewport_fault_context(
+    viewport_id: &str,
+    snapshots: &HashMap<String, ViewportSnapshot>,
+) -> serde_json::Value {
+    let snapshot = snapshots.get(viewport_id);
+    json!({
+        "id": viewport_id,
+        "name": snapshot.and_then(|snapshot| snapshot.name.clone()),
+        "title": snapshot.and_then(|snapshot| snapshot.title.clone()),
+        "parent_viewport_id": snapshot.and_then(|snapshot| snapshot.parent_viewport_id.clone()),
+        "focused": snapshot.map(|snapshot| snapshot.focused),
+    })
 }
 
 #[cfg(test)]
