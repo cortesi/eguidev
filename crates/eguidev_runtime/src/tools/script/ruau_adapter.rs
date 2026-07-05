@@ -51,6 +51,8 @@ declare args: any
 declare function assert(value: boolean, message: string?): ()
 declare function assert_widget_exists(id: string): ()
 declare function configure(options: any): ()
+declare function dump(options: any?): any
+declare function dump_text(options: any?): string
 declare function fixture(name: string): ()
 declare function fixture_raw(name: string): ()
 declare function fixtures(): any
@@ -77,6 +79,8 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "configure",
     "coroutine",
     "debug",
+    "dump",
+    "dump_text",
     "fixture",
     "fixture_raw",
     "fixtures",
@@ -922,6 +926,20 @@ impl EguidevModule {
             "fixtures",
             ModuleBinding::Global,
             Box::new(FixturesFn {
+                runtime: Arc::clone(&self.runtime),
+            }),
+        );
+        builder.scoped_function(
+            "dump",
+            ModuleBinding::Global,
+            Box::new(DumpFn {
+                runtime: Arc::clone(&self.runtime),
+            }),
+        );
+        builder.scoped_function(
+            "dump_text",
+            ModuleBinding::Global,
+            Box::new(DumpTextFn {
                 runtime: Arc::clone(&self.runtime),
             }),
         );
@@ -2822,6 +2840,53 @@ impl ScopedHostFunction for FixturesFn {
         no_args("fixtures", &args)?;
         let pos = script_position_from_caller(scope);
         let value = self.runtime.fixtures(pos).map_err(host_script_error)?;
+        single_typed_json_return(scope, &value)
+    }
+}
+
+struct DumpFn {
+    runtime: Arc<ScriptRuntime>,
+}
+
+impl ScopedHostFunction for DumpFn {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let pos = script_position_from_caller(scope);
+        let options = optional_json_arg(scope, "dump", args)?;
+        let options = match options.as_ref() {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(map)) => Some(map),
+            Some(_) => return Err(RuntimeError::runtime("dump expected an options table")),
+        };
+        let value = self.runtime.dump(pos, options).map_err(host_script_error)?;
+        single_typed_json_return(scope, &value)
+    }
+}
+
+struct DumpTextFn {
+    runtime: Arc<ScriptRuntime>,
+}
+
+impl ScopedHostFunction for DumpTextFn {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let pos = script_position_from_caller(scope);
+        let options = optional_json_arg(scope, "dump_text", args)?;
+        let options = match options.as_ref() {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(map)) => Some(map),
+            Some(_) => return Err(RuntimeError::runtime("dump_text expected an options table")),
+        };
+        let value = self
+            .runtime
+            .dump_text(pos, options)
+            .map_err(host_script_error)?;
         single_typed_json_return(scope, &value)
     }
 }

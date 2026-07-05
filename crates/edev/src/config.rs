@@ -85,6 +85,25 @@ pub struct EvalConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Resolved configuration for `edev dump`.
+pub struct DumpConfig {
+    /// Shared app launch settings.
+    pub(crate) launch: LaunchConfig,
+    /// Optional name-only fixture to apply before dumping.
+    pub(crate) fixture: Option<String>,
+    /// Optional viewport selector to dump.
+    pub(crate) viewport: Option<String>,
+    /// Whether to wait for a fresh capture before dumping when no fixture is set.
+    pub(crate) wait_for_capture: bool,
+    /// Emit structured JSON instead of text.
+    pub(crate) json: bool,
+    /// Optional output file. Stdout is used when unset.
+    pub(crate) out: Option<PathBuf>,
+    /// Per-script timeout, defaulting from `[smoke].script_timeout_secs`.
+    pub(crate) timeout: Option<Duration>,
+}
+
+#[derive(Debug, Clone)]
 /// Resolved configuration for `edev fixture` / `edev fixtures`.
 pub struct FixtureConfig {
     /// Shared app launch settings.
@@ -102,6 +121,8 @@ pub enum EdevCommand {
     Smoke(SmokeConfig),
     /// Evaluate one Luau script through the launcher.
     Eval(EvalConfig),
+    /// Dump the app's captured widget tree and exit.
+    Dump(DumpConfig),
     /// Start the app and list or apply a fixture.
     Fixture(FixtureConfig),
     /// Render scripting API documentation and exit.
@@ -183,6 +204,15 @@ impl EdevCommand {
                     &current_dir,
                 )?))
             }
+            CliCommand::Dump(cli) => {
+                let mut options = DumpCliOptions::from(cli);
+                options.common.command = app_argv;
+                Ok(Self::Dump(resolve_dump_config(
+                    options,
+                    loaded.as_ref(),
+                    &current_dir,
+                )?))
+            }
             CliCommand::Fixture(cli) => {
                 let mut options = FixtureCliOptions::from(cli);
                 options.common.command = app_argv;
@@ -239,6 +269,16 @@ struct EvalCliOptions {
 }
 
 #[derive(Debug, Default, Clone)]
+struct DumpCliOptions {
+    common: CommonCliOptions,
+    fixture: Option<String>,
+    viewport: Option<String>,
+    script_timeout_secs: Option<u64>,
+    json: bool,
+    out: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone)]
 struct FixtureCliOptions {
     common: CommonCliOptions,
     name: Option<String>,
@@ -267,6 +307,8 @@ enum CliCommand {
     Smoke(SmokeArgs),
     /// Run one Luau script and print the structured result.
     Eval(EvalArgs),
+    /// Print a canonical widget tree dump and exit.
+    Dump(DumpArgs),
     /// Start the app and list registered fixtures, then exit.
     Fixtures(FixturesArgs),
     /// Start the app, apply a fixture, and keep running.
@@ -337,6 +379,27 @@ struct EvalArgs {
     /// Pass a typed script arg.
     #[arg(long = "arg", value_parser = parse_script_arg_cli)]
     args: Vec<(String, ScriptArgValue)>,
+}
+
+#[derive(Debug, Args)]
+struct DumpArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    /// Apply this fixture before dumping.
+    #[arg(long)]
+    fixture: Option<String>,
+    /// Restrict the dump to one viewport selector.
+    #[arg(long)]
+    viewport: Option<String>,
+    /// Override the dump script timeout.
+    #[arg(long = "script-timeout-secs")]
+    script_timeout_secs: Option<u64>,
+    /// Emit structured JSON instead of text.
+    #[arg(long, action = ArgAction::SetTrue)]
+    json: bool,
+    /// Write the dump to a file instead of stdout.
+    #[arg(long)]
+    out: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -411,6 +474,19 @@ impl From<EvalArgs> for EvalCliOptions {
             out_dir: args.out_dir,
             script_timeout_secs: args.script_timeout_secs,
             args: script_args,
+        }
+    }
+}
+
+impl From<DumpArgs> for DumpCliOptions {
+    fn from(args: DumpArgs) -> Self {
+        Self {
+            common: args.common.into(),
+            fixture: args.fixture,
+            viewport: args.viewport,
+            script_timeout_secs: args.script_timeout_secs,
+            json: args.json,
+            out: args.out,
         }
     }
 }
@@ -518,6 +594,32 @@ fn resolve_fixture_config(
     Ok(FixtureConfig {
         launch,
         name: cli.name,
+    })
+}
+
+fn resolve_dump_config(
+    cli: DumpCliOptions,
+    loaded: Option<&LoadedConfig>,
+    current_dir: &Path,
+) -> Result<DumpConfig, EdevError> {
+    let launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
+    let file_smoke = loaded.map(|config| &config.file.smoke);
+    let wait_for_capture = cli.fixture.is_none();
+    Ok(DumpConfig {
+        launch,
+        fixture: cli.fixture,
+        viewport: cli.viewport,
+        wait_for_capture,
+        json: cli.json,
+        out: cli
+            .out
+            .as_ref()
+            .map(|path| absolutize_path(path, current_dir)),
+        timeout: Some(Duration::from_secs(
+            cli.script_timeout_secs
+                .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
+                .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
+        )),
     })
 }
 
@@ -910,6 +1012,49 @@ mod tests {
         );
         assert_eq!(config.args.get("count"), Some(&ScriptArgValue::Int(4)));
         assert_eq!(config.launch.command[0], "cargo");
+    }
+
+    #[test]
+    fn parse_dump_command_accepts_fixture_viewport_json_out_and_timeout() {
+        let args = os_args(&[
+            "dump",
+            "--fixture",
+            "basic.default",
+            "--viewport",
+            "secondary",
+            "--script-timeout-secs",
+            "9",
+            "--json",
+            "--out",
+            "tmp/tree.json",
+            "--",
+            "cargo",
+            "run",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Dump(config) = command else {
+            panic!("expected dump command");
+        };
+        assert_eq!(config.fixture.as_deref(), Some("basic.default"));
+        assert_eq!(config.viewport.as_deref(), Some("secondary"));
+        assert!(!config.wait_for_capture);
+        assert!(config.json);
+        assert_eq!(config.out, Some(current_dir.join("tmp/tree.json")));
+        assert_eq!(config.timeout, Some(Duration::from_secs(9)));
+        assert_eq!(config.launch.command[0], "cargo");
+    }
+
+    #[test]
+    fn parse_dump_without_fixture_waits_for_capture() {
+        let args = os_args(&["dump", "--", "cargo", "run"]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Dump(config) = command else {
+            panic!("expected dump command");
+        };
+
+        assert!(config.wait_for_capture);
     }
 
     #[test]

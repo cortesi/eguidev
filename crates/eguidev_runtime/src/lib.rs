@@ -19,6 +19,7 @@
 #[cfg(target_arch = "wasm32")]
 compile_error!("eguidev_runtime is native-only and is not supported on wasm32 targets");
 
+mod dump;
 mod error;
 #[cfg(target_os = "macos")]
 mod macos;

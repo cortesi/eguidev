@@ -244,6 +244,49 @@ export type ViewportState = {
     pointer_pos: Pos?,
 }
 
+export type DumpOptions = {
+    viewport: string?,
+    root: string?,
+    include_invisible: boolean?,
+    fields: ("core" | "full")?,
+}
+
+export type WidgetDump = {
+    id: string,
+    role: WidgetRole,
+    label: string?,
+    value: WidgetValue?,
+    value_text: string,
+    data: any?,
+    rect: Rect,
+    enabled: boolean,
+    visible: boolean,
+    focused: boolean,
+    selected: boolean?,
+    interact_rect: Rect?,
+    layout: WidgetLayout?,
+    scroll_state: ScrollAreaMeta?,
+    range: Range?,
+    layer: string?,
+    children: { WidgetDump },
+}
+
+export type ViewportDump = {
+    id: string,
+    name: string?,
+    title: string?,
+    focused: boolean,
+    minimized: boolean?,
+    occluded: boolean?,
+    inner_size: Vec,
+    frame_count: number,
+    widgets: { WidgetDump },
+}
+
+export type TreeDump = {
+    viewports: { ViewportDump },
+}
+
 --- Exact pixel sampled from a fresh viewport capture.
 --- `position` is the requested egui logical point. `physical` is the sampled
 --- pixel coordinate after multiplying by the viewport's pixels-per-point and
@@ -560,6 +603,11 @@ declare function root(): Viewport
 --- Throws when multiple viewports match the selected title rule.
 declare function viewport(options: ViewportLookupOptions): Viewport?
 declare function viewports(): { Viewport }
+
+--- Return a canonical tree dump of captured widgets, grouped by viewport.
+declare function dump(options: DumpOptions?): TreeDump
+--- Render the canonical widget tree dump as stable, human-readable text.
+declare function dump_text(options: DumpOptions?): string
 
 --- Apply a registered fixture and wait until its readiness anchors match fresh captures.
 --- Widget and viewport handles resolve fresh across fixture boundaries, so rebinding `root()`

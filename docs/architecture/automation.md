@@ -13,7 +13,8 @@ The automation stack now has three explicit layers:
 2. Optional embedded runtime: provided by the native-only
    `eguidev_runtime` crate, attached once through
    `eguidev_runtime::attach()`, and responsible for the in-process MCP server,
-   script evaluation, screenshots, and async automation waits.
+   script evaluation, screenshots, canonical widget tree dumps, and async
+   automation waits.
 3. `edev` launcher: external process lifecycle and stable host tool surface
    (`start`, `stop`, `restart`, `status`, `script_eval`, `script_api`).
 
@@ -51,6 +52,10 @@ Tool hosting:
   `tools/list_changed` notifications.
 
 Fixtures are applied by scripts via `fixture()`, which auto-settles after application.
+Scripts can also call `dump()` / `dump_text()` to capture the current widget tree across live
+viewports. The `edev dump` command launches the app, optionally applies a name-only fixture, waits
+for a fresh capture when no fixture is applied, and then evaluates those same helpers, so
+command-line dumps and script dumps share one runtime implementation.
 For `eframe` apps, the required integration point is `FrameGuard` around rendered frames; the
 first `FrameGuard` call registers an egui plugin that injects queued input into every viewport's
 pass, so there is no separate raw-input hook for apps to wire up. Fixture handlers registered with

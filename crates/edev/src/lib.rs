@@ -47,7 +47,9 @@ use tokio::{
 mod config;
 mod instance_registry;
 
-use config::{EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, SmokeConfig};
+use config::{
+    DumpConfig, EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, SmokeConfig,
+};
 
 /// Tool names forwarded from edev to the app MCP server.
 const PROXIED_TOOL_NAMES: &[&str] = &["script_eval"];
@@ -70,6 +72,7 @@ pub async fn run() -> Result<(), EdevError> {
         EdevCommand::Mcp(config) => run_mcp(config).await,
         EdevCommand::Smoke(config) => run_smoke(config).await,
         EdevCommand::Eval(config) => run_eval(config).await,
+        EdevCommand::Dump(config) => run_dump(config).await,
         EdevCommand::Fixture(config) => run_fixture(config).await,
     }
 }
@@ -143,6 +146,105 @@ async fn run_eval(config: EvalConfig) -> Result<(), EdevError> {
         (Err(error), Ok(())) => Err(error),
         (Ok(()), Err(error)) | (Err(_), Err(error)) => Err(error),
     }
+}
+
+/// Launch the app, optionally apply a fixture, print a dump, and exit.
+async fn run_dump(config: DumpConfig) -> Result<(), EdevError> {
+    let instance_registry = InstanceRegistry::register(&config.launch)?;
+    let mut state = State::new(config.launch.clone(), instance_registry);
+    let client = start_proxy_target(&mut state, "dump command could not reach the app").await?;
+    let result = run_dump_script(client, &config).await;
+    let shutdown_result = state.shutdown().await;
+    match (result, shutdown_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) | (Err(_), Err(error)) => Err(error),
+    }
+}
+
+/// Execute the generated dump script and emit only the requested dump payload.
+async fn run_dump_script(
+    client: Arc<AsyncMutex<tmcp::Client<()>>>,
+    config: &DumpConfig,
+) -> Result<(), EdevError> {
+    let result = call_script_eval_result(
+        &client,
+        ScriptEvalRequest {
+            script: dump_script(config),
+            timeout_ms: config.timeout.map(|duration| duration.as_millis() as u64),
+            options: Some(ScriptEvalOptions {
+                source_name: Some("@edev_dump.luau".to_string()),
+                args: Default::default(),
+            }),
+        },
+    )
+    .await
+    .map_err(EdevError::EvalFailed)?;
+    let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
+    if !outcome.success {
+        return Err(EdevError::EvalFailed(script_eval_error_message(
+            outcome.error.as_ref(),
+            "dump script failed",
+        )));
+    }
+    let value = outcome
+        .value
+        .ok_or_else(|| EdevError::EvalFailed("dump script returned no value".to_string()))?;
+    let output = dump_output(config, &value)?;
+    emit_dump_output(config, &output)?;
+    Ok(())
+}
+
+/// Build the internal Luau script used by `edev dump`.
+fn dump_script(config: &DumpConfig) -> String {
+    let mut lines = Vec::new();
+    if let Some(fixture) = &config.fixture {
+        lines.push(format!("fixture({})", luau_string(fixture)));
+    } else if config.wait_for_capture {
+        lines.push("wait_for_capture()".to_string());
+    }
+    lines.push(format!("return {}", dump_call(config)));
+    lines.join("\n")
+}
+
+/// Build the final dump helper call for the generated Luau script.
+fn dump_call(config: &DumpConfig) -> String {
+    let function = if config.json { "dump" } else { "dump_text" };
+    let Some(viewport) = &config.viewport else {
+        return format!("{function}()");
+    };
+    format!("{function}({{ viewport = {} }})", luau_string(viewport))
+}
+
+/// Convert the script return value into the exact CLI payload.
+fn dump_output(config: &DumpConfig, value: &serde_json::Value) -> Result<String, EdevError> {
+    if config.json {
+        return serde_json::to_string_pretty(value).map_err(|error| {
+            EdevError::EvalFailed(format!("failed to encode dump JSON: {error}"))
+        });
+    }
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| EdevError::EvalFailed("dump_text returned a non-string value".to_string()))
+}
+
+/// Write dump output to the configured destination.
+fn emit_dump_output(config: &DumpConfig, output: &str) -> Result<(), EdevError> {
+    if let Some(path) = &config.out {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, output)?;
+    } else {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+/// Quote a Rust string as a Luau string literal.
+fn luau_string(value: &str) -> String {
+    serde_json::to_string(value).expect("string serialization cannot fail")
 }
 
 /// Execute one script against a launched app and emit the eval result.
@@ -1860,6 +1962,44 @@ mod tests {
                 .expect("script eval json"),
         )
         .expect("script eval outcome")
+    }
+
+    fn dump_config(tempdir: &TempDir) -> DumpConfig {
+        DumpConfig {
+            launch: test_config(tempdir.path().to_path_buf()),
+            fixture: None,
+            viewport: None,
+            wait_for_capture: true,
+            json: false,
+            out: None,
+            timeout: None,
+        }
+    }
+
+    #[test]
+    fn dump_script_waits_for_capture_without_fixture() {
+        let tempdir = test_tempdir();
+        let mut config = dump_config(&tempdir);
+        config.viewport = Some("secondary".to_string());
+
+        assert_eq!(
+            dump_script(&config),
+            "wait_for_capture()\nreturn dump_text({ viewport = \"secondary\" })"
+        );
+    }
+
+    #[test]
+    fn dump_script_uses_fixture_without_extra_capture_wait() {
+        let tempdir = test_tempdir();
+        let mut config = dump_config(&tempdir);
+        config.fixture = Some("basic.default".to_string());
+        config.wait_for_capture = false;
+        config.json = true;
+
+        assert_eq!(
+            dump_script(&config),
+            "fixture(\"basic.default\")\nreturn dump()"
+        );
     }
 
     #[test]

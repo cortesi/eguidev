@@ -35,6 +35,7 @@ use super::{
     },
 };
 use crate::{
+    dump::{DumpOptions, build_tree_dump, dump_text},
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
     screenshots::ScreenshotKind,
@@ -86,6 +87,17 @@ fn unique_viewport_lookup(
         [snapshot] => Ok(Some(*snapshot)),
         _ => Err(format!("multiple viewports matched {selector}")),
     }
+}
+
+fn dump_options(
+    _pos: ScriptPosition,
+    options: Option<&Map<String, Value>>,
+) -> Result<DumpOptions, String> {
+    let Some(options) = options else {
+        return Ok(DumpOptions::default());
+    };
+    serde_json::from_value(Value::Object(options.clone()))
+        .map_err(|error| format!("invalid dump options: {error}"))
 }
 
 impl ScriptRuntime {
@@ -2060,6 +2072,30 @@ impl ScriptRuntime {
 
     pub(super) fn fixtures(&self, pos: ScriptPosition) -> ScriptResult<Value> {
         self.to_json(pos, self.server.inner.fixtures.fixtures_sorted())
+    }
+
+    pub(super) fn dump(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let options =
+            dump_options(pos, options).map_err(|message| self.type_error(pos, message))?;
+        let dump = build_tree_dump(&self.server.inner, &options)
+            .map_err(|error| self.tool_error(pos, error.into()))?;
+        self.to_json(pos, dump)
+    }
+
+    pub(super) fn dump_text(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let options =
+            dump_options(pos, options).map_err(|message| self.type_error(pos, message))?;
+        let dump = build_tree_dump(&self.server.inner, &options)
+            .map_err(|error| self.tool_error(pos, error.into()))?;
+        self.to_json(pos, dump_text(&dump))
     }
 
     fn assert_result(
