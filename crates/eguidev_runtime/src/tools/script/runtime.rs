@@ -412,6 +412,7 @@ impl ScriptRuntime {
         self.to_json(
             pos,
             serde_json::json!({
+                "name": snapshot.name,
                 "title": snapshot.title,
                 "outer_pos": Value::Null,
                 "outer_size": snapshot.outer_size,
@@ -1053,23 +1054,38 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let title_contains = parse_optional_string(options, "title_contains")
             .map_err(|error| self.type_error(pos, error.message))?;
-        if title.is_none() && title_contains.is_none() {
-            return Err(self.type_error(pos, "viewport requires title or title_contains"));
+        let name = parse_optional_string(options, "name")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let focused = parse_optional_bool(options, "focused")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        if let Some(error) = self.server.inner.viewports.viewport_name_error() {
+            return Err(self.tool_error(pos, ToolError::from(error).into()));
+        }
+        if name.is_none() && title.is_none() && title_contains.is_none() && focused.is_none() {
+            return Err(self.type_error(
+                pos,
+                "viewport requires name, focused, title, or title_contains",
+            ));
         }
         let snapshots = self.server.inner.viewports.viewports_snapshot();
-        let exact = if let Some(title) = title.as_deref() {
-            let matches = snapshots
+        let mut selector = Vec::new();
+        let mut matches = if let Some(name) = name.as_deref() {
+            selector.push(format!("name {name:?}"));
+            snapshots
+                .iter()
+                .filter(|snapshot| snapshot.name.as_deref() == Some(name))
+                .collect::<Vec<_>>()
+        } else if let Some(title) = title.as_deref() {
+            let exact = snapshots
                 .iter()
                 .filter(|snapshot| snapshot.title.as_deref() == Some(title))
                 .collect::<Vec<_>>();
-            unique_viewport_lookup(matches, format!("title {title:?}"))
-                .map_err(|error| self.runtime_error(pos, error))?
-        } else {
-            None
-        };
-        let contains = if exact.is_none() {
-            if let Some(needle) = title_contains.as_deref() {
-                let matches = snapshots
+            if !exact.is_empty() || title_contains.is_none() {
+                selector.push(format!("title {title:?}"));
+                exact
+            } else if let Some(needle) = title_contains.as_deref() {
+                selector.push(format!("title_contains {needle:?}"));
+                snapshots
                     .iter()
                     .filter(|snapshot| {
                         snapshot
@@ -1077,18 +1093,34 @@ impl ScriptRuntime {
                             .as_deref()
                             .is_some_and(|title| title.contains(needle))
                     })
-                    .collect::<Vec<_>>();
-                unique_viewport_lookup(matches, format!("title_contains {needle:?}"))
-                    .map_err(|error| self.runtime_error(pos, error))?
+                    .collect::<Vec<_>>()
             } else {
-                None
+                Vec::new()
             }
+        } else if let Some(needle) = title_contains.as_deref() {
+            selector.push(format!("title_contains {needle:?}"));
+            snapshots
+                .iter()
+                .filter(|snapshot| {
+                    snapshot
+                        .title
+                        .as_deref()
+                        .is_some_and(|title| title.contains(needle))
+                })
+                .collect::<Vec<_>>()
         } else {
-            None
+            snapshots.iter().collect::<Vec<_>>()
         };
-        exact.or(contains).map_or(Ok(Value::Null), |snapshot| {
-            self.viewport_handle_json(pos, &snapshot.viewport_id)
-        })
+        if let Some(focused) = focused {
+            selector.push(format!("focused {focused}"));
+            matches.retain(|snapshot| snapshot.focused == focused);
+        }
+        let selector = selector.join(", ");
+        unique_viewport_lookup(matches, selector)
+            .map_err(|error| self.runtime_error(pos, error))?
+            .map_or(Ok(Value::Null), |snapshot| {
+                self.viewport_handle_json(pos, &snapshot.viewport_id)
+            })
     }
 
     pub(super) async fn viewports_list(

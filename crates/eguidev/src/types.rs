@@ -1,6 +1,6 @@
 //! Data types used by DevMCP tooling.
 
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, error::Error, fmt};
 
 use egui::{Rect as EguiRect, Vec2 as EguiVec2};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -11,6 +11,169 @@ use serde::{
 };
 
 use crate::registry::viewport_id_to_string;
+
+/// Error returned when a semantic viewport name is reserved or invalid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ViewportNameError {
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+}
+
+impl ViewportNameError {
+    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ViewportNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for ViewportNameError {}
+
+/// Error returned when parsing a viewport selector string fails.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ViewportSelParseError {
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+}
+
+impl ViewportSelParseError {
+    fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ViewportSelParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for ViewportSelParseError {}
+
+/// Explicit selector for a viewport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewportSel {
+    kind: ViewportSelKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ViewportSelKind {
+    Root,
+    Id(egui::ViewportId),
+    RawId(u64),
+    Name(String),
+}
+
+impl ViewportSel {
+    /// Select the root viewport.
+    pub fn root() -> Self {
+        Self {
+            kind: ViewportSelKind::Root,
+        }
+    }
+
+    /// Select a concrete egui viewport id.
+    pub fn id(id: egui::ViewportId) -> Self {
+        Self {
+            kind: ViewportSelKind::Id(id),
+        }
+    }
+
+    /// Select a semantic viewport name.
+    pub fn name(name: impl Into<String>) -> Result<Self, ViewportNameError> {
+        let name = name.into();
+        validate_viewport_name(&name)?;
+        Ok(Self {
+            kind: ViewportSelKind::Name(name),
+        })
+    }
+
+    /// Parse the Luau/tool selector grammar: `root`, a semantic name, or `vp:<hex>`.
+    pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {
+        let selector = selector.as_ref();
+        if selector.trim().is_empty() {
+            return Err(ViewportSelParseError::new(
+                "empty_viewport_selector",
+                "viewport selector must not be empty",
+            ));
+        }
+        if selector == "root" {
+            return Ok(Self::root());
+        }
+        if let Some(raw) = selector.strip_prefix("vp:") {
+            if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(ViewportSelParseError::new(
+                    "invalid_viewport_id",
+                    format!("viewport id selector `{selector}` must be `vp:<hex>`"),
+                ));
+            }
+            let raw_id = u64::from_str_radix(raw, 16).map_err(|_| {
+                ViewportSelParseError::new(
+                    "invalid_viewport_id",
+                    format!("viewport id selector `{selector}` must be `vp:<hex>`"),
+                )
+            })?;
+            return Ok(Self {
+                kind: ViewportSelKind::RawId(raw_id),
+            });
+        }
+        validate_viewport_name(selector).map_err(|error| {
+            ViewportSelParseError::new(
+                error.code,
+                format!("invalid viewport name: {}", error.message),
+            )
+        })?;
+        Ok(Self {
+            kind: ViewportSelKind::Name(selector.to_string()),
+        })
+    }
+
+    /// Return the canonical string selector used in fixtures and scripts.
+    pub fn to_selector_string(&self) -> String {
+        match &self.kind {
+            ViewportSelKind::Root => "root".to_string(),
+            ViewportSelKind::Id(id) => viewport_id_to_string(*id),
+            ViewportSelKind::RawId(raw_id) => format!("vp:{raw_id:x}"),
+            ViewportSelKind::Name(name) => name.clone(),
+        }
+    }
+}
+
+impl From<egui::ViewportId> for ViewportSel {
+    fn from(value: egui::ViewportId) -> Self {
+        Self::id(value)
+    }
+}
+
+pub fn validate_viewport_name(name: &str) -> Result<(), ViewportNameError> {
+    if name.trim().is_empty() {
+        return Err(ViewportNameError::new(
+            "empty_viewport_name",
+            "viewport name must not be empty",
+        ));
+    }
+    if name == "root" || name.starts_with("vp:") {
+        return Err(ViewportNameError::new(
+            "reserved_viewport_name",
+            format!("viewport name `{name}` is reserved"),
+        ));
+    }
+    Ok(())
+}
 
 fn sanitize_f32(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
@@ -142,7 +305,7 @@ pub struct FixtureSpec {
 pub struct Anchor {
     /// Widget id to resolve from the registry.
     pub widget_id: String,
-    /// Optional viewport selector (`root` or `vp:...`).
+    /// Optional viewport selector (`root`, semantic name, or `vp:...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport_id: Option<String>,
     /// Readiness condition to evaluate against the widget state.
@@ -186,10 +349,14 @@ impl FixtureSpec {
     }
 
     /// Add a visible-widget precondition scoped to a viewport.
-    pub fn precondition_in(self, widget_id: impl Into<String>, viewport: egui::ViewportId) -> Self {
+    pub fn precondition_in(
+        self,
+        widget_id: impl Into<String>,
+        viewport: impl Into<ViewportSel>,
+    ) -> Self {
         self.push_precondition(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::Visible,
         )
     }
@@ -204,11 +371,11 @@ impl FixtureSpec {
         self,
         widget_id: impl Into<String>,
         value: WidgetValue,
-        viewport: egui::ViewportId,
+        viewport: impl Into<ViewportSel>,
     ) -> Self {
         self.push_precondition(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::Value(value),
         )
     }
@@ -219,10 +386,10 @@ impl FixtureSpec {
     }
 
     /// Add a visible-widget readiness anchor scoped to a viewport.
-    pub fn anchor_in(self, widget_id: impl Into<String>, viewport: egui::ViewportId) -> Self {
+    pub fn anchor_in(self, widget_id: impl Into<String>, viewport: impl Into<ViewportSel>) -> Self {
         self.push_anchor(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::Visible,
         )
     }
@@ -237,11 +404,11 @@ impl FixtureSpec {
         self,
         widget_id: impl Into<String>,
         text: impl Into<String>,
-        viewport: egui::ViewportId,
+        viewport: impl Into<ViewportSel>,
     ) -> Self {
         self.push_anchor(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::Label(text.into()),
         )
     }
@@ -256,11 +423,11 @@ impl FixtureSpec {
         self,
         widget_id: impl Into<String>,
         value: WidgetValue,
-        viewport: egui::ViewportId,
+        viewport: impl Into<ViewportSel>,
     ) -> Self {
         self.push_anchor(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::Value(value),
         )
     }
@@ -274,11 +441,11 @@ impl FixtureSpec {
     pub fn anchor_scroll_in(
         self,
         widget_id: impl Into<String>,
-        viewport: egui::ViewportId,
+        viewport: impl Into<ViewportSel>,
     ) -> Self {
         self.push_anchor(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::ScrollReady,
         )
     }
@@ -306,11 +473,11 @@ impl FixtureSpec {
         widget_id: impl Into<String>,
         offset: impl Into<Vec2>,
         tolerance: f32,
-        viewport: egui::ViewportId,
+        viewport: impl Into<ViewportSel>,
     ) -> Self {
         self.push_anchor(
             widget_id.into(),
-            Some(viewport_id_to_string(viewport)),
+            Some(viewport.into().to_selector_string()),
             AnchorCheck::ScrollAt {
                 offset: offset.into(),
                 tolerance,
@@ -842,7 +1009,7 @@ impl RoleState {
 
 #[cfg(test)]
 mod tests {
-    use super::{RoleState, Vec2, WidgetValue};
+    use super::{RoleState, Vec2, ViewportSel, WidgetValue, validate_viewport_name};
 
     #[test]
     fn widget_value_deserializes_tagged_object() {
@@ -869,6 +1036,48 @@ mod tests {
     fn widget_value_serialization() {
         let v = WidgetValue::Bool(true);
         assert_eq!(serde_json::to_string(&v).unwrap(), "true");
+    }
+
+    #[test]
+    fn viewport_selector_parses_canonical_strings() {
+        assert_eq!(
+            ViewportSel::parse("root").unwrap().to_selector_string(),
+            "root"
+        );
+        assert_eq!(
+            ViewportSel::parse("details").unwrap().to_selector_string(),
+            "details"
+        );
+        assert_eq!(
+            ViewportSel::parse("vp:AB").unwrap().to_selector_string(),
+            "vp:ab"
+        );
+        assert_eq!(
+            ViewportSel::parse("vp:00ff").unwrap().to_selector_string(),
+            "vp:ff"
+        );
+    }
+
+    #[test]
+    fn viewport_selector_rejects_invalid_raw_ids() {
+        for selector in ["vp:", "vp:+ff", "vp:zz"] {
+            assert!(
+                ViewportSel::parse(selector).is_err(),
+                "{selector} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn viewport_name_validation_rejects_empty_and_reserved_names() {
+        for name in ["", "   "] {
+            let error = validate_viewport_name(name).expect_err("empty name rejected");
+            assert_eq!(error.code, "empty_viewport_name");
+        }
+        for name in ["root", "vp:123"] {
+            let error = validate_viewport_name(name).expect_err("reserved name rejected");
+            assert_eq!(error.code, "reserved_viewport_name");
+        }
     }
 
     #[test]
@@ -929,6 +1138,9 @@ pub struct WidgetRegistryEntry {
     pub label: Option<String>,
     /// Optional widget value for stateful controls.
     pub value: Option<WidgetValue>,
+    /// Structured app-domain metadata attached to this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     /// Optional layout metadata.
     pub layout: Option<WidgetLayout>,
     /// Optional role-specific metadata encoded as a nested enum.
@@ -957,6 +1169,9 @@ pub struct WidgetState {
     pub label: Option<String>,
     /// Optional widget value for stateful controls.
     pub value: Option<WidgetValue>,
+    /// Structured app-domain metadata attached to this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     /// String representation of the widget value. Empty string when value is
     /// `None`. For `Bool` → `"true"`/`"false"`, `Float` → decimal, `Int` →
     /// decimal, `Text` → verbatim.
@@ -1015,6 +1230,7 @@ impl From<&WidgetRegistryEntry> for WidgetState {
             role: entry.role.clone(),
             label: entry.label.clone(),
             value: entry.value.clone(),
+            data: entry.data.clone(),
             value_text,
             layout: entry.layout.clone(),
             scroll,

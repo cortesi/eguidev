@@ -300,6 +300,7 @@ mod tests {
             role,
             label: None,
             value: None,
+            data: None,
             layout: None,
             role_state: None,
             parent_id: Some("panel".to_string()),

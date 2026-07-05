@@ -11,11 +11,12 @@ use std::{
 use eframe::{App, egui};
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::ScrollBarVisibility};
 use eguidev::{
-    ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureSpec, FrameGuard,
-    ProgressBarOptions, ScrollAreaState, TextEditOptions, WidgetRole,
+    ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureSpec,
+    ProgressBarOptions, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRole,
 };
 #[cfg(feature = "devtools")]
 use eguidev_runtime::attach as attach_runtime;
+use serde_json::json;
 
 /// Shared result type for the demo binary entry point.
 type MainResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -32,8 +33,8 @@ fn occluder_viewport_id() -> egui::ViewportId {
 
 /// Fixture catalog for the demo app.
 fn demo_fixtures() -> Vec<FixtureSpec> {
-    let secondary = secondary_viewport_id();
-    let occluder = occluder_viewport_id();
+    let secondary = ViewportSel::name("secondary").expect("valid viewport name");
+    let occluder = ViewportSel::name("occluder").expect("valid viewport name");
     vec![
         FixtureSpec::new("basic.default", "Reset to the initial demo state.")
             .anchor_label("basic.status", "Waiting for input.")
@@ -64,7 +65,12 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "Reset the secondary viewport to its default state.",
         )
         .anchor_label("basic.status", "Waiting for input.")
-        .anchor_scroll_at_in("viewports.scroll", egui::vec2(0.0, 0.0), 0.75, secondary),
+        .anchor_scroll_at_in(
+            "viewports.scroll",
+            egui::vec2(0.0, 0.0),
+            0.75,
+            secondary.clone(),
+        ),
         FixtureSpec::new(
             "viewports.scrolled",
             "Jump the secondary viewport list down to a later row.",
@@ -77,6 +83,11 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
         )
         .anchor_label("basic.status", "Fixture: root viewport occluded")
         .anchor_label_in("viewports.occluder.status", "Occluder active", occluder),
+        FixtureSpec::new(
+            "viewports.duplicate_names",
+            "Deliberately register duplicate viewport names for fault testing.",
+        )
+        .anchor_label("basic.status", "Fixture: duplicate viewport names"),
     ]
 }
 
@@ -242,6 +253,8 @@ struct DemoState {
     show_occluder: bool,
     /// Whether fixture resets should preserve the test occluder viewport.
     force_occluder: bool,
+    /// Whether the occluder should deliberately reuse the secondary viewport name.
+    duplicate_viewport_names: bool,
     /// Selected row index from the secondary viewport list.
     secondary_selected_row: usize,
     /// Accumulated drag offset for the secondary viewport drag region.
@@ -308,6 +321,7 @@ impl DemoState {
             show_secondary: true,
             show_occluder: force_occluder,
             force_occluder,
+            duplicate_viewport_names: false,
             secondary_selected_row: 0,
             secondary_drag_offset: egui::Vec2::ZERO,
             secondary_scroll_state: ScrollAreaState::default(),
@@ -350,6 +364,7 @@ impl DemoState {
         self.basic_scroll_state.reset();
         self.show_secondary = true;
         self.show_occluder = self.force_occluder;
+        self.duplicate_viewport_names = false;
         self.secondary_selected_row = 0;
         self.secondary_drag_offset = egui::Vec2::ZERO;
         self.secondary_scroll_state.reset();
@@ -406,6 +421,13 @@ impl DemoState {
             "viewports.occluded" => {
                 self.show_occluder = true;
                 self.status = "Fixture: root viewport occluded".to_string();
+                Ok(())
+            }
+            "viewports.duplicate_names" => {
+                self.show_secondary = true;
+                self.show_occluder = true;
+                self.duplicate_viewport_names = true;
+                self.status = "Fixture: duplicate viewport names".to_string();
                 Ok(())
             }
             _ => Err(format!("unknown fixture: {name}")),
@@ -542,7 +564,11 @@ impl DemoApp {
                     label: Some("Sample target".to_string()),
                     visible: true,
                     ..Default::default()
-                },
+                }
+                .with_data(json!({
+                    "kind": "sample_target",
+                    "color": "#2f80ed",
+                })),
             );
             let (gutter_rect, _) =
                 ui.allocate_exact_size(egui::vec2(16.0, 24.0), egui::Sense::hover());
@@ -834,84 +860,84 @@ impl DemoApp {
         ui: &mut egui::Ui,
         class: egui::ViewportClass,
     ) {
-        let devmcp = devmcp.clone();
-        let ctx = ui.ctx().clone();
-        let _guard = FrameGuard::new(&devmcp, &ctx);
+        eguidev::frame_scope(devmcp, ui, "viewports.secondary.frame", |ui| {
+            eguidev::name_viewport(ui.ctx(), "secondary");
 
-        if ui.ctx().input(|i| i.viewport().close_requested()) {
-            s.show_secondary = false;
-        }
+            if ui.ctx().input(|i| i.viewport().close_requested()) {
+                s.show_secondary = false;
+            }
 
-        let title = match class {
-            egui::ViewportClass::EmbeddedWindow => "Secondary viewport (embedded)",
-            _ => "Secondary viewport",
-        };
-        ui.heading(title);
-        ui.label("Scroll and drag inside this viewport.");
+            let title = match class {
+                egui::ViewportClass::EmbeddedWindow => "Secondary viewport (embedded)",
+                _ => "Secondary viewport",
+            };
+            ui.heading(title);
+            ui.label("Scroll and drag inside this viewport.");
 
-        let _output = s.secondary_scroll_state.show(
-            egui::ScrollArea::vertical()
-                .id_salt("secondary_scroll")
-                .max_height(240.0),
-            ui,
-            "viewports.scroll",
-            |ui| {
-                for row in 0..25 {
-                    let label = format!("Row {row}");
-                    let response = ui.dev_button(format!("viewports.row.{row}"), label);
-                    if response.clicked() {
-                        s.secondary_selected_row = row;
-                        s.status = format!("Secondary row {row} selected.");
+            let _output = s.secondary_scroll_state.show(
+                egui::ScrollArea::vertical()
+                    .id_salt("secondary_scroll")
+                    .max_height(240.0),
+                ui,
+                "viewports.scroll",
+                |ui| {
+                    for row in 0..25 {
+                        let label = format!("Row {row}");
+                        let response = ui.dev_button(format!("viewports.row.{row}"), label);
+                        if response.clicked() {
+                            s.secondary_selected_row = row;
+                            s.status = format!("Secondary row {row} selected.");
+                        }
                     }
-                }
-            },
-        );
+                },
+            );
 
-        ui.separator();
-        ui.dev_label(
-            "viewports.selected_row.detail",
-            format!("Selected row: {}", s.secondary_selected_row),
-        );
+            ui.separator();
+            ui.dev_label(
+                "viewports.selected_row.detail",
+                format!("Selected row: {}", s.secondary_selected_row),
+            );
 
-        ui.separator();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(160.0, 48.0), egui::Sense::hover());
-        let drag_rect = rect.translate(s.secondary_drag_offset);
-        let response = ui.interact(
-            drag_rect,
-            egui::Id::new("secondary_drag_region"),
-            egui::Sense::drag(),
-        );
-        if response.dragged() {
-            s.secondary_drag_offset += response.drag_delta();
-        }
-        ui.painter()
-            .rect_filled(drag_rect, 6.0, egui::Color32::from_rgb(32, 128, 96));
-        ui.painter().text(
-            drag_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Drag me",
-            egui::FontId::proportional(16.0),
-            egui::Color32::WHITE,
-        );
-        eguidev::track_response_full(
-            "viewports.drag",
-            &response,
-            eguidev::WidgetMeta {
-                role: WidgetRole::Unknown,
-                label: Some("drag region".to_string()),
-                rect: Some(drag_rect),
-                interact_rect: Some(drag_rect),
-                visible: true,
-                ..Default::default()
-            },
-        );
-        ui.dev_label(
-            "viewports.drag.detail",
-            format!(
-                "Drag offset: {:.1}, {:.1}",
-                s.secondary_drag_offset.x, s.secondary_drag_offset.y
-            ),
-        );
+            ui.separator();
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(160.0, 48.0), egui::Sense::hover());
+            let drag_rect = rect.translate(s.secondary_drag_offset);
+            let response = ui.interact(
+                drag_rect,
+                egui::Id::new("secondary_drag_region"),
+                egui::Sense::drag(),
+            );
+            if response.dragged() {
+                s.secondary_drag_offset += response.drag_delta();
+            }
+            ui.painter()
+                .rect_filled(drag_rect, 6.0, egui::Color32::from_rgb(32, 128, 96));
+            ui.painter().text(
+                drag_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drag me",
+                egui::FontId::proportional(16.0),
+                egui::Color32::WHITE,
+            );
+            eguidev::track_response_full(
+                "viewports.drag",
+                &response,
+                eguidev::WidgetMeta {
+                    role: WidgetRole::Unknown,
+                    label: Some("drag region".to_string()),
+                    rect: Some(drag_rect),
+                    interact_rect: Some(drag_rect),
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+            ui.dev_label(
+                "viewports.drag.detail",
+                format!(
+                    "Drag offset: {:.1}, {:.1}",
+                    s.secondary_drag_offset.x, s.secondary_drag_offset.y
+                ),
+            );
+        });
     }
 
     /// Render the optional secondary viewport from the root frame.
@@ -951,29 +977,34 @@ impl DemoApp {
 
     /// Render contents inside the occluder viewport.
     fn render_occluder(s: &mut DemoState, devmcp: &DevMcp, ui: &mut egui::Ui) {
-        let devmcp = devmcp.clone();
-        let ctx = ui.ctx().clone();
-        let _guard = FrameGuard::new(&devmcp, &ctx);
+        eguidev::frame_scope(devmcp, ui, "viewports.occluder.frame", |ui| {
+            let viewport_name = if s.duplicate_viewport_names {
+                "secondary"
+            } else {
+                "occluder"
+            };
+            eguidev::name_viewport(ui.ctx(), viewport_name);
 
-        if ui.ctx().input(|i| i.viewport().close_requested()) {
-            s.show_occluder = s.force_occluder;
-        }
+            if ui.ctx().input(|i| i.viewport().close_requested()) {
+                s.show_occluder = s.force_occluder;
+            }
 
-        egui::Frame::central_panel(ui.style())
-            .fill(Color32::from_rgb(16, 18, 20))
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(ui.available_height() * 0.4);
-                    ui.heading("Occluder active");
-                    ui.dev_label("viewports.occluder.status", "Occluder active");
-                    if ui
-                        .dev_button("viewports.occluder.dismiss", "Dismiss occluder")
-                        .clicked()
-                    {
-                        s.show_occluder = s.force_occluder;
-                    }
+            egui::Frame::central_panel(ui.style())
+                .fill(Color32::from_rgb(16, 18, 20))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() * 0.4);
+                        ui.heading("Occluder active");
+                        ui.dev_label("viewports.occluder.status", "Occluder active");
+                        if ui
+                            .dev_button("viewports.occluder.dismiss", "Dismiss occluder")
+                            .clicked()
+                        {
+                            s.show_occluder = s.force_occluder;
+                        }
+                    });
                 });
-            });
+        });
     }
 
     /// Capture per-frame input state for the demo diagnostics.
@@ -1055,8 +1086,7 @@ impl App for DemoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let devmcp = self.devmcp.clone();
         let ctx = ui.ctx().clone();
-        {
-            let _guard = FrameGuard::new(&devmcp, &ctx);
+        eguidev::frame_scope(&devmcp, ui, "root.frame", |ui| {
             let mut s = self.state.lock().expect("demo state lock");
             egui::Frame::central_panel(ui.style()).show(ui, |ui| {
                 Self::render_root(&mut s, &self.preview_texture, ui);
@@ -1083,7 +1113,7 @@ impl App for DemoApp {
                 );
             }
             s.widget_window_open = open;
-        }
+        });
         let mut s = self.state.lock().expect("demo state lock");
         Self::show_secondary_viewport(&mut s, &devmcp, &ctx);
         Self::show_occluder_viewport(&mut s, &devmcp, &ctx);
@@ -1175,6 +1205,20 @@ mod tests {
 
         assert!(state.show_occluder);
         assert_eq!(state.status, "Fixture: root viewport occluded");
+    }
+
+    #[test]
+    fn duplicate_names_fixture_enables_fault_surface() {
+        let mut state = DemoState::new(false);
+
+        state
+            .apply_fixture("viewports.duplicate_names")
+            .expect("apply fixture");
+
+        assert!(state.show_secondary);
+        assert!(state.show_occluder);
+        assert!(state.duplicate_viewport_names);
+        assert_eq!(state.status, "Fixture: duplicate viewport names");
     }
 
     #[test]

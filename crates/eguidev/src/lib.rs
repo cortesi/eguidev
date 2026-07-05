@@ -139,21 +139,22 @@ mod viewports;
 mod widget_registry;
 
 pub use crate::{
-    devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport},
+    devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
     fixtures::FixtureHandler,
     instrument::{
         ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
-        publish_rect_meta, track_response_full,
+        name_viewport, publish_rect_meta, track_response_full,
     },
     types::{
-        Anchor, AnchorCheck, FixtureSpec, RoleState, ScrollAreaMeta, WidgetLayout, WidgetRange,
-        WidgetRole, WidgetState, WidgetValue,
+        Anchor, AnchorCheck, FixtureSpec, RoleState, ScrollAreaMeta, ViewportNameError,
+        ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange, WidgetRole, WidgetState,
+        WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
         TextEditOptions, take_widget_value_override,
     },
-    widget_registry::WidgetMeta,
+    widget_registry::{WidgetDataError, WidgetMeta},
 };
 #[doc(hidden)]
 pub mod internal {
@@ -187,8 +188,8 @@ pub mod internal {
     pub mod types {
         pub use crate::types::{
             Anchor, AnchorCheck, FixtureSpec, Modifiers, Pos2, Rect, RoleState, ScrollAreaMeta,
-            Vec2, WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole,
-            WidgetState, WidgetValue,
+            Vec2, ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange,
+            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue,
         };
     }
 
@@ -203,6 +204,8 @@ pub mod internal {
     }
 
     pub mod widget_registry {
-        pub use crate::widget_registry::{WidgetMeta, WidgetRegistry, record_widget};
+        pub use crate::widget_registry::{
+            WidgetDataError, WidgetMeta, WidgetRegistry, record_widget,
+        };
     }
 }

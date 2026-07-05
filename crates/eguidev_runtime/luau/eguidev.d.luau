@@ -198,6 +198,7 @@ export type WidgetState = {
     role: WidgetRole,
     label: string?,
     value: WidgetValue?,
+    data: any?,
     --- String representation of value. Empty string when value is nil.
     --- Bool → "true"/"false", Float → decimal, Int → decimal, Text → verbatim.
     value_text: string,
@@ -222,6 +223,7 @@ export type WidgetState = {
 }
 
 export type ViewportState = {
+    name: string?,
     title: string?,
     outer_pos: Pos?,
     outer_size: Vec?,
@@ -531,6 +533,8 @@ export type ScriptOptions = {
 }
 
 export type ViewportLookupOptions = {
+    name: string?,
+    focused: boolean?,
     title: string?,
     title_contains: string?,
 }
@@ -550,7 +554,8 @@ declare function wait_for_frames(count: number?): number
 --- Wait until the root viewport has produced a fresh captured snapshot.
 declare function wait_for_capture(): ()
 declare function root(): Viewport
---- Find a viewport by title. Exact `title` matches win over `title_contains`.
+--- Find a viewport by semantic name, focus state, or title. Exact `title` matches
+--- win over `title_contains`.
 --- Returns nil when no viewport matches.
 --- Throws when multiple viewports match the selected title rule.
 declare function viewport(options: ViewportLookupOptions): Viewport?

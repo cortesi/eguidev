@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::{
     error::{ErrorCode, ToolError},
     registry::{lock, viewport_id_to_string},
-    types::{Pos2, Vec2},
+    types::{Pos2, Vec2, validate_viewport_name},
 };
 
 #[derive(Debug, Clone)]
@@ -49,6 +49,7 @@ impl FrameHealth {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ViewportSnapshot {
     pub viewport_id: String,
+    pub name: Option<String>,
     pub inner_size: Vec2,
     pub outer_size: Option<Vec2>,
     pub pixels_per_point: f32,
@@ -74,6 +75,8 @@ pub struct PlatformViewportState {
 pub struct ViewportState {
     viewports_snapshot: Mutex<Vec<ViewportSnapshot>>,
     viewport_lookup: Mutex<HashMap<String, egui::ViewportId>>,
+    viewport_names: Mutex<HashMap<egui::ViewportId, String>>,
+    viewport_name_errors: Mutex<HashMap<egui::ViewportId, ViewportNameViolation>>,
     live_viewports: Mutex<Option<HashSet<egui::ViewportId>>>,
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
     capture_snapshot: Mutex<HashMap<egui::ViewportId, CaptureSnapshot>>,
@@ -91,6 +94,8 @@ impl ViewportState {
         Self {
             viewports_snapshot: Mutex::new(Vec::new()),
             viewport_lookup: Mutex::new(HashMap::new()),
+            viewport_names: Mutex::new(HashMap::new()),
+            viewport_name_errors: Mutex::new(HashMap::new()),
             live_viewports: Mutex::new(None),
             input_snapshot: Mutex::new(HashMap::new()),
             capture_snapshot: Mutex::new(HashMap::new()),
@@ -102,10 +107,20 @@ impl ViewportState {
         let (viewports, pixels_per_point, focused) =
             ctx.input(|i| (i.raw.viewports.clone(), i.pixels_per_point(), i.focused));
         let live_viewports = viewports.keys().copied().collect::<HashSet<_>>();
+        self.retain_live_viewport_names(&live_viewports);
+        let names = lock(&self.viewport_names, "viewport names lock").clone();
+        let names_by_selector = names
+            .iter()
+            .map(|(viewport_id, name)| (viewport_id_to_string(*viewport_id), name.clone()))
+            .collect::<HashMap<_, _>>();
         let mut stored = lock(&self.viewports_snapshot, "viewports snapshot lock");
         let mut snapshots = stored
             .iter()
             .cloned()
+            .map(|mut snapshot| {
+                snapshot.name = names_by_selector.get(&snapshot.viewport_id).cloned();
+                snapshot
+            })
             .map(|snapshot| (snapshot.viewport_id.clone(), snapshot))
             .collect::<HashMap<_, _>>();
         let mut lookup = lock(&self.viewport_lookup, "viewport lookup lock");
@@ -126,6 +141,7 @@ impl ViewportState {
                 viewport_id_str.clone(),
                 ViewportSnapshot {
                     viewport_id: viewport_id_str,
+                    name: names.get(&viewport_id).cloned(),
                     inner_size: Vec2::from(inner_size),
                     outer_size,
                     pixels_per_point: ppp,
@@ -175,6 +191,35 @@ impl ViewportState {
     pub fn remember_viewport_id(&self, viewport_id: egui::ViewportId) {
         lock(&self.viewport_lookup, "viewport lookup lock")
             .insert(viewport_id_to_string(viewport_id), viewport_id);
+    }
+
+    pub fn name_viewport(&self, viewport_id: egui::ViewportId, name: String) {
+        self.remember_viewport_id(viewport_id);
+        if let Err(error) = validate_viewport_name(&name) {
+            lock(&self.viewport_name_errors, "viewport name errors lock").insert(
+                viewport_id,
+                ViewportNameViolation {
+                    viewport_id,
+                    name,
+                    code: error.code,
+                    message: error.message,
+                },
+            );
+            return;
+        }
+
+        lock(&self.viewport_name_errors, "viewport name errors lock").remove(&viewport_id);
+        lock(&self.viewport_names, "viewport names lock").insert(viewport_id, name);
+    }
+
+    fn retain_live_viewport_names(&self, live_viewports: &HashSet<egui::ViewportId>) {
+        let is_live = |viewport_id: &egui::ViewportId| {
+            *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
+        };
+        lock(&self.viewport_names, "viewport names lock")
+            .retain(|viewport_id, _| is_live(viewport_id));
+        lock(&self.viewport_name_errors, "viewport name errors lock")
+            .retain(|viewport_id, _| is_live(viewport_id));
     }
 
     pub fn capture_input_snapshot(&self, ctx: &Context, fixture_epoch: u64, frame_count: u64) {
@@ -275,10 +320,19 @@ impl ViewportState {
         &self,
         viewport_id: Option<String>,
     ) -> Result<egui::ViewportId, ToolError> {
+        if let Some(error) = self.viewport_name_error() {
+            return Err(error);
+        }
         match viewport_id {
             None => Ok(egui::ViewportId::ROOT),
             Some(value) if value == "root" => Ok(egui::ViewportId::ROOT),
             Some(value) => {
+                if let Some(viewport_id) = lock(&self.viewport_names, "viewport names lock")
+                    .iter()
+                    .find_map(|(viewport_id, name)| (name == &value).then_some(*viewport_id))
+                {
+                    return Ok(viewport_id);
+                }
                 let lookup = lock(&self.viewport_lookup, "viewport lookup lock");
                 lookup.get(&value).copied().ok_or_else(|| {
                     ToolError::new(ErrorCode::InvalidRef, "Unknown viewport").with_details(json!({
@@ -289,6 +343,104 @@ impl ViewportState {
                 })
             }
         }
+    }
+
+    pub fn viewport_name_error(&self) -> Option<ToolError> {
+        let invalid_names = lock(&self.viewport_name_errors, "viewport name errors lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let live_viewports = lock(&self.live_viewports, "live viewports lock").clone();
+        let names = lock(&self.viewport_names, "viewport names lock").clone();
+        build_viewport_name_fault(invalid_names, &names, live_viewports.as_ref())
+            .map(ViewportNameFault::into_tool_error)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ViewportNameViolation {
+    viewport_id: egui::ViewportId,
+    name: String,
+    code: String,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
+struct DuplicateViewportNameEntry {
+    name: String,
+    viewport_ids: Vec<egui::ViewportId>,
+}
+
+#[derive(Debug, Clone)]
+struct ViewportNameFault {
+    invalid_names: Vec<ViewportNameViolation>,
+    duplicate_names: Vec<DuplicateViewportNameEntry>,
+}
+
+fn build_viewport_name_fault(
+    invalid_names: Vec<ViewportNameViolation>,
+    names: &HashMap<egui::ViewportId, String>,
+    live_viewports: Option<&HashSet<egui::ViewportId>>,
+) -> Option<ViewportNameFault> {
+    let mut by_name: HashMap<String, Vec<egui::ViewportId>> = HashMap::new();
+    for (viewport_id, name) in names {
+        let is_live = *viewport_id == egui::ViewportId::ROOT
+            || live_viewports.is_none_or(|live| live.contains(viewport_id));
+        if is_live {
+            by_name.entry(name.clone()).or_default().push(*viewport_id);
+        }
+    }
+    let mut duplicate_names = by_name
+        .into_iter()
+        .filter_map(|(name, mut viewport_ids)| {
+            viewport_ids.sort_by_key(|viewport_id| viewport_id_to_string(*viewport_id));
+            (viewport_ids.len() > 1).then_some(DuplicateViewportNameEntry { name, viewport_ids })
+        })
+        .collect::<Vec<_>>();
+    duplicate_names.sort_by(|left, right| left.name.cmp(&right.name));
+    (!invalid_names.is_empty() || !duplicate_names.is_empty()).then_some(ViewportNameFault {
+        invalid_names,
+        duplicate_names,
+    })
+}
+
+impl ViewportNameFault {
+    fn into_tool_error(self) -> ToolError {
+        let mut labels = self
+            .invalid_names
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .chain(self.duplicate_names.iter().map(|entry| entry.name.as_str()))
+            .take(5)
+            .collect::<Vec<_>>();
+        labels.sort();
+        let summary = labels.join(", ");
+        let count = self.invalid_names.len() + self.duplicate_names.len();
+        let suffix = if count > 5 {
+            format!(", +{} more", count - 5)
+        } else {
+            String::new()
+        };
+        let message = format!(
+            "Viewport name instrumentation faults detected: {summary}{suffix}; fix instrumentation before continuing automation"
+        );
+        ToolError::new(ErrorCode::DuplicateWidgetId, message).with_details(json!({
+            "reason": "viewport_name_faults",
+            "invalid_names": self.invalid_names.into_iter().map(|entry| {
+                json!({
+                    "viewport_id": viewport_id_to_string(entry.viewport_id),
+                    "name": entry.name,
+                    "code": entry.code,
+                    "message": entry.message,
+                })
+            }).collect::<Vec<_>>(),
+            "duplicate_names": self.duplicate_names.into_iter().map(|entry| {
+                json!({
+                    "name": entry.name,
+                    "viewport_ids": entry.viewport_ids.into_iter().map(viewport_id_to_string).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>(),
+        }))
     }
 }
 
@@ -314,6 +466,18 @@ mod tests {
         state.update_viewports(&ctx);
 
         let secondary_id = viewport_id_to_string(secondary);
+        state.name_viewport(secondary, "secondary".to_string());
+        state.update_viewports(&ctx);
+        assert_eq!(
+            state
+                .viewports_snapshot()
+                .into_iter()
+                .find(|snapshot| snapshot.viewport_id == secondary_id)
+                .expect("secondary snapshot")
+                .name
+                .as_deref(),
+            Some("secondary")
+        );
         assert_eq!(
             state
                 .resolve_viewport_id(Some(secondary_id.clone()))
@@ -337,6 +501,11 @@ mod tests {
                 .resolve_viewport_id(Some(secondary_id))
                 .expect("retained secondary viewport"),
             secondary
+        );
+        assert!(
+            state
+                .resolve_viewport_id(Some("secondary".to_string()))
+                .is_err()
         );
         assert!(!state.is_live_viewport(secondary));
         assert!(state.is_live_viewport(egui::ViewportId::ROOT));

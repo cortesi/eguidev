@@ -13,7 +13,7 @@ use egui::Context;
 use crate::{
     actions::InputAction,
     fixtures::FixtureHandler,
-    instrument::{ACTIVE, swallow_panic},
+    instrument::{ACTIVE, container, swallow_panic},
     registry::Inner,
     types::FixtureSpec,
 };
@@ -376,6 +376,23 @@ impl Drop for FrameGuard<'_> {
     fn drop(&mut self) {
         self.devmcp.end_frame(self.ctx);
     }
+}
+
+/// Wrap one viewport frame and register `container_id` as its root container.
+///
+/// Call this once for each rendered viewport pass, and render all instrumented
+/// widgets for that pass inside `add_contents`. If the viewport has a semantic
+/// name, call `name_viewport` from inside `add_contents` so the active frame is
+/// already installed.
+pub fn frame_scope<R>(
+    devmcp: &DevMcp,
+    ui: &mut egui::Ui,
+    container_id: impl Into<String>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let ctx = ui.ctx().clone();
+    let _guard = FrameGuard::new(devmcp, &ctx);
+    container(ui, container_id, add_contents)
 }
 
 /// Clear script-visible widgets for a viewport that is no longer rendered.

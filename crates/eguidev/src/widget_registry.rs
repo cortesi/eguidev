@@ -1,9 +1,10 @@
 //! Widget registry for tracking egui widgets across frames.
 #![allow(missing_docs)]
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, error::Error, fmt, sync::Mutex};
 
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::{
     error::{ErrorCode, ToolError},
@@ -21,6 +22,8 @@ pub struct WidgetMeta {
     pub label: Option<String>,
     /// Optional widget value for stateful controls.
     pub value: Option<WidgetValue>,
+    /// Structured app-domain metadata attached to this widget.
+    pub data: Option<Value>,
     /// Optional layout metadata.
     pub layout: Option<WidgetLayout>,
     /// Role-specific metadata. Leave as `None` for custom widgets.
@@ -32,6 +35,50 @@ pub struct WidgetMeta {
     /// Optional explicit interaction rect override.
     pub interact_rect: Option<egui::Rect>,
 }
+
+impl WidgetMeta {
+    /// Attach structured app-domain data from any serializable value.
+    pub fn with_data<T: Serialize>(self, data: T) -> Self {
+        let data =
+            serde_json::to_value(data).unwrap_or_else(|error| widget_data_error_value(&error));
+        Self {
+            data: normalize_widget_data(Some(data)),
+            ..self
+        }
+    }
+
+    /// Attach structured app-domain data, returning serialization errors.
+    pub fn try_with_data<T: Serialize>(self, data: T) -> Result<Self, WidgetDataError> {
+        let data = serde_json::to_value(data).map_err(|error| WidgetDataError {
+            code: "widget_data_serialize".to_string(),
+            message: format!("failed to serialize widget data: {error}"),
+            details: None,
+        })?;
+        Ok(Self {
+            data: Some(normalize_widget_data(Some(data)).expect("data just provided")),
+            ..self
+        })
+    }
+}
+
+/// Error returned by strict widget data attachment.
+#[derive(Debug, Clone)]
+pub struct WidgetDataError {
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional structured error details.
+    pub details: Option<Value>,
+}
+
+impl fmt::Display for WidgetDataError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for WidgetDataError {}
 
 #[derive(Debug, Clone)]
 struct DuplicateExplicitIdFault {
@@ -285,6 +332,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         focused,
     } = input;
     let value = normalize_widget_value(meta.value);
+    let data = normalize_widget_data(meta.data);
     let (rect, interact_rect) = if let Some(to_global) = ctx.layer_transform_to_global(layer_id) {
         (to_global.mul_rect(rect), to_global.mul_rect(interact_rect))
     } else {
@@ -301,6 +349,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         role: meta.role,
         label: meta.label,
         value,
+        data,
         layout: meta.layout,
         role_state: meta.role_state,
         parent_id,
@@ -309,6 +358,29 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         focused,
     };
     widgets.record_widget(viewport_id, entry);
+}
+
+fn normalize_widget_data(data: Option<Value>) -> Option<Value> {
+    const MAX_WIDGET_DATA_BYTES: usize = 16 * 1024;
+
+    let data = data?;
+    let byte_len = serde_json::to_vec(&data)
+        .map(|bytes| bytes.len())
+        .unwrap_or(MAX_WIDGET_DATA_BYTES + 1);
+    if byte_len <= MAX_WIDGET_DATA_BYTES {
+        return Some(data);
+    }
+    Some(json!({
+        "_eguidev_truncated": true,
+        "bytes": byte_len,
+    }))
+}
+
+fn widget_data_error_value(error: &serde_json::Error) -> Value {
+    json!({
+        "_eguidev_error": "serialize",
+        "message": error.to_string(),
+    })
 }
 
 fn normalize_widget_value(value: Option<WidgetValue>) -> Option<WidgetValue> {
@@ -511,4 +583,75 @@ fn selectors_value(details: &serde_json::Value) -> serde_json::Value {
         .get("selectors")
         .cloned()
         .unwrap_or_else(|| json!({}))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::{
+        Serialize, Serializer,
+        ser::{Error as SerError, SerializeMap},
+    };
+    use serde_json::{Value, json};
+
+    use super::{WidgetMeta, normalize_widget_data};
+
+    struct FailingData;
+
+    impl Serialize for FailingData {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            Err(S::Error::custom("intentional data failure"))
+        }
+    }
+
+    struct NonFiniteData;
+
+    impl Serialize for NonFiniteData {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry("nan", &f64::NAN)?;
+            map.end()
+        }
+    }
+
+    #[test]
+    fn widget_data_is_truncated_when_compact_json_is_too_large() {
+        let value = json!({
+            "payload": "x".repeat(17 * 1024),
+        });
+
+        assert_eq!(
+            normalize_widget_data(Some(value)),
+            Some(json!({
+                "_eguidev_truncated": true,
+                "bytes": 17422,
+            }))
+        );
+    }
+
+    #[test]
+    fn with_data_marks_serialization_failures() {
+        let meta = WidgetMeta::default().with_data(FailingData);
+        let data = meta.data.expect("error marker");
+
+        assert_eq!(data["_eguidev_error"], "serialize");
+        assert!(
+            data["message"]
+                .as_str()
+                .expect("message")
+                .contains("intentional data failure")
+        );
+    }
+
+    #[test]
+    fn with_data_sanitizes_non_finite_numbers_to_null() {
+        let meta = WidgetMeta::default().with_data(NonFiniteData);
+
+        assert_eq!(meta.data, Some(json!({ "nan": Value::Null })));
+    }
 }

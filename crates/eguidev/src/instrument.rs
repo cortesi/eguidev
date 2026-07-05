@@ -40,6 +40,21 @@ pub fn active_inner() -> Option<Arc<Inner>> {
     })
 }
 
+/// Register a semantic name for the viewport currently rendering in `ctx`.
+///
+/// Call this every frame from inside that viewport's instrumented pass, after
+/// `FrameGuard` or `frame_scope` has made the frame active. Calls outside an
+/// active instrumentation frame are ignored, which keeps production rendering
+/// code usable when DevMCP is disabled.
+pub fn name_viewport(ctx: &egui::Context, name: impl Into<String>) {
+    let Some(inner) = active_inner() else {
+        return;
+    };
+    inner
+        .viewports
+        .name_viewport(ctx.viewport_id(), name.into());
+}
+
 /// Record a widget with an explicit id and geometry only.
 ///
 /// Prefer `DevUiExt` for standard widgets. Use `id` for custom widgets where metadata is

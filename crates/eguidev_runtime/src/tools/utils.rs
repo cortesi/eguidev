@@ -208,6 +208,9 @@ pub fn ensure_automation_ready(inner: &Inner) -> Result<(), ToolError> {
     if let Some(error) = inner.widgets.duplicate_explicit_id_error() {
         return Err(error.into());
     }
+    if let Some(error) = inner.viewports.viewport_name_error() {
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -773,6 +776,7 @@ pub fn viewport_snapshot_for(
 
 pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
     json!({
+        "name": snapshot.name,
         "title": snapshot.title,
         "outer_pos": Value::Null,
         "outer_size": snapshot.outer_size,
@@ -858,6 +862,7 @@ mod tests {
             role,
             label: None,
             value,
+            data: None,
             layout: None,
             role_state: None,
             parent_id: None,

@@ -786,7 +786,9 @@ impl DevMcpServer {
     ) -> ToolResult<Vec<ViewportSnapshot>> {
         let mut viewports = self.inner.viewports.viewports_snapshot();
         if let Some(filter) = viewport_id {
-            viewports.retain(|entry| entry.viewport_id == filter);
+            let viewport_id =
+                viewport_id_to_string(resolve_viewport_id(&self.inner, Some(filter))?);
+            viewports.retain(|entry| entry.viewport_id == viewport_id);
         }
         Ok(viewports)
     }
@@ -2781,6 +2783,7 @@ mod tests {
             role,
             label: None,
             value: None,
+            data: None,
             layout: None,
             role_state: None,
             parent_id: parent_id.map(str::to_string),
@@ -2849,6 +2852,7 @@ mod tests {
     fn viewport_snapshot_with_inner_size(inner_size: Vec2) -> ViewportSnapshot {
         ViewportSnapshot {
             viewport_id: viewport_id_to_string(egui::ViewportId::ROOT),
+            name: None,
             inner_size,
             outer_size: Some(inner_size),
             pixels_per_point: 1.0,
@@ -3196,6 +3200,65 @@ return {
     }
 
     #[tokio::test]
+    async fn script_eval_viewport_finds_viewport_by_name_and_focus() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let secondary = egui::ViewportId::from_hash_of("secondary.named.lookup");
+
+        let mut raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        raw_input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                title: Some("Root Lookup".to_string()),
+                focused: Some(false),
+                ..Default::default()
+            },
+        );
+        raw_input.viewports.insert(
+            secondary,
+            egui::ViewportInfo {
+                title: Some("Secondary Lookup".to_string()),
+                focused: Some(true),
+                ..Default::default()
+            },
+        );
+        drop(ctx.run_ui(raw_input, |_| {}));
+        inner
+            .viewports
+            .name_viewport(secondary, "secondary".to_string());
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        inner.viewports.update_viewports(&ctx);
+        record_test_snapshot(&inner, egui::ViewportId::ROOT);
+
+        let result = server
+            .script_eval(
+                r#"local named = viewport({ name = "secondary" })
+local focused = viewport({ focused = true })
+local state = named ~= nil and named:state() or nil
+return {
+    named = named ~= nil and named.id or nil,
+    focused = focused ~= nil and focused.id or nil,
+    name = state ~= nil and state.name or nil,
+}"#
+                .to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        let secondary_id = viewport_id_to_string(secondary);
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"]["named"], secondary_id);
+        assert_eq!(json["value"]["focused"], secondary_id);
+        assert_eq!(json["value"]["name"], "secondary");
+    }
+
+    #[tokio::test]
     async fn script_eval_viewport_errors_on_ambiguous_title() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -3245,6 +3308,49 @@ return {
     }
 
     #[tokio::test]
+    async fn script_eval_viewport_errors_on_duplicate_names() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let ctx = egui::Context::default();
+        let first = egui::ViewportId::from_hash_of("duplicate.name.first");
+        let second = egui::ViewportId::from_hash_of("duplicate.name.second");
+
+        let mut raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        raw_input
+            .viewports
+            .insert(egui::ViewportId::ROOT, Default::default());
+        raw_input.viewports.insert(first, Default::default());
+        raw_input.viewports.insert(second, Default::default());
+        drop(ctx.run_ui(raw_input, |_| {}));
+        inner
+            .viewports
+            .name_viewport(first, "duplicate".to_string());
+        inner
+            .viewports
+            .name_viewport(second, "duplicate".to_string());
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        inner.viewports.update_viewports(&ctx);
+        record_test_snapshot(&inner, egui::ViewportId::ROOT);
+
+        let result = server
+            .script_eval(
+                r#"return viewport({ name = "duplicate" })"#.to_string(),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["code"], ErrorCode::DuplicateWidgetId.as_str());
+        assert_eq!(json["error"]["details"]["reason"], "viewport_name_faults");
+    }
+
+    #[tokio::test]
     async fn script_eval_widget_get_state_reads_current_snapshot() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -3253,6 +3359,7 @@ return {
         inner.widgets.clear_registry(viewport_id);
         let mut entry = make_entry("status", 1, WidgetRole::Button);
         entry.label = Some("Ready".to_string());
+        entry.data = Some(json!({"kind": "status", "ready": true}));
         entry.focused = true;
         inner.widgets.record_widget(viewport_id, entry);
         inner.widgets.finalize_registry(viewport_id);
@@ -3260,8 +3367,14 @@ return {
         let result = server
             .script_eval(
                 r#"local state = root():widget_get("status"):state()
-return { role = state.role, label = state.label, focused = state.focused }"#
-                    .to_string(),
+return {
+    role = state.role,
+    label = state.label,
+    kind = state.data.kind,
+    ready = state.data.ready,
+    focused = state.focused,
+}"#
+                .to_string(),
                 None,
                 None,
             )
@@ -3271,7 +3384,13 @@ return { role = state.role, label = state.label, focused = state.focused }"#
         assert_eq!(json["success"], true);
         assert_eq!(
             json["value"],
-            json!({ "role": "button", "label": "Ready", "focused": true })
+            json!({
+                "role": "button",
+                "label": "Ready",
+                "kind": "status",
+                "ready": true,
+                "focused": true
+            })
         );
     }
 
@@ -3306,6 +3425,7 @@ for _, widget in ipairs(root():widget_list()) do
     assert(type(state.focused) == "boolean", "focused must be boolean")
     assert(state.label == nil or type(state.label) == "string", "label must be nil|string")
     assert(state.value == nil or type(state.value) ~= "userdata", "value must not be userdata")
+    assert(state.data == nil or type(state.data) == "table", "data must be nil|table")
     assert(state.layout == nil or type(state.layout) == "table", "layout must be nil|table")
     assert(state.scroll_state == nil or type(state.scroll_state) == "table", "scroll_state")
     assert(state.range == nil or type(state.range) == "table", "range")

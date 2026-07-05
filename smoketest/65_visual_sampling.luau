@@ -1,6 +1,9 @@
 fixture("basic.default")
 local vp = root()
 local target = vp:widget_get("basic.visual.sample_target"):state()
+assert(target.data ~= nil, "sample target should expose structured widget data")
+assert(target.data.kind == "sample_target", "sample target data should expose kind")
+assert(target.data.color == "#2f80ed", "sample target data should expose color")
 local center = {
     x = (target.rect.min.x + target.rect.max.x) / 2,
     y = (target.rect.min.y + target.rect.max.y) / 2,
