@@ -19,7 +19,7 @@ use eguidev::{FixtureParam, FixtureSpec, ParamKind, WidgetValue};
 use eguidev_runtime::{
     ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     ScriptEvalRequest, script_definitions,
-    smoke::{ScriptRunRequest, SuiteResult, run_suite_with},
+    smoke::{ScriptRunRequest, SuiteResult, discover_suite_scripts, run_suite_with},
 };
 use instance_registry::InstanceRegistry;
 use serde::{
@@ -120,13 +120,23 @@ async fn run_mcp(config: McpConfig) -> Result<(), EdevError> {
 
 /// Run the checked-in smoke suite once and exit non-zero on any smoke failure.
 async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
-    let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let mut state = State::new(config.launch.clone(), instance_registry);
+    if config.list {
+        return print_smoke_list(&config);
+    }
+
+    let launch = config.launch.clone().ok_or_else(|| {
+        EdevError::InvalidArgs(
+            "no app command configured; add app.command to .edev.toml or pass one after --"
+                .to_string(),
+        )
+    })?;
+    let instance_registry = InstanceRegistry::register(&launch)?;
+    let mut state = State::new(launch.clone(), instance_registry);
     let client = start_proxy_target(&mut state, "smoke runner could not reach the app").await?;
     let bundle_context = config.bundle_dir.as_ref().and_then(|dir| {
         state.app.as_ref().map(|app| BundleContext {
             dir: dir.clone(),
-            launch: config.launch.clone(),
+            launch: launch.clone(),
             stderr_buffer: Arc::clone(&app.stderr_buffer),
             stdout_buffer: Arc::clone(&app.stdout_buffer),
             collection_timeout_ms: config
@@ -153,6 +163,22 @@ async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
     }
+}
+
+/// Print discovered smoke scripts in text or JSON list format.
+fn print_smoke_list(config: &SmokeConfig) -> Result<(), EdevError> {
+    let scripts = discover_suite_scripts(&config.suite)?;
+    if config.list_json {
+        let output = serde_json::to_string_pretty(&scripts).map_err(|error| {
+            EdevError::SmokeFailed(format!("failed to render list JSON: {error}"))
+        })?;
+        println!("{output}");
+        return Ok(());
+    }
+    for script in scripts {
+        println!("{}\t{}", script.path, script.size);
+    }
+    Ok(())
 }
 
 /// Run one Luau script through `script_eval`, print JSON, and write returned images.
@@ -990,18 +1016,23 @@ async fn write_failure_bundle(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     context: &BundleContext,
     script_path: &str,
+    round: Option<u32>,
     args: &ScriptArgs,
     outcome: &ScriptEvalOutcome,
 ) -> Result<(), EdevError> {
+    let bundle_key = match round {
+        Some(round) => format!("{script_path}-round-{round}"),
+        None => script_path.to_string(),
+    };
     let bundle_dir = context.dir.join(format!(
         "{}-{}",
-        safe_file_component(script_path),
-        stable_hash8(script_path)
+        safe_file_component(&bundle_key),
+        stable_hash8(&bundle_key)
     ));
     replace_dir(&bundle_dir)?;
     fs::write(
         bundle_dir.join("meta.json"),
-        bundle_meta(context, script_path, args, outcome)?,
+        bundle_meta(context, script_path, round, args, outcome)?,
     )?;
     fs::write(bundle_dir.join("failure.txt"), failure_text(outcome)?)?;
     fs::write(
@@ -1207,14 +1238,23 @@ fn replace_dir(path: &Path) -> Result<(), EdevError> {
 fn bundle_meta(
     context: &BundleContext,
     script_path: &str,
+    round: Option<u32>,
     args: &ScriptArgs,
     outcome: &ScriptEvalOutcome,
 ) -> Result<String, EdevError> {
-    let value = serde_json::json!({
-        "script": {
+    let script = match round {
+        Some(round) => serde_json::json!({
+            "path": script_path,
+            "round": round,
+            "args": args,
+        }),
+        None => serde_json::json!({
             "path": script_path,
             "args": args,
-        },
+        }),
+    };
+    let value = serde_json::json!({
+        "script": script,
         "fixtures": &outcome.fixtures,
         "app": {
             "command": &context.launch.command,
@@ -2476,11 +2516,17 @@ async fn run_smoke_suite(
             if !outcome.success
                 && let Some(context) = bundle_context.as_ref()
             {
+                let bundle_round = if config.suite.round_limit() > 1 {
+                    Some(request.round)
+                } else {
+                    None
+                };
                 let bundle_result = block_in_place(|| {
                     Handle::current().block_on(write_failure_bundle(
                         &client,
                         context,
                         &script_path,
+                        bundle_round,
                         &script_args,
                         &outcome,
                     ))
@@ -2826,7 +2872,8 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 mod tests {
     use async_trait::async_trait;
     use eguidev_runtime::{
-        ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo, smoke::SuiteConfig,
+        ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo,
+        smoke::{SuiteConfig, SuiteRunMode},
     };
     use tempfile::TempDir;
     use tmcp::{
@@ -3048,9 +3095,11 @@ mod tests {
             ScriptArgValue::String("Sky".to_string()),
         )]);
 
-        let meta = bundle_meta(&context, "nested/fail.luau", &args, &outcome).expect("bundle meta");
+        let meta = bundle_meta(&context, "nested/fail.luau", Some(2), &args, &outcome)
+            .expect("bundle meta");
         let meta: serde_json::Value = serde_json::from_str(&meta).expect("meta json");
         assert_eq!(meta["script"]["path"], "nested/fail.luau");
+        assert_eq!(meta["script"]["round"], 2);
         assert_eq!(meta["script"]["args"]["name"], "Sky");
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
         assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
@@ -3125,19 +3174,23 @@ mod tests {
             collection_timeout_ms: 1_000,
         };
         let config = SmokeConfig {
-            launch: test_config(tempdir.path().to_path_buf()),
+            launch: Some(test_config(tempdir.path().to_path_buf())),
             suite: SuiteConfig {
                 suite_dir,
                 scripts: Vec::new(),
+                only: Vec::new(),
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
                 fail_fast: false,
+                run_mode: SuiteRunMode::ONCE,
                 args: ScriptArgs::from([(
                     "name".to_string(),
                     ScriptArgValue::String("Sky".to_string()),
                 )]),
             },
             verbose_output: false,
+            list: false,
+            list_json: false,
             bundle_dir: Some(bundle_dir.clone()),
         };
 
@@ -3198,6 +3251,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn run_smoke_suite_writes_round_suffixed_failure_bundles() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
+        let tempdir = test_tempdir();
+        let suite_dir = tempdir.path().join("suite");
+        fs::create_dir_all(&suite_dir).expect("create suite");
+        fs::write(suite_dir.join("10_fail.luau"), "assert(false, \"boom\")").expect("write script");
+        let bundle_dir = tempdir.path().join("bundles");
+        let context = BundleContext {
+            dir: bundle_dir.clone(),
+            launch: test_config(tempdir.path().to_path_buf()),
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
+            collection_timeout_ms: 1_000,
+        };
+        let config = SmokeConfig {
+            launch: Some(test_config(tempdir.path().to_path_buf())),
+            suite: SuiteConfig {
+                suite_dir,
+                scripts: Vec::new(),
+                only: Vec::new(),
+                suite_timeout: Duration::from_secs(10),
+                script_timeout: Some(Duration::from_secs(1)),
+                fail_fast: false,
+                run_mode: SuiteRunMode::Repeat(2),
+                args: ScriptArgs::default(),
+            },
+            verbose_output: false,
+            list: false,
+            list_json: false,
+            bundle_dir: Some(bundle_dir.clone()),
+        };
+
+        let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
+            .await
+            .expect("smoke suite");
+
+        assert_eq!(result.failed(), 2);
+        for round in 1_u32..=2 {
+            let key = format!("10_fail.luau-round-{round}");
+            let script_dir = bundle_dir.join(format!(
+                "{}-{}",
+                safe_file_component(&key),
+                stable_hash8(&key)
+            ));
+            assert!(
+                script_dir.join("meta.json").is_file(),
+                "bundle entries: {:?}",
+                fs::read_dir(&bundle_dir)
+                    .map(|entries| {
+                        entries
+                            .filter_map(Result::ok)
+                            .map(|entry| entry.file_name())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            );
+            let meta: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(script_dir.join("meta.json")).expect("meta"),
+            )
+            .expect("meta json");
+            assert_eq!(meta["script"]["path"], "10_fail.luau");
+            assert_eq!(meta["script"]["round"].as_u64(), Some(u64::from(round)));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn run_smoke_suite_preserves_failure_when_bundle_write_fails() {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
@@ -3215,16 +3335,20 @@ mod tests {
             collection_timeout_ms: 1_000,
         };
         let config = SmokeConfig {
-            launch: test_config(tempdir.path().to_path_buf()),
+            launch: Some(test_config(tempdir.path().to_path_buf())),
             suite: SuiteConfig {
                 suite_dir,
                 scripts: Vec::new(),
+                only: Vec::new(),
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
                 fail_fast: false,
+                run_mode: SuiteRunMode::ONCE,
                 args: ScriptArgs::default(),
             },
             verbose_output: false,
+            list: false,
+            list_json: false,
             bundle_dir: Some(bundle_root),
         };
 

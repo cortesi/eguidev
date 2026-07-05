@@ -55,12 +55,40 @@ struct SmokeArgs {
     /// Enable verbose smoke logging.
     #[arg(short, long)]
     verbose: bool,
+    /// Print discovered smoke scripts without launching the app.
+    #[arg(long)]
+    list: bool,
+    /// Emit list output as JSON.
+    #[arg(long, requires = "list")]
+    json: bool,
+    /// Filter discovered smoke scripts by display-path glob. Repeat to intersect filters.
+    #[arg(long = "only", value_name = "GLOB")]
+    only: Vec<String>,
+    /// Run the selected smoke scripts this many times.
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(u32).range(1..),
+        conflicts_with = "until_fail"
+    )]
+    repeat: Option<u32>,
+    /// Repeat until the first failure, stopping after at most this many rounds.
+    #[arg(
+        long = "until-fail",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    until_fail: Option<u32>,
     /// Run only these smoke scripts, in the order provided.
     #[arg(value_name = "SCRIPT")]
     scripts: Vec<PathBuf>,
     /// Pass a typed suite-wide script arg.
     #[arg(long = "arg", value_name = "KEY=VALUE")]
     script_args: Vec<String>,
+    /// Write failure bundles to the configured/default bundle directory.
+    #[arg(long)]
+    bundle: bool,
+    /// Write failure bundles to this directory.
+    #[arg(long = "bundle-dir")]
+    bundle_dir: Option<PathBuf>,
     /// Stop the suite after the first smoketest failure.
     #[arg(long)]
     fail_fast: bool,
@@ -192,11 +220,32 @@ fn smoke_with_app_command(
     let mut demo_command = Command::new("cargo");
     demo_command.current_dir(&workspace_root);
     demo_command.args(["run", "-q", "-p", "edev", "--", "smoke"]);
+    if args.list {
+        demo_command.arg("--list");
+    }
+    if args.json {
+        demo_command.arg("--json");
+    }
+    for only in &args.only {
+        demo_command.args(["--only", only]);
+    }
+    if let Some(repeat) = args.repeat {
+        demo_command.arg("--repeat").arg(repeat.to_string());
+    }
+    if let Some(until_fail) = args.until_fail {
+        demo_command.arg("--until-fail").arg(until_fail.to_string());
+    }
     if args.fail_fast {
         demo_command.arg("--fail-fast");
     }
     if args.verbose {
         demo_command.arg("--verbose");
+    }
+    if args.bundle {
+        demo_command.arg("--bundle");
+    }
+    if let Some(bundle_dir) = &args.bundle_dir {
+        demo_command.arg("--bundle-dir").arg(bundle_dir);
     }
     for script_arg in &args.script_args {
         demo_command.args(["--arg", script_arg]);

@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use glob::Pattern;
+use serde::Serialize;
 use tokio::runtime::Handle;
 
 use crate::{
@@ -22,14 +24,71 @@ pub struct SuiteConfig {
     /// Explicit script paths to run. Empty means discover all `.luau` files
     /// under `suite_dir` recursively in lexicographic order.
     pub scripts: Vec<PathBuf>,
+    /// Discovery glob filters matched against display paths. Empty means all
+    /// discovered scripts. Cannot be combined with explicit `scripts`.
+    pub only: Vec<String>,
     /// Wall-clock deadline for the entire suite.
     pub suite_timeout: Duration,
     /// Per-script timeout. `None` uses the script-eval default.
     pub script_timeout: Option<Duration>,
     /// Stop after the first failure.
     pub fail_fast: bool,
+    /// Repetition behavior for the selected suite.
+    pub run_mode: SuiteRunMode,
     /// Args passed to every script in the suite.
     pub args: ScriptArgs,
+}
+
+impl SuiteConfig {
+    /// Maximum number of rounds this suite can run.
+    pub fn round_limit(&self) -> u32 {
+        self.run_mode.round_limit()
+    }
+
+    fn stop_on_failure(&self) -> bool {
+        self.fail_fast || self.run_mode.stop_on_failure()
+    }
+
+    fn stop_after_failure_reason(&self) -> Option<&'static str> {
+        self.stop_on_failure()
+            .then_some("stopped after earlier smoketest failure")
+    }
+}
+
+/// Repetition behavior for one smoke suite invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuiteRunMode {
+    /// Run the selected scripts this many times. Values below 1 are treated as
+    /// one round.
+    Repeat(u32),
+    /// Repeat until the first failure, stopping after at most this many rounds.
+    /// Values below 1 are treated as one round.
+    UntilFail(u32),
+}
+
+impl SuiteRunMode {
+    /// Run the selected scripts once.
+    pub const ONCE: Self = Self::Repeat(1);
+
+    /// Return the maximum number of rounds this mode can run.
+    pub fn round_limit(self) -> u32 {
+        match self {
+            Self::Repeat(count) | Self::UntilFail(count) => count.max(1),
+        }
+    }
+
+    fn stop_on_failure(self) -> bool {
+        matches!(self, Self::UntilFail(_))
+    }
+}
+
+/// Discovered smoke script metadata for list mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuiteScriptInfo {
+    /// Forward-slash-normalized display path.
+    pub path: String,
+    /// Script file size in bytes.
+    pub size: u64,
 }
 
 /// Outcome for an individual smoketest script.
@@ -46,6 +105,8 @@ pub enum ScriptStatus {
 /// Result of a single script execution.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScriptResult {
+    /// One-based round index for repeated suite runs.
+    pub round: u32,
     /// Forward-slash-normalized relative script path, or `<suite>` for suite-level failures.
     pub path: String,
     /// Final script status.
@@ -64,8 +125,9 @@ pub struct ScriptResult {
 
 impl ScriptResult {
     #[cfg(test)]
-    fn pass(path: String, elapsed_ms: u64, logs: Vec<String>) -> Self {
+    fn pass(round: u32, path: String, elapsed_ms: u64, logs: Vec<String>) -> Self {
         Self {
+            round,
             path,
             status: ScriptStatus::Pass,
             elapsed_ms,
@@ -77,12 +139,14 @@ impl ScriptResult {
     }
 
     fn pass_with_fixtures(
+        round: u32,
         path: String,
         elapsed_ms: u64,
         logs: Vec<String>,
         fixtures: Vec<FixtureApplication>,
     ) -> Self {
         Self {
+            round,
             path,
             status: ScriptStatus::Pass,
             elapsed_ms,
@@ -93,11 +157,12 @@ impl ScriptResult {
         }
     }
 
-    fn fail(path: String, elapsed_ms: u64, message: String, logs: Vec<String>) -> Self {
-        Self::fail_with_details(path, elapsed_ms, message, logs, None)
+    fn fail(round: u32, path: String, elapsed_ms: u64, message: String, logs: Vec<String>) -> Self {
+        Self::fail_with_details(round, path, elapsed_ms, message, logs, None)
     }
 
     fn fail_with_details(
+        round: u32,
         path: String,
         elapsed_ms: u64,
         message: String,
@@ -105,6 +170,7 @@ impl ScriptResult {
         details: Option<String>,
     ) -> Self {
         Self {
+            round,
             path,
             status: ScriptStatus::Fail,
             elapsed_ms,
@@ -116,6 +182,7 @@ impl ScriptResult {
     }
 
     fn fail_with_outcome(
+        round: u32,
         path: String,
         elapsed_ms: u64,
         message: String,
@@ -123,6 +190,7 @@ impl ScriptResult {
         details: Option<String>,
     ) -> Self {
         Self {
+            round,
             path,
             status: ScriptStatus::Fail,
             elapsed_ms,
@@ -133,8 +201,9 @@ impl ScriptResult {
         }
     }
 
-    fn skip(path: String, message: String) -> Self {
+    fn skip(round: u32, path: String, message: String) -> Self {
         Self {
+            round,
             path,
             status: ScriptStatus::Skip,
             elapsed_ms: 0,
@@ -146,11 +215,24 @@ impl ScriptResult {
     }
 }
 
+/// Runtime summary for one repeated suite round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuiteRoundResult {
+    /// One-based round index.
+    pub round: u32,
+    /// Round runtime in milliseconds.
+    pub elapsed_ms: u64,
+}
+
 /// Result of running a full suite.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuiteResult {
     /// Per-script results in execution order.
     pub results: Vec<ScriptResult>,
+    /// Per-round timings.
+    pub rounds: Vec<SuiteRoundResult>,
+    /// Maximum number of rounds requested for this suite invocation.
+    pub requested_rounds: u32,
     /// Total suite runtime in milliseconds.
     pub elapsed_ms: u64,
 }
@@ -188,6 +270,7 @@ impl SuiteResult {
     /// Render suite results as printable lines.
     pub fn render_lines(&self, verbose: bool) -> Vec<String> {
         let mut lines = Vec::new();
+        let show_rounds = self.requested_rounds > 1;
         for script in &self.results {
             if verbose {
                 lines.extend(
@@ -198,7 +281,12 @@ impl SuiteResult {
             }
             match script.status {
                 ScriptStatus::Pass => {
-                    lines.push(format!("[PASS] {} ({}ms)", script.path, script.elapsed_ms));
+                    lines.push(format!(
+                        "[PASS] {}{} ({}ms)",
+                        round_prefix(show_rounds, script.round),
+                        script.path,
+                        script.elapsed_ms
+                    ));
                 }
                 ScriptStatus::Fail => {
                     let message = script
@@ -206,8 +294,11 @@ impl SuiteResult {
                         .as_deref()
                         .unwrap_or("script failed without a message");
                     lines.push(format!(
-                        "[FAIL] {} ({}ms): {}",
-                        script.path, script.elapsed_ms, message
+                        "[FAIL] {}{} ({}ms): {}",
+                        round_prefix(show_rounds, script.round),
+                        script.path,
+                        script.elapsed_ms,
+                        message
                     ));
                     if verbose && let Some(details) = &script.details {
                         lines.extend(details.lines().map(|line| format!("DETAIL: {line}")));
@@ -215,12 +306,20 @@ impl SuiteResult {
                 }
                 ScriptStatus::Skip => {
                     lines.push(format!(
-                        "[SKIP] {}: {}",
+                        "[SKIP] {}{}: {}",
+                        round_prefix(show_rounds, script.round),
                         script.path,
                         script.message.as_deref().unwrap_or("skipped")
                     ));
                 }
             }
+        }
+        if show_rounds {
+            lines.extend(
+                self.rounds
+                    .iter()
+                    .map(|round| format!("[ROUND] {} ({}ms)", round.round, round.elapsed_ms)),
+            );
         }
         if verbose {
             lines.push(format!(
@@ -241,6 +340,8 @@ impl SuiteResult {
 pub struct ScriptRunRequest {
     /// Forward-slash-normalized relative script path used for diagnostics.
     pub path: String,
+    /// One-based round index for repeated suite runs.
+    pub round: u32,
     /// Luau source code loaded from disk.
     pub source: String,
     /// Optional per-script timeout in milliseconds.
@@ -253,6 +354,20 @@ pub struct ScriptRunRequest {
 struct SuiteScript {
     display_path: String,
     source_path: PathBuf,
+    size: u64,
+}
+
+/// Discover the selected smoke scripts without running them.
+pub fn discover_suite_scripts(config: &SuiteConfig) -> io::Result<Vec<SuiteScriptInfo>> {
+    collect_suite_scripts(config).map(|scripts| {
+        scripts
+            .into_iter()
+            .map(|script| SuiteScriptInfo {
+                path: script.display_path,
+                size: script.size,
+            })
+            .collect()
+    })
 }
 
 /// Run a smoketest suite against a live `DevMcp` instance.
@@ -276,12 +391,14 @@ where
     F: FnMut(ScriptRunRequest) -> Result<ScriptEvalOutcome, String>,
 {
     let suite_start = Instant::now();
+    let round_limit = config.round_limit();
     let scripts = match collect_suite_scripts(config) {
         Ok(paths) if !paths.is_empty() => paths,
         Ok(_) => {
             return suite_failure_result(
                 suite_start.elapsed().as_millis() as u64,
-                format!("no smoketests found under {}", config.suite_dir.display()),
+                empty_suite_message(config),
+                round_limit,
             );
         }
         Err(error) => {
@@ -291,6 +408,7 @@ where
                     "failed to discover smoketests under {}: {error}",
                     config.suite_dir.display()
                 ),
+                round_limit,
             );
         }
     };
@@ -298,125 +416,161 @@ where
     let suite_deadline = suite_start
         .checked_add(config.suite_timeout)
         .unwrap_or_else(Instant::now);
-    let mut results = Vec::with_capacity(scripts.len());
+    let mut results = Vec::new();
+    let mut rounds = Vec::new();
+    let mut stop_suite = false;
 
-    for (index, script) in scripts.iter().enumerate() {
-        if Instant::now() >= suite_deadline {
-            append_skipped(
-                &mut results,
-                &scripts[index..],
-                "suite deadline exceeded before test started",
-            );
-            break;
-        }
+    for round in 1..=round_limit {
+        let round_start = Instant::now();
+        for (index, script) in scripts.iter().enumerate() {
+            if Instant::now() >= suite_deadline {
+                append_skipped(
+                    &mut results,
+                    round,
+                    &scripts[index..],
+                    "suite deadline exceeded before test started",
+                );
+                stop_suite = true;
+                break;
+            }
 
-        let relative_display = script.display_path.clone();
-        let source_path = &script.source_path;
-        let script_start = Instant::now();
-        let source = match fs::read_to_string(source_path) {
-            Ok(source) => source,
-            Err(error) => {
-                let elapsed_ms = script_start.elapsed().as_millis() as u64;
-                let message = format!("failed to read script: {error}");
-                results.push(ScriptResult::fail(
+            let relative_display = script.display_path.clone();
+            let source_path = &script.source_path;
+            let script_start = Instant::now();
+            let source = match fs::read_to_string(source_path) {
+                Ok(source) => source,
+                Err(error) => {
+                    let elapsed_ms = script_start.elapsed().as_millis() as u64;
+                    let message = format!("failed to read script: {error}");
+                    results.push(ScriptResult::fail(
+                        round,
+                        relative_display,
+                        elapsed_ms,
+                        message,
+                        Vec::new(),
+                    ));
+                    if let Some(reason) = config.stop_after_failure_reason() {
+                        append_skipped(&mut results, round, &scripts[index + 1..], reason);
+                        stop_suite = true;
+                        break;
+                    }
+                    continue;
+                }
+            };
+
+            let outcome = execute(ScriptRunRequest {
+                path: relative_display.clone(),
+                round,
+                source,
+                timeout_ms: config.script_timeout.map(duration_to_millis),
+                args: config.args.clone(),
+            });
+            let elapsed_ms = script_start.elapsed().as_millis() as u64;
+
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(message) => {
+                    results.push(ScriptResult::fail(
+                        round,
+                        relative_display,
+                        elapsed_ms,
+                        message,
+                        Vec::new(),
+                    ));
+                    if let Some(reason) = config.stop_after_failure_reason() {
+                        append_skipped(&mut results, round, &scripts[index + 1..], reason);
+                        stop_suite = true;
+                        break;
+                    }
+                    continue;
+                }
+            };
+
+            if outcome.success {
+                results.push(ScriptResult::pass_with_fixtures(
+                    round,
                     relative_display,
                     elapsed_ms,
-                    message,
-                    Vec::new(),
+                    outcome.logs,
+                    outcome.fixtures,
                 ));
-                if config.fail_fast {
-                    append_skipped(
-                        &mut results,
-                        &scripts[index + 1..],
-                        "fail-fast after earlier smoketest failure",
-                    );
-                    break;
-                }
                 continue;
             }
-        };
 
-        let outcome = execute(ScriptRunRequest {
-            path: relative_display.clone(),
-            source,
-            timeout_ms: config.script_timeout.map(duration_to_millis),
-            args: config.args.clone(),
-        });
-        let elapsed_ms = script_start.elapsed().as_millis() as u64;
-
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(message) => {
-                results.push(ScriptResult::fail(
-                    relative_display,
-                    elapsed_ms,
-                    message,
-                    Vec::new(),
-                ));
-                if config.fail_fast {
-                    append_skipped(
-                        &mut results,
-                        &scripts[index + 1..],
-                        "fail-fast after earlier smoketest failure",
-                    );
-                    break;
-                }
-                continue;
-            }
-        };
-
-        if outcome.success {
-            results.push(ScriptResult::pass_with_fixtures(
+            let message = script_failure_summary(&outcome);
+            let details = script_failure_details(&outcome);
+            results.push(ScriptResult::fail_with_outcome(
+                round,
                 relative_display,
                 elapsed_ms,
-                outcome.logs,
-                outcome.fixtures,
+                message,
+                outcome,
+                details,
             ));
-            continue;
+            if let Some(reason) = config.stop_after_failure_reason() {
+                append_skipped(&mut results, round, &scripts[index + 1..], reason);
+                stop_suite = true;
+                break;
+            }
         }
-
-        let message = script_failure_summary(&outcome);
-        let details = script_failure_details(&outcome);
-        results.push(ScriptResult::fail_with_outcome(
-            relative_display,
-            elapsed_ms,
-            message,
-            outcome,
-            details,
-        ));
-        if config.fail_fast {
-            append_skipped(
-                &mut results,
-                &scripts[index + 1..],
-                "fail-fast after earlier smoketest failure",
-            );
+        rounds.push(SuiteRoundResult {
+            round,
+            elapsed_ms: round_start.elapsed().as_millis() as u64,
+        });
+        if stop_suite {
             break;
         }
     }
 
     SuiteResult {
         results,
+        rounds,
+        requested_rounds: round_limit,
         elapsed_ms: suite_start.elapsed().as_millis() as u64,
     }
 }
 
-fn suite_failure_result(elapsed_ms: u64, message: String) -> SuiteResult {
+fn suite_failure_result(elapsed_ms: u64, message: String, requested_rounds: u32) -> SuiteResult {
     SuiteResult {
         results: vec![ScriptResult::fail(
+            1,
             SUITE_RESULT_PATH.to_string(),
             elapsed_ms,
             message,
             Vec::new(),
         )],
+        rounds: Vec::new(),
+        requested_rounds,
         elapsed_ms,
     }
 }
 
-fn append_skipped(results: &mut Vec<ScriptResult>, paths: &[SuiteScript], reason: &str) {
+fn empty_suite_message(config: &SuiteConfig) -> String {
+    if config.only.is_empty() {
+        return format!("no smoketests found under {}", config.suite_dir.display());
+    }
+    format!(
+        "no smoketests under {} matched --only {}",
+        config.suite_dir.display(),
+        config
+            .only
+            .iter()
+            .map(|filter| format!("{filter:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn append_skipped(
+    results: &mut Vec<ScriptResult>,
+    round: u32,
+    paths: &[SuiteScript],
+    reason: &str,
+) {
     results.extend(
         paths
             .iter()
-            .map(|path| ScriptResult::skip(path.display_path.clone(), reason.into())),
+            .map(|path| ScriptResult::skip(round, path.display_path.clone(), reason.into())),
     );
 }
 
@@ -425,16 +579,27 @@ fn duration_to_millis(duration: Duration) -> u64 {
 }
 
 fn collect_suite_scripts(config: &SuiteConfig) -> io::Result<Vec<SuiteScript>> {
+    if !config.scripts.is_empty() && !config.only.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "`--only` cannot be combined with explicit smoke script paths",
+        ));
+    }
+
     if config.scripts.is_empty() {
-        return collect_suite_paths(&config.suite_dir).map(|paths| {
-            paths
-                .into_iter()
-                .map(|path| SuiteScript {
+        let scripts = collect_suite_paths(&config.suite_dir)?
+            .into_iter()
+            .map(|path| {
+                let source_path = config.suite_dir.join(&path);
+                let size = fs::metadata(&source_path).map(|metadata| metadata.len())?;
+                Ok(SuiteScript {
                     display_path: normalize_path(&path),
-                    source_path: config.suite_dir.join(path),
+                    source_path,
+                    size,
                 })
-                .collect()
-        });
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        return filter_suite_scripts(scripts, &config.only);
     }
 
     config
@@ -462,9 +627,38 @@ fn collect_suite_scripts(config: &SuiteConfig) -> io::Result<Vec<SuiteScript>> {
             Ok(SuiteScript {
                 display_path: normalize_path(path),
                 source_path: path.clone(),
+                size: metadata.len(),
             })
         })
         .collect()
+}
+
+fn filter_suite_scripts(
+    scripts: Vec<SuiteScript>,
+    filters: &[String],
+) -> io::Result<Vec<SuiteScript>> {
+    if filters.is_empty() {
+        return Ok(scripts);
+    }
+    let patterns = filters
+        .iter()
+        .map(|filter| {
+            Pattern::new(filter).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid --only glob {filter:?}: {error}"),
+                )
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(scripts
+        .into_iter()
+        .filter(|script| {
+            patterns
+                .iter()
+                .all(|pattern| pattern.matches(&script.display_path))
+        })
+        .collect())
 }
 
 fn collect_suite_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
@@ -525,6 +719,14 @@ fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn round_prefix(show_rounds: bool, round: u32) -> String {
+    if show_rounds {
+        format!("round {round} ")
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -538,10 +740,11 @@ mod tests {
     use tokio::runtime::Builder;
 
     use super::{
-        ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, collect_suite_paths,
-        collect_suite_scripts, normalize_path, run_suite, run_suite_with,
+        ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, SuiteRunMode,
+        collect_suite_paths, collect_suite_scripts, discover_suite_scripts, normalize_path,
+        run_suite, run_suite_with,
     };
-    use crate::{DevMcp, ScriptArgValue, ScriptArgs, runtime};
+    use crate::{DevMcp, ScriptArgValue, ScriptArgs, ScriptEvalOutcome, runtime};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -550,6 +753,51 @@ mod tests {
         PathBuf::from("tmp")
             .join("smoke_tests")
             .join(format!("{name}_{id}"))
+    }
+
+    fn suite_config(suite_dir: PathBuf) -> SuiteConfig {
+        SuiteConfig {
+            suite_dir,
+            scripts: Vec::new(),
+            only: Vec::new(),
+            suite_timeout: Duration::from_secs(10),
+            script_timeout: None,
+            fail_fast: false,
+            run_mode: SuiteRunMode::ONCE,
+            args: ScriptArgs::default(),
+        }
+    }
+
+    fn success_outcome() -> ScriptEvalOutcome {
+        serde_json::from_value(serde_json::json!({
+            "success": true,
+            "logs": [],
+            "assertions": [],
+            "timing": {
+                "compile_ms": 0,
+                "exec_ms": 0,
+                "total_ms": 0
+            }
+        }))
+        .expect("deserialize success outcome")
+    }
+
+    fn failure_outcome(message: &str) -> ScriptEvalOutcome {
+        serde_json::from_value(serde_json::json!({
+            "success": false,
+            "logs": ["boom"],
+            "assertions": [],
+            "timing": {
+                "compile_ms": 0,
+                "exec_ms": 0,
+                "total_ms": 0
+            },
+            "error": {
+                "type": "runtime",
+                "message": message
+            }
+        }))
+        .expect("deserialize failure outcome")
     }
 
     #[test]
@@ -585,20 +833,87 @@ mod tests {
         fs::write(&suite_script, "return true").expect("write suite script");
         fs::write(&external_script, "return true").expect("write external script");
 
-        let scripts = collect_suite_scripts(&SuiteConfig {
-            suite_dir,
-            scripts: vec![external_script.clone(), suite_script.clone()],
-            suite_timeout: Duration::from_secs(10),
-            script_timeout: None,
-            fail_fast: false,
-            args: ScriptArgs::default(),
-        })
-        .expect("collect scripts");
+        let mut config = suite_config(suite_dir);
+        config.scripts = vec![external_script.clone(), suite_script.clone()];
+        let scripts = collect_suite_scripts(&config).expect("collect scripts");
         assert_eq!(scripts.len(), 2);
         assert_eq!(scripts[0].display_path, normalize_path(&external_script));
         assert_eq!(scripts[0].source_path, external_script);
         assert_eq!(scripts[1].display_path, normalize_path(&suite_script));
         assert_eq!(scripts[1].source_path, suite_script);
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn discover_suite_scripts_lists_sizes_and_intersects_only_filters() {
+        let root = test_root("discover_suite_scripts_lists_sizes_and_intersects_only_filters");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(suite_dir.join("nested")).expect("create suite dir");
+        fs::write(suite_dir.join("10_bootstrap.luau"), "return true").expect("write first");
+        fs::write(suite_dir.join("20_layout.luau"), "return 12345").expect("write second");
+        fs::write(
+            suite_dir.join("nested").join("30_layout.luau"),
+            "return false",
+        )
+        .expect("write nested");
+
+        let mut config = suite_config(suite_dir);
+        config.only = vec!["*layout.luau".to_string(), "nested/*".to_string()];
+        let scripts = discover_suite_scripts(&config).expect("discover scripts");
+
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].path, "nested/30_layout.luau");
+        assert_eq!(scripts[0].size, "return false".len() as u64);
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn collect_suite_scripts_rejects_only_with_explicit_paths() {
+        let root = test_root("collect_suite_scripts_rejects_only_with_explicit_paths");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        let script = suite_dir.join("10_bootstrap.luau");
+        fs::write(&script, "return true").expect("write script");
+
+        let mut config = suite_config(suite_dir);
+        config.scripts = vec![script];
+        config.only = vec!["*.luau".to_string()];
+        let error = collect_suite_scripts(&config).expect_err("conflict should fail");
+
+        assert!(error.to_string().contains("cannot be combined"));
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn run_suite_with_reports_empty_only_selection() {
+        let root = test_root("run_suite_with_reports_empty_only_selection");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_bootstrap.luau"), "return true").expect("write script");
+
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.only = vec!["*missing*".to_string()];
+                config
+            },
+            |_request| Ok(success_outcome()),
+        );
+
+        assert_eq!(result.failed(), 1);
+        assert!(
+            result.results[0]
+                .message
+                .as_deref()
+                .expect("failure message")
+                .contains("matched --only \"*missing*\"")
+        );
 
         drop(fs::remove_dir_all(&root));
     }
@@ -622,24 +937,18 @@ mod tests {
             .build()
             .expect("runtime");
         let devmcp = runtime::attach_for_tests(DevMcp::new());
-        let result = run_suite(
-            &devmcp,
-            runtime.handle(),
-            &SuiteConfig {
-                suite_dir,
-                scripts: Vec::new(),
-                suite_timeout: Duration::from_secs(10),
-                script_timeout: None,
-                fail_fast: true,
-                args: ScriptArgs::from([
-                    (
-                        "name".to_string(),
-                        ScriptArgValue::String("Sky".to_string()),
-                    ),
-                    ("count".to_string(), ScriptArgValue::Int(4)),
-                ]),
-            },
-        );
+        let result = run_suite(&devmcp, runtime.handle(), &{
+            let mut config = suite_config(suite_dir);
+            config.fail_fast = true;
+            config.args = ScriptArgs::from([
+                (
+                    "name".to_string(),
+                    ScriptArgValue::String("Sky".to_string()),
+                ),
+                ("count".to_string(), ScriptArgValue::Int(4)),
+            ]);
+            config
+        });
 
         assert_eq!(result.passed(), 1);
         assert_eq!(result.failed(), 1);
@@ -662,19 +971,18 @@ mod tests {
         fs::write(suite_dir.join("30_skip.luau"), "return true").expect("write skip");
 
         let result = run_suite_with(
-            &SuiteConfig {
-                suite_dir,
-                scripts: Vec::new(),
-                suite_timeout: Duration::from_secs(10),
-                script_timeout: Some(Duration::from_secs(7)),
-                fail_fast: true,
-                args: ScriptArgs::from([
+            &{
+                let mut config = suite_config(suite_dir);
+                config.script_timeout = Some(Duration::from_secs(7));
+                config.fail_fast = true;
+                config.args = ScriptArgs::from([
                     (
                         "name".to_string(),
                         ScriptArgValue::String("Sky".to_string()),
                     ),
                     ("count".to_string(), ScriptArgValue::Int(4)),
-                ]),
+                ]);
+                config
             },
             |request: ScriptRunRequest| {
                 assert_eq!(request.timeout_ms, Some(7_000));
@@ -684,33 +992,9 @@ mod tests {
                 );
                 assert_eq!(request.args.get("count"), Some(&ScriptArgValue::Int(4)));
                 if request.path == "20_fail.luau" {
-                    return Ok(serde_json::from_value(serde_json::json!({
-                        "success": false,
-                        "logs": ["boom"],
-                        "assertions": [],
-                        "timing": {
-                            "compile_ms": 0,
-                            "exec_ms": 0,
-                            "total_ms": 0
-                        },
-                        "error": {
-                            "type": "runtime",
-                            "message": "boom"
-                        }
-                    }))
-                    .expect("deserialize failure outcome"));
+                    return Ok(failure_outcome("boom"));
                 }
-                Ok(serde_json::from_value(serde_json::json!({
-                    "success": true,
-                    "logs": [],
-                    "assertions": [],
-                    "timing": {
-                        "compile_ms": 0,
-                        "exec_ms": 0,
-                        "total_ms": 0
-                    }
-                }))
-                .expect("deserialize success outcome"))
+                Ok(success_outcome())
             },
         );
 
@@ -730,30 +1014,17 @@ mod tests {
         fs::write(suite_dir.join("10_slow.luau"), "return true").expect("write script");
 
         let result = run_suite_with(
-            &SuiteConfig {
-                suite_dir,
-                scripts: Vec::new(),
-                suite_timeout: Duration::from_secs(10),
-                script_timeout: None,
-                fail_fast: true,
-                args: ScriptArgs::default(),
+            &{
+                let mut config = suite_config(suite_dir);
+                config.fail_fast = true;
+                config
             },
             |_request: ScriptRunRequest| {
                 let start = Instant::now();
                 while start.elapsed() < Duration::from_millis(5) {
                     spin_loop();
                 }
-                Ok(serde_json::from_value(serde_json::json!({
-                    "success": true,
-                    "logs": [],
-                    "assertions": [],
-                    "timing": {
-                        "compile_ms": 0,
-                        "exec_ms": 0,
-                        "total_ms": 0
-                    }
-                }))
-                .expect("deserialize success outcome"))
+                Ok(success_outcome())
             },
         );
 
@@ -764,15 +1035,140 @@ mod tests {
     }
 
     #[test]
+    fn run_suite_with_repeats_selected_set() {
+        let root = test_root("run_suite_with_repeats_selected_set");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_first.luau"), "return true").expect("write first");
+        fs::write(suite_dir.join("20_second.luau"), "return true").expect("write second");
+
+        let mut seen = Vec::new();
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.run_mode = SuiteRunMode::Repeat(3);
+                config
+            },
+            |request: ScriptRunRequest| {
+                seen.push((request.round, request.path));
+                Ok(success_outcome())
+            },
+        );
+
+        assert_eq!(result.passed(), 6);
+        assert_eq!(result.rounds.len(), 3);
+        assert_eq!(
+            seen,
+            vec![
+                (1, "10_first.luau".to_string()),
+                (1, "20_second.luau".to_string()),
+                (2, "10_first.luau".to_string()),
+                (2, "20_second.luau".to_string()),
+                (3, "10_first.luau".to_string()),
+                (3, "20_second.luau".to_string()),
+            ]
+        );
+        assert!(
+            result
+                .render_lines(false)
+                .iter()
+                .any(|line| line.starts_with("[PASS] round 2 10_first.luau ("))
+        );
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn run_suite_with_until_fail_stops_on_first_failure() {
+        let root = test_root("run_suite_with_until_fail_stops_on_first_failure");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_first.luau"), "return true").expect("write first");
+        fs::write(suite_dir.join("20_second.luau"), "return true").expect("write second");
+
+        let mut seen = Vec::new();
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.run_mode = SuiteRunMode::UntilFail(5);
+                config
+            },
+            |request: ScriptRunRequest| {
+                seen.push((request.round, request.path.clone()));
+                if request.round == 2 && request.path == "10_first.luau" {
+                    return Ok(failure_outcome("boom"));
+                }
+                Ok(success_outcome())
+            },
+        );
+
+        assert_eq!(result.passed(), 2);
+        assert_eq!(result.failed(), 1);
+        assert_eq!(result.skipped(), 1);
+        assert_eq!(result.rounds.len(), 2);
+        assert_eq!(
+            result
+                .results
+                .last()
+                .expect("skip result")
+                .message
+                .as_deref(),
+            Some("stopped after earlier smoketest failure")
+        );
+        assert_eq!(
+            seen,
+            vec![
+                (1, "10_first.luau".to_string()),
+                (1, "20_second.luau".to_string()),
+                (2, "10_first.luau".to_string()),
+            ]
+        );
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn run_suite_with_until_fail_first_round_renders_round_prefix() {
+        let root = test_root("run_suite_with_until_fail_first_round_renders_round_prefix");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_fail.luau"), "return true").expect("write script");
+
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.run_mode = SuiteRunMode::UntilFail(5);
+                config
+            },
+            |_request| Ok(failure_outcome("boom")),
+        );
+
+        assert_eq!(result.failed(), 1);
+        assert!(
+            result
+                .render_lines(false)
+                .iter()
+                .any(|line| line.starts_with("[FAIL] round 1 10_fail.luau ("))
+        );
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
     fn render_lines_emits_summary_and_logs_in_verbose_mode() {
         let result = SuiteResult {
             results: vec![
                 super::ScriptResult::pass(
+                    1,
                     "10_pass.luau".to_string(),
                     12,
                     vec!["hello".to_string()],
                 ),
                 super::ScriptResult::fail_with_details(
+                    1,
                     "20_fail.luau".to_string(),
                     18,
                     "boom".to_string(),
@@ -780,6 +1176,8 @@ mod tests {
                     Some("{\n  \"kind\": \"widget\"\n}".to_string()),
                 ),
             ],
+            rounds: Vec::new(),
+            requested_rounds: 1,
             elapsed_ms: 30,
         };
 

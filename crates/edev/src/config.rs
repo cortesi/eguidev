@@ -13,7 +13,10 @@ use std::{
 };
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
-use eguidev_runtime::{ScriptArgValue, ScriptArgs, smoke::SuiteConfig};
+use eguidev_runtime::{
+    ScriptArgValue, ScriptArgs,
+    smoke::{SuiteConfig, SuiteRunMode},
+};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -62,12 +65,16 @@ pub struct McpConfig {
 #[derive(Debug, Clone)]
 /// Resolved configuration for `edev smoke`.
 pub struct SmokeConfig {
-    /// Shared app launch settings.
-    pub(crate) launch: LaunchConfig,
+    /// Shared app launch settings. List mode does not need an app command.
+    pub(crate) launch: Option<LaunchConfig>,
     /// Suite runner configuration.
     pub(crate) suite: SuiteConfig,
     /// Whether to emit verbose smoke output.
     pub(crate) verbose_output: bool,
+    /// Print selected smoke scripts and exit without launching the app.
+    pub(crate) list: bool,
+    /// Emit list output as JSON.
+    pub(crate) list_json: bool,
     /// Optional failure bundle output directory.
     pub(crate) bundle_dir: Option<PathBuf>,
 }
@@ -268,6 +275,11 @@ struct SmokeCliOptions {
     common: CommonCliOptions,
     suite_dir: Option<PathBuf>,
     scripts: Vec<PathBuf>,
+    only: Vec<String>,
+    list: bool,
+    list_json: bool,
+    repeat: Option<u32>,
+    until_fail: Option<u32>,
     fail_fast: Option<bool>,
     suite_timeout_secs: Option<u64>,
     script_timeout_secs: Option<u64>,
@@ -370,6 +382,28 @@ struct SmokeArgs {
     /// Run only these smoke scripts, in the order provided.
     #[arg(value_name = "SCRIPT")]
     scripts: Vec<PathBuf>,
+    /// Print discovered smoke scripts without launching the app.
+    #[arg(long = "list", action = ArgAction::SetTrue)]
+    list: bool,
+    /// Emit list output as JSON.
+    #[arg(long = "json", action = ArgAction::SetTrue, requires = "list")]
+    list_json: bool,
+    /// Filter discovered smoke scripts by display-path glob. Repeat to intersect filters.
+    #[arg(long = "only", value_name = "GLOB")]
+    only: Vec<String>,
+    /// Run the selected smoke scripts this many times.
+    #[arg(
+        long = "repeat",
+        value_parser = clap::value_parser!(u32).range(1..),
+        conflicts_with = "until_fail"
+    )]
+    repeat: Option<u32>,
+    /// Repeat until the first failure, stopping after at most this many rounds.
+    #[arg(
+        long = "until-fail",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    until_fail: Option<u32>,
     /// Stop the smoke suite after the first failure.
     #[arg(long = "fail-fast", action = ArgAction::SetTrue, conflicts_with = "no_fail_fast")]
     fail_fast: bool,
@@ -503,6 +537,11 @@ impl From<SmokeArgs> for SmokeCliOptions {
             common: args.common.into(),
             suite_dir: args.suite_dir,
             scripts: args.scripts,
+            only: args.only,
+            list: args.list,
+            list_json: args.list_json,
+            repeat: args.repeat,
+            until_fail: args.until_fail,
             fail_fast,
             suite_timeout_secs: args.suite_timeout_secs,
             script_timeout_secs: args.script_timeout_secs,
@@ -756,7 +795,6 @@ fn resolve_smoke_config(
     loaded: Option<&LoadedConfig>,
     current_dir: &Path,
 ) -> Result<SmokeConfig, EdevError> {
-    let launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
     let suite_base_dir = loaded
         .and_then(|config| config.path.parent())
         .unwrap_or(current_dir);
@@ -774,6 +812,11 @@ fn resolve_smoke_config(
         return Err(EdevError::InvalidArgs(
             "smoke.filter is no longer supported; pass explicit script paths to `edev smoke`"
                 .to_string(),
+        ));
+    }
+    if !cli.scripts.is_empty() && !cli.only.is_empty() {
+        return Err(EdevError::InvalidArgs(
+            "`--only` cannot be combined with explicit smoke script paths".to_string(),
         ));
     }
     let suite_dir = resolve_path(
@@ -801,6 +844,7 @@ fn resolve_smoke_config(
     let suite = SuiteConfig {
         suite_dir,
         scripts: cli.scripts,
+        only: cli.only,
         suite_timeout: Duration::from_secs(
             cli.suite_timeout_secs
                 .or_else(|| file_smoke.and_then(|smoke| smoke.suite_timeout_secs))
@@ -815,10 +859,22 @@ fn resolve_smoke_config(
             .fail_fast
             .or_else(|| file_smoke.and_then(|smoke| smoke.fail_fast))
             .unwrap_or(false),
+        run_mode: cli
+            .until_fail
+            .map(SuiteRunMode::UntilFail)
+            .unwrap_or_else(|| SuiteRunMode::Repeat(cli.repeat.unwrap_or(1))),
         args,
     };
+    let launch = if cli.list {
+        None
+    } else {
+        Some(resolve_launch_config(&cli.common, loaded, current_dir)?)
+    };
+    let verbose_output = launch.as_ref().is_some_and(|launch| launch.verbose);
     Ok(SmokeConfig {
-        verbose_output: launch.verbose,
+        verbose_output,
+        list: cli.list,
+        list_json: cli.list_json,
         launch,
         suite,
         bundle_dir,
@@ -1085,6 +1141,82 @@ mod tests {
     }
 
     #[test]
+    fn parse_smoke_command_accepts_authoring_flags() {
+        let args = os_args(&[
+            "smoke", "--list", "--json", "--only", "*layout*", "--only", "nested/*", "--repeat",
+            "3", "--", "cargo", "run",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Smoke(config) = command else {
+            panic!("expected smoke command");
+        };
+
+        assert!(config.list);
+        assert!(config.list_json);
+        assert_eq!(
+            config.suite.only,
+            vec!["*layout*".to_string(), "nested/*".to_string()]
+        );
+        assert_eq!(config.suite.run_mode, SuiteRunMode::Repeat(3));
+    }
+
+    #[test]
+    fn parse_smoke_command_accepts_until_fail() {
+        let args = os_args(&["smoke", "--until-fail", "5", "--", "cargo", "run"]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Smoke(config) = command else {
+            panic!("expected smoke command");
+        };
+
+        assert_eq!(config.suite.run_mode, SuiteRunMode::UntilFail(5));
+    }
+
+    #[test]
+    fn parse_smoke_command_rejects_only_with_explicit_scripts() {
+        let args = os_args(&[
+            "smoke",
+            "--only",
+            "*visual*",
+            "smoketest/65_visual_sampling.luau",
+            "--",
+            "cargo",
+            "run",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let error = EdevCommand::parse_args_in_dir(&args, &current_dir)
+            .expect_err("only with explicit script should fail");
+
+        assert!(
+            matches!(error, EdevError::InvalidArgs(message) if message.contains("cannot be combined"))
+        );
+    }
+
+    #[test]
+    fn parse_smoke_list_command_does_not_require_app_command() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        fs::create_dir_all(repo_root.join("smoketest")).expect("create suite dir");
+        fs::write(
+            repo_root.join("smoketest").join("10_bootstrap.luau"),
+            "return true",
+        )
+        .expect("write script");
+
+        let command = EdevCommand::parse_args_in_dir(&os_args(&["smoke", "--list"]), &repo_root)
+            .expect("parse command");
+        let EdevCommand::Smoke(config) = command else {
+            panic!("expected smoke command");
+        };
+
+        assert!(config.list);
+        assert!(config.launch.is_none());
+        assert_eq!(config.suite.suite_dir, repo_root.join("smoketest"));
+    }
+
+    #[test]
     fn parse_smoke_command_accepts_bundle_dir() {
         let args = os_args(&[
             "smoke",
@@ -1287,7 +1419,10 @@ suite_dir = \"suite\"
         let EdevCommand::Smoke(config) = command else {
             panic!("expected smoke command");
         };
-        assert_eq!(config.launch.cwd, repo_root.join("app"));
+        assert_eq!(
+            config.launch.as_ref().expect("launch").cwd,
+            repo_root.join("app")
+        );
         assert_eq!(config.suite.suite_dir, repo_root.join("suite"));
     }
 
