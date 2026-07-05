@@ -43,8 +43,8 @@ Launcher lifecycle:
 Tool hosting:
 
 - `script_eval` is proxied to the running app and is the only app-dependent host tool.
-- `script_api` is served directly by `edev` from checked-in definitions, so it remains callable
-  even while the app is stopped.
+- `script_api` proxies to the running app so app preludes are visible; while the app is stopped,
+  `edev` serves the checked-in definitions directly.
 - `status` reports the current lifecycle state, startup failure diagnostics, and app frame health
   when a running app client can answer the app-side `health` tool. Health proxy failures are
   reported inside the status payload instead of failing the lifecycle call.

@@ -64,6 +64,12 @@ export type ScriptArgs = { [string]: ScriptArgValue }
 
 declare args: ScriptArgs
 
+export type WidgetFindOptions = {
+    viewport: string?,
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+}
+
 export type WidgetRole =
     "button"
     | "link"
@@ -285,6 +291,32 @@ export type ViewportDump = {
 
 export type TreeDump = {
     viewports: { ViewportDump },
+}
+
+export type DiffOptions = {
+    move_epsilon: number?,
+    include_invisible: boolean?,
+    id_prefix: string?,
+}
+
+export type WidgetDelta = {
+    id: string,
+    viewport_id: string,
+    change: "added" | "removed" | "changed",
+    fields: { string },
+    before: WidgetState?,
+    after: WidgetState?,
+}
+
+export type TreeDiff = {
+    changes: { WidgetDelta },
+    viewports_added: { string },
+    viewports_removed: { string },
+}
+
+export type Capture = {
+    frame: number,
+    diff: (self: Capture, options: DiffOptions?) -> TreeDiff,
 }
 
 --- Exact pixel sampled from a fresh viewport capture.
@@ -617,7 +649,7 @@ export type ScriptOptions = {
 export type WaitOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
-    viewport_id: string?,
+    viewport: string?,
 }
 
 export type ViewportLookupOptions = {
@@ -625,6 +657,20 @@ export type ViewportLookupOptions = {
     focused: boolean?,
     title: string?,
     title_contains: string?,
+}
+
+export type ExpectedState = {
+    visible: boolean?,
+    focused: boolean?,
+    enabled: boolean?,
+    selected: boolean?,
+    role: WidgetRole?,
+    label: string?,
+    label_contains: string?,
+    value: WidgetValue?,
+    value_text_contains: string?,
+    --- Restricts lookup and asserts the resolved widget viewport id or semantic name.
+    viewport: string?,
 }
 
 -- Logged values are recorded in the script result payload.
@@ -667,6 +713,12 @@ declare function root(): Viewport
 --- Throws when multiple viewports match the selected title rule.
 declare function viewport(options: ViewportLookupOptions): Viewport?
 declare function viewports(): { Viewport }
+--- Resolve a widget id across viewports, waiting for one unique match.
+declare function widget(id: string, options: WidgetFindOptions?): Widget
+--- Resolve a widget id across viewports without waiting. Returns nil when absent.
+declare function try_widget(id: string, options: WidgetFindOptions?): Widget?
+--- Snapshot the current widget registry across all viewports.
+declare function capture(): Capture
 
 --- Return a canonical tree dump of captured widgets, grouped by viewport.
 declare function dump(options: DumpOptions?): TreeDump
@@ -686,3 +738,11 @@ declare function fixtures(): { Fixture }
 -- Assertions record pass/fail metadata in the result payload and throw on failure.
 declare function assert(condition: boolean, message: string?): ()
 declare function assert_widget_exists(id: string): ()
+declare function expect(id: string, expected: ExpectedState?): WidgetState
+declare function expect_absent(id: string): ()
+declare function expect_left_of(a: string, b: string, min_gap: number?): ()
+declare function expect_above(a: string, b: string, min_gap: number?): ()
+declare function expect_no_overlap(a: string, b: string): ()
+declare function expect_within(inner: string, outer: string): ()
+declare function expect_text_fits(id: string): ()
+declare function expect_tree(parent: string, children: { string }): ()

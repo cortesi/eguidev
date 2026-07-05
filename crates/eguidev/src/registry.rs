@@ -21,6 +21,7 @@ use crate::{
     fixtures::{FixtureExecution, FixtureManager},
     idle::IdleRegistry,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
+    script_prelude::ScriptPreludeRegistry,
     types::{FixtureCall, WidgetValue},
     viewports::{FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
@@ -55,6 +56,7 @@ pub struct Inner {
     pub fixtures: FixtureManager,
     pub diagnostics: DiagnosticRegistry,
     pub idle: IdleRegistry,
+    pub script_preludes: ScriptPreludeRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     automation_options: Mutex<AutomationOptions>,
     /// Whether the egui input-injection plugin has already been registered
@@ -137,6 +139,7 @@ impl Inner {
             fixtures: FixtureManager::new(),
             diagnostics: DiagnosticRegistry::new(),
             idle: IdleRegistry::new(),
+            script_preludes: ScriptPreludeRegistry::new(),
             runtime_hooks: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
             input_plugin_installed: AtomicBool::new(false),

@@ -56,7 +56,7 @@ use config::{
 };
 
 /// Tool names forwarded from edev to the app MCP server.
-const PROXIED_TOOL_NAMES: &[&str] = &["script_eval"];
+const PROXIED_TOOL_NAMES: &[&str] = &["script_eval", "script_api"];
 /// Timeout used for proxied request/response round-trips between edev and app MCP.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum app stdout/stderr bytes retained for diagnostics.
@@ -2362,7 +2362,22 @@ impl ServerHandler for EdevServer {
                 CallToolResult::new()
                     .with_structured_content(serde_json::to_value(report).expect("status report"))
             }
-            "script_api" => CallToolResult::new().with_text_content(script_definitions()),
+            "script_api" => {
+                let (app_client, log_state) = {
+                    let state = state.lock().await;
+                    let app_client = if matches!(state.status, AppStatus::Running) {
+                        state.app.as_ref().map(|app| Arc::clone(&app.client))
+                    } else {
+                        None
+                    };
+                    (app_client, state.log_state.clone())
+                };
+                if let Some(client) = app_client {
+                    call_proxy_tool(client, log_state, "script_api".to_string(), arguments).await
+                } else {
+                    CallToolResult::new().with_text_content(script_definitions())
+                }
+            }
             _ => {
                 let (client, log_state) = {
                     let state = state.lock().await;
@@ -3261,6 +3276,10 @@ mod tests {
         ) -> tmcp::Result<CallToolResponse> {
             if name == "script_eval" {
                 Ok(successful_script_eval_result().into())
+            } else if name == "script_api" {
+                Ok(CallToolResult::new()
+                    .with_text_content("live app script api")
+                    .into())
             } else if name == "health" {
                 Ok(CallToolResult::new()
                     .with_structured_content(serde_json::json!({
@@ -3880,9 +3899,9 @@ mod tests {
     }
 
     #[test]
-    fn proxied_tool_names_only_include_script_eval() {
+    fn proxied_tool_names_include_live_script_surfaces() {
         assert!(is_proxied_tool("script_eval"));
-        assert!(!is_proxied_tool("script_api"));
+        assert!(is_proxied_tool("script_api"));
         assert!(!is_proxied_tool("start"));
         assert!(!is_proxied_tool("restart"));
         assert!(!is_proxied_tool("widget_list"));
@@ -4142,6 +4161,26 @@ mod tests {
             .into_result()
             .expect("immediate result");
         assert_eq!(result.text().expect("text"), script_definitions());
+    }
+
+    #[tokio::test]
+    async fn script_api_proxies_to_running_app() {
+        let (app, _handle) = make_mock_app().await;
+        let tempdir = test_tempdir();
+        let mut raw_state = make_state(&tempdir);
+        raw_state.status = AppStatus::Running;
+        raw_state.app = Some(app);
+        let state = Arc::new(AsyncMutex::new(raw_state));
+        let server = EdevServer { state };
+        let ctx = TestServerContext::new();
+
+        let result = server
+            .call_tool(ctx.ctx(), "script_api".to_string(), None, None)
+            .await
+            .expect("script_api")
+            .into_result()
+            .expect("immediate result");
+        assert_eq!(result.text().expect("text"), "live app script api");
     }
 
     #[tokio::test]

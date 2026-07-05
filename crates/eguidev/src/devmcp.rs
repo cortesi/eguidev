@@ -17,6 +17,7 @@ use crate::{
     idle::IdleRegistry,
     instrument::{ACTIVE, container, swallow_panic},
     registry::Inner,
+    script_prelude::{ScriptPrelude, ScriptPreludeRegistry},
     types::{FixtureCall, FixtureResult, FixtureSpec},
 };
 
@@ -98,6 +99,7 @@ pub struct DevMcp {
     fixtures: Vec<FixtureSpec>,
     diagnostics: DiagnosticRegistry,
     idle: IdleRegistry,
+    script_preludes: ScriptPreludeRegistry,
     verbose_logging: bool,
     fixture_handler: Option<FixtureHandler>,
     automation_options: AutomationOptions,
@@ -110,6 +112,7 @@ impl fmt::Debug for DevMcp {
             .field("fixtures", &self.fixtures)
             .field("diagnostics", &self.diagnostics)
             .field("idle", &self.idle)
+            .field("script_preludes", &self.script_preludes)
             .field("verbose_logging", &self.verbose_logging)
             .field("automation_options", &self.automation_options)
             .finish()
@@ -253,6 +256,15 @@ impl DevMcp {
         Ok(self)
     }
 
+    /// Register app-owned Luau helpers under a required namespace.
+    pub fn script_prelude(self, prelude: ScriptPrelude) -> Result<Self, DevMcpConfigError> {
+        self.script_preludes.insert(prelude)?;
+        if let Some(inner) = self.inner() {
+            inner.script_preludes.set_from(&self.script_preludes);
+        }
+        Ok(self)
+    }
+
     /// Returns true if DevMCP automation is attached.
     pub fn is_enabled(&self) -> bool {
         matches!(self.state, DevMcpState::Active(_))
@@ -305,6 +317,7 @@ impl DevMcp {
         }
         inner.diagnostics.set_providers_from(&self.diagnostics);
         inner.idle.set_from(&self.idle);
+        inner.script_preludes.set_from(&self.script_preludes);
         self.state = DevMcpState::Active(inner);
         self
     }

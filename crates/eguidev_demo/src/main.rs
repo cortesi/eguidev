@@ -13,7 +13,8 @@ use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::Scro
 use eguidev::{
     Anchor, ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall,
     FixtureError, FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, ProgressBarOptions,
-    RoleState, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange, WidgetRole, WidgetValue,
+    RoleState, ScriptPrelude, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange,
+    WidgetRole, WidgetValue,
 };
 #[cfg(feature = "devtools")]
 use eguidev_runtime::attach as attach_runtime;
@@ -142,6 +143,11 @@ fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<
                 "focused": focused,
                 "secondary_visible": s.show_secondary,
             }))
+        })?
+        .script_prelude(ScriptPrelude {
+            namespace: "demo".to_string(),
+            source: include_str!("../luau/prelude.luau").to_string(),
+            declarations: include_str!("../luau/prelude.d.luau").to_string(),
         })?
         .on_idle_ui(|_ctx| true)?;
     #[cfg(feature = "devtools")]

@@ -91,18 +91,10 @@ assert(
 fixture("basic.default")
 
 -- assert_widget_exists
-assert_widget_exists("basic.submit")
-vp:wait_for_widget("basic.submit", function(widget)
-    return widget.visible
-end)
-vp:wait_for_widget("basic.submit", function(widget)
-    return widget.enabled
-end)
+expect("basic.submit", { visible = true, enabled = true })
 
 -- assert_widget_value on the name field
-vp:wait_for_widget("basic.name", function(widget)
-    return widget.value == "Sky"
-end)
+expect("basic.name", { value = "Sky" })
 
 -- timeout diagnostics are catchable through pcall as surfaced error text
 configure({ timeout_ms = 10, poll_interval_ms = 1 })

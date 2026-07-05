@@ -71,7 +71,9 @@ pub use eguidev::{DevMcp, ScrollAreaMeta};
 
 pub use crate::{
     runtime::{attach, eval_script},
-    script_docs::{render_script_docs_markdown, script_definitions},
+    script_docs::{
+        render_script_docs_markdown, script_definitions, script_definitions_with_preludes,
+    },
     tools::{
         FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
         ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,

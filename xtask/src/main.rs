@@ -251,6 +251,7 @@ fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
     let definitions_path = Path::new("crates/eguidev_runtime/luau/eguidev.d.luau");
     let definitions = fs::read_to_string(definitions_path)?;
     check_luau_source(definitions_path, "eguidev.d.luau", &definitions)?;
+    let demo_definitions = demo_script_definitions(&definitions)?;
 
     for source_path in luau_sources()? {
         let source = fs::read_to_string(&source_path)?;
@@ -258,11 +259,22 @@ fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
             .to_str()
             .map(|path| path.replace('\\', "/"))
             .unwrap_or_else(|| "script.luau".to_string());
-        let source = source_with_luau_definitions(&definitions, &source);
+        let definitions = if source_path.starts_with("smoketest") {
+            demo_definitions.as_str()
+        } else {
+            definitions.as_str()
+        };
+        let source = source_with_luau_definitions(definitions, &source);
         check_luau_source(&source_path, &module_name, &source)?;
     }
 
     Ok(())
+}
+
+/// Return the Luau declaration surface used by the demo smoke suite.
+fn demo_script_definitions(definitions: &str) -> Result<String, Box<dyn Error>> {
+    let declarations = fs::read_to_string("crates/eguidev_demo/luau/prelude.d.luau")?;
+    Ok(format!("{definitions}\n\n{}", declarations.trim_end()))
 }
 
 /// Prefix a script with the checked-in declaration surface for Ruau's single-module checker.

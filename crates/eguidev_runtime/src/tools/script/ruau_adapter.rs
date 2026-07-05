@@ -39,6 +39,7 @@ use super::{
 use crate::{registry::Inner, runtime::Runtime, types::WidgetRef};
 
 const EGUIDEV_SEED: u64 = 0x00e9_d1de;
+const BUILTIN_PRELUDE_SOURCE: &str = include_str!("../../../luau/prelude.luau");
 
 const SETUP_SOURCE: &[u8] = br#"
 --!nonstrict
@@ -92,30 +93,11 @@ function wait_until(predicate, options)
 end
 "#;
 
-const DECLARATION: &str = r#"
-declare args: any
-declare function assert(value: boolean, message: string?): ()
-declare function assert_widget_exists(id: string): ()
-declare function configure(options: any): ()
-declare function diagnostic(name: string): any
-declare function diagnostics(): any
-declare function dump(options: any?): any
-declare function dump_text(options: any?): string
-declare function fixture(name: string, params: any?): any
-declare function fixture_raw(name: string, params: any?): ()
-declare function fixtures(): any
-declare function log(entry: any): ()
-declare function root(): any
-declare function viewport(options: any): any
-declare function viewports(): any
-declare function wait_for_capture(options: any?): ()
-declare function wait_for_frames(count: number?): number
-declare function wait_until(predicate: () -> boolean, options: any?): ()
-declare function __eguidev_args(): any
-"#;
+const CORE_DECLARATION: &str = include_str!("../../../luau/eguidev.d.luau");
 
 const VIEWPORT_METHODS: &[u8] = b"viewport_methods";
 const WIDGET_METHODS: &[u8] = b"widget_methods";
+const CAPTURE_METHODS: &[u8] = b"capture_methods";
 
 #[cfg(test)]
 const SUPPORTED_GLOBALS: &[&str] = &[
@@ -125,6 +107,7 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "assert_widget_exists",
     "bit32",
     "buffer",
+    "capture",
     "configure",
     "coroutine",
     "debug",
@@ -132,6 +115,14 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "diagnostics",
     "dump",
     "dump_text",
+    "expect",
+    "expect_above",
+    "expect_absent",
+    "expect_left_of",
+    "expect_no_overlap",
+    "expect_text_fits",
+    "expect_tree",
+    "expect_within",
     "fixture",
     "fixture_raw",
     "fixtures",
@@ -147,6 +138,7 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "table",
     "tonumber",
     "tostring",
+    "try_widget",
     "type",
     "utf8",
     "viewport",
@@ -154,6 +146,7 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "wait_for_capture",
     "wait_for_frames",
     "wait_until",
+    "widget",
 ];
 
 #[cfg(test)]
@@ -161,6 +154,7 @@ const SUPPORTED_METHODS: &[&str] = &[
     "check_layout",
     "children",
     "click",
+    "diff",
     "dismiss_popups",
     "drag",
     "drag_relative",
@@ -257,6 +251,7 @@ async fn run_script_eval_local(
     source_name: String,
     args: ScriptArgs,
 ) -> ScriptEvalOutcome {
+    let app_preludes = inner.script_preludes.preludes();
     let script_runtime = Arc::new(ScriptRuntime::new(
         inner,
         runtime,
@@ -270,6 +265,7 @@ async fn run_script_eval_local(
     let module = Arc::new(EguidevModule {
         args: script_args_to_luau_json(&args),
         runtime: Arc::clone(&script_runtime),
+        declaration: script_declarations(&app_preludes),
     });
     let mut vm = match Vm::builder()
         .ambient(Ambient::production(EGUIDEV_SEED))
@@ -303,6 +299,14 @@ async fn run_script_eval_local(
         }
     };
     if let Err(error) = run_setup(&mut vm, &setup).await {
+        let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
+        return build_error_outcome(&script_runtime, error, timing);
+    }
+    if let Err(error) = run_builtin_prelude(&mut vm, &runtime_capabilities).await {
+        let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
+        return build_error_outcome(&script_runtime, error, timing);
+    }
+    if let Err(error) = run_app_preludes(&mut vm, &runtime_capabilities, &app_preludes).await {
         let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
         return build_error_outcome(&script_runtime, error, timing);
     }
@@ -523,6 +527,20 @@ fn is_supported_method(name: &str) -> bool {
     SUPPORTED_METHODS.binary_search(&name).is_ok()
 }
 
+fn script_declarations(app_preludes: &[eguidev::ScriptPrelude]) -> String {
+    let mut declaration = CORE_DECLARATION.trim_end().to_string();
+    declaration.push_str("\ndeclare function __eguidev_args(): any\n");
+    for prelude in app_preludes {
+        if prelude.declarations.trim().is_empty() {
+            continue;
+        }
+        declaration.push('\n');
+        declaration.push_str(prelude.declarations.trim());
+    }
+    declaration.push('\n');
+    declaration
+}
+
 async fn run_setup(vm: &mut Vm, setup: &LoadedModule) -> Result<(), ScriptErrorInfo> {
     match vm.exec_async(setup, CallOptions::new()).await {
         Ok(values) if values.is_empty() => Ok(()),
@@ -539,6 +557,74 @@ async fn run_setup(vm: &mut Vm, setup: &LoadedModule) -> Result<(), ScriptErrorI
     }
 }
 
+async fn run_builtin_prelude(
+    vm: &mut Vm,
+    runtime_capabilities: &RuntimeCapabilities,
+) -> Result<(), ScriptErrorInfo> {
+    let label = "built-in prelude";
+    let prelude = load_prelude(
+        vm,
+        runtime_capabilities,
+        b"@eguidev_prelude.luau",
+        BUILTIN_PRELUDE_SOURCE.as_bytes(),
+        label,
+    )?;
+    run_prelude(vm, &prelude, label).await
+}
+
+async fn run_app_preludes(
+    vm: &mut Vm,
+    runtime_capabilities: &RuntimeCapabilities,
+    app_preludes: &[eguidev::ScriptPrelude],
+) -> Result<(), ScriptErrorInfo> {
+    for prelude in app_preludes {
+        let namespace_source = format!("--!nonstrict\n{} = {{}}\n", prelude.namespace);
+        let namespace_label = format!("app prelude namespace {}", prelude.namespace);
+        let namespace_setup = load_prelude(
+            vm,
+            runtime_capabilities,
+            format!("@{namespace_label}.luau").as_bytes(),
+            namespace_source.as_bytes(),
+            &namespace_label,
+        )?;
+        run_prelude(vm, &namespace_setup, &namespace_label).await?;
+
+        let source_label = format!("app prelude {}", prelude.namespace);
+        let app_prelude = load_prelude(
+            vm,
+            runtime_capabilities,
+            format!("@{}.prelude.luau", prelude.namespace).as_bytes(),
+            prelude.source.as_bytes(),
+            &source_label,
+        )?;
+        run_prelude(vm, &app_prelude, &source_label).await?;
+    }
+    Ok(())
+}
+
+async fn run_prelude(
+    vm: &mut Vm,
+    prelude: &LoadedModule,
+    label: &str,
+) -> Result<(), ScriptErrorInfo> {
+    match vm.exec_async(prelude, CallOptions::new()).await {
+        Ok(values) if values.is_empty() => Ok(()),
+        Ok(values) => Err(prelude_error_info(
+            label,
+            runtime_error(format!("prelude returned unexpected values: {values:?}")),
+        )),
+        Err(error) => {
+            let info = if let Some(error) = error.script_error() {
+                ruau_script_error_info(error)
+            } else {
+                let rendered_error = error.to_string();
+                fatal_error_info(error.kind(), &rendered_error, 0)
+            };
+            Err(prelude_error_info(label, info))
+        }
+    }
+}
+
 fn load(
     vm: &mut Vm,
     runtime_capabilities: &RuntimeCapabilities,
@@ -551,6 +637,35 @@ fn load(
         .map_err(|error| compile_error_info(&error, source_name))?;
     vm.load_named(&chunk, chunk_name)
         .map_err(|error| runtime_error(format!("failed to load Ruau chunk: {error}")))
+}
+
+fn load_prelude(
+    vm: &mut Vm,
+    runtime_capabilities: &RuntimeCapabilities,
+    chunk_name: &[u8],
+    source: &[u8],
+    label: &str,
+) -> Result<LoadedModule, ScriptErrorInfo> {
+    let chunk = runtime_capabilities
+        .compile_source(source, &CompileOptions::new())
+        .map_err(|error| prelude_error_info(label, compile_error_info(&error, label)))?;
+    vm.load_named(&chunk, chunk_name).map_err(|error| {
+        prelude_error_info(
+            label,
+            runtime_error(format!("failed to load Ruau chunk: {error}")),
+        )
+    })
+}
+
+fn prelude_error_info(label: &str, mut info: ScriptErrorInfo) -> ScriptErrorInfo {
+    info.error_type = "prelude".to_string();
+    if !info.message.starts_with(label) {
+        info.message = format!("{label}: {}", info.message);
+    }
+    if info.backtrace.is_none() {
+        info.backtrace = Some(vec![label.to_string()]);
+    }
+    info
 }
 
 fn values_to_script_value(
@@ -907,6 +1022,7 @@ fn deadline_after(timeout_ms: u64) -> Option<Deadline> {
 struct EguidevModule {
     args: Value,
     runtime: Arc<ScriptRuntime>,
+    declaration: String,
 }
 
 impl NativeModule for EguidevModule {
@@ -915,13 +1031,14 @@ impl NativeModule for EguidevModule {
     }
 
     fn declaration(&self) -> DeclSource<'_> {
-        DeclSource::Text(DECLARATION)
+        DeclSource::Text(&self.declaration)
     }
 
     fn build(&self, builder: &mut dyn ModuleBuilder) {
         self.register_core_globals(builder);
         self.register_viewport_methods(builder);
         self.register_widget_methods(builder);
+        self.register_capture_methods(builder);
         self.register_script_utility_globals(builder);
     }
 }
@@ -1040,6 +1157,33 @@ impl EguidevModule {
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
+            "widget",
+            ModuleBinding::Global,
+            async_host_fn(move |ctx: AsyncHostContext, args: StringOptionsArgs| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .widget_find(
+                            pos,
+                            args.value,
+                            args.options.as_ref().and_then(Value::as_object),
+                        )
+                        .await
+                        .map_err(host_script_error)?;
+                    typed_json_host_return_with_metatable(&ctx, value, WIDGET_METHODS).await
+                }
+            }),
+        );
+        builder.scoped_function(
+            "try_widget",
+            ModuleBinding::Global,
+            Box::new(TryWidgetFn {
+                runtime: Arc::clone(&self.runtime),
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
             "viewports",
             ModuleBinding::Global,
             async_host_fn(move |ctx: AsyncHostContext, (): ()| {
@@ -1052,6 +1196,16 @@ impl EguidevModule {
                         .map_err(host_script_error)?;
                     typed_json_array_host_return_with_metatable(&ctx, value, VIEWPORT_METHODS).await
                 }
+            }),
+        );
+    }
+
+    fn register_capture_methods(&self, builder: &mut dyn ModuleBuilder) {
+        builder.scoped_function(
+            "diff",
+            ModuleBinding::hidden("capture_methods"),
+            Box::new(CaptureDiffFn {
+                runtime: Arc::clone(&self.runtime),
             }),
         );
     }
@@ -2116,6 +2270,13 @@ impl EguidevModule {
             }),
         );
         builder.scoped_function(
+            "capture",
+            ModuleBinding::Global,
+            Box::new(CaptureFn {
+                runtime: Arc::clone(&self.runtime),
+            }),
+        );
+        builder.scoped_function(
             "__eguidev_args",
             ModuleBinding::Global,
             Box::new(ArgsFn {
@@ -2260,6 +2421,18 @@ impl<'s> FromLuaMulti<'s> for ViewportStringOptionsArgs {
             value,
             options,
         })
+    }
+}
+
+struct StringOptionsArgs {
+    value: String,
+    options: Option<Value>,
+}
+
+impl<'s> FromLuaMulti<'s> for StringOptionsArgs {
+    fn from_lua_multi(args: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let (value, options) = string_and_options_arg(scope, "widget", args)?;
+        Ok(Self { value, options })
     }
 }
 
@@ -3265,6 +3438,63 @@ struct LogFn {
     runtime: Arc<ScriptRuntime>,
 }
 
+struct TryWidgetFn {
+    runtime: Arc<ScriptRuntime>,
+}
+
+impl ScopedHostFunction for TryWidgetFn {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let pos = script_position_from_caller(scope);
+        let (id, options) = string_and_options_arg(scope, "try_widget", args)?;
+        let value = self
+            .runtime
+            .try_widget_find(pos, id, options.as_ref().and_then(Value::as_object))
+            .map_err(host_script_error)?;
+        optional_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
+    }
+}
+
+struct CaptureFn {
+    runtime: Arc<ScriptRuntime>,
+}
+
+impl ScopedHostFunction for CaptureFn {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        no_args("capture", &args)?;
+        let pos = script_position_from_caller(scope);
+        let value = self.runtime.capture(pos).map_err(host_script_error)?;
+        single_typed_json_table_return_with_metatable(scope, &value, CAPTURE_METHODS)
+    }
+}
+
+struct CaptureDiffFn {
+    runtime: Arc<ScriptRuntime>,
+}
+
+impl ScopedHostFunction for CaptureDiffFn {
+    fn call<'s>(
+        &self,
+        scope: &Scope<'s>,
+        args: MultiValue<'s>,
+    ) -> Result<MultiValue<'s>, RuntimeError> {
+        let pos = script_position_from_caller(scope);
+        let (capture, options) = capture_self_and_options(scope, "diff", args)?;
+        let value = self
+            .runtime
+            .capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object))
+            .map_err(host_script_error)?;
+        single_typed_json_return(scope, &value)
+    }
+}
+
 impl ScopedHostFunction for LogFn {
     fn call<'s>(
         &self,
@@ -3341,6 +3571,50 @@ fn optional_json_arg<'s>(
             "{name} expected at most one argument, got {got}"
         ))),
     }
+}
+
+fn string_and_options_arg<'s>(
+    scope: &Scope<'s>,
+    name: &str,
+    args: MultiValue<'s>,
+) -> Result<(String, Option<Value>), RuntimeError> {
+    let mut values = args.into_vec();
+    if !(1..=2).contains(&values.len()) {
+        return Err(RuntimeError::runtime(format!(
+            "{name} expected string and optional options, got {} arguments",
+            values.len()
+        )));
+    }
+    let value = from_scoped_value::<String>(scope, values.remove(0))?;
+    let options = values
+        .pop()
+        .map(|value| scoped_value_to_json(scope, value))
+        .map(|value| value.map(normalize_integral_numbers))
+        .transpose()?
+        .filter(|value| !value.is_null());
+    Ok((value, options))
+}
+
+fn capture_self_and_options<'s>(
+    scope: &Scope<'s>,
+    name: &str,
+    args: MultiValue<'s>,
+) -> Result<(Value, Option<Value>), RuntimeError> {
+    let mut values = args.into_vec();
+    if !(1..=2).contains(&values.len()) {
+        return Err(RuntimeError::runtime(format!(
+            "{name} expected self and optional options, got {} arguments",
+            values.len()
+        )));
+    }
+    let capture = scoped_value_to_json(scope, values.remove(0)).map(normalize_integral_numbers)?;
+    let options = values
+        .pop()
+        .map(|value| scoped_value_to_json(scope, value))
+        .map(|value| value.map(normalize_integral_numbers))
+        .transpose()?
+        .filter(|value| !value.is_null());
+    Ok((capture, options))
 }
 
 fn viewport_self_and_options<'s>(
@@ -3529,6 +3803,25 @@ async fn typed_json_array_host_return_with_metatable(
     let value = ctx
         .scope(move |scope| {
             let scoped = typed_json_array_value_with_metatable(scope, &value, methods)?;
+            Ok(scope.stash_value(scoped)?.into_owned_value())
+        })
+        .await?;
+    Ok(HostReturn {
+        values: vec![value],
+    })
+}
+
+async fn typed_json_host_return_with_metatable(
+    ctx: &AsyncHostContext,
+    value: Value,
+    methods: &'static [u8],
+) -> Result<HostReturn, RuntimeError> {
+    if value.is_null() {
+        return typed_scalar_host_return(value);
+    }
+    let value = ctx
+        .scope(move |scope| {
+            let scoped = typed_json_table_value_with_metatable(scope, &value, methods)?;
             Ok(scope.stash_value(scoped)?.into_owned_value())
         })
         .await?;
@@ -3739,12 +4032,24 @@ return catalog[1].name"#
 return widgets[1].id"#
         ));
         assert!(is_supported_by_initial_ruau_slice(
+            r#"local found = widget("status")
+local maybe = try_widget("missing")
+expect("status", { visible = true })
+expect_absent("missing")
+return found.id ~= nil and maybe == nil"#
+        ));
+        assert!(is_supported_by_initial_ruau_slice(
             r#"local widget = root():widget_get("status")
 return widget:state().role"#
         ));
         assert!(is_supported_by_initial_ruau_slice(
             r#"local widgets = root():widget_at_point({ x = 1, y = 1 }, true)
 return #widgets"#
+        ));
+        assert!(is_supported_by_initial_ruau_slice(
+            r#"local before = capture()
+local diff = before:diff({ id_prefix = "status" })
+return #diff.changes"#
         ));
     }
 
@@ -3796,6 +4101,12 @@ return true"#
         assert!(is_supported_by_initial_ruau_slice(
             r##"local viewport = root()
 local widget = viewport:widget_get("status")
+expect_left_of("left", "right")
+expect_above("top", "bottom")
+expect_no_overlap("first", "second")
+expect_within("inner", "outer")
+expect_text_fits("status")
+expect_tree("parent", { "child" })
 widget:text_measure()
 widget:check_layout()
 widget:screenshot()

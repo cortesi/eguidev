@@ -14,7 +14,7 @@ for _, w in ipairs(buttons) do
 end
 
 -- widget_list with id_prefix (ensure scroll rows exist first)
-assert_widget_exists("basic.scroll.row.0")
+expect("basic.scroll.row.0", { visible = true })
 local scroll_rows = vp:widget_list({ id_prefix = "basic.scroll.row.", include_invisible = true }) :: any
 assert(#scroll_rows >= 1, "should find scroll rows")
 for _, w in ipairs(scroll_rows) do
@@ -38,9 +38,10 @@ end
 assert(#ancestors >= 1, "ancestor walk should include at least the target itself")
 
 -- children() on a scroll area should expose immediate rows
-assert_widget_exists("basic.scroll")
+expect("basic.scroll", { visible = true })
 local children = vp:widget_get("basic.scroll"):children()
 assert(#children >= 1, "scroll area should have children")
+expect_tree("basic.scroll", { children[1].id })
 
 local function collect_descendants(widget: Widget, out: { string })
     for _, child in ipairs(widget:children()) do

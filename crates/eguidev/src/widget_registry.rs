@@ -257,6 +257,56 @@ impl WidgetRegistry {
         }
         Ok(matches.into_iter().next().expect("single id match"))
     }
+
+    pub fn resolve_widget_global(
+        &self,
+        viewports: &ViewportState,
+        target: &WidgetRef,
+    ) -> Result<WidgetRegistryEntry, ToolError> {
+        if target.viewport_id.is_some() {
+            return self.resolve_widget(viewports, None, target);
+        }
+        if let Some(error) = self.duplicate_explicit_id_error(viewports) {
+            return Err(error);
+        }
+        let registry = lock(&self.registry_snapshot, "registry snapshot lock");
+
+        if target.id.is_none() {
+            return Err(
+                ToolError::new(ErrorCode::InvalidRef, "WidgetRef must include id")
+                    .with_details(selector_details(target, None, None)),
+            );
+        }
+
+        let matches = registry
+            .values()
+            .flatten()
+            .filter(|entry| entry.id == target.id.as_deref().unwrap_or_default())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if matches.is_empty() {
+            return Err(not_found_error(
+                "Widget not found for id",
+                target,
+                None,
+                "all",
+                &registry,
+                viewports,
+            ));
+        }
+        if matches.len() > 1 {
+            return Err(ambiguous_error(
+                "ambiguous",
+                "Widget reference is ambiguous",
+                target,
+                None,
+                "all",
+                &matches,
+            ));
+        }
+        Ok(matches.into_iter().next().expect("single id match"))
+    }
 }
 
 pub fn record_widget(
@@ -601,7 +651,8 @@ fn missing_widget_search(
             "suggestions": [],
         });
     };
-    let restrict_to = (resolved_viewport != "root").then_some(resolved_viewport);
+    let restrict_to =
+        (resolved_viewport != "root" && resolved_viewport != "all").then_some(resolved_viewport);
     let mut all_candidates: Vec<(CandidateScore, String)> = Vec::new();
     let mut exact_matches = Vec::new();
     let mut summaries = registry

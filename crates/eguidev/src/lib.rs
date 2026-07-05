@@ -137,6 +137,7 @@ mod idle;
 mod instrument;
 mod overlay;
 mod registry;
+mod script_prelude;
 mod tree;
 pub(crate) mod types;
 mod ui_ext;
@@ -150,6 +151,7 @@ pub use crate::{
         ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
         name_viewport, publish_rect_meta, track_response_full,
     },
+    script_prelude::ScriptPrelude,
     types::{
         Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
         FixtureResponse, FixtureResult, FixtureSpec, ParamKind, RoleState, ScrollAreaMeta,
@@ -197,6 +199,10 @@ pub mod internal {
 
     pub mod registry {
         pub use crate::registry::{Inner, lock, viewport_id_to_string};
+    }
+
+    pub mod script_prelude {
+        pub use crate::script_prelude::{ScriptPrelude, ScriptPreludeRegistry};
     }
 
     pub mod tree {

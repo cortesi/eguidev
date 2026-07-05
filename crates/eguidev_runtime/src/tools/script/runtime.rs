@@ -1,7 +1,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::result_large_err)]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     sync::{
         Arc, Mutex,
@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tmcp::ToolResult;
 use tokio::{task::spawn_blocking, time::timeout};
@@ -44,6 +44,46 @@ use crate::{
     types::{Modifiers, Rect, Vec2, WidgetRef, WidgetRegistryEntry, WidgetState, WidgetValue},
     viewports::ViewportSnapshot,
 };
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ScriptCapture {
+    frame: u64,
+    #[serde(rename = "__widgets")]
+    widgets: Vec<ScriptCapturedWidget>,
+    #[serde(rename = "__viewports")]
+    viewports: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ScriptCapturedWidget {
+    id: String,
+    viewport_id: String,
+    state: WidgetState,
+}
+
+#[derive(Debug, Serialize)]
+struct WidgetDelta {
+    id: String,
+    viewport_id: String,
+    change: &'static str,
+    fields: Vec<&'static str>,
+    before: Option<WidgetState>,
+    after: Option<WidgetState>,
+}
+
+#[derive(Debug, Serialize)]
+struct TreeDiff {
+    changes: Vec<WidgetDelta>,
+    viewports_added: Vec<String>,
+    viewports_removed: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DiffOptions {
+    move_epsilon: f32,
+    include_invisible: bool,
+    id_prefix: Option<String>,
+}
 
 pub(super) struct ScriptRuntime {
     pub(super) server: DevMcpServer,
@@ -501,8 +541,7 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<(Option<String>, Option<u64>, Option<u64>)> {
-        let viewport_id = parse_optional_string(options, "viewport_id")
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let viewport_id = self.parse_optional_viewport_option(pos, options)?;
         let timeout_ms = parse_optional_u64(options, "timeout_ms")
             .map_err(|error| self.type_error(pos, error.message))?
             .or_else(|| self.configured_timeout_ms());
@@ -510,6 +549,83 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?
             .or_else(|| self.configured_poll_interval_ms());
         Ok((viewport_id, timeout_ms, poll_interval_ms))
+    }
+
+    fn parse_optional_viewport_option(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Option<String>> {
+        let viewport = parse_optional_string(options, "viewport")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let viewport_id = parse_optional_string(options, "viewport_id")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        match (viewport, viewport_id) {
+            (Some(viewport), Some(viewport_id)) if viewport != viewport_id => Err(self.type_error(
+                pos,
+                "options must not include both viewport and viewport_id with different values",
+            )),
+            (Some(viewport), _) => Ok(Some(viewport)),
+            (None, viewport_id) => Ok(viewport_id),
+        }
+    }
+
+    fn diff_options(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<DiffOptions> {
+        let move_epsilon = parse_optional_f32(options, "move_epsilon")
+            .map_err(|error| self.type_error(pos, error.message))?
+            .unwrap_or(0.5);
+        if !move_epsilon.is_finite() || move_epsilon < 0.0 {
+            return Err(self.type_error(pos, "move_epsilon must be a non-negative finite number"));
+        }
+        let include_invisible = parse_optional_bool(options, "include_invisible")
+            .map_err(|error| self.type_error(pos, error.message))?
+            .unwrap_or(false);
+        let id_prefix = parse_optional_string(options, "id_prefix")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        Ok(DiffOptions {
+            move_epsilon,
+            include_invisible,
+            id_prefix,
+        })
+    }
+
+    fn capture_snapshot(&self) -> ScriptCapture {
+        let mut viewports = self
+            .server
+            .inner
+            .viewports
+            .viewports_snapshot()
+            .into_iter()
+            .map(|snapshot| snapshot.viewport_id)
+            .collect::<Vec<_>>();
+        if viewports.is_empty() {
+            viewports.push(viewport_id_to_string(egui::ViewportId::ROOT));
+        }
+        let widgets = viewports
+            .iter()
+            .filter_map(|viewport_id| {
+                self.server
+                    .inner
+                    .viewports
+                    .resolve_viewport_id(Some(viewport_id.clone()))
+                    .ok()
+            })
+            .flat_map(|viewport_id| self.server.inner.widgets.widget_list(viewport_id))
+            .map(|widget| ScriptCapturedWidget {
+                id: widget.id.clone(),
+                viewport_id: widget.viewport_id.clone(),
+                state: WidgetState::from(&widget),
+            })
+            .collect();
+        ScriptCapture {
+            frame: self.server.inner.frame_count(),
+            widgets,
+            viewports,
+        }
     }
 
     fn resolve_target_viewport(
@@ -626,13 +742,65 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let viewport_id = parse_optional_string(options, "viewport_id")
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let viewport_id = self.parse_optional_viewport_option(pos, options)?;
         let result = self
             .server
             .widget_get_result(viewport_id.as_deref(), &target)
             .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_json(pos, &result.widget)
+    }
+
+    pub(super) async fn widget_find(
+        &self,
+        pos: ScriptPosition,
+        id: String,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let target = parse_widget_ref(&Value::String(id))
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let (viewport_id, timeout_ms, poll_interval_ms) = self.parse_wait_options(pos, options)?;
+        let widget = self
+            .await_tool(
+                pos,
+                self.server.wait_for_widget_state(
+                    viewport_id,
+                    target,
+                    timeout_ms,
+                    poll_interval_ms,
+                    |widget| widget.is_some(),
+                ),
+            )
+            .await?
+            .ok_or_else(|| self.runtime_error(pos, "widget wait matched without a widget"))?;
+        self.widget_handle_json(pos, &widget)
+    }
+
+    pub(super) fn try_widget_find(
+        &self,
+        pos: ScriptPosition,
+        id: String,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let target = parse_widget_ref(&Value::String(id))
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let viewport_id = self.parse_optional_viewport_option(pos, options)?;
+        let result = match viewport_id.as_deref() {
+            Some(viewport_id) => self
+                .server
+                .widget_get_result(Some(viewport_id), &target)
+                .map(|result| result.widget),
+            None => self
+                .server
+                .inner
+                .widgets
+                .resolve_widget_global(&self.server.inner.viewports, &target)
+                .map_err(|error| tmcp::ToolError::from(ToolError::from(error))),
+        };
+        match result {
+            Ok(widget) => self.widget_handle_json(pos, &widget),
+            Err(error) if error.code == "not_found" => Ok(Value::Null),
+            Err(error) => Err(self.tool_error(pos, error)),
+        }
     }
 
     pub(super) async fn widget_set_value(
@@ -1667,6 +1835,29 @@ impl ScriptRuntime {
         self.to_json(pos, report)
     }
 
+    pub(super) fn capture(&self, pos: ScriptPosition) -> ScriptResult<Value> {
+        self.to_json(pos, self.capture_snapshot())
+    }
+
+    pub(super) fn capture_diff(
+        &self,
+        pos: ScriptPosition,
+        capture: &Value,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<Value> {
+        let before = serde_json::from_value::<ScriptCapture>(capture.clone()).map_err(|error| {
+            self.type_error(
+                pos,
+                format!("Capture:diff expected a capture table: {error}"),
+            )
+        })?;
+        let options = self.diff_options(pos, options)?;
+        self.to_json(
+            pos,
+            diff_captures(&before, &self.capture_snapshot(), &options),
+        )
+    }
+
     pub(super) async fn wait_for_scroll_ready(
         &self,
         pos: ScriptPosition,
@@ -2290,6 +2481,139 @@ fn widget_values_match(current: &WidgetValue, expected: &WidgetValue) -> bool {
 fn scroll_offsets_match(current: Vec2, expected: Vec2) -> bool {
     (current.x - expected.x).abs() <= SCROLL_STABILITY_TOLERANCE
         && (current.y - expected.y).abs() <= SCROLL_STABILITY_TOLERANCE
+}
+
+fn diff_captures(before: &ScriptCapture, after: &ScriptCapture, options: &DiffOptions) -> TreeDiff {
+    let before_viewports = before.viewports.iter().cloned().collect::<BTreeSet<_>>();
+    let after_viewports = after.viewports.iter().cloned().collect::<BTreeSet<_>>();
+    let before_widgets = capture_widget_map(before, options);
+    let after_widgets = capture_widget_map(after, options);
+    let keys = before_widgets
+        .keys()
+        .chain(after_widgets.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut changes = Vec::new();
+
+    for (viewport_id, id) in keys {
+        match (
+            before_widgets.get(&(viewport_id.clone(), id.clone())),
+            after_widgets.get(&(viewport_id.clone(), id.clone())),
+        ) {
+            (None, Some(after)) => changes.push(WidgetDelta {
+                id,
+                viewport_id,
+                change: "added",
+                fields: Vec::new(),
+                before: None,
+                after: Some(after.state.clone()),
+            }),
+            (Some(before), None) => changes.push(WidgetDelta {
+                id,
+                viewport_id,
+                change: "removed",
+                fields: Vec::new(),
+                before: Some(before.state.clone()),
+                after: None,
+            }),
+            (Some(before), Some(after)) => {
+                let fields =
+                    changed_widget_fields(&before.state, &after.state, options.move_epsilon);
+                if !fields.is_empty() {
+                    changes.push(WidgetDelta {
+                        id,
+                        viewport_id,
+                        change: "changed",
+                        fields,
+                        before: Some(before.state.clone()),
+                        after: Some(after.state.clone()),
+                    });
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    TreeDiff {
+        changes,
+        viewports_added: after_viewports
+            .difference(&before_viewports)
+            .cloned()
+            .collect(),
+        viewports_removed: before_viewports
+            .difference(&after_viewports)
+            .cloned()
+            .collect(),
+    }
+}
+
+fn capture_widget_map(
+    capture: &ScriptCapture,
+    options: &DiffOptions,
+) -> BTreeMap<(String, String), ScriptCapturedWidget> {
+    capture
+        .widgets
+        .iter()
+        .filter(|widget| options.include_invisible || widget.state.visible)
+        .filter(|widget| {
+            options
+                .id_prefix
+                .as_deref()
+                .is_none_or(|prefix| widget.id.starts_with(prefix))
+        })
+        .map(|widget| {
+            (
+                (widget.viewport_id.clone(), widget.id.clone()),
+                widget.clone(),
+            )
+        })
+        .collect()
+}
+
+fn changed_widget_fields(
+    before: &WidgetState,
+    after: &WidgetState,
+    move_epsilon: f32,
+) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if before.role != after.role {
+        fields.push("role");
+    }
+    if rect_changed(&before.rect, &after.rect, move_epsilon) {
+        fields.push("rect");
+    }
+    if before.visible != after.visible {
+        fields.push("visible");
+    }
+    if before.enabled != after.enabled {
+        fields.push("enabled");
+    }
+    if before.focused != after.focused {
+        fields.push("focused");
+    }
+    if before.selected != after.selected {
+        fields.push("selected");
+    }
+    if before.label != after.label {
+        fields.push("label");
+    }
+    if before.value != after.value {
+        fields.push("value");
+    }
+    if before.value_text != after.value_text {
+        fields.push("value_text");
+    }
+    if before.data != after.data {
+        fields.push("data");
+    }
+    fields
+}
+
+fn rect_changed(before: &Rect, after: &Rect, epsilon: f32) -> bool {
+    (before.min.x - after.min.x).abs() > epsilon
+        || (before.min.y - after.min.y).abs() > epsilon
+        || (before.max.x - after.max.x).abs() > epsilon
+        || (before.max.y - after.max.y).abs() > epsilon
 }
 
 fn image_ref_json(id: String) -> Value {
