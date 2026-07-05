@@ -656,6 +656,58 @@ impl DemoApp {
                     ..Default::default()
                 },
             );
+            ui.horizontal(|ui| {
+                let (painted_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(72.0, 36.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(painted_rect, 0.0, Color32::from_rgb(0x12, 0x25, 0x34));
+                ui.painter().circle_filled(
+                    painted_rect.left_center() + egui::vec2(18.0, 0.0),
+                    10.0,
+                    Color32::from_rgb(0xf2, 0xc9, 0x4c),
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        painted_rect.center() + egui::vec2(2.0, -12.0),
+                        painted_rect.right_bottom() - egui::vec2(6.0, 6.0),
+                    ),
+                    2.0,
+                    Color32::from_rgb(0x27, 0xae, 0x60),
+                );
+                eguidev::publish_rect_meta(
+                    ui,
+                    "basic.visual.painted_canvas",
+                    painted_rect,
+                    eguidev::WidgetMeta {
+                        role: WidgetRole::Image,
+                        label: Some("Painted canvas".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    }
+                    .with_data(json!({
+                        "kind": "painted_canvas",
+                    })),
+                );
+
+                let (flat_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(72.0, 36.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(flat_rect, 0.0, Color32::from_rgb(0x99, 0xa3, 0xad));
+                eguidev::publish_rect_meta(
+                    ui,
+                    "basic.visual.flat_canvas",
+                    flat_rect,
+                    eguidev::WidgetMeta {
+                        role: WidgetRole::Image,
+                        label: Some("Flat canvas".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    }
+                    .with_data(json!({
+                        "kind": "flat_canvas",
+                    })),
+                );
+            });
 
             let _menu = ui.dev_menu_button("basic.menu.actions", "Actions", |ui| {
                 if ui

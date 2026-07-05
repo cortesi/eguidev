@@ -280,3 +280,68 @@ function expect_tree(parent, children)
         end
     end
 end
+
+local function __eguidev_count_sample_colors(samples)
+    local colors = {}
+    local count = 0
+    for _, sample in ipairs(samples) do
+        if colors[sample.hex] == nil then
+            colors[sample.hex] = true
+            count += 1
+        end
+    end
+    return count, colors
+end
+
+function expect_painted(id, min_colors)
+    min_colors = min_colors or 2
+    expect(id, { visible = true })
+    local final_state = nil
+    local final_count = 0
+    local final_colors = nil
+    local final_error = nil
+    __eguidev_wait_for(function()
+        local handle = try_widget(id)
+        if handle == nil then
+            final_state = nil
+            final_count = 0
+            final_colors = nil
+            final_error = "widget is absent"
+            return false
+        end
+        final_state = handle:state()
+        if not final_state.visible then
+            final_count = 0
+            final_colors = nil
+            final_error = "widget is not visible"
+            return false
+        end
+        local ok, samples = pcall(function()
+            return handle:sample_grid(24, 24)
+        end)
+        if not ok then
+            final_count = 0
+            final_colors = nil
+            final_error = tostring(samples)
+            return false
+        end
+        final_count, final_colors = __eguidev_count_sample_colors(samples)
+        final_error = nil
+        return final_count >= min_colors
+    end, function()
+        local message = "expect_painted failed for "
+            .. __eguidev_repr(id)
+            .. ": expected at least "
+            .. tostring(min_colors)
+            .. " colors, got "
+            .. tostring(final_count)
+        if final_error ~= nil then
+            message = message .. "; last error: " .. final_error
+        end
+        return message
+            .. "; colors: "
+            .. __eguidev_repr(final_colors)
+            .. "; state: "
+            .. __eguidev_repr(final_state)
+    end)
+end

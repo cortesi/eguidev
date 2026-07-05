@@ -2092,6 +2092,54 @@ impl ScriptRuntime {
         self.to_json(pos, samples)
     }
 
+    pub(super) async fn widget_sample_pixels(
+        &self,
+        pos: ScriptPosition,
+        target: &Value,
+        viewport_id: Option<String>,
+        positions: &Value,
+    ) -> ScriptResult<Value> {
+        let target =
+            parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
+        let positions = positions
+            .as_array()
+            .ok_or_else(|| self.type_error(pos, "sample_pixels expects an array of positions"))?
+            .iter()
+            .map(|value| parse_pos2(value).map_err(|error| self.type_error(pos, error.message)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let samples = self
+            .await_tool(
+                pos,
+                self.server
+                    .widget_sample_pixels(viewport_id, &target, positions),
+            )
+            .await?;
+        self.to_json(pos, samples)
+    }
+
+    pub(super) async fn widget_sample_grid(
+        &self,
+        pos: ScriptPosition,
+        target: &Value,
+        viewport_id: Option<String>,
+        nx: &Value,
+        ny: &Value,
+    ) -> ScriptResult<Value> {
+        let target =
+            parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
+        let nx =
+            parse_sample_grid_count(nx, "nx").map_err(|message| self.type_error(pos, message))?;
+        let ny =
+            parse_sample_grid_count(ny, "ny").map_err(|message| self.type_error(pos, message))?;
+        let samples = self
+            .await_tool(
+                pos,
+                self.server.widget_sample_grid(viewport_id, &target, nx, ny),
+            )
+            .await?;
+        self.to_json(pos, samples)
+    }
+
     pub(super) async fn check_layout(
         &self,
         pos: ScriptPosition,
@@ -2476,6 +2524,19 @@ fn widget_values_match(current: &WidgetValue, expected: &WidgetValue) -> bool {
         }
         _ => current == expected,
     }
+}
+
+fn parse_sample_grid_count(value: &Value, name: &'static str) -> Result<usize, String> {
+    let Some(number) = value.as_number() else {
+        return Err(format!("sample_grid {name} must be a positive integer"));
+    };
+    let Some(count) = number.as_u64() else {
+        return Err(format!("sample_grid {name} must be a positive integer"));
+    };
+    if count == 0 || count > usize::MAX as u64 {
+        return Err(format!("sample_grid {name} must be a positive integer"));
+    }
+    usize::try_from(count).map_err(|_| format!("sample_grid {name} is too large"))
 }
 
 fn scroll_offsets_match(current: Vec2, expected: Vec2) -> bool {

@@ -13,6 +13,13 @@ local samples = vp:sample_pixels({ center })
 assert(samples[1].hex == "#2f80edff", "sample target color should be exact")
 local channel_math = samples[1].rgba[1] + ((target.rect.max.x - target.rect.min.x) / 2)
 assert(channel_math > samples[1].rgba[1], "sampled rgba values should support arithmetic")
+local target_widget = widget("basic.visual.sample_target")
+local relative_center = {
+    x = (target.rect.max.x - target.rect.min.x) / 2,
+    y = (target.rect.max.y - target.rect.min.y) / 2,
+}
+local widget_samples = target_widget:sample_pixels({ relative_center })
+assert(widget_samples[1].hex == "#2f80edff", "widget-relative sample color should be exact")
 
 vp:widget_get("basic.menu.actions"):click()
 assert_widget_exists("basic.menu.actions.mark_ready")
@@ -30,4 +37,32 @@ local gutter_center = {
 local gutter_samples = vp:sample_pixels({ gutter_center })
 assert(gutter_samples[1].hex == "#e5484dff", "gutter marker color should be exact")
 
-return { sample = samples[1], gutter = gutter_samples[1] }
+local function color_count(samples)
+    local seen = {}
+    local count = 0
+    for _, sample in ipairs(samples) do
+        if seen[sample.hex] == nil then
+            seen[sample.hex] = true
+            count += 1
+        end
+    end
+    return count
+end
+
+local painted_samples = widget("basic.visual.painted_canvas"):sample_grid(4, 4)
+local painted_colors = color_count(painted_samples)
+assert(painted_colors >= 3, "painted canvas should expose multiple sampled colors")
+expect_painted("basic.visual.painted_canvas", 3)
+
+configure({ timeout_ms = 50, poll_interval_ms = 1 })
+local flat_ok = pcall(function()
+    expect_painted("basic.visual.flat_canvas", 2)
+end)
+assert(not flat_ok, "flat canvas should fail expect_painted")
+
+return {
+    sample = samples[1],
+    widget_sample = widget_samples[1],
+    gutter = gutter_samples[1],
+    painted_colors = painted_colors,
+}

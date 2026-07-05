@@ -120,6 +120,7 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "expect_absent",
     "expect_left_of",
     "expect_no_overlap",
+    "expect_painted",
     "expect_text_fits",
     "expect_tree",
     "expect_within",
@@ -171,6 +172,7 @@ const SUPPORTED_METHODS: &[&str] = &[
     "raw_pointer_move",
     "raw_scroll",
     "raw_text",
+    "sample_grid",
     "sample_pixels",
     "screenshot",
     "scroll",
@@ -2022,6 +2024,49 @@ impl EguidevModule {
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
+            "sample_pixels",
+            ModuleBinding::hidden("widget_methods"),
+            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueArgs| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .widget_sample_pixels(
+                            pos,
+                            &args.receiver.value,
+                            args.receiver.viewport_id,
+                            &args.value,
+                        )
+                        .await
+                        .map_err(host_script_error)?;
+                    typed_json_host_return(&ctx, value).await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "sample_grid",
+            ModuleBinding::hidden("widget_methods"),
+            async_host_fn(move |ctx: AsyncHostContext, args: WidgetGridArgs| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .widget_sample_grid(
+                            pos,
+                            &args.receiver.value,
+                            args.receiver.viewport_id,
+                            &args.nx,
+                            &args.ny,
+                        )
+                        .await
+                        .map_err(host_script_error)?;
+                    typed_json_host_return(&ctx, value).await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
             "show_highlight",
             ModuleBinding::hidden("widget_methods"),
             async_host_fn(move |ctx: AsyncHostContext, args: WidgetStringArgs| {
@@ -2762,6 +2807,48 @@ impl<'s> FromLuaMulti<'s> for WidgetStringArgs {
         let receiver = WidgetReceiver::from_lua(values.remove(0), scope)?;
         let value = String::from_lua(values.remove(0), scope)?;
         Ok(Self { receiver, value })
+    }
+}
+
+struct WidgetValueArgs {
+    receiver: WidgetReceiver,
+    value: Value,
+}
+
+impl<'s> FromLuaMulti<'s> for WidgetValueArgs {
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec();
+        if values.len() != 2 {
+            return Err(RuntimeError::runtime(format!(
+                "method expected widget self and value argument, got {} arguments",
+                values.len()
+            )));
+        }
+        let receiver = WidgetReceiver::from_lua(values.remove(0), scope)?;
+        let value = JsonArg::from_lua(values.remove(0), scope)?.0;
+        Ok(Self { receiver, value })
+    }
+}
+
+struct WidgetGridArgs {
+    receiver: WidgetReceiver,
+    nx: Value,
+    ny: Value,
+}
+
+impl<'s> FromLuaMulti<'s> for WidgetGridArgs {
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec();
+        if values.len() != 3 {
+            return Err(RuntimeError::runtime(format!(
+                "method expected widget self, nx, and ny arguments, got {} arguments",
+                values.len()
+            )));
+        }
+        let receiver = WidgetReceiver::from_lua(values.remove(0), scope)?;
+        let nx = JsonArg::from_lua(values.remove(0), scope)?.0;
+        let ny = JsonArg::from_lua(values.remove(0), scope)?.0;
+        Ok(Self { receiver, nx, ny })
     }
 }
 
@@ -4107,9 +4194,12 @@ expect_no_overlap("first", "second")
 expect_within("inner", "outer")
 expect_text_fits("status")
 expect_tree("parent", { "child" })
+expect_painted("status", 2)
 widget:text_measure()
 widget:check_layout()
 widget:screenshot()
+widget:sample_pixels({ { x = 1, y = 1 } })
+widget:sample_grid(2, 2)
 widget:show_highlight("#ff0000")
 widget:hide_highlight()
 widget:show_debug_overlay("bounds", { show_labels = false })

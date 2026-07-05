@@ -169,6 +169,12 @@ export type Widget = {
     -- Checks this widget and its descendants for layout problems.
     check_layout: (self: Widget) -> { LayoutIssue },
     screenshot: (self: Widget) -> ImageRef,
+    --- Capture this widget's viewport once and sample positions relative to
+    --- the widget rect's minimum point.
+    sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample },
+    --- Capture this widget's viewport once and sample an evenly spaced grid
+    --- over the widget's visible clipped rect.
+    sample_grid: (self: Widget, nx: number, ny: number) -> { PixelSample },
     --- Show a persistent stroke overlay around this widget's interact_rect.
     --- The highlight remains visible until hide_highlight() is called. Calling
     --- show_highlight again on the same widget replaces the previous highlight.
@@ -746,3 +752,4 @@ declare function expect_no_overlap(a: string, b: string): ()
 declare function expect_within(inner: string, outer: string): ()
 declare function expect_text_fits(id: string): ()
 declare function expect_tree(parent: string, children: { string }): ()
+declare function expect_painted(id: string, min_colors: number?): ()

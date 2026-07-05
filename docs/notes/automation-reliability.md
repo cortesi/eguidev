@@ -57,9 +57,11 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   is enabled.
 - Automation options default to disabling egui animations while the runtime is attached;
   scripts can override this with `configure({ animations = true })`.
-- `Viewport:sample_pixels(...)` samples exact `ColorImage` RGBA data before JPEG encoding,
-  enabling fixed-color assertions for painter-only regions published with `publish_rect_meta`.
-  Use `hex` for exact color equality; use `rgba` channel arithmetic only for threshold checks.
+- `Viewport:sample_pixels(...)` and widget-relative `Widget:sample_pixels(...)` sample exact
+  `ColorImage` RGBA data before JPEG encoding. `Widget:sample_grid(nx, ny)` samples a clipped
+  visible widget area from one capture, and `expect_painted(id, min_colors?)` catches flat
+  painter-only regions published with `publish_rect_meta`. Use `hex` for exact color equality;
+  use `rgba` channel arithmetic only for threshold checks.
 
 ## Intentional strict semantics
 

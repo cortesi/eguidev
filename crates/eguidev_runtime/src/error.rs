@@ -70,6 +70,9 @@ pub enum ErrorCode {
     ViewportNameFault,
     InvisibleInteraction,
     OverrideNotConsumed,
+    SampleOutOfBounds,
+    SampleNotVisible,
+    SampleAreaTooSmall,
     Timeout,
     Internal,
 }
@@ -87,6 +90,9 @@ impl ErrorCode {
             Self::ViewportNameFault => "viewport_name_fault",
             Self::InvisibleInteraction => "invisible_interaction",
             Self::OverrideNotConsumed => "override_not_consumed",
+            Self::SampleOutOfBounds => "sample_out_of_bounds",
+            Self::SampleNotVisible => "sample_not_visible",
+            Self::SampleAreaTooSmall => "sample_area_too_small",
             Self::Timeout => "timeout",
             Self::Internal => "internal",
         }
@@ -106,6 +112,9 @@ impl From<base_error::ErrorCode> for ErrorCode {
             base_error::ErrorCode::ViewportNameFault => Self::ViewportNameFault,
             base_error::ErrorCode::InvisibleInteraction => Self::InvisibleInteraction,
             base_error::ErrorCode::OverrideNotConsumed => Self::OverrideNotConsumed,
+            base_error::ErrorCode::SampleOutOfBounds => Self::SampleOutOfBounds,
+            base_error::ErrorCode::SampleNotVisible => Self::SampleNotVisible,
+            base_error::ErrorCode::SampleAreaTooSmall => Self::SampleAreaTooSmall,
             base_error::ErrorCode::Timeout => Self::Timeout,
             base_error::ErrorCode::Internal => Self::Internal,
         }
