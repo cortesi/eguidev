@@ -16,5 +16,15 @@ This directory holds the checked-in Luau smoketest suite for `eguidev_demo`.
 ## Run
 
 ```sh
-cargo run -p eguidev_demo --bin eguidev_demo -- --smoketests ./smoketest
+cargo xtask smoke
+```
+
+Useful authoring commands:
+
+```sh
+cargo xtask smoke --list
+cargo xtask smoke --only '*visual*'
+cargo xtask smoke --repeat 5 --only '*layout*'
+cargo xtask smoke --until-fail 50
+cargo xtask smoke --bundle --fail-fast
 ```

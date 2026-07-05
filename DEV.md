@@ -23,6 +23,20 @@ cargo xtask smoke
 That command runs the checked-in Luau smoketest suite through `edev smoke` and prints one line per
 test by default.
 
+List or narrow the discovered suite without launching the demo:
+
+```sh
+cargo xtask smoke --list
+cargo xtask smoke --list --json --only '*visual*'
+```
+
+Run repeated rounds against one app process when chasing intermittent behavior:
+
+```sh
+cargo xtask smoke --only '*visual*' --repeat 5
+cargo xtask smoke --until-fail 50
+```
+
 Enable extra smoketest debugging output:
 
 ```sh
@@ -58,11 +72,11 @@ cargo xtask smoke-occlusion
 ```
 
 Smoke scripts should prefer semantic waits and exact visual assertions over frame sleeps.
-Use `Viewport:sample_pixels()` for fixed-color painter checks, and use
-`Viewport:dismiss_popups()` or `fixture()` boundaries to isolate transient menus between tests.
-Use `viewport({ title = "..." })` or `viewport({ title_contains = "..." })` to find
-secondary windows by title instead of duplicating `viewports()` search loops; titles should
-be unique because ambiguous matches throw.
+Use `Widget:sample_pixels()`, `Widget:sample_grid()`, and `expect_painted()` for painter checks,
+and use `Viewport:dismiss_popups()` or `fixture()` boundaries to isolate transient menus between
+tests. Use `widget(id)` for cross-viewport lookup, or `viewport({ name = "..." })`,
+`viewport({ title = "..." })`, or `viewport({ title_contains = "..." })` when you need a viewport
+handle. Names and exact titles should be unique because ambiguous matches throw.
 Use `hex` for exact color equality; `rgba` channels and geometry values are script-facing
 numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
 On macOS, child-viewport screenshots fall back to Quartz window capture after a fresh child

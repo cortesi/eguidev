@@ -57,13 +57,22 @@ MCP config example: `docs/examples/mcp/eguidev_demo.json`.
 Checked-in smoke coverage now has two layers:
 
 - `edev smoke` runs the checked-in Luau smoketest suite.
+- `edev smoke --list [--json]` prints the discovered script set without
+  launching the demo. Add repeatable `--only GLOB` filters to narrow discovery;
+  globs match the forward-slash display path, so `*` may match across
+  directory separators.
 - `edev smoke --verbose` keeps the same suite but also emits the extra suite summary and launcher
   output that are useful when debugging failures.
+- `edev smoke --repeat N` runs the selected set multiple times against one app
+  process. `edev smoke --until-fail N` uses the same repeated mode but stops at
+  the first failure, up to `N` rounds. The suite timeout covers the whole
+  invocation unless `--suite-timeout-secs` is provided.
 - `edev smoke --bundle` writes failure bundles under `tmp/edev-bundles`, or use
   `edev smoke --bundle-dir PATH` to choose the directory. Each failed script gets a deterministic
   directory with `meta.json`, `failure.txt`, full tree dumps, diagnostics, viewport screenshots,
   app stderr, and an `app.stdout.log` file that contains captured stdout only when stdout is not
-  reserved for the MCP transport.
+  reserved for the MCP transport. Repeated runs include the round in the bundle directory and
+  `meta.json`.
 - `edev smoke smoketest/*.luau` or `edev smoke path/to/ad_hoc_probe.luau` runs explicit scripts in
   the order provided, so you can use normal shell expansion or quick one-off probes outside the
   configured suite.

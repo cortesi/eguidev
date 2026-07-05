@@ -19,6 +19,9 @@ interaction, waits, and verification inside Luau scripts.
 
 - Start most interactions by listing fixtures with `fixtures()` and applying an
   appropriate baseline via `fixture()` inside the script.
+- Verify fixture params, defaults, returned values, tags, and anchors with
+  `edev fixtures --markdown`, `edev fixture NAME --param k=v`, and
+  `edev dump --fixture NAME --param k=v`.
 - Keep the smoke harness fixture-agnostic; scripts are responsible for choosing
   and applying fixtures explicitly.
 
@@ -36,9 +39,14 @@ interaction, waits, and verification inside Luau scripts.
 
 - Test `wait_for_settle` - does the composite settle check (InputSettled +
   RepaintIdle) match expected flow semantics?
+- Inspect `wait_for_settle()` reports and timeout details. Do incomplete
+  phases identify whether input, viewport commands, clean capture, fresh frame,
+  or app idle blocked progress?
 - Test `wait_for_widget` with various predicates: existence, visibility,
   enabled/focused state, text equality/substring checks, and disappearance.
   Do timeouts work? What happens when predicates are never met?
+- Prefer `expect(...)`, `expect_absent(...)`, and `widget(...)` for simple
+  checks; keep predicate waits for genuinely custom readiness conditions.
 
 ## Layout Diagnostics
 
@@ -49,11 +57,17 @@ interaction, waits, and verification inside Luau scripts.
 ## Widget Hierarchy
 
 - Test `parent()` and `children()` traversal from `Widget` handles.
+- Test `widget(id)` and `try_widget(id)` across multiple viewports, including
+  the ambiguity error when the same explicit id appears in more than one live
+  viewport.
+- Test `capture():diff()` for added, removed, changed, and filtered widgets.
 - Test `widget_at_point` - can you identify widgets by coordinate?
 
 ## Screenshot and Visual Tools
 
 - Test `Widget:screenshot()` for individual widget capture (not just viewport).
+- Test `Widget:sample_pixels()`, `Widget:sample_grid()`, and
+  `expect_painted()` for custom painter output and flat-fill false positives.
 - Test `show_highlight()` to visually mark specific widgets.
 - Test all `show_debug_overlay` modes: `bounds`, `margins`, `clipping`,
   `overlaps`, `focus`, `layers`, `containers`.
@@ -69,6 +83,9 @@ interaction, waits, and verification inside Luau scripts.
 - Test invalid widget references - clear error messages?
 - Test operations on non-existent ids.
 - Test `Widget:set_value()` with wrong value types on different roles.
+- Test an instrumented custom widget that does not consume
+  `take_widget_value_override()`; `set_value()` should fail with
+  `override_not_consumed` and name the widget/viewport.
 - Test out-of-bounds values (slider value outside range, combo index too high).
 
 ## Edge Cases

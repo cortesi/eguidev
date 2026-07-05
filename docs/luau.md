@@ -102,14 +102,8 @@ Pass optional parameters as Luau tables. Unspecified keys use defaults.
 ```luau
 local vp = root()
 vp:widget_get("submit"):click({ timeout_ms = 1000 })
-vp:wait_for_widget("status", function(widget)
-    local value = widget ~= nil and widget.value or nil
-    local text = tostring(value ~= nil and (value :: any).text or "")
-    return string.find(text, "Done", 1, true) ~= nil
-end, { timeout_ms = 1000 })
-vp:wait_for_widget("status", function(widget)
-    return widget ~= nil and widget.label == "Ready"
-end, { timeout_ms = 1000 })
+expect("status", { value_text_contains = "Done" })
+expect("status", { label = "Ready" })
 local report = vp:wait_for_settle({ timeout_ms = 1000 })
 assert(report.settled)
 ```
@@ -130,8 +124,7 @@ assert(
 ## Common idioms
 
 ```luau
-local vp = root()
-local toggle = vp:widget_get("toggle")
+local toggle = widget("toggle")
 local toggle_state = toggle:state()
 if toggle_state.value == nil or not ((toggle_state.value :: any).bool) then
     toggle:click()
@@ -142,9 +135,9 @@ for _, button in ipairs(buttons) do
     log(button.id)
 end
 
-vp:widget_get("search.input"):hover()
+widget("search.input"):hover()
 
-vp:widget_get("search.input"):type_text("/tmp", {
+widget("search.input"):type_text("/tmp", {
     clear = true,
     enter = false,
     focus_timeout_ms = 1000,

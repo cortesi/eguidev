@@ -36,13 +36,14 @@ Three pieces make this work:
 ## Getting started
 
 **1. Instrument your app.** Add `eguidev` as a dependency, create a `DevMcp`
-handle, wrap each frame with `FrameGuard`, and tag widgets with the `dev_*`
-helpers:
+handle, wrap each viewport frame with `frame_scope`, and tag widgets with the
+`dev_*` helpers:
 
 ```rust
-let _guard = FrameGuard::new(&self.devmcp, &ctx);
-ui.dev_text_edit("app.name", &mut self.name);
-if ui.dev_button("app.submit", "Submit").clicked() { /* ... */ }
+eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
+    ui.dev_text_edit("app.name", &mut self.name);
+    if ui.dev_button("app.submit", "Submit").clicked() { /* ... */ }
+});
 ```
 
 **2. Attach the runtime.** Put `eguidev_runtime` behind an app feature and
@@ -89,9 +90,12 @@ The same scripting surface powers developer-facing tooling:
 
 - `edev smoke` runs a directory of self-contained `.luau` smoketests against
   the live app -- regression tests that double as executable documentation of
-  your UI. Add `--bundle` or `--bundle-dir PATH` to write failure bundles with
-  tree dumps, diagnostics, screenshots, script logs, app stderr, and stdout
-  notes/logs when the transport leaves stdout available.
+  your UI. Use `--list [--json]` to inspect the selected set without launching
+  the app, `--only GLOB` to filter discovered scripts, `--repeat N` or
+  `--until-fail N` to hunt intermittent failures, and `--bundle` or
+  `--bundle-dir PATH` to write failure bundles with tree dumps, diagnostics,
+  screenshots, script logs, app stderr, and stdout notes/logs when the transport
+  leaves stdout available.
 - `edev eval` runs a single script and prints the structured result.
 - `edev dump` prints a canonical widget tree dump, optionally after applying
   a fixture with `--param key=value` or restricting output to one viewport.
@@ -99,9 +103,13 @@ The same scripting surface powers developer-facing tooling:
 - `edev fixtures` / `edev fixture <name>` list registered fixtures, pass typed
   params with `--param key=value`, optionally skip anchor waits with
   `--no-wait`, and launch the app in a known baseline state for manual testing.
-- Apps can register `DevMcp::diagnostic(...)` and `DevMcp::diagnostic_ui(...)`
-  providers for structured state that scripts read with `diagnostic(...)`,
-  `diagnostics()`, and `wait_until(...)`.
+- Scripts use `widget(...)`, `expect(...)`, geometry/text assertions, `capture()`
+  diffs, and `expect_painted(...)` for cross-viewport lookup and concise
+  verification.
+- Apps can register `DevMcp::diagnostic(...)`, `DevMcp::diagnostic_ui(...)`,
+  app script preludes, fixture catalogs, and runtime/UI-thread fixture handlers
+  for structured setup and state that scripts read with `diagnostic(...)`,
+  `diagnostics()`, `fixtures()`, and `wait_until(...)`.
 
 Run `edev --help` for the details.
 

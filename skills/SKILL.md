@@ -66,13 +66,10 @@ fixture("basic.with_items")
 local vp = root()
 
 -- Act
-vp:widget_get("item.0.delete"):click()
+widget("item.0.delete"):click()
 
 -- Verify
-local remaining = vp:wait_for_widget("items.count", function(widget)
-    return widget.value_text == "2"
-end)
-assert(remaining ~= nil, "items.count should update")
+local remaining = expect("items.count", { value_text_contains = "2" })
 
 -- Report
 return { remaining = remaining.value_text }
@@ -100,16 +97,20 @@ state that can update asynchronously or through app work queued after the click.
 
 Prefer programmatic inspection over screenshots:
 
-- `widget_list`, `widget_get`, `state()`, `children()`, `parent()` for
-  structure and values.
-- Use `viewport({ title = "..." })` or `viewport({ title_contains = "..." })`
-  to find secondary windows by title instead of hand-rolling `viewports()` loops;
-  keep titles unique because ambiguous matches throw.
+- `widget(...)`, `try_widget(...)`, `widget_list`, `widget_get`, `state()`,
+  `children()`, and `parent()` for structure and values.
+- Use `widget(id)` for cross-viewport lookup. Use `viewport({ name = "..." })`,
+  `viewport({ title = "..." })`, or `viewport({ title_contains = "..." })`
+  when you need a viewport handle; keep names and titles unique because
+  ambiguous matches throw.
 - Use `widget_list({ label = "..." })`, `widget_list({ label_contains = "..." })`,
   `widget_list({ role = "button" })`, or `widget_list({ id_prefix = "settings" })`
   to discover widgets without fetching state for every item.
 - `wait_for_widget` with predicates for state readiness -- widget existence
   does not imply state readiness.
+- `expect(...)`, `expect_absent(...)`, geometry assertions, `expect_text_fits`,
+  `expect_tree`, and `expect_painted` for common verification.
+- `capture():diff()` to compare widget state before and after an action.
 - `check_layout()` for layout problems (clipping, overflow, overlap).
 - `text_measure()` for text sizing and truncation.
 
@@ -152,6 +153,9 @@ Smoketest scripts follow the same shape as good `script_eval` scripts:
 - Keep scripts independent -- no reliance on state from earlier tests.
 - Use assertions for pass/fail and `log()` for diagnostics.
 - Treat smoketests as regression tests and executable API documentation.
+- Use `edev smoke --list [--json]` and repeatable `--only GLOB` filters while
+  authoring. Use `--repeat N` or `--until-fail N` to hunt flaky settle or
+  rendering behavior, and `--bundle` / `--bundle-dir PATH` for failure bundles.
 
 
 ## Iterative Development Workflow

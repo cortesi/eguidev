@@ -57,10 +57,30 @@ waits for static and handler-returned anchors, and returns handler values. Scrip
 command launches the app, optionally applies a fixture with `--param` values, waits for a fresh
 capture when no fixture is applied, and then evaluates those same helpers, so command-line dumps
 and script dumps share one runtime implementation.
+
+Scripts resolve cross-viewport widgets with `widget(id, options?)`, use `try_widget(...)` for
+non-waiting probes, and use the built-in prelude helpers (`expect`, `expect_absent`, geometry
+assertions, `expect_text_fits`, `expect_tree`, and `expect_painted`) for common checks. `capture()`
+snapshots widget state across viewports and diffs against the current frame by `(viewport_id, id)`,
+covering role, geometry, visibility, focus/selection, text/value, and structured `data`.
 Apps can register runtime-thread and UI-thread diagnostics through `DevMcp::diagnostic(...)` and
 `DevMcp::diagnostic_ui(...)`. Scripts read those providers with `diagnostic(name)` for one payload
 or `diagnostics()` for an all-provider snapshot whose provider errors are captured in an `errors`
 table. The Luau prelude supplies `wait_until(predicate, options?)` for diagnostic-based polling.
+
+Apps may register namespaced script preludes through `DevMcp::script_prelude(...)`; `script_api`
+includes those app declarations while the app is running and falls back to the checked-in built-in
+definitions while stopped.
+
+Smoke authoring:
+
+- `edev smoke --list [--json]` prints the selected script set without launching the app.
+- `--only GLOB` filters discovered scripts by forward-slash display path. Repeating the flag
+  intersects filters. Explicit positional script paths remain exact selections and cannot be
+  combined with `--only`.
+- `--repeat N` and `--until-fail N` reuse one app instance across rounds and report per-round
+  timing. The suite timeout is a whole-invocation deadline; raise `--suite-timeout-secs` for long
+  repeated runs.
 
 Failure bundles:
 
@@ -68,7 +88,8 @@ Failure bundles:
   `tmp/edev-bundles`; `--bundle-dir PATH` enables bundles and chooses the directory explicitly.
 - Each failed script gets a deterministic
   `<safe-script-display-path>-<relative-path-hash>` directory that is overwritten on the next
-  run of the same script.
+  run of the same script. Multi-round runs add `round-N` to the directory key and record the round
+  in `meta.json`.
 - Bundles include `meta.json`, `failure.txt`, `tree.json`, `tree.txt`, `diagnostics.json`, one
   `viewport-*.jpg` per captured viewport, `app.stderr.log`, and `app.stdout.log`.
 - `app.stdout.log` contains captured stdout only when stdout is not reserved for the stdio MCP

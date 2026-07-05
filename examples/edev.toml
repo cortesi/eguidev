@@ -54,7 +54,14 @@ command = [
 # Stop the suite after the first failure.
 # fail_fast = false
 
+# Failure bundle output directory used by `edev smoke --bundle`.
+# Relative paths resolve from the directory containing this file.
+# bundle_dir = "tmp/edev-bundles"
+
 # Wall-clock deadline for the entire suite, in seconds.
+# Repeated smoke runs share this whole-invocation deadline; use
+# `edev smoke --suite-timeout-secs N` for long `--repeat` / `--until-fail`
+# sessions.
 # suite_timeout_secs = 600
 
 # Per-script timeout, in seconds.

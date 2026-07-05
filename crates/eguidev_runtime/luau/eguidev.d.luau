@@ -10,8 +10,9 @@
 -- When the same script is run via `edev smoke`, the smoke runner ignores the
 -- final return value and only uses thrown errors/assertions plus logs.
 --
--- This file is the canonical scripting reference. `script_api` and
--- `edev --script-docs` return this file verbatim.
+-- This file is the canonical scripting reference. `script_api` and `edev docs`
+-- return these built-in definitions; `script_api` also includes app preludes
+-- when the app registers them.
 --
 -- Model expectations:
 -- - Write strict Luau. Inline `script_eval` scripts are strict even when the
@@ -719,11 +720,14 @@ declare function root(): Viewport
 --- Throws when multiple viewports match the selected title rule.
 declare function viewport(options: ViewportLookupOptions): Viewport?
 declare function viewports(): { Viewport }
---- Resolve a widget id across viewports, waiting for one unique match.
+--- Resolve a widget id across all live viewports, waiting for one unique match.
+--- Use the `viewport` option when the same id is expected in more than one
+--- viewport. Ambiguity is an instrumentation error, not an arbitrary choice.
 declare function widget(id: string, options: WidgetFindOptions?): Widget
---- Resolve a widget id across viewports without waiting. Returns nil when absent.
+--- Resolve a widget id across all live viewports without waiting.
+--- Returns nil when absent and still throws on ambiguity.
 declare function try_widget(id: string, options: WidgetFindOptions?): Widget?
---- Snapshot the current widget registry across all viewports.
+--- Snapshot the current widget registry across all viewports for later diffing.
 declare function capture(): Capture
 
 --- Return a canonical tree dump of captured widgets, grouped by viewport.
@@ -736,7 +740,8 @@ declare function dump_text(options: DumpOptions?): string
 --- after each fixture is usually unnecessary.
 --- Returns values supplied by the fixture handler.
 declare function fixture(name: string, params: FixtureParams?): FixtureValues
---- Apply a registered fixture without waiting for readiness.
+--- Apply a registered fixture without waiting for readiness. Use only for
+--- manual setup or when the script intentionally checks intermediate state.
 declare function fixture_raw(name: string, params: FixtureParams?): ()
 -- Fixtures are independent baseline setups and must be safe to invoke in any order.
 declare function fixtures(): { Fixture }
@@ -744,12 +749,19 @@ declare function fixtures(): { Fixture }
 -- Assertions record pass/fail metadata in the result payload and throw on failure.
 declare function assert(condition: boolean, message: string?): ()
 declare function assert_widget_exists(id: string): ()
+--- Wait until a widget exists and every requested state field matches.
+--- Failure messages include the last observed widget state.
 declare function expect(id: string, expected: ExpectedState?): WidgetState
+--- Wait until no widget with this id resolves across live viewports.
 declare function expect_absent(id: string): ()
+--- Assert current geometry relationships after any preceding action has settled.
 declare function expect_left_of(a: string, b: string, min_gap: number?): ()
 declare function expect_above(a: string, b: string, min_gap: number?): ()
 declare function expect_no_overlap(a: string, b: string): ()
 declare function expect_within(inner: string, outer: string): ()
+--- Assert that the widget's visible text is not clipped or ellipsized.
 declare function expect_text_fits(id: string): ()
+--- Assert that every listed child resolves to a descendant of parent.
 declare function expect_tree(parent: string, children: { string }): ()
+--- Assert that a visible widget samples as more than a flat fill.
 declare function expect_painted(id: string, min_colors: number?): ()
