@@ -53,8 +53,9 @@ mod utils;
 use layout::*;
 use results::*;
 pub use script::{
-    ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo, ScriptEvalOptions,
-    ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation, ScriptTiming,
+    FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
+    ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
+    ScriptTiming,
 };
 use types::{OverlayDebugModeName, OverlayDebugOptionsInput, PointerButtonName, ScrollAlign};
 use utils::{parse_key_combo, resolve_key_name, *};

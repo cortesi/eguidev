@@ -44,6 +44,52 @@ const SETUP_SOURCE: &[u8] = br#"
 --!nonstrict
 args = __eguidev_args()
 __eguidev_args = nil
+
+local __eguidev_configure = configure
+local __eguidev_wait_options = {
+    timeout_ms = 5000,
+    poll_interval_ms = 16,
+}
+
+local function __eguidev_copy_wait_options(options)
+    local copy = {}
+    if options ~= nil then
+        for key, value in pairs(options) do
+            copy[key] = value
+        end
+    end
+    return copy
+end
+
+function configure(options)
+    __eguidev_configure(options)
+    if options ~= nil then
+        if options.timeout_ms ~= nil then
+            __eguidev_wait_options.timeout_ms = options.timeout_ms
+        end
+        if options.poll_interval_ms ~= nil then
+            __eguidev_wait_options.poll_interval_ms = options.poll_interval_ms
+        end
+    end
+end
+
+function wait_until(predicate, options)
+    if type(predicate) ~= "function" then
+        error("wait_until expected a predicate function", 2)
+    end
+    local wait_options = __eguidev_copy_wait_options(__eguidev_wait_options)
+    if options ~= nil then
+        for key, value in pairs(options) do
+            wait_options[key] = value
+        end
+    end
+    local timeout_ms = wait_options.timeout_ms
+    local deadline_ms = os.clock() * 1000 + timeout_ms
+    while not predicate() do
+        wait_options.timeout_ms = math.max(0, math.ceil(deadline_ms - os.clock() * 1000))
+        wait_for_capture(wait_options)
+    end
+end
 "#;
 
 const DECLARATION: &str = r#"
@@ -51,6 +97,8 @@ declare args: any
 declare function assert(value: boolean, message: string?): ()
 declare function assert_widget_exists(id: string): ()
 declare function configure(options: any): ()
+declare function diagnostic(name: string): any
+declare function diagnostics(): any
 declare function dump(options: any?): any
 declare function dump_text(options: any?): string
 declare function fixture(name: string): ()
@@ -60,8 +108,9 @@ declare function log(entry: any): ()
 declare function root(): any
 declare function viewport(options: any): any
 declare function viewports(): any
-declare function wait_for_capture(): ()
+declare function wait_for_capture(options: any?): ()
 declare function wait_for_frames(count: number?): number
+declare function wait_until(predicate: () -> boolean, options: any?): ()
 declare function __eguidev_args(): any
 "#;
 
@@ -79,6 +128,8 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "configure",
     "coroutine",
     "debug",
+    "diagnostic",
+    "diagnostics",
     "dump",
     "dump_text",
     "fixture",
@@ -102,6 +153,7 @@ const SUPPORTED_GLOBALS: &[&str] = &[
     "viewports",
     "wait_for_capture",
     "wait_for_frames",
+    "wait_until",
 ];
 
 #[cfg(test)]
@@ -927,6 +979,35 @@ impl EguidevModule {
             ModuleBinding::Global,
             Box::new(FixturesFn {
                 runtime: Arc::clone(&self.runtime),
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "diagnostic",
+            ModuleBinding::Global,
+            async_host_fn(move |ctx: AsyncHostContext, name: String| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .diagnostic(pos, name)
+                        .await
+                        .map_err(host_script_error)?;
+                    typed_json_host_return(&ctx, value).await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "diagnostics",
+            ModuleBinding::Global,
+            async_host_fn(move |ctx: AsyncHostContext, (): ()| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime.diagnostics(pos).await.map_err(host_script_error)?;
+                    typed_json_host_return(&ctx, value).await
+                }
             }),
         );
         builder.scoped_function(
@@ -1981,12 +2062,12 @@ impl EguidevModule {
         builder.async_function(
             "wait_for_capture",
             ModuleBinding::Global,
-            async_host_fn(move |ctx: AsyncHostContext, (): ()| {
+            async_host_fn(move |ctx: AsyncHostContext, options: OptionalJsonArg| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     runtime
-                        .wait_for_capture(pos, None)
+                        .wait_for_capture(pos, options.0.as_ref().and_then(Value::as_object))
                         .await
                         .map_err(host_script_error)?;
                     Ok(HostReturn::default())
@@ -2051,6 +2132,24 @@ impl<'s> FromLua<'s> for JsonArg {
         scoped_value_to_json(scope, value)
             .map(normalize_integral_numbers)
             .map(Self)
+    }
+}
+
+struct OptionalJsonArg(Option<Value>);
+
+impl<'s> FromLuaMulti<'s> for OptionalJsonArg {
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec();
+        match values.len() {
+            0 => Ok(Self(None)),
+            1 => scoped_value_to_json(scope, values.remove(0))
+                .map(normalize_integral_numbers)
+                .map(Some)
+                .map(Self),
+            got => Err(RuntimeError::runtime(format!(
+                "expected at most one argument, got {got}"
+            ))),
+        }
     }
 }
 
@@ -3567,14 +3666,16 @@ mod tests {
     };
 
     use serde_json::json;
+    use tokio::runtime::Builder as TokioRuntimeBuilder;
 
     use super::{
         is_supported_by_initial_ruau_slice, promote_integer_numbers_to_luau_numbers,
         run_script_eval_blocking,
     };
     use crate::{
+        DevMcp,
         registry::Inner,
-        runtime::Runtime,
+        runtime::{self, Runtime},
         tools::script::types::{ScriptArgValue, ScriptArgs},
         types::{FixtureSpec, Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetValue},
     };
@@ -3598,6 +3699,11 @@ fixture("ready")
 wait_for_capture()
 wait_for_frames(1)
 local catalog = fixtures()
+local ready = diagnostic("ready")
+local all = diagnostics()
+wait_until(function()
+    return ready.ok and all.values ~= nil
+end)
 return catalog[1].name"#
         ));
     }
@@ -3734,6 +3840,124 @@ return 1 + 1"#
     }
 
     #[test]
+    fn initial_ruau_slice_runs_diagnostics_and_wait_until() {
+        let devmcp = runtime::attach_for_tests(
+            DevMcp::new()
+                .diagnostic("ready", || Ok(json!({ "ready": true, "count": 2 })))
+                .expect("diagnostic"),
+        );
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let outcome = runtime.block_on(runtime::eval_script(
+            &devmcp,
+            r#"wait_until(function()
+    return diagnostic("ready").ready
+end)
+return diagnostics()"#,
+            Some(1_000),
+            crate::ScriptEvalOptions {
+                source_name: Some("diagnostics.luau".to_string()),
+                args: ScriptArgs::default(),
+            },
+        ));
+
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "values": {
+                    "ready": {
+                        "ready": true,
+                        "count": 2,
+                    },
+                },
+                "errors": {},
+            }))
+        );
+    }
+
+    #[test]
+    fn initial_ruau_slice_wait_until_respects_configured_timeout() {
+        let devmcp = runtime::attach_for_tests(DevMcp::new());
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let outcome = runtime.block_on(runtime::eval_script(
+            &devmcp,
+            r#"configure({ timeout_ms = 20, poll_interval_ms = 1 })
+wait_until(function()
+    return false
+end)
+"#,
+            Some(1_000),
+            crate::ScriptEvalOptions {
+                source_name: Some("wait-until-timeout.luau".to_string()),
+                args: ScriptArgs::default(),
+            },
+        ));
+
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("timeout error");
+        assert_eq!(error.error_type, "timeout");
+        assert_eq!(error.code.as_deref(), Some("timeout"));
+        assert!(
+            error
+                .message
+                .contains("Timed out waiting for a fresh capture"),
+            "{error:?}"
+        );
+        assert!(
+            outcome.timing.total_ms < 500,
+            "wait_until should honor the configured timeout: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn initial_ruau_slice_collects_diagnostic_errors() {
+        let devmcp = runtime::attach_for_tests(
+            DevMcp::new()
+                .diagnostic("broken", || {
+                    Err(eguidev::DiagnosticError::new("broken", "diagnostic failed")
+                        .with_details(json!({ "reason": "test" })))
+                })
+                .expect("diagnostic"),
+        );
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let outcome = runtime.block_on(runtime::eval_script(
+            &devmcp,
+            r#"return diagnostics()"#,
+            Some(1_000),
+            crate::ScriptEvalOptions {
+                source_name: Some("diagnostics.luau".to_string()),
+                args: ScriptArgs::default(),
+            },
+        ));
+
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "values": {},
+                "errors": {
+                    "broken": {
+                        "code": "broken",
+                        "message": "diagnostic failed",
+                        "details": {
+                            "reason": "test",
+                        },
+                    },
+                },
+            }))
+        );
+    }
+
+    #[test]
     fn initial_ruau_slice_records_assertion_failures() {
         let inner = Arc::new(Inner::new());
         let runtime = Runtime::ensure_for_inner(&inner);
@@ -3817,6 +4041,9 @@ return { first = catalog[1].name, count = #catalog, frame = frame }"#
         assert!(outcome.success, "{outcome:?}");
         assert!(applied.load(Ordering::SeqCst));
         assert_eq!(outcome.logs, vec!["alpha"]);
+        assert_eq!(outcome.fixtures.len(), 1);
+        assert_eq!(outcome.fixtures[0].name, "zeta");
+        assert!(outcome.fixtures[0].params.is_empty());
         assert_eq!(
             outcome.value,
             Some(json!({ "first": "alpha", "count": 2, "frame": 0 }))

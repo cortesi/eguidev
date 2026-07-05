@@ -56,6 +56,25 @@ Scripts can also call `dump()` / `dump_text()` to capture the current widget tre
 viewports. The `edev dump` command launches the app, optionally applies a name-only fixture, waits
 for a fresh capture when no fixture is applied, and then evaluates those same helpers, so
 command-line dumps and script dumps share one runtime implementation.
+Apps can register runtime-thread and UI-thread diagnostics through `DevMcp::diagnostic(...)` and
+`DevMcp::diagnostic_ui(...)`. Scripts read those providers with `diagnostic(name)` for one payload
+or `diagnostics()` for an all-provider snapshot whose provider errors are captured in an `errors`
+table. The Luau prelude supplies `wait_until(predicate, options?)` for diagnostic-based polling.
+
+Failure bundles:
+
+- `edev smoke --bundle` writes bundles under the configured `[smoke] bundle_dir`, defaulting to
+  `tmp/edev-bundles`; `--bundle-dir PATH` enables bundles and chooses the directory explicitly.
+- Each failed script gets a deterministic
+  `<safe-script-display-path>-<relative-path-hash>` directory that is overwritten on the next
+  run of the same script.
+- Bundles include `meta.json`, `failure.txt`, `tree.json`, `tree.txt`, `diagnostics.json`, one
+  `viewport-*.jpg` per captured viewport, `app.stderr.log`, and `app.stdout.log`.
+- `app.stdout.log` contains captured stdout only when stdout is not reserved for the stdio MCP
+  transport; current stdio launches write an explanatory note instead.
+- If post-failure collection fails, the bundle keeps the original failure files and records the
+  collection problem in `collection-error.txt`.
+
 For `eframe` apps, the required integration point is `FrameGuard` around rendered frames; the
 first `FrameGuard` call registers an egui plugin that injects queued input into every viewport's
 pass, so there is no separate raw-input hook for apps to wire up. Fixture handlers registered with

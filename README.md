@@ -89,13 +89,18 @@ The same scripting surface powers developer-facing tooling:
 
 - `edev smoke` runs a directory of self-contained `.luau` smoketests against
   the live app -- regression tests that double as executable documentation of
-  your UI.
+  your UI. Add `--bundle` or `--bundle-dir PATH` to write failure bundles with
+  tree dumps, diagnostics, screenshots, script logs, app stderr, and stdout
+  notes/logs when the transport leaves stdout available.
 - `edev eval` runs a single script and prints the structured result.
 - `edev dump` prints a canonical widget tree dump, optionally after applying
   a fixture or restricting output to one viewport. Without a fixture, it waits
   for a fresh capture before dumping.
 - `edev fixtures` / `edev fixture <name>` list registered fixtures and launch
   the app in a known baseline state for manual testing.
+- Apps can register `DevMcp::diagnostic(...)` and `DevMcp::diagnostic_ui(...)`
+  providers for structured state that scripts read with `diagnostic(...)`,
+  `diagnostics()`, and `wait_until(...)`.
 
 Run `edev --help` for the details.
 

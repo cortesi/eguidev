@@ -12,8 +12,9 @@ mod value;
 
 pub use eval::run_script_eval;
 pub use types::{
-    ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo, ScriptEvalOptions,
-    ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation, ScriptTiming,
+    FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
+    ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
+    ScriptTiming,
 };
 
 pub(super) const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;

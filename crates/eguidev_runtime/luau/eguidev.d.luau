@@ -575,6 +575,12 @@ export type ScriptOptions = {
     animations: boolean?,
 }
 
+export type WaitOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    viewport_id: string?,
+}
+
 export type ViewportLookupOptions = {
     name: string?,
     focused: boolean?,
@@ -590,12 +596,31 @@ declare function log(message: any): ()
 --- Unset fields keep their current values.
 declare function configure(options: ScriptOptions): ()
 
+export type DiagnosticErrorInfo = {
+    code: string,
+    message: string,
+    details: any?,
+}
+
+export type DiagnosticsSnapshot = {
+    values: { [string]: any },
+    errors: { [string]: DiagnosticErrorInfo },
+}
+
+--- Run one named diagnostic provider and return its JSON payload.
+--- Provider failures raise a structured script error.
+declare function diagnostic(name: string): any
+--- Run all registered diagnostic providers without failing the collection.
+declare function diagnostics(): DiagnosticsSnapshot
+
 --- Wait for at least `count` more frames to be observed.
 --- Returns the ending frame count on success.
 --- Throws a timeout error if the requested frames are not observed in time.
 declare function wait_for_frames(count: number?): number
 --- Wait until the root viewport has produced a fresh captured snapshot.
-declare function wait_for_capture(): ()
+declare function wait_for_capture(options: WaitOptions?): ()
+--- Poll a predicate until it returns true. The predicate may call yielding helpers.
+declare function wait_until(predicate: () -> boolean, options: WaitOptions?): ()
 declare function root(): Viewport
 --- Find a viewport by semantic name, focus state, or title. Exact `title` matches
 --- win over `title_contains`.

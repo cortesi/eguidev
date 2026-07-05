@@ -7,7 +7,7 @@ use std::{
     fs,
     future::{Future, pending},
     io::{self as std_io, IsTerminal},
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -17,11 +17,15 @@ use std::{
 use async_trait::async_trait;
 use eguidev::Anchor;
 use eguidev_runtime::{
-    ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, script_definitions,
+    ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest,
+    script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, run_suite_with},
 };
 use instance_registry::InstanceRegistry;
-use serde::Serialize;
+use serde::{
+    Deserialize, Serialize,
+    de::{DeserializeOwned, Error as SerdeDeError},
+};
 use syntect::{
     easy::HighlightLines,
     highlighting::ThemeSet,
@@ -31,8 +35,8 @@ use syntect::{
 use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
-        CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock, Cursor, Implementation,
-        InitializeResult, ListToolsResult, TaskMetadata, Tool, ToolSchema,
+        CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock, Cursor, ImageContent,
+        Implementation, InitializeResult, ListToolsResult, TaskMetadata, Tool, ToolSchema,
     },
 };
 use tokio::{
@@ -55,6 +59,12 @@ use config::{
 const PROXIED_TOOL_NAMES: &[&str] = &["script_eval"];
 /// Timeout used for proxied request/response round-trips between edev and app MCP.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Maximum app stdout/stderr bytes retained for diagnostics.
+const APP_LOG_TAIL_LIMIT: usize = 4 * 1024 * 1024;
+/// Extra log bytes retained before trimming back to the stable tail limit.
+const APP_LOG_TAIL_TRIM_SLACK: usize = 256 * 1024;
+/// Bundle note used when stdout is reserved for the MCP transport.
+const STDOUT_TRANSPORT_NOTE: &str = "stdout is consumed by the stdio MCP transport for this launch; no app stdout log is available.\n";
 /// Maximum attempts for restart when the app MCP transport closes mid-handshake.
 const RESTART_MAX_ATTEMPTS: usize = 3;
 
@@ -113,8 +123,21 @@ async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
     let instance_registry = InstanceRegistry::register(&config.launch)?;
     let mut state = State::new(config.launch.clone(), instance_registry);
     let client = start_proxy_target(&mut state, "smoke runner could not reach the app").await?;
+    let bundle_context = config.bundle_dir.as_ref().and_then(|dir| {
+        state.app.as_ref().map(|app| BundleContext {
+            dir: dir.clone(),
+            launch: config.launch.clone(),
+            stderr_buffer: Arc::clone(&app.stderr_buffer),
+            stdout_buffer: Arc::clone(&app.stdout_buffer),
+            collection_timeout_ms: config
+                .suite
+                .script_timeout
+                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(10_000),
+        })
+    });
 
-    let result = run_smoke_suite(client, &config).await;
+    let result = run_smoke_suite(client, &config, bundle_context).await;
     let shutdown_result = state.shutdown().await;
     match (result, shutdown_result) {
         (Ok(summary), Ok(())) => {
@@ -468,6 +491,146 @@ fn eval_output_value(
     Ok(value)
 }
 
+/// Information needed to write a failure bundle while the app is still running.
+#[derive(Clone)]
+struct BundleContext {
+    /// Root directory for all failure bundles in this smoke run.
+    dir: PathBuf,
+    /// App launch settings to record in `meta.json`.
+    launch: LaunchConfig,
+    /// Tail-capped app stderr captured since launch.
+    stderr_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Tail-capped app stdout captured since launch when available.
+    stdout_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Timeout for bundle collection script evaluation.
+    collection_timeout_ms: u64,
+}
+
+/// Payload returned by the internal bundle snapshot collection script.
+#[derive(Debug, Deserialize)]
+struct BundleSnapshotCollection {
+    /// Full structured tree dump.
+    tree: serde_json::Value,
+    /// Full text tree dump.
+    text: String,
+    /// Viewport screenshots captured by the collection script.
+    #[serde(deserialize_with = "deserialize_bundle_shots")]
+    shots: Vec<BundleShot>,
+    /// Non-fatal screenshot collection errors.
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_bundle_errors")]
+    errors: Vec<BundleCollectionError>,
+}
+
+/// One viewport screenshot entry from the collection script.
+#[derive(Debug, Deserialize)]
+struct BundleShot {
+    /// Canonical viewport id such as `root` or `vp:<hex>`.
+    viewport_id: Option<String>,
+    /// Semantic viewport name when one was registered.
+    name: Option<String>,
+    /// Image reference returned by `Viewport:screenshot()`.
+    image: BundleImageRef,
+}
+
+/// Image reference returned by the Luau script runtime.
+#[derive(Debug, Deserialize)]
+struct BundleImageRef {
+    /// Runtime image id used to find the corresponding MCP image block.
+    id: String,
+}
+
+/// Non-fatal bundle collection error returned by an internal script.
+#[derive(Debug, Deserialize, Serialize)]
+struct BundleCollectionError {
+    /// Collection phase that failed.
+    kind: String,
+    /// Viewport id involved in the failure when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewport_id: Option<String>,
+    /// Semantic viewport name involved in the failure when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Human-readable error message.
+    message: String,
+}
+
+/// Internal Luau script used to collect frame artifacts after a smoke failure.
+const BUNDLE_COLLECTION_SCRIPT: &str = r#"
+wait_for_capture()
+local shots = {}
+local errors = {}
+for _, viewport in ipairs(viewports()) do
+    local state = viewport:state()
+    local ok, image = pcall(function()
+        return viewport:screenshot()
+    end)
+    if ok then
+        table.insert(shots, {
+            viewport_id = viewport.id,
+            name = state.name,
+            image = image,
+        })
+    else
+        table.insert(errors, {
+            kind = "screenshot",
+            viewport_id = viewport.id,
+            name = state.name,
+            message = tostring(image),
+        })
+    end
+end
+return {
+    tree = dump({ fields = "full" }),
+    text = dump_text({ fields = "full" }),
+    shots = shots,
+    errors = errors,
+}
+"#;
+
+/// Internal Luau script used to collect diagnostics after frame artifacts are written.
+const BUNDLE_DIAGNOSTICS_SCRIPT: &str = r#"
+return diagnostics()
+"#;
+
+/// Deserialize Luau's ambiguous empty table as an empty screenshot list.
+fn deserialize_bundle_shots<'de, D>(deserializer: D) -> Result<Vec<BundleShot>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_luau_array(deserializer, "screenshot")
+}
+
+/// Deserialize Luau's ambiguous empty table as an empty collection error list.
+fn deserialize_bundle_errors<'de, D>(
+    deserializer: D,
+) -> Result<Vec<BundleCollectionError>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_luau_array(deserializer, "collection error")
+}
+
+/// Deserialize a Luau array while accepting an empty table encoded as `{}`.
+fn deserialize_luau_array<'de, D, T>(deserializer: D, label: &str) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(SerdeDeError::custom),
+        serde_json::Value::Object(map) if map.is_empty() => Ok(Vec::new()),
+        other => Err(SerdeDeError::custom(format!(
+            "expected {label} array, got {other}"
+        ))),
+    }
+}
+
 /// Convert arbitrary script/image names into portable path components.
 fn safe_file_component(value: &str) -> String {
     let safe = value
@@ -494,6 +657,365 @@ fn image_extension(mime_type: &str) -> &'static str {
         "image/webp" => "webp",
         _ => "bin",
     }
+}
+
+/// Write one deterministic failure bundle for a failed smoke script.
+async fn write_failure_bundle(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    context: &BundleContext,
+    script_path: &str,
+    args: &ScriptArgs,
+    outcome: &ScriptEvalOutcome,
+) -> Result<(), EdevError> {
+    let bundle_dir = context.dir.join(format!(
+        "{}-{}",
+        safe_file_component(script_path),
+        stable_hash8(script_path)
+    ));
+    replace_dir(&bundle_dir)?;
+    fs::write(
+        bundle_dir.join("meta.json"),
+        bundle_meta(context, script_path, args, outcome)?,
+    )?;
+    fs::write(bundle_dir.join("failure.txt"), failure_text(outcome)?)?;
+    fs::write(
+        bundle_dir.join("app.stderr.log"),
+        snapshot_output(&context.stderr_buffer),
+    )?;
+    fs::write(
+        bundle_dir.join("app.stdout.log"),
+        stdout_bundle_text(&context.stdout_buffer),
+    )?;
+
+    let collection_result = match call_script_eval_result(
+        client,
+        ScriptEvalRequest {
+            script: BUNDLE_COLLECTION_SCRIPT.to_string(),
+            timeout_ms: Some(context.collection_timeout_ms),
+            options: Some(ScriptEvalOptions {
+                source_name: Some(format!("<bundle:{script_path}>")),
+                args: ScriptArgs::default(),
+            }),
+        },
+    )
+    .await
+    {
+        Ok(result) => Some(result),
+        Err(message) => {
+            fs::write(
+                bundle_dir.join("collection-error.txt"),
+                format!("bundle collection failed: {message}\n"),
+            )?;
+            None
+        }
+    };
+
+    let collection = match collection_result.as_ref() {
+        Some(result) => match parse_script_eval_outcome(result) {
+            Ok(collection_outcome) if collection_outcome.success => {
+                match collection_outcome.value {
+                    Some(value) => {
+                        match serde_json::from_value::<BundleSnapshotCollection>(value) {
+                            Ok(collection) => Some(collection),
+                            Err(error) => {
+                                append_collection_error(
+                                    &bundle_dir,
+                                    format!("invalid bundle payload: {error}\n"),
+                                )?;
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        append_collection_error(
+                            &bundle_dir,
+                            "bundle collection script returned no value\n",
+                        )?;
+                        None
+                    }
+                }
+            }
+            Ok(collection_outcome) => {
+                append_collection_error(
+                    &bundle_dir,
+                    format!(
+                        "bundle collection script failed: {}\n",
+                        script_eval_error_message(collection_outcome.error.as_ref(), "failed")
+                    ),
+                )?;
+                None
+            }
+            Err(error) => {
+                append_collection_error(
+                    &bundle_dir,
+                    format!("failed to decode bundle collection result: {error}\n"),
+                )?;
+                None
+            }
+        },
+        None => None,
+    };
+
+    if let (Some(result), Some(collection)) = (collection_result.as_ref(), collection.as_ref()) {
+        fs::write(bundle_dir.join("tree.json"), pretty_json(&collection.tree)?)?;
+        fs::write(bundle_dir.join("tree.txt"), &collection.text)?;
+        if !collection.errors.is_empty() {
+            append_collection_error(
+                &bundle_dir,
+                format!(
+                    "bundle snapshot collection errors:\n{}",
+                    pretty_json(&collection.errors)?
+                ),
+            )?;
+        }
+        if let Err(error) = write_bundle_images(&bundle_dir, result, collection) {
+            append_collection_error(
+                &bundle_dir,
+                format!("bundle image extraction failed: {error}\n"),
+            )?;
+        }
+    } else {
+        fs::write(bundle_dir.join("tree.json"), "{}\n")?;
+        fs::write(bundle_dir.join("tree.txt"), "bundle collection failed\n")?;
+    }
+    fs::write(
+        bundle_dir.join("diagnostics.json"),
+        pretty_json(&collect_bundle_diagnostics(client, context, script_path).await?)?,
+    )?;
+    Ok(())
+}
+
+/// Collect diagnostics for a bundle without coupling them to tree/screenshot capture.
+async fn collect_bundle_diagnostics(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    context: &BundleContext,
+    script_path: &str,
+) -> Result<serde_json::Value, EdevError> {
+    let fallback = serde_json::json!({
+        "values": {},
+        "errors": {
+            "_collection": {
+                "code": "collection_failed",
+                "message": "bundle diagnostics collection failed",
+            },
+        },
+    });
+    let result = match call_script_eval_result(
+        client,
+        ScriptEvalRequest {
+            script: BUNDLE_DIAGNOSTICS_SCRIPT.to_string(),
+            timeout_ms: Some(context.collection_timeout_ms),
+            options: Some(ScriptEvalOptions {
+                source_name: Some(format!("<bundle-diagnostics:{script_path}>")),
+                args: ScriptArgs::default(),
+            }),
+        },
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(message) => {
+            return Ok(serde_json::json!({
+                "values": {},
+                "errors": {
+                    "_collection": {
+                        "code": "collection_failed",
+                        "message": format!("bundle diagnostics failed: {message}"),
+                    },
+                },
+            }));
+        }
+    };
+    let outcome = match parse_script_eval_outcome(&result) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(serde_json::json!({
+                "values": {},
+                "errors": {
+                    "_collection": {
+                        "code": "collection_failed",
+                        "message": format!("failed to decode bundle diagnostics: {error}"),
+                    },
+                },
+            }));
+        }
+    };
+    if !outcome.success {
+        return Ok(serde_json::json!({
+            "values": {},
+            "errors": {
+                "_collection": {
+                    "code": "collection_failed",
+                    "message": script_eval_error_message(outcome.error.as_ref(), "bundle diagnostics failed"),
+                },
+            },
+        }));
+    }
+    Ok(outcome.value.unwrap_or(fallback))
+}
+
+/// Append one collection warning to `collection-error.txt`.
+fn append_collection_error(bundle_dir: &Path, message: impl AsRef<str>) -> Result<(), EdevError> {
+    use std::io::Write;
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(bundle_dir.join("collection-error.txt"))?;
+    file.write_all(message.as_ref().as_bytes())?;
+    Ok(())
+}
+
+/// Replace a deterministic bundle directory with an empty directory.
+fn replace_dir(path: &Path) -> Result<(), EdevError> {
+    if path.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else if path.exists() {
+        fs::remove_file(path)?;
+    }
+    fs::create_dir_all(path)?;
+    Ok(())
+}
+
+/// Build `meta.json` for a failure bundle.
+fn bundle_meta(
+    context: &BundleContext,
+    script_path: &str,
+    args: &ScriptArgs,
+    outcome: &ScriptEvalOutcome,
+) -> Result<String, EdevError> {
+    let value = serde_json::json!({
+        "script": {
+            "path": script_path,
+            "args": args,
+        },
+        "fixtures": &outcome.fixtures,
+        "app": {
+            "command": &context.launch.command,
+            "cwd": context.launch.cwd.display().to_string(),
+        },
+        "eguidev_version": env!("CARGO_PKG_VERSION"),
+        "failure": {
+            "message": script_eval_error_message(outcome.error.as_ref(), "script failed"),
+            "details": outcome.error.as_ref().and_then(|error| error.details.clone()),
+            "error": &outcome.error,
+        },
+    });
+    pretty_json(&value)
+}
+
+/// Render the human-readable failure summary for `failure.txt`.
+fn failure_text(outcome: &ScriptEvalOutcome) -> Result<String, EdevError> {
+    let mut text = String::new();
+    text.push_str(&format!(
+        "failure: {}\n",
+        script_eval_error_message(outcome.error.as_ref(), "script failed")
+    ));
+    if let Some(error) = &outcome.error {
+        if let Some(code) = &error.code {
+            text.push_str(&format!("code: {code}\n"));
+        }
+        if let Some(location) = &error.location {
+            text.push_str(&format!(
+                "location: {}:{}\n",
+                location.line,
+                location.column.unwrap_or(1)
+            ));
+        }
+        if let Some(details) = &error.details {
+            text.push_str("\ndetails:\n");
+            text.push_str(&pretty_json(details)?);
+        }
+    }
+    if !outcome.logs.is_empty() {
+        text.push_str("\nlogs:\n");
+        for log in &outcome.logs {
+            text.push_str("- ");
+            text.push_str(log);
+            text.push('\n');
+        }
+    }
+    if !outcome.assertions.is_empty() {
+        text.push_str("\nassertions:\n");
+        text.push_str(&pretty_json(&outcome.assertions)?);
+    }
+    if !outcome.fixtures.is_empty() {
+        text.push_str("\nfixtures:\n");
+        text.push_str(&pretty_json(&outcome.fixtures)?);
+    }
+    Ok(text)
+}
+
+/// Write viewport screenshot image blocks referenced by the collection payload.
+fn write_bundle_images(
+    bundle_dir: &Path,
+    result: &CallToolResult,
+    collection: &BundleSnapshotCollection,
+) -> Result<(), EdevError> {
+    for shot in &collection.shots {
+        let image = collection_image_content(result, &shot.image.id)?;
+        let name = shot
+            .name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .or(shot.viewport_id.as_deref())
+            .unwrap_or(&shot.image.id);
+        let path = bundle_dir.join(format!(
+            "viewport-{}.{}",
+            safe_file_component(name),
+            image_extension(&image.mime_type)
+        ));
+        let bytes = image.data_bytes().map_err(|error| {
+            EdevError::EvalFailed(format!("failed to decode image {}: {error}", shot.image.id))
+        })?;
+        fs::write(path, bytes)?;
+    }
+    Ok(())
+}
+
+/// Return the MCP image content block for a collected image id.
+fn collection_image_content<'a>(
+    result: &'a CallToolResult,
+    image_id: &str,
+) -> Result<&'a ImageContent, EdevError> {
+    let outcome = parse_script_eval_outcome(result).map_err(EdevError::EvalFailed)?;
+    let image = outcome
+        .images
+        .as_ref()
+        .and_then(|images| images.iter().find(|image| image.id == image_id))
+        .ok_or_else(|| EdevError::EvalFailed(format!("missing bundle image {image_id}")))?;
+    let block = result.content.get(image.content_index).ok_or_else(|| {
+        EdevError::EvalFailed(format!(
+            "image {} referenced missing content block {}",
+            image.id, image.content_index
+        ))
+    })?;
+    let ContentBlock::Image(content) = block else {
+        return Err(EdevError::EvalFailed(format!(
+            "image {} referenced non-image content block {}",
+            image.id, image.content_index
+        )));
+    };
+    Ok(content)
+}
+
+/// Serialize bundle JSON with a trailing newline for stable files.
+fn pretty_json(value: &impl Serialize) -> Result<String, EdevError> {
+    let mut text = serde_json::to_string_pretty(value).map_err(|error| {
+        EdevError::EvalFailed(format!("failed to serialize bundle JSON: {error}"))
+    })?;
+    text.push('\n');
+    Ok(text)
+}
+
+/// Stable eight-hex hash for deterministic bundle directory names.
+fn stable_hash8(value: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:08x}", hash as u32)
 }
 
 /// Run a fixture-related script and convert script failures into fixture errors.
@@ -979,6 +1501,8 @@ struct AppProcess {
     stderr_task: Option<JoinHandle<()>>,
     /// Captured stderr output, primarily for startup errors.
     stderr_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Captured stdout output when stdout is not consumed by the MCP transport.
+    stdout_buffer: Arc<Mutex<Vec<u8>>>,
     /// Logger for process lifecycle messages.
     log_state: LogState,
 }
@@ -1133,6 +1657,7 @@ async fn spawn_app(
     })?;
 
     let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+    let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
     let stderr_buffer_clone = Arc::clone(&stderr_buffer);
     let stderr_log_state = log_state.clone();
     let stderr_task = tokio::spawn(async move {
@@ -1147,9 +1672,7 @@ async fn spawn_app(
             if bytes == 0 {
                 break;
             }
-            if let Ok(mut buffer) = stderr_buffer_clone.lock() {
-                buffer.extend_from_slice(line.as_bytes());
-            }
+            append_tail_capped(&stderr_buffer_clone, line.as_bytes());
             stderr_log_state.record_line(&line);
             let _write_result = tokio_io::stderr().write_all(line.as_bytes()).await;
         }
@@ -1187,6 +1710,7 @@ async fn spawn_app(
         client: Arc::new(AsyncMutex::new(client)),
         stderr_task: Some(stderr_task),
         stderr_buffer,
+        stdout_buffer,
         log_state,
     })
 }
@@ -1286,6 +1810,36 @@ async fn drain_stderr(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
         data.clear();
     }
     output
+}
+
+/// Return buffered process output without clearing it.
+fn snapshot_output(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
+    buffer.lock().map_or_else(
+        |_| String::new(),
+        |data| String::from_utf8_lossy(&data).to_string(),
+    )
+}
+
+/// Return bundle stdout text, explaining the normal stdio-MCP empty case.
+fn stdout_bundle_text(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
+    let output = snapshot_output(buffer);
+    if output.is_empty() {
+        STDOUT_TRANSPORT_NOTE.to_string()
+    } else {
+        output
+    }
+}
+
+/// Append bytes to a tail-capped process-output buffer.
+fn append_tail_capped(buffer: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
+    let Ok(mut data) = buffer.lock() else {
+        return;
+    };
+    data.extend_from_slice(bytes);
+    if data.len() > APP_LOG_TAIL_LIMIT + APP_LOG_TAIL_TRIM_SLACK {
+        let drop_len = data.len() - APP_LOG_TAIL_LIMIT;
+        data.drain(..drop_len);
+    }
 }
 
 /// Fetch the process group id for a spawned child process.
@@ -1552,15 +2106,18 @@ async fn call_app_health(
 async fn run_smoke_suite(
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
     config: &SmokeConfig,
+    bundle_context: Option<BundleContext>,
 ) -> Result<SuiteResult, EdevError> {
     Ok(run_suite_with(
         &config.suite,
         |request: ScriptRunRequest| {
+            let script_path = request.path.clone();
+            let script_args = request.args.clone();
             let payload = script_eval_request_value(ScriptEvalRequest {
                 script: request.source,
                 timeout_ms: request.timeout_ms,
                 options: Some(ScriptEvalOptions {
-                    source_name: Some(request.path),
+                    source_name: Some(script_path.clone()),
                     args: request.args,
                 }),
             });
@@ -1573,7 +2130,24 @@ async fn run_smoke_suite(
                         .map_err(|error| error.to_string())
                 })
             })?;
-            parse_script_eval_outcome(&result)
+            let outcome = parse_script_eval_outcome(&result)?;
+            if !outcome.success
+                && let Some(context) = bundle_context.as_ref()
+            {
+                let bundle_result = block_in_place(|| {
+                    Handle::current().block_on(write_failure_bundle(
+                        &client,
+                        context,
+                        &script_path,
+                        &script_args,
+                        &outcome,
+                    ))
+                });
+                if let Err(error) = bundle_result {
+                    eprintln!("edev: failed to write failure bundle for {script_path}: {error}");
+                }
+            }
+            Ok(outcome)
         },
     ))
 }
@@ -1909,12 +2483,14 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use eguidev_runtime::{ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo};
+    use eguidev_runtime::{
+        ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo, smoke::SuiteConfig,
+    };
     use tempfile::TempDir;
     use tmcp::{
         Client, Server, ServerCtx, ServerHandle, ServerHandler,
         schema::{
-            CallToolResponse, CallToolResult, ContentBlock, Cursor, InitializeResult,
+            CallToolResponse, CallToolResult, ContentBlock, Cursor, ImageContent, InitializeResult,
             ListToolsResult, TaskMetadata,
         },
         testutils::{TestServerContext, make_duplex_pair},
@@ -2032,6 +2608,99 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stable_hash8_is_deterministic_and_path_sensitive() {
+        assert_eq!(
+            stable_hash8("nested/fail.luau"),
+            stable_hash8("nested/fail.luau")
+        );
+        assert_ne!(
+            stable_hash8("nested/fail.luau"),
+            stable_hash8("other/fail.luau")
+        );
+        assert_eq!(stable_hash8("nested/fail.luau").len(), 8);
+    }
+
+    #[test]
+    fn replace_dir_overwrites_existing_bundle_directory() {
+        let tempdir = test_tempdir();
+        let bundle_dir = tempdir.path().join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("create bundle");
+        fs::write(bundle_dir.join("old.txt"), "old").expect("write old");
+
+        replace_dir(&bundle_dir).expect("replace dir");
+
+        assert!(bundle_dir.is_dir());
+        assert!(!bundle_dir.join("old.txt").exists());
+    }
+
+    #[test]
+    fn bundle_meta_and_failure_text_include_script_context() {
+        let tempdir = test_tempdir();
+        let outcome = parse_script_eval_outcome(
+            &CallToolResult::new()
+                .with_json_text(serde_json::json!({
+                    "success": false,
+                    "logs": ["before failure"],
+                    "assertions": [{
+                        "passed": false,
+                        "message": "expected ready",
+                        "location": "fail.luau:3"
+                    }],
+                    "fixtures": [{
+                        "name": "basic.default"
+                    }],
+                    "timing": {
+                        "compile_ms": 0,
+                        "exec_ms": 1,
+                        "total_ms": 1
+                    },
+                    "error": {
+                        "type": "assertion",
+                        "message": "expected ready",
+                        "code": "assertion_failed",
+                        "details": {
+                            "widget": "basic.status"
+                        }
+                    }
+                }))
+                .expect("script eval json"),
+        )
+        .expect("outcome");
+        let context = BundleContext {
+            dir: tempdir.path().join("bundles"),
+            launch: test_config(tempdir.path().to_path_buf()),
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
+            collection_timeout_ms: 10_000,
+        };
+        let args = ScriptArgs::from([(
+            "name".to_string(),
+            ScriptArgValue::String("Sky".to_string()),
+        )]);
+
+        let meta = bundle_meta(&context, "nested/fail.luau", &args, &outcome).expect("bundle meta");
+        let meta: serde_json::Value = serde_json::from_str(&meta).expect("meta json");
+        assert_eq!(meta["script"]["path"], "nested/fail.luau");
+        assert_eq!(meta["script"]["args"]["name"], "Sky");
+        assert_eq!(meta["fixtures"][0]["name"], "basic.default");
+        assert_eq!(meta["failure"]["details"]["widget"], "basic.status");
+
+        let text = failure_text(&outcome).expect("failure text");
+        assert!(text.contains("failure: expected ready"));
+        assert!(text.contains("before failure"));
+        assert!(text.contains("basic.default"));
+    }
+
+    #[test]
+    fn stdout_bundle_text_explains_stdio_transport_when_empty() {
+        let empty = Arc::new(Mutex::new(Vec::new()));
+        assert_eq!(stdout_bundle_text(&empty), STDOUT_TRANSPORT_NOTE);
+
+        let captured = Arc::new(Mutex::new(b"captured stdout\n".to_vec()));
+        assert_eq!(stdout_bundle_text(&captured), "captured stdout\n");
+    }
+
     #[tokio::test]
     async fn eval_script_calls_script_eval_with_timeout_and_args() {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -2065,6 +2734,138 @@ mod tests {
             request.options.as_ref().expect("options").args.get("name"),
             Some(&ScriptArgValue::String("Sky".to_string()))
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_smoke_suite_writes_deterministic_failure_bundle() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
+        let tempdir = test_tempdir();
+        let suite_dir = tempdir.path().join("suite");
+        fs::create_dir_all(&suite_dir).expect("create suite");
+        fs::write(suite_dir.join("10_fail.luau"), "assert(false, \"boom\")").expect("write script");
+        let bundle_dir = tempdir.path().join("bundles");
+        let stderr_buffer = Arc::new(Mutex::new(b"app stderr\n".to_vec()));
+        let stdout_buffer = Arc::new(Mutex::new(b"app stdout\n".to_vec()));
+        let context = BundleContext {
+            dir: bundle_dir.clone(),
+            launch: test_config(tempdir.path().to_path_buf()),
+            stderr_buffer,
+            stdout_buffer,
+            collection_timeout_ms: 1_000,
+        };
+        let config = SmokeConfig {
+            launch: test_config(tempdir.path().to_path_buf()),
+            suite: SuiteConfig {
+                suite_dir,
+                scripts: Vec::new(),
+                suite_timeout: Duration::from_secs(10),
+                script_timeout: Some(Duration::from_secs(1)),
+                fail_fast: false,
+                args: ScriptArgs::from([(
+                    "name".to_string(),
+                    ScriptArgValue::String("Sky".to_string()),
+                )]),
+            },
+            verbose_output: false,
+            bundle_dir: Some(bundle_dir.clone()),
+        };
+
+        let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context.clone()))
+            .await
+            .expect("smoke suite");
+
+        assert_eq!(result.failed(), 1);
+        assert_eq!(result.results[0].message.as_deref(), Some("boom"));
+        assert_eq!(result.results[0].path, "10_fail.luau");
+        let script_dir = bundle_dir.join(format!(
+            "{}-{}",
+            safe_file_component(&result.results[0].path),
+            stable_hash8(&result.results[0].path)
+        ));
+        assert!(
+            script_dir.join("meta.json").is_file(),
+            "bundle entries: {:?}",
+            fs::read_dir(&bundle_dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.file_name())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        );
+        assert!(script_dir.join("failure.txt").is_file());
+        assert!(script_dir.join("tree.json").is_file());
+        assert!(script_dir.join("tree.txt").is_file());
+        assert!(script_dir.join("diagnostics.json").is_file());
+        assert_eq!(
+            fs::read_to_string(script_dir.join("app.stderr.log")).expect("stderr"),
+            "app stderr\n"
+        );
+        assert_eq!(
+            fs::read_to_string(script_dir.join("app.stdout.log")).expect("stdout"),
+            "app stdout\n"
+        );
+        assert_eq!(
+            fs::read(script_dir.join("viewport-root.jpg")).expect("viewport image"),
+            b"jpeg"
+        );
+        let meta: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(script_dir.join("meta.json")).expect("meta"))
+                .expect("meta json");
+        assert_eq!(meta["script"]["args"]["name"], "Sky");
+        assert_eq!(meta["fixtures"][0]["name"], "basic.default");
+
+        fs::write(script_dir.join("stale.txt"), "stale").expect("write stale");
+        let second = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
+            .await
+            .expect("second smoke suite");
+        assert_eq!(second.failed(), 1);
+        assert!(!script_dir.join("stale.txt").exists());
+        assert_eq!(requests.lock().expect("requests").len(), 6);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_smoke_suite_preserves_failure_when_bundle_write_fails() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
+        let tempdir = test_tempdir();
+        let suite_dir = tempdir.path().join("suite");
+        fs::create_dir_all(&suite_dir).expect("create suite");
+        fs::write(suite_dir.join("10_fail.luau"), "assert(false, \"boom\")").expect("write script");
+        let bundle_root = tempdir.path().join("bundle-root-file");
+        fs::write(&bundle_root, "not a directory").expect("write bundle root file");
+        let context = BundleContext {
+            dir: bundle_root.clone(),
+            launch: test_config(tempdir.path().to_path_buf()),
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
+            collection_timeout_ms: 1_000,
+        };
+        let config = SmokeConfig {
+            launch: test_config(tempdir.path().to_path_buf()),
+            suite: SuiteConfig {
+                suite_dir,
+                scripts: Vec::new(),
+                suite_timeout: Duration::from_secs(10),
+                script_timeout: Some(Duration::from_secs(1)),
+                fail_fast: false,
+                args: ScriptArgs::default(),
+            },
+            verbose_output: false,
+            bundle_dir: Some(bundle_root),
+        };
+
+        let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
+            .await
+            .expect("smoke suite");
+
+        assert_eq!(result.failed(), 1);
+        assert_eq!(result.results[0].message.as_deref(), Some("boom"));
+        assert_eq!(result.results[0].logs, vec!["before failure"]);
+        assert_eq!(result.results[0].fixtures[0].name, "basic.default");
+        assert_eq!(requests.lock().expect("requests").len(), 1);
     }
 
     #[test]
@@ -2123,6 +2924,10 @@ mod tests {
     struct HealthFailingServer;
 
     struct RecordingEvalServer {
+        requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
+    }
+
+    struct BundleSmokeServer {
         requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
     }
 
@@ -2221,6 +3026,138 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ServerHandler for BundleSmokeServer {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: String,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> tmcp::Result<InitializeResult> {
+            Ok(InitializeResult::new("bundle-smoke"))
+        }
+
+        async fn list_tools(
+            &self,
+            _context: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> tmcp::Result<ListToolsResult> {
+            Ok(ListToolsResult::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _context: &ServerCtx,
+            name: String,
+            arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
+        ) -> tmcp::Result<CallToolResponse> {
+            if name != "script_eval" {
+                return Err(McpError::ToolNotFound(name));
+            }
+            let request = arguments
+                .ok_or_else(|| McpError::InternalError("missing arguments".to_string()))?
+                .deserialize::<ScriptEvalRequest>()
+                .map_err(|error| McpError::InternalError(error.to_string()))?;
+            self.requests
+                .lock()
+                .expect("requests lock poisoned")
+                .push(request.clone());
+            if request.script == BUNDLE_COLLECTION_SCRIPT {
+                let result = CallToolResult::new()
+                    .with_json_text(serde_json::json!({
+                        "success": true,
+                        "value": {
+                            "tree": {
+                                "viewports": []
+                            },
+                            "text": "viewport root\n",
+                            "shots": [{
+                                "viewport_id": "root",
+                                "name": "root",
+                                "image": {
+                                    "type": "image_ref",
+                                    "id": "image-0"
+                                }
+                            }],
+                            "errors": []
+                        },
+                        "images": [{
+                            "id": "image-0",
+                            "content_index": 1,
+                            "kind": "viewport",
+                            "viewport_id": "root"
+                        }],
+                        "logs": [],
+                        "assertions": [],
+                        "timing": {
+                            "compile_ms": 0,
+                            "exec_ms": 0,
+                            "total_ms": 0
+                        }
+                    }))
+                    .expect("collection json")
+                    .with_content(ContentBlock::Image(
+                        ImageContent::new("", "image/jpeg").with_data_bytes(b"jpeg"),
+                    ));
+                return Ok(result.into());
+            }
+            if request.script == BUNDLE_DIAGNOSTICS_SCRIPT {
+                return Ok(CallToolResult::new()
+                    .with_json_text(serde_json::json!({
+                        "success": true,
+                        "value": {
+                            "values": {
+                                "demo.runtime": {
+                                    "ready": true
+                                }
+                            },
+                            "errors": {}
+                        },
+                        "logs": [],
+                        "assertions": [],
+                        "timing": {
+                            "compile_ms": 0,
+                            "exec_ms": 0,
+                            "total_ms": 0
+                        }
+                    }))
+                    .expect("diagnostics json")
+                    .into());
+            }
+
+            Ok(CallToolResult::new()
+                .with_json_text(serde_json::json!({
+                    "success": false,
+                    "logs": ["before failure"],
+                    "assertions": [{
+                        "passed": false,
+                        "message": "boom",
+                        "location": "10_fail.luau:1"
+                    }],
+                    "fixtures": [{
+                        "name": "basic.default"
+                    }],
+                    "timing": {
+                        "compile_ms": 0,
+                        "exec_ms": 1,
+                        "total_ms": 1
+                    },
+                    "error": {
+                        "type": "assertion",
+                        "message": "boom",
+                        "code": "assertion_failed",
+                        "details": {
+                            "widget": "basic.status"
+                        }
+                    }
+                }))
+                .expect("failure json")
+                .into())
+        }
+    }
+
     struct FailingServer;
 
     #[async_trait]
@@ -2282,6 +3219,7 @@ mod tests {
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
         };
 
@@ -2312,6 +3250,7 @@ mod tests {
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
         };
 
@@ -2342,6 +3281,7 @@ mod tests {
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
         };
 
@@ -2376,6 +3316,42 @@ mod tests {
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
+            log_state: LogState::new(false),
+        };
+
+        (app, handle)
+    }
+
+    async fn make_bundle_smoke_app(
+        requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
+    ) -> (AppProcess, ServerHandle) {
+        let ((server_reader, server_writer), (client_reader, client_writer)) = {
+            let (sr, sw, cr, cw) = make_duplex_pair();
+            ((sr, sw), (cr, cw))
+        };
+
+        let server = Server::new(move || BundleSmokeServer {
+            requests: Arc::clone(&requests),
+        });
+        let handle = ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .expect("server handle");
+
+        let mut client = Client::new("test", "0.1.0");
+        client
+            .connect_stream_raw(client_reader, client_writer)
+            .await
+            .expect("connect");
+        client.init().await.expect("init");
+
+        let app = AppProcess {
+            child: None,
+            process_group_id: None,
+            client: Arc::new(AsyncMutex::new(client)),
+            stderr_task: None,
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
         };
 

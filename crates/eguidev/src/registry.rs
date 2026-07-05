@@ -15,6 +15,7 @@ use egui::{Context, Vec2 as EguiVec2};
 use crate::{
     actions::{ActionQueue, ActionTiming, InputAction},
     devmcp::{AutomationOptions, RuntimeHooks},
+    diagnostics::DiagnosticRegistry,
     fixtures::FixtureManager,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
     types::WidgetValue,
@@ -48,6 +49,7 @@ pub struct Inner {
     pub last_action_frame: AtomicU64,
     verbose_logging: AtomicBool,
     pub fixtures: FixtureManager,
+    pub diagnostics: DiagnosticRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     automation_options: Mutex<AutomationOptions>,
     /// Whether the egui input-injection plugin has already been registered
@@ -118,6 +120,7 @@ impl Inner {
             last_action_frame: AtomicU64::new(0),
             verbose_logging: AtomicBool::new(false),
             fixtures: FixtureManager::new(),
+            diagnostics: DiagnosticRegistry::new(),
             runtime_hooks: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
             input_plugin_installed: AtomicBool::new(false),

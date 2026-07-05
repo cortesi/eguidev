@@ -127,6 +127,7 @@
 
 mod actions;
 mod devmcp;
+mod diagnostics;
 mod error;
 mod fixtures;
 mod instrument;
@@ -140,6 +141,7 @@ mod widget_registry;
 
 pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
+    diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
     fixtures::FixtureHandler,
     instrument::{
         ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
@@ -164,6 +166,10 @@ pub mod internal {
 
     pub mod devmcp {
         pub use crate::devmcp::{AutomationOptions, RuntimeHooks};
+    }
+
+    pub mod diagnostics {
+        pub use crate::diagnostics::{DiagnosticExecution, DiagnosticRegistry};
     }
 
     pub mod error {

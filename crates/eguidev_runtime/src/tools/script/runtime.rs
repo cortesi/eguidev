@@ -1,6 +1,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::result_large_err)]
 
 use std::{
+    collections::BTreeMap,
     future::Future,
     sync::{
         Arc, Mutex,
@@ -12,7 +13,7 @@ use std::{
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tmcp::ToolResult;
-use tokio::time::timeout;
+use tokio::{task::spawn_blocking, time::timeout};
 
 use super::{
     super::{
@@ -30,11 +31,12 @@ use super::{
         widget_value_from_dynamic,
     },
     types::{
-        ImageCapture, ScriptAssertion, ScriptErrorInfo, ScriptImageKind, ScriptLocation,
-        ScriptPosition, ScriptResult,
+        FixtureApplication, ImageCapture, ScriptAssertion, ScriptErrorInfo, ScriptImageKind,
+        ScriptLocation, ScriptPosition, ScriptResult,
     },
 };
 use crate::{
+    diagnostics::DiagnosticExecution,
     dump::{DumpOptions, build_tree_dump, dump_text},
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
@@ -47,6 +49,7 @@ pub(super) struct ScriptRuntime {
     pub(super) server: DevMcpServer,
     logs: Mutex<Vec<String>>,
     assertions: Mutex<Vec<ScriptAssertion>>,
+    fixtures: Mutex<Vec<FixtureApplication>>,
     images: Mutex<Vec<ImageCapture>>,
     image_counter: AtomicUsize,
     source_name: String,
@@ -114,6 +117,7 @@ impl ScriptRuntime {
             server: DevMcpServer::with_runtime(inner, runtime),
             logs: Mutex::new(Vec::new()),
             assertions: Mutex::new(Vec::new()),
+            fixtures: Mutex::new(Vec::new()),
             images: Mutex::new(Vec::new()),
             image_counter: AtomicUsize::new(0),
             source_name,
@@ -202,6 +206,24 @@ impl ScriptRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    pub(super) fn fixture_applications(&self) -> Vec<FixtureApplication> {
+        self.fixtures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn record_fixture(&self, name: String) {
+        let mut fixtures = self
+            .fixtures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        fixtures.push(FixtureApplication {
+            name,
+            params: BTreeMap::new(),
+        });
     }
 
     fn record_assertion(&self, passed: bool, message: String, pos: ScriptPosition) {
@@ -474,8 +496,12 @@ impl ScriptRuntime {
     ) -> ScriptResult<(Option<String>, Option<u64>, Option<u64>)> {
         let viewport_id = parse_optional_string(options, "viewport_id")
             .map_err(|error| self.type_error(pos, error.message))?;
-        let timeout_ms = self.configured_timeout_ms();
-        let poll_interval_ms = self.configured_poll_interval_ms();
+        let timeout_ms = parse_optional_u64(options, "timeout_ms")
+            .map_err(|error| self.type_error(pos, error.message))?
+            .or_else(|| self.configured_timeout_ms());
+        let poll_interval_ms = parse_optional_u64(options, "poll_interval_ms")
+            .map_err(|error| self.type_error(pos, error.message))?
+            .or_else(|| self.configured_poll_interval_ms());
         Ok((viewport_id, timeout_ms, poll_interval_ms))
     }
 
@@ -2055,8 +2081,9 @@ impl ScriptRuntime {
 
     pub(super) async fn fixture(&self, pos: ScriptPosition, name: String) -> ScriptResult<Value> {
         let timeout_ms = self.configured_timeout_ms();
-        self.await_tool(pos, self.server.fixture(name, timeout_ms))
+        self.await_tool(pos, self.server.fixture(name.clone(), timeout_ms))
             .await?;
+        self.record_fixture(name);
         self.to_json(pos, ())
     }
 
@@ -2065,13 +2092,88 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         name: String,
     ) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.fixture_apply(name))
+        self.await_tool(pos, self.server.fixture_apply(name.clone()))
             .await?;
+        self.record_fixture(name);
         self.to_json(pos, ())
     }
 
     pub(super) fn fixtures(&self, pos: ScriptPosition) -> ScriptResult<Value> {
         self.to_json(pos, self.server.inner.fixtures.fixtures_sorted())
+    }
+
+    pub(super) async fn diagnostic(
+        &self,
+        pos: ScriptPosition,
+        name: String,
+    ) -> ScriptResult<Value> {
+        self.run_diagnostic(pos, &name)
+            .await
+            .map_err(|error| self.diagnostic_error(pos, error))
+    }
+
+    pub(super) async fn diagnostics(&self, pos: ScriptPosition) -> ScriptResult<Value> {
+        let mut values = BTreeMap::new();
+        let mut errors = BTreeMap::new();
+        for name in self.server.inner.diagnostics.names() {
+            match self.run_diagnostic(pos, &name).await {
+                Ok(value) => {
+                    values.insert(name, value);
+                }
+                Err(error) => {
+                    errors.insert(name, error);
+                }
+            }
+        }
+        self.to_json(
+            pos,
+            serde_json::json!({
+                "values": values,
+                "errors": errors,
+            }),
+        )
+    }
+
+    async fn run_diagnostic(&self, pos: ScriptPosition, name: &str) -> eguidev::DiagnosticResult {
+        match self.server.inner.diagnostics.start(name) {
+            DiagnosticExecution::Ready(result) => result,
+            DiagnosticExecution::Queued(receiver) => {
+                self.server.inner.request_repaint();
+                let remaining = self.remaining_script_duration(pos).map_err(|error| {
+                    eguidev::DiagnosticError::new(
+                        error.code.as_deref().unwrap_or("timeout"),
+                        error.message,
+                    )
+                })?;
+                spawn_blocking(move || receiver.recv_timeout(remaining))
+                    .await
+                    .map_err(|error| {
+                        eguidev::DiagnosticError::new(
+                            "internal",
+                            format!("diagnostic wait task failed: {error}"),
+                        )
+                    })?
+            }
+        }
+    }
+
+    fn diagnostic_error(
+        &self,
+        pos: ScriptPosition,
+        error: eguidev::DiagnosticError,
+    ) -> ScriptErrorInfo {
+        ScriptErrorInfo {
+            error_type: if error.code == "timeout" {
+                "timeout".to_string()
+            } else {
+                "diagnostic".to_string()
+            },
+            message: error.message,
+            location: self.error_location(pos),
+            backtrace: None,
+            code: Some(error.code),
+            details: error.details,
+        }
     }
 
     pub(super) fn dump(

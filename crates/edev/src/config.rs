@@ -21,6 +21,7 @@ use crate::EdevError;
 
 const DEFAULT_CONFIG_FILE: &str = ".edev.toml";
 const DEFAULT_SUITE_DIR: &str = "smoketest";
+const DEFAULT_BUNDLE_DIR: &str = "tmp/edev-bundles";
 const DEFAULT_SUITE_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_SCRIPT_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_IDLE_SHUTDOWN_AFTER_SECS: u64 = 20 * 60;
@@ -67,6 +68,8 @@ pub struct SmokeConfig {
     pub(crate) suite: SuiteConfig,
     /// Whether to emit verbose smoke output.
     pub(crate) verbose_output: bool,
+    /// Optional failure bundle output directory.
+    pub(crate) bundle_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -257,6 +260,8 @@ struct SmokeCliOptions {
     suite_timeout_secs: Option<u64>,
     script_timeout_secs: Option<u64>,
     args: ScriptArgs,
+    bundle: bool,
+    bundle_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -362,6 +367,12 @@ struct SmokeArgs {
     /// Pass a typed suite-wide script arg.
     #[arg(long = "arg", value_parser = parse_script_arg_cli)]
     args: Vec<(String, ScriptArgValue)>,
+    /// Write failure bundles to the configured/default bundle directory.
+    #[arg(long = "bundle", action = ArgAction::SetTrue)]
+    bundle: bool,
+    /// Write failure bundles to this directory.
+    #[arg(long = "bundle-dir")]
+    bundle_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -460,6 +471,8 @@ impl From<SmokeArgs> for SmokeCliOptions {
             suite_timeout_secs: args.suite_timeout_secs,
             script_timeout_secs: args.script_timeout_secs,
             args: script_args,
+            bundle: args.bundle,
+            bundle_dir: args.bundle_dir,
         }
     }
 }
@@ -569,6 +582,7 @@ struct FileSmokeConfig {
     fail_fast: Option<bool>,
     #[serde(rename = "artifact_dir")]
     legacy_artifact_dir: Option<PathBuf>,
+    bundle_dir: Option<PathBuf>,
     #[serde(default)]
     args: ScriptArgs,
 }
@@ -711,6 +725,17 @@ fn resolve_smoke_config(
         .map(|smoke| smoke.args.clone())
         .unwrap_or_default();
     args.extend(cli.args);
+    let bundle_dir = if cli.bundle || cli.bundle_dir.is_some() {
+        Some(resolve_path(
+            cli.bundle_dir.as_ref(),
+            file_smoke.and_then(|smoke| smoke.bundle_dir.as_ref()),
+            current_dir,
+            suite_base_dir,
+            Path::new(DEFAULT_BUNDLE_DIR),
+        )?)
+    } else {
+        None
+    };
     let suite = SuiteConfig {
         suite_dir,
         scripts: cli.scripts,
@@ -734,6 +759,7 @@ fn resolve_smoke_config(
         verbose_output: launch.verbose,
         launch,
         suite,
+        bundle_dir,
     })
 }
 
@@ -982,6 +1008,28 @@ mod tests {
                 PathBuf::from("tmp/ad_hoc.luau"),
             ]
         );
+        assert_eq!(config.bundle_dir, None);
+    }
+
+    #[test]
+    fn parse_smoke_command_accepts_bundle_dir() {
+        let args = os_args(&[
+            "smoke",
+            "--bundle-dir",
+            "tmp/custom-bundles",
+            "--",
+            "cargo",
+            "run",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Smoke(config) = command else {
+            panic!("expected smoke command");
+        };
+        assert_eq!(
+            config.bundle_dir,
+            Some(current_dir.join("tmp/custom-bundles"))
+        );
     }
 
     #[test]
@@ -1146,6 +1194,59 @@ suite_dir = \"suite\"
         };
         assert_eq!(config.launch.cwd, repo_root.join("app"));
         assert_eq!(config.suite.suite_dir, repo_root.join("suite"));
+    }
+
+    #[test]
+    fn smoke_bundle_uses_configured_or_default_dir_only_when_enabled() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        let config_path = repo_root.join(DEFAULT_CONFIG_FILE);
+        fs::write(
+            &config_path,
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[smoke]
+bundle_dir = \"configured-bundles\"
+",
+        )
+        .expect("write config");
+
+        let disabled =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke"]), &repo_root).expect("parse");
+        let EdevCommand::Smoke(config) = disabled else {
+            panic!("expected smoke command");
+        };
+        assert_eq!(config.bundle_dir, None);
+
+        let configured =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke", "--bundle"]), &repo_root)
+                .expect("parse");
+        let EdevCommand::Smoke(config) = configured else {
+            panic!("expected smoke command");
+        };
+        assert_eq!(
+            config.bundle_dir,
+            Some(repo_root.join("configured-bundles"))
+        );
+
+        fs::write(
+            &config_path,
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+",
+        )
+        .expect("write config");
+        let defaulted =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke", "--bundle"]), &repo_root)
+                .expect("parse");
+        let EdevCommand::Smoke(config) = defaulted else {
+            panic!("expected smoke command");
+        };
+        assert_eq!(config.bundle_dir, Some(repo_root.join(DEFAULT_BUNDLE_DIR)));
     }
 
     #[test]

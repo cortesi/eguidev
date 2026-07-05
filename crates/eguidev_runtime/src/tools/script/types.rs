@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use tmcp::schema::{CallToolResult, ContentBlock};
 
-use crate::types::{Rect, WidgetRef};
+use crate::types::{Rect, WidgetRef, WidgetValue};
 
 pub(super) type ScriptResult<T> = Result<T, ScriptErrorInfo>;
 
@@ -169,6 +169,17 @@ pub struct ScriptImageInfo {
     pub metadata: Option<Value>,
 }
 
+/// Fixture applied during a script evaluation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FixtureApplication {
+    /// Fixture name passed to `fixture(...)` or `fixture_raw(...)`.
+    pub name: String,
+    /// Validated fixture parameters. Stage 3 records name-only applications.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, WidgetValue>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct ScriptValue {
     pub(super) value: Option<Value>,
@@ -195,6 +206,10 @@ pub struct ScriptEvalOutcome {
     #[serde(default)]
     /// Assertion outcomes recorded during evaluation.
     pub assertions: Vec<ScriptAssertion>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    /// Fixtures applied during evaluation.
+    pub fixtures: Vec<FixtureApplication>,
     /// Timing information for the evaluation.
     pub timing: ScriptTiming,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,6 +257,7 @@ impl ScriptEvalOutcome {
             images: None,
             logs: Vec::new(),
             assertions: Vec::new(),
+            fixtures: Vec::new(),
             timing: ScriptTiming::zero(),
             error: Some(error),
             content: Vec::new(),

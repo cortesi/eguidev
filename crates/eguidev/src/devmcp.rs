@@ -12,6 +12,7 @@ use egui::Context;
 
 use crate::{
     actions::InputAction,
+    diagnostics::{DevMcpConfigError, DiagnosticRegistry, DiagnosticResult},
     fixtures::FixtureHandler,
     instrument::{ACTIVE, container, swallow_panic},
     registry::Inner,
@@ -94,6 +95,7 @@ impl egui::Plugin for InputInjectionPlugin {
 pub struct DevMcp {
     state: DevMcpState,
     fixtures: Vec<FixtureSpec>,
+    diagnostics: DiagnosticRegistry,
     verbose_logging: bool,
     fixture_handler: Option<FixtureHandler>,
     automation_options: AutomationOptions,
@@ -104,6 +106,7 @@ impl fmt::Debug for DevMcp {
         f.debug_struct("DevMcp")
             .field("state", &self.state)
             .field("fixtures", &self.fixtures)
+            .field("diagnostics", &self.diagnostics)
             .field("verbose_logging", &self.verbose_logging)
             .field("automation_options", &self.automation_options)
             .finish()
@@ -177,6 +180,38 @@ impl DevMcp {
         self
     }
 
+    /// Register a named diagnostic provider that runs on the automation runtime thread.
+    pub fn diagnostic<F>(
+        self,
+        name: impl Into<String>,
+        provider: F,
+    ) -> Result<Self, DevMcpConfigError>
+    where
+        F: Fn() -> DiagnosticResult + Send + Sync + 'static,
+    {
+        self.diagnostics.insert_runtime(name.into(), provider)?;
+        if let Some(inner) = self.inner() {
+            inner.diagnostics.set_providers_from(&self.diagnostics);
+        }
+        Ok(self)
+    }
+
+    /// Register a named diagnostic provider that runs on the UI thread.
+    pub fn diagnostic_ui<F>(
+        self,
+        name: impl Into<String>,
+        provider: F,
+    ) -> Result<Self, DevMcpConfigError>
+    where
+        F: FnMut(&Context) -> DiagnosticResult + Send + 'static,
+    {
+        self.diagnostics.insert_ui(name.into(), provider)?;
+        if let Some(inner) = self.inner() {
+            inner.diagnostics.set_providers_from(&self.diagnostics);
+        }
+        Ok(self)
+    }
+
     /// Returns true if DevMCP automation is attached.
     pub fn is_enabled(&self) -> bool {
         matches!(self.state, DevMcpState::Active(_))
@@ -214,6 +249,7 @@ impl DevMcp {
         if let Some(handler) = &self.fixture_handler {
             inner.fixtures.set_fixture_handler(handler.clone());
         }
+        inner.diagnostics.set_providers_from(&self.diagnostics);
         self.state = DevMcpState::Active(inner);
         self
     }
@@ -241,6 +277,9 @@ impl DevMcp {
             let viewport_id = ctx.viewport_id();
             inner.begin_frame(viewport_id);
             inner.capture_context(viewport_id, ctx);
+            if viewport_id == egui::ViewportId::ROOT {
+                inner.diagnostics.drain_ui(ctx);
+            }
             if let Some(hooks) = inner.runtime_hooks() {
                 let events = ctx.input(|input| input.events.clone());
                 hooks.on_raw_input(inner, &events);

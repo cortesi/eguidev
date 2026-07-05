@@ -92,13 +92,42 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
 }
 
 /// Build the demo's DevMCP handle, optionally attaching the embedded runtime.
-fn build_devmcp(config: AppConfig, state: Arc<Mutex<DemoState>>) -> MainResult<DevMcp> {
+fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<DevMcp> {
+    let fixture_state = Arc::clone(state);
+    let runtime_diagnostic_state = Arc::clone(state);
+    let ui_diagnostic_state = Arc::clone(state);
     let devmcp = DevMcp::new()
         .fixtures(demo_fixtures())
         .on_fixture(move |name| {
-            let mut s = state.lock().expect("demo state lock");
+            let mut s = fixture_state.lock().expect("demo state lock");
             s.apply_fixture(name)
-        });
+        })
+        .diagnostic("demo.runtime", move || {
+            let s = runtime_diagnostic_state
+                .lock()
+                .expect("demo diagnostic state lock");
+            Ok(json!({
+                "ready": true,
+                "status": s.status,
+                "click_count": s.click_count,
+                "secondary_visible": s.show_secondary,
+                "secondary_selected_row": s.secondary_selected_row,
+            }))
+        })?
+        .diagnostic_ui("demo.ui", move |ctx| {
+            let s = ui_diagnostic_state
+                .lock()
+                .expect("demo UI diagnostic state lock");
+            let viewport_id = ctx.viewport_id();
+            let focused = ctx.input(|input| input.focused);
+            Ok(json!({
+                "ready": true,
+                "viewport_id": format!("{viewport_id:?}"),
+                "pixels_per_point": ctx.pixels_per_point(),
+                "focused": focused,
+                "secondary_visible": s.show_secondary,
+            }))
+        })?;
     #[cfg(feature = "devtools")]
     {
         if config.enable_mcp {
@@ -439,7 +468,7 @@ impl DemoApp {
     /// Build a new demo app from the parsed configuration.
     fn new(config: AppConfig, ctx: &egui::Context) -> MainResult<Self> {
         let state = Arc::new(Mutex::new(DemoState::new(config.force_occluder)));
-        let devmcp = build_devmcp(config, Arc::clone(&state))?;
+        let devmcp = build_devmcp(config, &state)?;
         let preview_texture = ctx.load_texture(
             "eguidev_demo.preview",
             ColorImage::filled([16, 16], Color32::from_rgb(64, 156, 255)),

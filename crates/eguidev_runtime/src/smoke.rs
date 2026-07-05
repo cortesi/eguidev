@@ -8,7 +8,9 @@ use std::{
 
 use tokio::runtime::Handle;
 
-use crate::{DevMcp, ScriptArgs, ScriptEvalOptions, ScriptEvalOutcome, runtime};
+use crate::{
+    DevMcp, FixtureApplication, ScriptArgs, ScriptEvalOptions, ScriptEvalOutcome, runtime,
+};
 
 const SUITE_RESULT_PATH: &str = "<suite>";
 
@@ -42,7 +44,7 @@ pub enum ScriptStatus {
 }
 
 /// Result of a single script execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScriptResult {
     /// Forward-slash-normalized relative script path, or `<suite>` for suite-level failures.
     pub path: String,
@@ -54,11 +56,14 @@ pub struct ScriptResult {
     pub message: Option<String>,
     /// Logs emitted by the script.
     pub logs: Vec<String>,
+    /// Fixtures applied during the script.
+    pub fixtures: Vec<FixtureApplication>,
     /// Verbose failure details from the script runtime.
     pub details: Option<String>,
 }
 
 impl ScriptResult {
+    #[cfg(test)]
     fn pass(path: String, elapsed_ms: u64, logs: Vec<String>) -> Self {
         Self {
             path,
@@ -66,6 +71,24 @@ impl ScriptResult {
             elapsed_ms,
             message: None,
             logs,
+            fixtures: Vec::new(),
+            details: None,
+        }
+    }
+
+    fn pass_with_fixtures(
+        path: String,
+        elapsed_ms: u64,
+        logs: Vec<String>,
+        fixtures: Vec<FixtureApplication>,
+    ) -> Self {
+        Self {
+            path,
+            status: ScriptStatus::Pass,
+            elapsed_ms,
+            message: None,
+            logs,
+            fixtures,
             details: None,
         }
     }
@@ -87,6 +110,25 @@ impl ScriptResult {
             elapsed_ms,
             message: Some(message),
             logs,
+            fixtures: Vec::new(),
+            details,
+        }
+    }
+
+    fn fail_with_outcome(
+        path: String,
+        elapsed_ms: u64,
+        message: String,
+        outcome: ScriptEvalOutcome,
+        details: Option<String>,
+    ) -> Self {
+        Self {
+            path,
+            status: ScriptStatus::Fail,
+            elapsed_ms,
+            message: Some(message),
+            logs: outcome.logs,
+            fixtures: outcome.fixtures,
             details,
         }
     }
@@ -98,13 +140,14 @@ impl ScriptResult {
             elapsed_ms: 0,
             message: Some(message),
             logs: Vec::new(),
+            fixtures: Vec::new(),
             details: None,
         }
     }
 }
 
 /// Result of running a full suite.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SuiteResult {
     /// Per-script results in execution order.
     pub results: Vec<ScriptResult>,
@@ -323,21 +366,22 @@ where
         };
 
         if outcome.success {
-            results.push(ScriptResult::pass(
+            results.push(ScriptResult::pass_with_fixtures(
                 relative_display,
                 elapsed_ms,
                 outcome.logs,
+                outcome.fixtures,
             ));
             continue;
         }
 
         let message = script_failure_summary(&outcome);
         let details = script_failure_details(&outcome);
-        results.push(ScriptResult::fail_with_details(
+        results.push(ScriptResult::fail_with_outcome(
             relative_display,
             elapsed_ms,
             message,
-            outcome.logs,
+            outcome,
             details,
         ));
         if config.fail_fast {

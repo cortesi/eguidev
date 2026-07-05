@@ -34,6 +34,10 @@ pub(crate) mod actions {
     pub use eguidev::internal::actions::*;
 }
 
+pub(crate) mod diagnostics {
+    pub use eguidev::internal::diagnostics::*;
+}
+
 pub(crate) mod overlay {
     pub use eguidev::internal::overlay::*;
 }
@@ -64,8 +68,9 @@ pub use crate::{
     runtime::{attach, eval_script},
     script_docs::{render_script_docs_markdown, script_definitions},
     tools::{
-        ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo, ScriptEvalOptions,
-        ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation, ScriptTiming,
+        FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
+        ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
+        ScriptTiming,
     },
 };
 
