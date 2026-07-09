@@ -80,6 +80,17 @@ pub struct SmokeConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Resolved configuration for `edev record`.
+pub struct RecordConfig {
+    /// Absolute output movie path.
+    pub(crate) outfile: PathBuf,
+    /// Optional native window title override.
+    pub(crate) window_title: Option<String>,
+    /// Smoke suite configuration to execute while recording.
+    pub(crate) smoke: SmokeConfig,
+}
+
+#[derive(Debug, Clone)]
 /// Resolved configuration for `edev eval`.
 pub struct EvalConfig {
     /// Shared app launch settings.
@@ -141,6 +152,8 @@ pub enum EdevCommand {
     Mcp(McpConfig),
     /// Run the checked-in smoke suite through the launcher.
     Smoke(SmokeConfig),
+    /// Run the checked-in smoke suite while recording a native app window.
+    Record(RecordConfig),
     /// Evaluate one Luau script through the launcher.
     Eval(EvalConfig),
     /// Dump the app's captured widget tree and exit.
@@ -212,6 +225,15 @@ impl EdevCommand {
                 let mut options = SmokeCliOptions::from(cli);
                 options.common.command = app_argv;
                 Ok(Self::Smoke(resolve_smoke_config(
+                    options,
+                    loaded.as_ref(),
+                    &current_dir,
+                )?))
+            }
+            CliCommand::Record(cli) => {
+                let mut options = RecordCliOptions::from(cli);
+                options.smoke.common.command = app_argv;
+                Ok(Self::Record(resolve_record_config(
                     options,
                     loaded.as_ref(),
                     &current_dir,
@@ -289,6 +311,13 @@ struct SmokeCliOptions {
 }
 
 #[derive(Debug, Default, Clone)]
+struct RecordCliOptions {
+    outfile: PathBuf,
+    window_title: Option<String>,
+    smoke: SmokeCliOptions,
+}
+
+#[derive(Debug, Default, Clone)]
 struct EvalCliOptions {
     common: CommonCliOptions,
     script: PathBuf,
@@ -340,6 +369,8 @@ enum CliCommand {
     Mcp(McpArgs),
     /// Run the smoketest suite and exit.
     Smoke(SmokeArgs),
+    /// Run the smoketest suite while recording the app window.
+    Record(RecordArgs),
     /// Run one Luau script and print the structured result.
     Eval(EvalArgs),
     /// Print a canonical widget tree dump and exit.
@@ -376,6 +407,25 @@ struct McpArgs {
 struct SmokeArgs {
     #[command(flatten)]
     common: CommonArgs,
+    #[command(flatten)]
+    smoke: SmokeSuiteArgs,
+}
+
+#[derive(Debug, Args, Clone)]
+struct RecordArgs {
+    /// Output `.mov` file to write.
+    outfile: PathBuf,
+    #[command(flatten)]
+    common: CommonArgs,
+    #[command(flatten)]
+    smoke: SmokeSuiteArgs,
+    /// Native window title to record instead of the root viewport title.
+    #[arg(long = "window-title", value_name = "TITLE")]
+    window_title: Option<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+struct SmokeSuiteArgs {
     /// Override the smoke suite directory.
     #[arg(long = "suite")]
     suite_dir: Option<PathBuf>,
@@ -524,31 +574,45 @@ impl From<McpArgs> for McpCliOptions {
 
 impl From<SmokeArgs> for SmokeCliOptions {
     fn from(args: SmokeArgs) -> Self {
-        let mut script_args = ScriptArgs::default();
-        script_args.extend(args.args);
-        let fail_fast = if args.fail_fast {
-            Some(true)
-        } else if args.no_fail_fast {
-            Some(false)
-        } else {
-            None
-        };
+        smoke_cli_options(args.common, args.smoke)
+    }
+}
+
+impl From<RecordArgs> for RecordCliOptions {
+    fn from(args: RecordArgs) -> Self {
         Self {
-            common: args.common.into(),
-            suite_dir: args.suite_dir,
-            scripts: args.scripts,
-            only: args.only,
-            list: args.list,
-            list_json: args.list_json,
-            repeat: args.repeat,
-            until_fail: args.until_fail,
-            fail_fast,
-            suite_timeout_secs: args.suite_timeout_secs,
-            script_timeout_secs: args.script_timeout_secs,
-            args: script_args,
-            bundle: args.bundle,
-            bundle_dir: args.bundle_dir,
+            outfile: args.outfile,
+            window_title: args.window_title,
+            smoke: smoke_cli_options(args.common, args.smoke),
         }
+    }
+}
+
+fn smoke_cli_options(common: CommonArgs, args: SmokeSuiteArgs) -> SmokeCliOptions {
+    let mut script_args = ScriptArgs::default();
+    script_args.extend(args.args);
+    let fail_fast = if args.fail_fast {
+        Some(true)
+    } else if args.no_fail_fast {
+        Some(false)
+    } else {
+        None
+    };
+    SmokeCliOptions {
+        common: common.into(),
+        suite_dir: args.suite_dir,
+        scripts: args.scripts,
+        only: args.only,
+        list: args.list,
+        list_json: args.list_json,
+        repeat: args.repeat,
+        until_fail: args.until_fail,
+        fail_fast,
+        suite_timeout_secs: args.suite_timeout_secs,
+        script_timeout_secs: args.script_timeout_secs,
+        args: script_args,
+        bundle: args.bundle,
+        bundle_dir: args.bundle_dir,
     }
 }
 
@@ -879,6 +943,38 @@ fn resolve_smoke_config(
         suite,
         bundle_dir,
     })
+}
+
+fn resolve_record_config(
+    cli: RecordCliOptions,
+    loaded: Option<&LoadedConfig>,
+    current_dir: &Path,
+) -> Result<RecordConfig, EdevError> {
+    let outfile = absolutize_path(&cli.outfile, current_dir);
+    validate_record_outfile(&outfile)?;
+    if cli.smoke.list {
+        return Err(EdevError::InvalidArgs(
+            "`edev record` cannot be combined with `--list` because recording requires launching an app window"
+                .to_string(),
+        ));
+    }
+    let smoke = resolve_smoke_config(cli.smoke, loaded, current_dir)?;
+    Ok(RecordConfig {
+        outfile,
+        window_title: cli.window_title,
+        smoke,
+    })
+}
+
+fn validate_record_outfile(path: &Path) -> Result<(), EdevError> {
+    let extension = path.extension().and_then(OsStr::to_str).unwrap_or_default();
+    if extension.eq_ignore_ascii_case("mov") {
+        return Ok(());
+    }
+    Err(EdevError::InvalidArgs(format!(
+        "`edev record OUTFILE` requires a .mov output path; got {}",
+        path.display()
+    )))
 }
 
 fn resolve_launch_config(
@@ -1235,6 +1331,77 @@ mod tests {
             config.bundle_dir,
             Some(current_dir.join("tmp/custom-bundles"))
         );
+    }
+
+    #[test]
+    fn parse_record_command_accepts_smoke_options_and_scripts() {
+        let args = os_args(&[
+            "record",
+            "tmp/demo.mov",
+            "smoketest/10_basic.luau",
+            "--window-title",
+            "Egui DevMCP Demo",
+            "--arg",
+            "name=Sky",
+            "--fail-fast",
+            "--bundle-dir",
+            "tmp/record-bundles",
+            "--",
+            "cargo",
+            "run",
+        ]);
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(&args, &current_dir).expect("parse command");
+        let EdevCommand::Record(config) = command else {
+            panic!("expected record command");
+        };
+
+        assert_eq!(config.outfile, current_dir.join("tmp/demo.mov"));
+        assert_eq!(config.window_title.as_deref(), Some("Egui DevMCP Demo"));
+        assert_eq!(
+            config.smoke.suite.scripts,
+            vec![PathBuf::from("smoketest/10_basic.luau")]
+        );
+        assert_eq!(
+            config.smoke.suite.args.get("name"),
+            Some(&ScriptArgValue::String("Sky".to_string()))
+        );
+        assert!(config.smoke.suite.fail_fast);
+        assert_eq!(
+            config.smoke.bundle_dir,
+            Some(current_dir.join("tmp/record-bundles"))
+        );
+        assert_eq!(
+            config.smoke.launch.as_ref().expect("launch").command[0],
+            "cargo"
+        );
+    }
+
+    #[test]
+    fn parse_record_command_rejects_non_mov_outfile() {
+        let args = os_args(&["record", "smoketest/10_basic.luau", "--", "cargo", "run"]);
+        let current_dir = env::current_dir().unwrap();
+        let error = EdevCommand::parse_args_in_dir(&args, &current_dir)
+            .expect_err("record outfile must be mov");
+        let EdevError::InvalidArgs(message) = error else {
+            panic!("expected invalid args");
+        };
+
+        assert!(message.contains("requires a .mov output path"));
+        assert!(message.contains("smoketest/10_basic.luau"));
+    }
+
+    #[test]
+    fn parse_record_command_rejects_list_mode() {
+        let args = os_args(&["record", "tmp/demo.mov", "--list"]);
+        let current_dir = env::current_dir().unwrap();
+        let error = EdevCommand::parse_args_in_dir(&args, &current_dir)
+            .expect_err("record list mode should fail");
+        let EdevError::InvalidArgs(message) = error else {
+            panic!("expected invalid args");
+        };
+
+        assert!(message.contains("cannot be combined with `--list`"));
     }
 
     #[test]

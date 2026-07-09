@@ -46,6 +46,25 @@ cargo xtask smoke --verbose
 Verbose smoke runs keep diagnostics in terminal output. `edev smoke` no longer writes a persistent
 artifact directory by default.
 
+Record a macOS demo movie while running the smoke suite:
+
+```sh
+cargo run -p edev -- record tmp/spacecurve-smoke.mov -- cargo run --features devtools -- --dev-mcp
+cargo run -p edev -- record tmp/spacecurve-smoke.mov --only '*layout*'
+```
+
+`edev record OUTFILE ...` is the native macOS recording boundary. It records one selected app
+window to a `.mov` file with ScreenCaptureKit direct recording, H.264 video at the window's native
+pixel resolution, and no audio. It does not invoke `screencapture`, `ffmpeg`, or another recorder
+program. The terminal or process running `edev` needs macOS Screen Recording permission. The root
+viewport title selects the window by default; pass `--window-title <TITLE>` to disambiguate or
+select another single window.
+
+Recording stays in `edev`. The portable runtime and Luau viewport state do not expose native window
+ids or ScreenCaptureKit details. The MVP does not record secondary viewports, microphone audio, or
+system audio. Long `--until-fail` runs produce one movie for the whole suite and can create large
+files.
+
 Run the separate `edev mcp` transport smoke:
 
 ```sh

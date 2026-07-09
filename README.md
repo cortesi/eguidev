@@ -96,6 +96,13 @@ The same scripting surface powers developer-facing tooling:
   `--bundle-dir PATH` to write failure bundles with tree dumps, diagnostics,
   screenshots, script logs, app stderr, and stdout notes/logs when the transport
   leaves stdout available.
+- `edev record OUTFILE ...` runs the same smoke suite while recording one native
+  app window to a `.mov` file. Recording is macOS-only, uses ScreenCaptureKit
+  directly rather than an external recorder program, requires Screen Recording
+  permission for the terminal or process running `edev`, captures H.264 video at
+  the window's native pixel resolution, and keeps native recording details out
+  of the runtime and Luau APIs. The root viewport title selects the window by
+  default; use `--window-title <TITLE>` when you need another single window.
 - `edev eval` runs a single script and prints the structured result.
 - `edev dump` prints a canonical widget tree dump, optionally after applying
   a fixture with `--param key=value` or restricting output to one viewport.

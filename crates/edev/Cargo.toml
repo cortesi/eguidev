@@ -33,3 +33,11 @@ tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6.2", default-features = false, features = ["alloc"] }
+libproc = "0.14.11"
+objc2 = "0.6.4"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["AVMediaFormat", "AVVideoSettings"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSArray", "NSError", "NSString", "NSURL", "NSProcessInfo"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["SCRecordingOutput", "SCShareableContent", "SCStream", "block2", "libc", "objc2-av-foundation", "objc2-core-foundation", "objc2-core-graphics"] }

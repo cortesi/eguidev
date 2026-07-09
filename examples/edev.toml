@@ -74,3 +74,16 @@ command = [
 # `edev smoke` and `edev eval` both use these defaults. CLI --arg flags are
 # merged on top of these.
 # args = { theme = "dark", count = 5 }
+
+
+# -- Recording smoke runs (edev record) ---------------------------------
+
+# Recording has no config defaults. Use `edev record OUTFILE ...` with the
+# smoke flags above, for example:
+#   edev record tmp/spacecurve-smoke.mov --only '*layout*'
+#
+# Recording is macOS-only, uses native ScreenCaptureKit direct recording rather
+# than an external recorder, requires Screen Recording permission for the
+# terminal or process running edev, and writes one H.264 video-only `.mov` for
+# the whole smoke invocation. The runtime and Luau APIs stay portable and do not
+# expose native recording details.

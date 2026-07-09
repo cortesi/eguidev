@@ -1,7 +1,7 @@
 //! Script-first MCP launcher and proxy for eguidev.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     fmt::Display,
     fs,
@@ -50,9 +50,11 @@ use tokio::{
 
 mod config;
 mod instance_registry;
+mod recording;
 
 use config::{
-    DumpConfig, EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, SmokeConfig,
+    DumpConfig, EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, RecordConfig,
+    SmokeConfig,
 };
 
 /// Tool names forwarded from edev to the app MCP server.
@@ -67,6 +69,8 @@ const APP_LOG_TAIL_TRIM_SLACK: usize = 256 * 1024;
 const STDOUT_TRANSPORT_NOTE: &str = "stdout is consumed by the stdio MCP transport for this launch; no app stdout log is available.\n";
 /// Maximum attempts for restart when the app MCP transport closes mid-handshake.
 const RESTART_MAX_ATTEMPTS: usize = 3;
+/// Fresh-capture attempts used while waiting for the native window to enter ScreenCaptureKit.
+const RECORD_WINDOW_DISCOVERY_ATTEMPTS: usize = 3;
 
 /// Run the eguidev launcher on stdio.
 pub async fn run() -> Result<(), EdevError> {
@@ -81,6 +85,7 @@ pub async fn run() -> Result<(), EdevError> {
         }
         EdevCommand::Mcp(config) => run_mcp(config).await,
         EdevCommand::Smoke(config) => run_smoke(config).await,
+        EdevCommand::Record(config) => run_record(config).await,
         EdevCommand::Eval(config) => run_eval(config).await,
         EdevCommand::Dump(config) => run_dump(config).await,
         EdevCommand::Fixture(config) => run_fixture(config).await,
@@ -118,40 +123,97 @@ async fn run_mcp(config: McpConfig) -> Result<(), EdevError> {
     result
 }
 
+/// Run a smoke suite while recording the selected app window.
+async fn run_record(config: RecordConfig) -> Result<(), EdevError> {
+    recording::ensure_supported()?;
+    prepare_record_outfile(&config.outfile)?;
+
+    let session =
+        start_smoke_session(&config.smoke, "record command could not reach the app").await?;
+    let title = match config.window_title {
+        Some(title) if !title.trim().is_empty() => {
+            wait_for_capture_refresh(&session.client, config.smoke.suite.script_timeout).await?;
+            title
+        }
+        Some(_) | None => {
+            root_viewport_title(&session.client, config.smoke.suite.script_timeout).await?
+        }
+    };
+    let app_process_ids = recording::process_group_members(session.process_group_id())
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let recording_request = recording::RecordingRequest {
+        outfile: config.outfile.clone(),
+        title,
+        app_process_ids,
+    };
+    let recorder = match start_recording_with_retries(
+        &session.client,
+        config.smoke.suite.script_timeout,
+        recording_request,
+    )
+    .await
+    {
+        Ok(recorder) => recorder,
+        Err(error) => {
+            if let Err(shutdown_error) = session.shutdown().await {
+                eprintln!("edev: shutdown failed after recording startup error: {shutdown_error}");
+            }
+            return Err(error);
+        }
+    };
+
+    let suite_config = config.smoke.clone();
+    let suite_client = Arc::clone(&session.client);
+    let suite_bundle_context = session.bundle_context(&suite_config);
+    let suite_task = tokio::spawn(async move {
+        run_smoke_suite(suite_client, &suite_config, suite_bundle_context).await
+    });
+    tokio::pin!(suite_task);
+    let suite_result = tokio::select! {
+        result = &mut suite_task => match result {
+            Ok(result) => result,
+            Err(error) => Err(EdevError::SmokeFailed(format!("smoke task failed: {error}"))),
+        },
+        _ = shutdown_signal() => {
+            suite_task.abort();
+            Err(EdevError::RecordFailed(
+                "recording interrupted by shutdown signal".to_string(),
+            ))
+        },
+    };
+    let recording_result = recorder.stop();
+    let shutdown_result = session.shutdown().await;
+    finish_record_run(
+        suite_result,
+        recording_result,
+        shutdown_result,
+        config.smoke.verbose_output,
+    )
+}
+
 /// Run the checked-in smoke suite once and exit non-zero on any smoke failure.
 async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
     if config.list {
         return print_smoke_list(&config);
     }
 
-    let launch = config.launch.clone().ok_or_else(|| {
-        EdevError::InvalidArgs(
-            "no app command configured; add app.command to .edev.toml or pass one after --"
-                .to_string(),
-        )
-    })?;
-    let instance_registry = InstanceRegistry::register(&launch)?;
-    let mut state = State::new(launch.clone(), instance_registry);
-    let client = start_proxy_target(&mut state, "smoke runner could not reach the app").await?;
-    let bundle_context = config.bundle_dir.as_ref().and_then(|dir| {
-        state.app.as_ref().map(|app| BundleContext {
-            dir: dir.clone(),
-            launch: launch.clone(),
-            stderr_buffer: Arc::clone(&app.stderr_buffer),
-            stdout_buffer: Arc::clone(&app.stdout_buffer),
-            collection_timeout_ms: config
-                .suite
-                .script_timeout
-                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-                .unwrap_or(10_000),
-        })
-    });
+    let session = start_smoke_session(&config, "smoke runner could not reach the app").await?;
+    let bundle_context = session.bundle_context(&config);
+    let result = run_smoke_suite(Arc::clone(&session.client), &config, bundle_context).await;
+    let shutdown_result = session.shutdown().await;
+    finish_smoke_run(result, shutdown_result, config.verbose_output)
+}
 
-    let result = run_smoke_suite(client, &config, bundle_context).await;
-    let shutdown_result = state.shutdown().await;
+/// Finish a smoke command with the historical failure precedence.
+fn finish_smoke_run(
+    result: Result<SuiteResult, EdevError>,
+    shutdown_result: Result<(), EdevError>,
+    verbose_output: bool,
+) -> Result<(), EdevError> {
     match (result, shutdown_result) {
         (Ok(summary), Ok(())) => {
-            for line in summary.render_lines(config.verbose_output) {
+            for line in summary.render_lines(verbose_output) {
                 println!("{line}");
             }
             if summary.success() {
@@ -163,6 +225,218 @@ async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
     }
+}
+
+/// Finish a record command while preserving smoke failures over recording errors.
+fn finish_record_run(
+    suite_result: Result<SuiteResult, EdevError>,
+    recording_result: Result<recording::RecordingSummary, EdevError>,
+    shutdown_result: Result<(), EdevError>,
+    verbose_output: bool,
+) -> Result<(), EdevError> {
+    match suite_result {
+        Err(error) => {
+            if let Err(recording_error) = recording_result {
+                eprintln!("edev: recording finalization failed: {recording_error}");
+            }
+            if let Err(shutdown_error) = shutdown_result {
+                eprintln!("edev: shutdown failed: {shutdown_error}");
+            }
+            Err(error)
+        }
+        Ok(summary) => {
+            for line in summary.render_lines(verbose_output) {
+                println!("{line}");
+            }
+            let recording_summary = match recording_result {
+                Ok(summary) => summary,
+                Err(error) => {
+                    if let Err(shutdown_error) = shutdown_result {
+                        eprintln!("edev: shutdown failed after recording error: {shutdown_error}");
+                    }
+                    return Err(error);
+                }
+            };
+            shutdown_result?;
+            let file_size = fs::metadata(&recording_summary.outfile)
+                .map(|metadata| metadata.len())
+                .unwrap_or(recording_summary.file_size)
+                .max(recording_summary.file_size);
+            eprintln!(
+                "edev: wrote recording {} ({} bytes)",
+                recording_summary.outfile.display(),
+                file_size
+            );
+            if summary.success() {
+                Ok(())
+            } else {
+                Err(EdevError::SmokeFailed("smoke suite failed".to_string()))
+            }
+        }
+    }
+}
+
+/// Active smoke runner session shared by `edev smoke` and `edev record`.
+struct SmokeSession {
+    /// App launch settings used for bundle metadata.
+    launch: LaunchConfig,
+    /// Mutable app lifecycle state.
+    state: State,
+    /// Connected app MCP client.
+    client: Arc<AsyncMutex<tmcp::Client<()>>>,
+}
+
+impl SmokeSession {
+    /// Build failure-bundle context while the app process is still alive.
+    fn bundle_context(&self, config: &SmokeConfig) -> Option<BundleContext> {
+        config.bundle_dir.as_ref().and_then(|dir| {
+            self.state.app.as_ref().map(|app| BundleContext {
+                dir: dir.clone(),
+                launch: self.launch.clone(),
+                stderr_buffer: Arc::clone(&app.stderr_buffer),
+                stdout_buffer: Arc::clone(&app.stdout_buffer),
+                collection_timeout_ms: config
+                    .suite
+                    .script_timeout
+                    .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+                    .unwrap_or(10_000),
+            })
+        })
+    }
+
+    /// Return the app process group id, if the launched process is still alive.
+    fn process_group_id(&self) -> Option<i32> {
+        self.state.app.as_ref().and_then(|app| app.process_group_id)
+    }
+
+    /// Shut down the app and unregister the launcher.
+    async fn shutdown(mut self) -> Result<(), EdevError> {
+        self.state.shutdown().await
+    }
+}
+
+/// Start an app-backed smoke session and connect to the app MCP server.
+async fn start_smoke_session(
+    config: &SmokeConfig,
+    unavailable_message: &str,
+) -> Result<SmokeSession, EdevError> {
+    let launch = required_smoke_launch(config)?;
+    let instance_registry = InstanceRegistry::register(&launch)?;
+    let mut state = State::new(launch.clone(), instance_registry);
+    let client = start_proxy_target(&mut state, unavailable_message).await?;
+    Ok(SmokeSession {
+        launch,
+        state,
+        client,
+    })
+}
+
+/// Return the launch config required for app-backed smoke execution.
+fn required_smoke_launch(config: &SmokeConfig) -> Result<LaunchConfig, EdevError> {
+    config.launch.clone().ok_or_else(|| {
+        EdevError::InvalidArgs(
+            "no app command configured; add app.command to .edev.toml or pass one after --"
+                .to_string(),
+        )
+    })
+}
+
+/// Start native recording, waiting on fresh captures if the window server lags startup.
+async fn start_recording_with_retries(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    timeout: Option<Duration>,
+    request: recording::RecordingRequest,
+) -> Result<recording::NativeRecording, EdevError> {
+    let mut last_error = None;
+    for attempt in 0..RECORD_WINDOW_DISCOVERY_ATTEMPTS {
+        if attempt > 0 {
+            wait_for_capture_refresh(client, timeout).await?;
+        }
+        match recording::start(&request) {
+            Ok(recording) => return Ok(recording),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        EdevError::RecordFailed("recording could not find a native window".to_string())
+    }))
+}
+
+/// Internal script used to synchronize native window probing with a fresh app capture.
+const WAIT_FOR_CAPTURE_SCRIPT: &str = r#"
+wait_for_capture()
+return true
+"#;
+
+/// Wait for the app to publish a fresh capture through the existing script API.
+async fn wait_for_capture_refresh(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    timeout: Option<Duration>,
+) -> Result<(), EdevError> {
+    let timeout_ms = timeout.map(|duration| duration.as_millis() as u64);
+    let outcome = call_script_eval(client, WAIT_FOR_CAPTURE_SCRIPT, timeout_ms)
+        .await
+        .map_err(EdevError::RecordFailed)?;
+    if outcome.success {
+        Ok(())
+    } else {
+        Err(EdevError::RecordFailed(script_eval_error_message(
+            outcome.error.as_ref(),
+            "failed to wait for a fresh capture before recording",
+        )))
+    }
+}
+
+/// Internal script used to get the root viewport title for native window matching.
+const ROOT_VIEWPORT_TITLE_SCRIPT: &str = r#"
+wait_for_capture()
+return root():state().title
+"#;
+
+/// Read the root viewport title through the existing script API.
+async fn root_viewport_title(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    timeout: Option<Duration>,
+) -> Result<String, EdevError> {
+    let timeout_ms = timeout.map(|duration| duration.as_millis() as u64);
+    let outcome = call_script_eval(client, ROOT_VIEWPORT_TITLE_SCRIPT, timeout_ms)
+        .await
+        .map_err(EdevError::RecordFailed)?;
+    if !outcome.success {
+        return Err(EdevError::RecordFailed(script_eval_error_message(
+            outcome.error.as_ref(),
+            "failed to read root viewport title",
+        )));
+    }
+    let title = outcome
+        .value
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .ok_or_else(|| {
+            EdevError::RecordFailed(
+                "root viewport has no title; pass --window-title <TITLE>".to_string(),
+            )
+        })?;
+    Ok(title.to_string())
+}
+
+/// Prepare the recording output path before starting the app.
+fn prepare_record_outfile(path: &Path) -> Result<(), EdevError> {
+    if path.is_dir() {
+        return Err(EdevError::RecordFailed(format!(
+            "recording output is a directory: {}",
+            path.display()
+        )));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// Print discovered smoke scripts in text or JSON list format.
@@ -1482,6 +1756,9 @@ pub enum EdevError {
     /// Smoke suite failure.
     #[error("smoke failed: {0}")]
     SmokeFailed(String),
+    /// Recording failure.
+    #[error("record failed: {0}")]
+    RecordFailed(String),
     /// One-shot script evaluation failure.
     #[error("eval failed: {0}")]
     EvalFailed(String),
