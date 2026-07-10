@@ -6,20 +6,19 @@ use std::{
 };
 
 #[cfg(test)]
-use ruau::ast::parse::{Options, SyntaxFlags, parse_file_with};
+use ruau::ast::parse::{ParseConfig, parse_file_with};
 use ruau::{
     bytecode::{CompileError, CompileErrorKind, CompileOptions},
     decl::DeclSource,
+    module::{NativeBinding, NativeModuleBuilder},
     vm::{
-        Ambient, AsyncHostContext, CallOptions, Deadline, FromLua, FromLuaMulti, IntoLuaMulti,
-        Limits, LoadedModule, MarshaledScriptError, MarshaledValue, ModuleBuilderExt, MultiValue,
-        RuntimeCapabilities, RuntimeError, Scope, ScopedHostFunction, ScopedValue, SourceLocation,
-        StashedClosure, StashedValue, Table, TracebackFrame, Vm, async_host_fn,
+        Ambient, AsyncHostContext, AsyncHostFunction, CallOptions, Deadline, FromLua, FromLuaMulti,
+        IntoLuaMulti, Limits, LoadedModule, MarshaledScriptError, MarshaledValue, MultiValue,
+        RuntimeCapabilities, RuntimeError, Scope, ScopedValue, SourceLocation, StashedClosure,
+        StashedValue, Table, TracebackFrame, Vm, async_host_fn,
         serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
     },
-    vm_api::{
-        HostReturn, ModuleBinding, ModuleBuilder, NativeModule, OwnedValue, RuntimeErrorKind,
-    },
+    vm_api::{HostReturn, ModuleBinding, NativeModule, OwnedValue, RuntimeErrorKind},
 };
 use serde_json::Value;
 use tokio::{
@@ -264,16 +263,18 @@ async fn run_script_eval_local(
     let compile_start = Instant::now();
     let runtime_capabilities = RuntimeCapabilities::default();
 
-    let module = Arc::new(EguidevModule {
+    let module = EguidevModule {
         args: script_args_to_luau_json(&args),
         runtime: Arc::clone(&script_runtime),
         declaration: script_declarations(&app_preludes),
-    });
+    }
+    .build();
     let mut vm = match Vm::builder()
         .ambient(Ambient::production(EGUIDEV_SEED))
         .limits(base_limits())
         .runtime_capabilities(runtime_capabilities.clone())
         .module(module)
+        .trusted_host()
         .build()
     {
         Ok(vm) => vm,
@@ -367,13 +368,11 @@ async fn run_script_eval_local(
 
 #[cfg(test)]
 fn is_supported_by_initial_ruau_slice(script: &str) -> bool {
-    let result = parse_file_with(script, Options::default(), SyntaxFlags::all_luau());
+    let result = parse_file_with(script, &ParseConfig::default());
     if !result.is_ok() {
         return false;
     }
-    let Some(document) = result.into_json_document() else {
-        return false;
-    };
+    let document = result.into_json_document();
     let Ok(value) = serde_json::to_value(document) else {
         return false;
     };
@@ -891,7 +890,7 @@ fn ruau_host_script_error_info(
 ) -> ScriptErrorInfo {
     ScriptErrorInfo {
         error_type: error_type_for_kind(kind).to_string(),
-        message: owned_value_text(value),
+        message: value.display_lua(),
         location: None,
         backtrace: traceback_lines_from_text(traceback),
         code: None,
@@ -915,40 +914,15 @@ fn marshaled_error_text(value: &MarshaledValue) -> String {
     }
 }
 
-fn owned_value_text(value: &OwnedValue) -> String {
-    match value {
-        OwnedValue::Nil => "nil".to_string(),
-        OwnedValue::Boolean(value) => value.to_string(),
-        OwnedValue::Number(value) => value.to_string(),
-        OwnedValue::Integer(value) => value.to_string(),
-        OwnedValue::Vector(value) => format!("{value:?}"),
-        OwnedValue::LightUserdata { .. } => "lightuserdata".to_string(),
-        OwnedValue::Bytes(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        OwnedValue::Pinned(_) => "pinned value".to_string(),
-    }
-}
-
 fn owned_values_shape(values: &[OwnedValue]) -> String {
     if values.is_empty() {
         return "no values".to_string();
     }
     values
         .iter()
-        .map(owned_value_type_name)
+        .map(OwnedValue::type_name)
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn owned_value_type_name(value: &OwnedValue) -> &'static str {
-    match value {
-        OwnedValue::Nil => "nil",
-        OwnedValue::Boolean(_) => "boolean",
-        OwnedValue::Number(_) | OwnedValue::Integer(_) => "number",
-        OwnedValue::Vector(_) => "vector",
-        OwnedValue::LightUserdata { .. } => "lightuserdata",
-        OwnedValue::Bytes(_) => "string",
-        OwnedValue::Pinned(_) => "pinned",
-    }
 }
 
 fn frame_location(frame: &TracebackFrame) -> Option<ScriptLocation> {
@@ -1027,40 +1001,72 @@ struct EguidevModule {
     declaration: String,
 }
 
-impl NativeModule for EguidevModule {
-    fn name(&self) -> &str {
-        "eguidev_initial"
+struct DeclaredModuleBuilder<'a> {
+    builder: &'a mut NativeModuleBuilder,
+}
+
+impl DeclaredModuleBuilder<'_> {
+    fn borrowed_function<F>(&mut self, name: &str, binding: ModuleBinding, function: F)
+    where
+        F: for<'s> Fn(&Scope<'s>, MultiValue<'s>) -> Result<MultiValue<'s>, RuntimeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.builder
+            .borrowed_function(name, declared_binding(binding), function);
     }
 
-    fn declaration(&self) -> DeclSource<'_> {
-        DeclSource::Text(&self.declaration)
+    fn async_function(
+        &mut self,
+        name: &str,
+        binding: ModuleBinding,
+        function: Box<dyn AsyncHostFunction>,
+    ) {
+        self.builder
+            .async_function(name, declared_binding(binding), Arc::from(function));
     }
+}
 
-    fn build(&self, builder: &mut dyn ModuleBuilder) {
-        self.register_core_globals(builder);
-        self.register_viewport_methods(builder);
-        self.register_widget_methods(builder);
-        self.register_capture_methods(builder);
-        self.register_script_utility_globals(builder);
+fn declared_binding(binding: ModuleBinding) -> NativeBinding {
+    match binding {
+        ModuleBinding::Global => NativeBinding::declared_global(),
+        ModuleBinding::GlobalOverride => NativeBinding::declared_global_override(),
+        ModuleBinding::Library(name) => NativeBinding::declared_library(name),
+        ModuleBinding::Hidden(name) => NativeBinding::hidden(name),
     }
 }
 
 impl EguidevModule {
-    fn register_core_globals(&self, builder: &mut dyn ModuleBuilder) {
-        builder.scoped_function(
+    fn build(self) -> Arc<dyn NativeModule> {
+        let mut native = NativeModuleBuilder::from_declaration(
+            "eguidev_initial",
+            DeclSource::Text(&self.declaration),
+        );
+        let mut builder = DeclaredModuleBuilder {
+            builder: &mut native,
+        };
+        self.register_core_globals(&mut builder);
+        self.register_viewport_methods(&mut builder);
+        self.register_widget_methods(&mut builder);
+        self.register_capture_methods(&mut builder);
+        self.register_script_utility_globals(&mut builder);
+        native
+            .build()
+            .expect("Eguidev declaration matches its runtime bindings")
+    }
+
+    fn register_core_globals(&self, builder: &mut DeclaredModuleBuilder<'_>) {
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "assert",
             ModuleBinding::GlobalOverride,
-            Box::new(AssertFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| assert_host(&runtime, scope, args),
         );
-        builder.scoped_function(
-            "configure",
-            ModuleBinding::Global,
-            Box::new(ConfigureFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("configure", ModuleBinding::Global, move |scope, args| {
+            configure_host(&runtime, scope, args)
+        });
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
             "fixture",
@@ -1093,13 +1099,10 @@ impl EguidevModule {
                 }
             }),
         );
-        builder.scoped_function(
-            "fixtures",
-            ModuleBinding::Global,
-            Box::new(FixturesFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("fixtures", ModuleBinding::Global, move |scope, args| {
+            fixtures_host(&runtime, scope, &args)
+        });
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
             "diagnostic",
@@ -1129,34 +1132,22 @@ impl EguidevModule {
                 }
             }),
         );
-        builder.scoped_function(
-            "dump",
-            ModuleBinding::Global,
-            Box::new(DumpFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
-        builder.scoped_function(
-            "dump_text",
-            ModuleBinding::Global,
-            Box::new(DumpTextFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
-        builder.scoped_function(
-            "root",
-            ModuleBinding::Global,
-            Box::new(RootFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
-        builder.scoped_function(
-            "viewport",
-            ModuleBinding::Global,
-            Box::new(ViewportFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("dump", ModuleBinding::Global, move |scope, args| {
+            dump_host(&runtime, scope, args)
+        });
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("dump_text", ModuleBinding::Global, move |scope, args| {
+            dump_text_host(&runtime, scope, args)
+        });
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("root", ModuleBinding::Global, move |scope, args| {
+            root_host(&runtime, scope, &args)
+        });
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("viewport", ModuleBinding::Global, move |scope, args| {
+            viewport_host(&runtime, scope, args)
+        });
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
             "widget",
@@ -1177,13 +1168,10 @@ impl EguidevModule {
                 }
             }),
         );
-        builder.scoped_function(
-            "try_widget",
-            ModuleBinding::Global,
-            Box::new(TryWidgetFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("try_widget", ModuleBinding::Global, move |scope, args| {
+            try_widget_host(&runtime, scope, args)
+        });
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
             "viewports",
@@ -1202,44 +1190,39 @@ impl EguidevModule {
         );
     }
 
-    fn register_capture_methods(&self, builder: &mut dyn ModuleBuilder) {
-        builder.scoped_function(
+    fn register_capture_methods(&self, builder: &mut DeclaredModuleBuilder<'_>) {
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "diff",
             ModuleBinding::hidden("capture_methods"),
-            Box::new(CaptureDiffFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| capture_diff_host(&runtime, scope, args),
         );
     }
 
-    fn register_viewport_methods(&self, builder: &mut dyn ModuleBuilder) {
-        builder.scoped_function(
+    fn register_viewport_methods(&self, builder: &mut DeclaredModuleBuilder<'_>) {
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "state",
             ModuleBinding::hidden("viewport_methods"),
-            Box::new(ViewportStateFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| viewport_state_host(&runtime, scope, args),
         );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "widget_list",
             ModuleBinding::hidden("viewport_methods"),
-            Box::new(ViewportWidgetListFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| viewport_widget_list_host(&runtime, scope, args),
         );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "widget_get",
             ModuleBinding::hidden("viewport_methods"),
-            Box::new(ViewportWidgetGetFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| viewport_widget_get_host(&runtime, scope, args),
         );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "widget_at_point",
             ModuleBinding::hidden("viewport_methods"),
-            Box::new(ViewportWidgetAtPointFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| viewport_widget_at_point_host(&runtime, scope, args),
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
@@ -1734,13 +1717,12 @@ impl EguidevModule {
         );
     }
 
-    fn register_widget_methods(&self, builder: &mut dyn ModuleBuilder) {
-        builder.scoped_function(
+    fn register_widget_methods(&self, builder: &mut DeclaredModuleBuilder<'_>) {
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "viewport",
             ModuleBinding::hidden("widget_methods"),
-            Box::new(WidgetViewportFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| widget_viewport_host(&runtime, scope, args),
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
@@ -2233,30 +2215,27 @@ impl EguidevModule {
                 }
             }),
         );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "state",
             ModuleBinding::hidden("widget_methods"),
-            Box::new(WidgetStateFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| widget_state_host(&runtime, scope, args),
         );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "parent",
             ModuleBinding::hidden("widget_methods"),
-            Box::new(WidgetParentFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| widget_parent_host(&runtime, scope, args),
         );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function(
             "children",
             ModuleBinding::hidden("widget_methods"),
-            Box::new(WidgetChildrenFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
+            move |scope, args| widget_children_host(&runtime, scope, args),
         );
     }
 
-    fn register_script_utility_globals(&self, builder: &mut dyn ModuleBuilder) {
+    fn register_script_utility_globals(&self, builder: &mut DeclaredModuleBuilder<'_>) {
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
             "wait_for_capture",
@@ -2307,26 +2286,19 @@ impl EguidevModule {
                 }
             }),
         );
-        builder.scoped_function(
-            "log",
-            ModuleBinding::Global,
-            Box::new(LogFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
-        builder.scoped_function(
-            "capture",
-            ModuleBinding::Global,
-            Box::new(CaptureFn {
-                runtime: Arc::clone(&self.runtime),
-            }),
-        );
-        builder.scoped_function(
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("log", ModuleBinding::Global, move |scope, args| {
+            log_host(&runtime, scope, args)
+        });
+        let runtime = Arc::clone(&self.runtime);
+        builder.borrowed_function("capture", ModuleBinding::Global, move |scope, args| {
+            capture_host(&runtime, scope, &args)
+        });
+        let args = self.args.clone();
+        builder.borrowed_function(
             "__eguidev_args",
             ModuleBinding::Global,
-            Box::new(ArgsFn {
-                args: self.args.clone(),
-            }),
+            move |scope, values| args_host(&args, scope, &values),
         );
     }
 }
@@ -3187,439 +3159,302 @@ fn parse_raw_action(action: &str) -> Result<bool, String> {
     }
 }
 
-struct ConfigureFn {
-    runtime: Arc<ScriptRuntime>,
+fn configure_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let options = optional_json_arg(scope, "configure", args)?;
+    runtime
+        .configure(pos, options.as_ref().and_then(Value::as_object))
+        .map_err(host_script_error)?;
+    Ok(MultiValue::new())
 }
 
-impl ScopedHostFunction for ConfigureFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let options = optional_json_arg(scope, "configure", args)?;
-        self.runtime
-            .configure(pos, options.as_ref().and_then(Value::as_object))
-            .map_err(host_script_error)?;
-        Ok(MultiValue::new())
-    }
+fn fixtures_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: &MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    no_args("fixtures", args)?;
+    let pos = script_position_from_caller(scope);
+    let value = runtime.fixtures(pos).map_err(host_script_error)?;
+    single_typed_json_return(scope, &value)
 }
 
-struct FixturesFn {
-    runtime: Arc<ScriptRuntime>,
+fn dump_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let options = optional_json_arg(scope, "dump", args)?;
+    let options = match options.as_ref() {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(map)) => Some(map),
+        Some(_) => return Err(RuntimeError::runtime("dump expected an options table")),
+    };
+    let value = runtime.dump(pos, options).map_err(host_script_error)?;
+    single_typed_json_return(scope, &value)
 }
 
-impl ScopedHostFunction for FixturesFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        no_args("fixtures", &args)?;
-        let pos = script_position_from_caller(scope);
-        let value = self.runtime.fixtures(pos).map_err(host_script_error)?;
-        single_typed_json_return(scope, &value)
-    }
+fn dump_text_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let options = optional_json_arg(scope, "dump_text", args)?;
+    let options = match options.as_ref() {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(map)) => Some(map),
+        Some(_) => return Err(RuntimeError::runtime("dump_text expected an options table")),
+    };
+    let value = runtime.dump_text(pos, options).map_err(host_script_error)?;
+    single_typed_json_return(scope, &value)
 }
 
-struct DumpFn {
-    runtime: Arc<ScriptRuntime>,
+fn root_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: &MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    no_args("root", args)?;
+    let pos = script_position_from_caller(scope);
+    let value = runtime.root_viewport(pos).map_err(host_script_error)?;
+    single_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
 }
 
-impl ScopedHostFunction for DumpFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let options = optional_json_arg(scope, "dump", args)?;
-        let options = match options.as_ref() {
-            None | Some(Value::Null) => None,
-            Some(Value::Object(map)) => Some(map),
-            Some(_) => return Err(RuntimeError::runtime("dump expected an options table")),
-        };
-        let value = self.runtime.dump(pos, options).map_err(host_script_error)?;
-        single_typed_json_return(scope, &value)
-    }
+fn viewport_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let options = optional_json_arg(scope, "viewport", args)?;
+    let options = match options.as_ref() {
+        None => None,
+        Some(Value::Object(map)) => Some(map),
+        Some(_) => return Err(RuntimeError::runtime("viewport expected an options table")),
+    };
+    let value = runtime
+        .viewport_lookup(pos, options)
+        .map_err(host_script_error)?;
+    optional_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
 }
 
-struct DumpTextFn {
-    runtime: Arc<ScriptRuntime>,
+fn viewport_widget_list_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let (viewport_id, mut options) = viewport_self_and_options(scope, "widget_list", args)?;
+    inject_viewport_id(viewport_id, &mut options);
+    let value = runtime
+        .widget_list(pos, options.as_ref().and_then(Value::as_object))
+        .map_err(host_script_error)?;
+    single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
 }
 
-impl ScopedHostFunction for DumpTextFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let options = optional_json_arg(scope, "dump_text", args)?;
-        let options = match options.as_ref() {
-            None | Some(Value::Null) => None,
-            Some(Value::Object(map)) => Some(map),
-            Some(_) => return Err(RuntimeError::runtime("dump_text expected an options table")),
-        };
-        let value = self
-            .runtime
-            .dump_text(pos, options)
-            .map_err(host_script_error)?;
-        single_typed_json_return(scope, &value)
-    }
+fn viewport_state_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let viewport_id = viewport_self(scope, "state", args)?;
+    let value = runtime
+        .viewport_state(pos, viewport_id)
+        .map_err(host_script_error)?;
+    single_typed_json_return(scope, &value)
 }
 
-struct RootFn {
-    runtime: Arc<ScriptRuntime>,
+fn viewport_widget_get_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let (viewport_id, widget_id) = viewport_self_and_string(scope, "widget_get", args)?;
+    let mut options = Some(Value::Object(serde_json::Map::new()));
+    inject_viewport_id(viewport_id, &mut options);
+    let target = Value::String(widget_id);
+    let value = runtime
+        .widget_get(pos, &target, options.as_ref().and_then(Value::as_object))
+        .map_err(host_script_error)?;
+    single_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
 }
 
-impl ScopedHostFunction for RootFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        no_args("root", &args)?;
-        let pos = script_position_from_caller(scope);
-        let value = self.runtime.root_viewport(pos).map_err(host_script_error)?;
-        single_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
-    }
+fn viewport_widget_at_point_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let (viewport_id, point, mut options) =
+        viewport_self_point_and_options(scope, "widget_at_point", args)?;
+    inject_viewport_id(viewport_id, &mut options);
+    let value = runtime
+        .widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object))
+        .map_err(host_script_error)?;
+    single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
 }
 
-struct ViewportFn {
-    runtime: Arc<ScriptRuntime>,
+fn widget_viewport_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let receiver = widget_receiver(scope, "viewport", args)?;
+    let viewport_id = receiver.viewport_id.as_deref().unwrap_or("root");
+    let value = runtime
+        .viewport_handle(pos, viewport_id)
+        .map_err(host_script_error)?;
+    single_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
 }
 
-impl ScopedHostFunction for ViewportFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let options = optional_json_arg(scope, "viewport", args)?;
-        let options = match options.as_ref() {
-            None => None,
-            Some(Value::Object(map)) => Some(map),
-            Some(_) => return Err(RuntimeError::runtime("viewport expected an options table")),
-        };
-        let value = self
-            .runtime
-            .viewport_lookup(pos, options)
-            .map_err(host_script_error)?;
-        optional_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
-    }
+fn widget_state_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let target = widget_self(scope, "state", args)?;
+    let value = runtime
+        .widget_state(pos, &target)
+        .map_err(host_script_error)?;
+    single_typed_json_return(scope, &value)
 }
 
-struct ViewportWidgetListFn {
-    runtime: Arc<ScriptRuntime>,
+fn widget_parent_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let target = widget_self(scope, "parent", args)?;
+    let value = runtime
+        .widget_parent(pos, &target)
+        .map_err(host_script_error)?;
+    optional_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
 }
 
-impl ScopedHostFunction for ViewportWidgetListFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let (viewport_id, mut options) = viewport_self_and_options(scope, "widget_list", args)?;
-        inject_viewport_id(viewport_id, &mut options);
-        let value = self
-            .runtime
-            .widget_list(pos, options.as_ref().and_then(Value::as_object))
-            .map_err(host_script_error)?;
-        single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
-    }
+fn widget_children_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let target = widget_self(scope, "children", args)?;
+    let value = runtime
+        .widget_children(pos, &target)
+        .map_err(host_script_error)?;
+    single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
 }
 
-struct ViewportStateFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for ViewportStateFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let viewport_id = viewport_self(scope, "state", args)?;
-        let value = self
-            .runtime
-            .viewport_state(pos, viewport_id)
-            .map_err(host_script_error)?;
-        single_typed_json_return(scope, &value)
-    }
-}
-
-struct ViewportWidgetGetFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for ViewportWidgetGetFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let (viewport_id, widget_id) = viewport_self_and_string(scope, "widget_get", args)?;
-        let mut options = Some(Value::Object(serde_json::Map::new()));
-        inject_viewport_id(viewport_id, &mut options);
-        let target = Value::String(widget_id);
-        let value = self
-            .runtime
-            .widget_get(pos, &target, options.as_ref().and_then(Value::as_object))
-            .map_err(host_script_error)?;
-        single_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
-    }
-}
-
-struct ViewportWidgetAtPointFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for ViewportWidgetAtPointFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let (viewport_id, point, mut options) =
-            viewport_self_point_and_options(scope, "widget_at_point", args)?;
-        inject_viewport_id(viewport_id, &mut options);
-        let value = self
-            .runtime
-            .widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object))
-            .map_err(host_script_error)?;
-        single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
-    }
-}
-
-struct WidgetViewportFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for WidgetViewportFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let receiver = widget_receiver(scope, "viewport", args)?;
-        let viewport_id = receiver.viewport_id.as_deref().unwrap_or("root");
-        let value = self
-            .runtime
-            .viewport_handle(pos, viewport_id)
-            .map_err(host_script_error)?;
-        single_typed_json_table_return_with_metatable(scope, &value, VIEWPORT_METHODS)
-    }
-}
-
-struct WidgetStateFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for WidgetStateFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let target = widget_self(scope, "state", args)?;
-        let value = self
-            .runtime
-            .widget_state(pos, &target)
-            .map_err(host_script_error)?;
-        single_typed_json_return(scope, &value)
-    }
-}
-
-struct WidgetParentFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for WidgetParentFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let target = widget_self(scope, "parent", args)?;
-        let value = self
-            .runtime
-            .widget_parent(pos, &target)
-            .map_err(host_script_error)?;
-        optional_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
-    }
-}
-
-struct WidgetChildrenFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for WidgetChildrenFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let target = widget_self(scope, "children", args)?;
-        let value = self
-            .runtime
-            .widget_children(pos, &target)
-            .map_err(host_script_error)?;
-        single_typed_json_array_return_with_metatable(scope, &value, WIDGET_METHODS)
-    }
-}
-
-struct AssertFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for AssertFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let values = args.into_vec();
-        let pos = script_position_from_caller(scope);
-        let Some(condition) = values.first().copied() else {
-            return Err(host_script_error(
-                self.runtime
-                    .type_error(pos, "assert expected a boolean condition"),
-            ));
-        };
-        let condition = from_scoped_value::<bool>(scope, condition).map_err(|error| {
+fn assert_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let values = args.into_vec();
+    let pos = script_position_from_caller(scope);
+    let Some(condition) = values.first().copied() else {
+        return Err(host_script_error(
+            runtime.type_error(pos, "assert expected a boolean condition"),
+        ));
+    };
+    let condition = from_scoped_value::<bool>(scope, condition).map_err(|error| {
+        host_script_error(
+            runtime.type_error(pos, format!("assert condition must be boolean: {error}")),
+        )
+    })?;
+    let message = values
+        .get(1)
+        .copied()
+        .map(|message| from_scoped_value::<String>(scope, message))
+        .transpose()
+        .map_err(|error| {
             host_script_error(
-                self.runtime
-                    .type_error(pos, format!("assert condition must be boolean: {error}")),
+                runtime.type_error(pos, format!("assert message must be string: {error}")),
             )
         })?;
-        let message = values
-            .get(1)
-            .copied()
-            .map(|message| from_scoped_value::<String>(scope, message))
-            .transpose()
-            .map_err(|error| {
-                host_script_error(
-                    self.runtime
-                        .type_error(pos, format!("assert message must be string: {error}")),
-                )
-            })?;
-        self.runtime
-            .assert_condition(pos, condition, message)
-            .map_err(host_script_error)?;
-        Ok(MultiValue::new())
-    }
+    runtime
+        .assert_condition(pos, condition, message)
+        .map_err(host_script_error)?;
+    Ok(MultiValue::new())
 }
 
-struct LogFn {
-    runtime: Arc<ScriptRuntime>,
+fn try_widget_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let (id, options) = string_and_options_arg(scope, "try_widget", args)?;
+    let value = runtime
+        .try_widget_find(pos, id, options.as_ref().and_then(Value::as_object))
+        .map_err(host_script_error)?;
+    optional_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
 }
 
-struct TryWidgetFn {
-    runtime: Arc<ScriptRuntime>,
+fn capture_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: &MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    no_args("capture", args)?;
+    let pos = script_position_from_caller(scope);
+    let value = runtime.capture(pos).map_err(host_script_error)?;
+    single_typed_json_table_return_with_metatable(scope, &value, CAPTURE_METHODS)
 }
 
-impl ScopedHostFunction for TryWidgetFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let (id, options) = string_and_options_arg(scope, "try_widget", args)?;
-        let value = self
-            .runtime
-            .try_widget_find(pos, id, options.as_ref().and_then(Value::as_object))
-            .map_err(host_script_error)?;
-        optional_typed_json_table_return_with_metatable(scope, &value, WIDGET_METHODS)
-    }
+fn capture_diff_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let pos = script_position_from_caller(scope);
+    let (capture, options) = capture_self_and_options(scope, "diff", args)?;
+    let value = runtime
+        .capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object))
+        .map_err(host_script_error)?;
+    single_typed_json_return(scope, &value)
 }
 
-struct CaptureFn {
-    runtime: Arc<ScriptRuntime>,
+fn log_host<'s>(
+    runtime: &ScriptRuntime,
+    scope: &Scope<'s>,
+    args: MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let value = one_arg("log", args)?;
+    let rendered = match scoped_value_to_json(scope, value) {
+        Ok(Value::String(value)) => value,
+        Ok(value) if !value.is_null() => value.to_string(),
+        Ok(_) => "null".to_string(),
+        Err(error) => return Err(error),
+    };
+    runtime.log(rendered);
+    Ok(MultiValue::new())
 }
 
-impl ScopedHostFunction for CaptureFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        no_args("capture", &args)?;
-        let pos = script_position_from_caller(scope);
-        let value = self.runtime.capture(pos).map_err(host_script_error)?;
-        single_typed_json_table_return_with_metatable(scope, &value, CAPTURE_METHODS)
-    }
-}
-
-struct CaptureDiffFn {
-    runtime: Arc<ScriptRuntime>,
-}
-
-impl ScopedHostFunction for CaptureDiffFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let pos = script_position_from_caller(scope);
-        let (capture, options) = capture_self_and_options(scope, "diff", args)?;
-        let value = self
-            .runtime
-            .capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object))
-            .map_err(host_script_error)?;
-        single_typed_json_return(scope, &value)
-    }
-}
-
-impl ScopedHostFunction for LogFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        let value = one_arg("log", args)?;
-        let rendered = match scoped_value_to_json(scope, value) {
-            Ok(Value::String(value)) => value,
-            Ok(value) if !value.is_null() => value.to_string(),
-            Ok(_) => "null".to_string(),
-            Err(error) => return Err(error),
-        };
-        self.runtime.log(rendered);
-        Ok(MultiValue::new())
-    }
-}
-
-struct ArgsFn {
-    args: Value,
-}
-
-impl ScopedHostFunction for ArgsFn {
-    fn call<'s>(
-        &self,
-        scope: &Scope<'s>,
-        args: MultiValue<'s>,
-    ) -> Result<MultiValue<'s>, RuntimeError> {
-        no_args("__eguidev_args", &args)?;
-        let value = lossless_json_to_luau_scoped_value(scope, &self.args)?;
-        let ScopedValue::Table(table) = value else {
-            return Err(RuntimeError::runtime(
-                "script args did not convert to a table",
-            ));
-        };
-        table.freeze_deep(scope)?;
-        Ok(MultiValue::from_values(vec![ScopedValue::Table(table)]))
-    }
+fn args_host<'s>(
+    script_args: &Value,
+    scope: &Scope<'s>,
+    args: &MultiValue<'s>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    no_args("__eguidev_args", args)?;
+    let value = lossless_json_to_luau_scoped_value(scope, script_args)?;
+    let ScopedValue::Table(table) = value else {
+        return Err(RuntimeError::runtime(
+            "script args did not convert to a table",
+        ));
+    };
+    table.freeze_deep(scope)?;
+    Ok(MultiValue::from_values(vec![ScopedValue::Table(table)]))
 }
 
 fn no_args(name: &str, args: &MultiValue<'_>) -> Result<(), RuntimeError> {
