@@ -5,16 +5,16 @@ description: MCP workflow for driving instrumented egui apps with Luau scripts.
 
 # eguidev
 
-eguidev exposes an instrumented egui app through MCP. Agents drive the app with
-complete Luau scripts via `script_eval`; the MCP lifecycle tools manage the app
-process.
+eguidev exposes an instrumented egui app through MCP and the `edev` CLI. Agents
+drive the app with complete Luau scripts; the MCP lifecycle tools manage a
+persistent app process, while CLI evaluations launch an app for one script.
 
-This skill assumes the eguidev MCP connection already works. It is workflow
-guidance, not an API reference.
+This skill is workflow guidance, not an API reference.
 
-**First action:** call `script_api` before writing Luau. The returned
-`eguidev.d.luau` is the canonical reference for scripting types, functions, and
-conventions.
+**First action:** call `script_api` before writing Luau. If the app's MCP tools
+are unavailable but the repository has an `.edev.toml`, run `edev docs`
+instead. Both return the canonical `eguidev.d.luau` reference for scripting
+types, functions, and conventions.
 
 
 ## MCP Surface
@@ -25,6 +25,11 @@ The MCP server exposes six tools:
 - `script_api` for the canonical Luau API
 - `script_eval` for all app inspection, interaction, waits, screenshots, and
   verification
+
+Do not edit global MCP configuration merely to unblock one repository task. If
+the configured tools are unavailable, use `edev docs`, place self-contained
+probes under the app's `tmp/` directory, run them with `edev eval <path>`, and
+use `edev smoke` for persistent scenarios.
 
 ## Instrumentation
 
@@ -81,6 +86,10 @@ end.
 By default, `click()` waits until input has drained and a clean post-action
 capture is available. Still use `wait_for_widget` or `wait_for` predicates for
 state that can update asynchronously or through app work queued after the click.
+For lists that filter, reorder, scroll, or virtualize rows, prefer a
+viewport-scoped `wait_for_widget` predicate on the expected post-action row.
+This keeps the assertion tied to the viewport and tolerates the old row handle
+disappearing while the new captured row set is installed.
 
 
 ## Lifecycle
