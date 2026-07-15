@@ -22,6 +22,12 @@ command = [
   "--dev-mcp",
 ]
 
+# macOS presentation while an automation client is connected. Background keeps
+# covered windows renderable without showing the app in the Dock or taking focus;
+# foreground preserves the app's ordinary presentation for manual sessions.
+# Attachment without a connected client does not change presentation.
+# presentation = "background"
+
 # Working directory for the app process. Relative paths resolve from the
 # directory containing this file.
 # cwd = "."

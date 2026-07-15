@@ -108,7 +108,7 @@ fn build_image_blocks(runtime: &ScriptRuntime, collector: &ImageReferenceCollect
 
 #[cfg(test)]
 mod tests {
-    use ruau::vm::{MarshaledPair, MarshaledValue, serde::marshaled_to_json};
+    use ruau::vm::{MarshaledPair, ValueSnapshot, serde::marshaled_to_json};
     use serde_json::{Value, json};
 
     use super::{script_args_to_json, script_return_value_from_json_values};
@@ -136,7 +136,7 @@ mod tests {
         );
     }
 
-    fn script_return_value_from_marshaled(values: &[MarshaledValue]) -> Option<Value> {
+    fn script_return_value_from_marshaled(values: &[ValueSnapshot]) -> Option<Value> {
         let json_values = values
             .iter()
             .map(marshaled_to_json)
@@ -149,13 +149,13 @@ mod tests {
     fn ruau_owned_values_keep_script_return_shape() {
         assert_eq!(script_return_value_from_marshaled(&[]), None);
         assert_eq!(
-            script_return_value_from_marshaled(&[MarshaledValue::Integer(7)]),
+            script_return_value_from_marshaled(&[ValueSnapshot::Integer(7)]),
             Some(json!(7))
         );
         assert_eq!(
             script_return_value_from_marshaled(&[
-                MarshaledValue::Integer(7),
-                MarshaledValue::String(b"ok".to_vec()),
+                ValueSnapshot::Integer(7),
+                ValueSnapshot::String(b"ok".to_vec()),
             ]),
             Some(json!([7, "ok"]))
         );
@@ -163,19 +163,19 @@ mod tests {
 
     #[test]
     fn ruau_owned_values_preserve_number_and_table_shape() {
-        let number = script_return_value_from_marshaled(&[MarshaledValue::Number(1.0)])
+        let number = script_return_value_from_marshaled(&[ValueSnapshot::Number(1.0)])
             .expect("number value");
         assert_eq!(number.as_f64(), Some(1.0));
         assert_eq!(number.as_i64(), None);
 
-        let array = MarshaledValue::Table(vec![
+        let array = ValueSnapshot::Table(vec![
             MarshaledPair {
-                key: MarshaledValue::Number(1.0),
-                value: MarshaledValue::Integer(10),
+                key: ValueSnapshot::Number(1.0),
+                value: ValueSnapshot::Integer(10),
             },
             MarshaledPair {
-                key: MarshaledValue::Integer(2),
-                value: MarshaledValue::String(b"two".to_vec()),
+                key: ValueSnapshot::Integer(2),
+                value: ValueSnapshot::String(b"two".to_vec()),
             },
         ]);
         assert_eq!(
@@ -183,7 +183,7 @@ mod tests {
             Some(json!([10, "two"]))
         );
         assert_eq!(
-            script_return_value_from_marshaled(&[MarshaledValue::Table(Vec::new())]),
+            script_return_value_from_marshaled(&[ValueSnapshot::Table(Vec::new())]),
             Some(json!({}))
         );
     }

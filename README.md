@@ -68,10 +68,20 @@ full launch command:
 ```toml
 [app]
 command = ["cargo", "run", "-p", "myapp", "--features", "devtools"]
+# presentation = "background" # default; use "foreground" for manual sessions
 ```
 
 See [`examples/edev.toml`](./examples/edev.toml) for a commented reference of
 all options.
+
+On macOS, presentation belongs to the connected Edev session. The default
+`background` mode keeps covered windows rendering without adding a Dock item or
+stealing focus; `foreground` preserves ordinary foreground presentation for
+manual automation. Attaching `eguidev_runtime` alone does not change activation
+policy or occlusion behavior, so the same executable remains suitable for a
+normal direct launch. Edev also owns managed-process cleanup, including when the
+launcher exits unexpectedly; applications should not create per-run `.app`
+bundles or identities for automation.
 
 **4. Connect your agent.** Register `edev mcp` as an MCP server -- for
 example, with Claude Code:

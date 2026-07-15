@@ -136,6 +136,7 @@ mod fixtures;
 mod idle;
 mod instrument;
 mod overlay;
+mod presentation;
 mod registry;
 mod script_prelude;
 mod tree;
@@ -194,6 +195,12 @@ pub mod internal {
         pub use crate::overlay::{
             OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry,
             OverlayManager, parse_color, rect_intersection, rect_size,
+        };
+    }
+
+    pub mod presentation {
+        pub use crate::presentation::{
+            EXPERIMENTAL_PRESENTATION_CAPABILITY, Presentation, PresentationStatus,
         };
     }
 

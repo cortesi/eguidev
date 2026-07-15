@@ -96,6 +96,9 @@ disappearing while the new captured row set is installed.
 
 - **NEVER** use `pkill`, `kill`, ctrl-c, or shell commands to manage the app.
 - Use `start` to ensure the app is running, `restart` for a fresh process.
+- Let Edev own every process it launches. Normal stop and launcher failure clean
+  up the complete managed process group; no manual process cleanup should be
+  required between runs.
 - Call `fixture()` at the start of scripts for a known in-app baseline.
 - `fixture()` waits for declared readiness anchors on fresh captures; still
   wait/assert the specific widget or viewport state your script depends on.
@@ -137,19 +140,31 @@ is clearer than an exact fixed-color check.
 
 ## Background Automation
 
-On macOS automation runs, `eguidev_runtime::attach` keeps covered windows
-rendering by making AppKit report the window visible to winit/eframe. This is a
-local runtime shim, not an upstream eframe dependency.
+On macOS, a connected Edev session owns temporary automation presentation.
+Background is the default and keeps covered windows rendering by making AppKit
+report the window visible to winit/eframe. It also keeps the app out of the Dock
+and avoids taking focus. This is a local runtime shim, not an upstream eframe
+dependency.
 
 - `ViewportState.occluded` is the egui/winit value after that shim.
 - `ViewportState.os_occluded` is the real platform occlusion state when observed.
 - `ViewportState.os_minimized` is the real platform minimized state when observed.
-- `EGUIDEV_FOREGROUND` disables the background automation tweaks for manual
-  foreground debugging.
+- Set `[app].presentation = "foreground"` in `.edev.toml`, or use the command's
+  `--presentation foreground` override, for manual foreground automation.
+- `status` reports the requested presentation and, when available, the observed
+  activation policy, executable path, bundle root, and bundle identifier.
+- Runtime attachment without a connected client leaves ordinary app presentation
+  unchanged, and disconnect restores the policy that preceded the session.
 
 Use `os_occluded` for strict occlusion assertions when it is present. Keep
 default smoke and script flows focused on whether frames, widgets, screenshots,
 and pixel samples continue to work while the app is covered.
+
+Launch the app's ordinary executable. Do not create per-run `.app` wrappers or
+bundle identifiers for automation, and do not add app-owned per-frame activation
+assertions that fight an active background session. Edev owns managed-process
+lifecycle and should leave no Dock, LaunchServices, or process residue after a
+run.
 
 
 ## Smoketest Scripts

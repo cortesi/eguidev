@@ -9,19 +9,24 @@ use std::{
     io::{self as std_io, IsTerminal},
     path::{Path, PathBuf},
     pin::Pin,
-    process::Stdio,
+    process::ExitStatus,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use eguidev::{FixtureParam, FixtureSpec, ParamKind, WidgetValue};
+#[cfg(target_os = "macos")]
+use eguidev::internal::presentation::PresentationStatus;
+use eguidev::{
+    FixtureParam, FixtureSpec, ParamKind, WidgetValue,
+    internal::presentation::{EXPERIMENTAL_PRESENTATION_CAPABILITY, Presentation},
+};
 use eguidev_runtime::{
     ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     ScriptEvalRequest, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, discover_suite_scripts, run_suite_with},
 };
-use instance_registry::InstanceRegistry;
+use instance_registry::{AppLaunch, AppRecord, InstanceRegistry, read_app_record_for_path};
 use serde::{
     Deserialize, Serialize,
     de::{DeserializeOwned, Error as SerdeDeError},
@@ -41,7 +46,7 @@ use tmcp::{
 };
 use tokio::{
     io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
+    process::Child,
     runtime::Handle,
     sync::Mutex as AsyncMutex,
     task::{JoinHandle, block_in_place},
@@ -50,6 +55,9 @@ use tokio::{
 
 mod config;
 mod instance_registry;
+#[cfg(test)]
+mod observations;
+mod process_lifecycle;
 mod recording;
 
 use config::{
@@ -74,6 +82,12 @@ const RECORD_WINDOW_DISCOVERY_ATTEMPTS: usize = 3;
 
 /// Run the eguidev launcher on stdio.
 pub async fn run() -> Result<(), EdevError> {
+    let args = env::args_os().collect::<Vec<_>>();
+    if process_lifecycle::is_supervisor_invocation(&args) {
+        return process_lifecycle::run_hidden_supervisor(&args)
+            .await
+            .map_err(EdevError::AppStart);
+    }
     match EdevCommand::from_env()? {
         EdevCommand::Help(help) => {
             print!("{help}");
@@ -1896,17 +1910,14 @@ impl State {
     async fn stop_app(&mut self) -> Result<StopStatus, EdevError> {
         if let Some(app) = self.app.take() {
             app.shutdown().await;
-            self.instance_registry.clear_app()?;
             self.status = AppStatus::NotRunning;
             return Ok(StopStatus::Stopped);
         }
         if matches!(self.status, AppStatus::StartupFailed { .. }) {
             self.status = AppStatus::NotRunning;
-            self.instance_registry.clear_app()?;
             return Ok(StopStatus::Stopped);
         }
         self.status = AppStatus::NotRunning;
-        self.instance_registry.clear_app()?;
         Ok(StopStatus::AlreadyStopped)
     }
 
@@ -2027,29 +2038,17 @@ impl State {
         F: for<'a> FnOnce(&'a LaunchConfig, LogState) -> SpawnFuture<'a>,
     {
         self.status = AppStatus::Starting;
-        if replace_existing {
-            if let Some(app) = self.app.take() {
-                app.shutdown().await;
-            }
-            self.instance_registry.clear_app()?;
+        if replace_existing && let Some(app) = self.app.take() {
+            app.shutdown().await;
         }
         self.log_edev(format!("{} requested", action.as_str()));
         match spawn(&self.config, self.log_state.clone()).await {
             Ok(app) => {
-                if let Err(error) = self
-                    .instance_registry
-                    .set_app_process_group_id(app.process_group_id)
-                {
-                    app.shutdown().await;
-                    self.status = AppStatus::NotRunning;
-                    return Err(error);
-                }
                 if let Err(output) = probe_script_eval_ready(&app.client).await {
                     app.shutdown().await;
                     self.status = AppStatus::StartupFailed {
                         output: output.clone(),
                     };
-                    self.instance_registry.clear_app()?;
                     self.log_edev(format!("{} failed during app startup", action.as_str()));
                     return Ok(LifecycleStartStatus::StartupFailed(output));
                 }
@@ -2087,11 +2086,23 @@ impl State {
 
     /// Build a structured status snapshot of the managed app lifecycle.
     fn status_report(&self) -> StatusReport {
-        let (app_present, process_group_id) = self
+        let (app_present, process_group_id, supervisor_pid, launch_id, registry_entry_path) = self
             .app
             .as_ref()
-            .map(|app| (true, app.process_group_id))
-            .unwrap_or((false, None));
+            .map(|app| {
+                (
+                    true,
+                    app.process_group_id,
+                    app.supervisor_pid,
+                    app.app_record
+                        .as_ref()
+                        .map(|record| record.launch_id.clone()),
+                    app.app_launch
+                        .as_ref()
+                        .map(|launch| launch.entry_path.clone()),
+                )
+            })
+            .unwrap_or((false, None, None, None, None));
         let startup_output = match &self.status {
             AppStatus::StartupFailed { output } => Some(output.clone()),
             _ => None,
@@ -2100,11 +2111,16 @@ impl State {
             state: self.status.as_str(),
             app_present,
             process_group_id,
+            supervisor_pid,
+            launch_id,
+            registry_entry_path,
             startup_output,
             mcp_client_attached: self.mcp_client_attached,
             idle_shutdown: self.idle_shutdown_report(),
             app_health: None,
             app_health_error: None,
+            #[cfg(target_os = "macos")]
+            presentation: PresentationStatus::requested(self.config.presentation),
         }
     }
 
@@ -2139,6 +2155,16 @@ struct AppProcess {
     child: Option<Child>,
     /// Process group id for the running app process tree.
     process_group_id: Option<i32>,
+    /// PID of the macOS supervisor, when present.
+    supervisor_pid: Option<u32>,
+    /// Task that owns and reaps the supervisor child.
+    supervisor_exit_task: Option<JoinHandle<std_io::Result<ExitStatus>>>,
+    /// Exact launch identity passed to the supervisor.
+    app_launch: Option<AppLaunch>,
+    /// Exact metadata written by the supervisor.
+    app_record: Option<AppRecord>,
+    /// Per-launch ownership writer held only by this outer AppProcess.
+    ownership_writer: Option<process_lifecycle::OwnershipWriter>,
     /// Connected MCP client speaking to the app over stdio.
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
     /// Background task streaming stderr.
@@ -2154,7 +2180,11 @@ struct AppProcess {
 impl AppProcess {
     /// Trigger immediate app termination without waiting for child process exit.
     fn start_termination(&mut self) {
-        terminate_process_group(self.process_group_id.take(), &self.log_state);
+        let process_group_id = self.process_group_id.take();
+        process_lifecycle::terminate_process_group(process_group_id, &self.log_state);
+        self.ownership_writer.take();
+        let supervisor_pid = self.supervisor_pid.take();
+        process_lifecycle::terminate_supervisor(supervisor_pid, &self.log_state);
         if let Some(child) = self.child.as_mut() {
             let _start_kill_result = child.start_kill();
         }
@@ -2165,9 +2195,18 @@ impl AppProcess {
 
     /// Terminate the app process and tear down stderr streaming.
     async fn shutdown(mut self) {
-        self.start_termination();
+        let process_group_id = self.process_group_id.take();
+        let _supervisor_pid = self.supervisor_pid.take();
+        process_lifecycle::close_ownership_writer(&mut self.ownership_writer, &self.log_state);
+        if let Some(task) = self.supervisor_exit_task.take() {
+            let _wait_result = task.await;
+        }
         if let Some(mut child) = self.child.take() {
+            process_lifecycle::terminate_process_group(process_group_id, &self.log_state);
             let _wait_result = child.wait().await;
+        }
+        if let Some(task) = self.stderr_task.take() {
+            let _wait_result = task.await;
         }
         let _drain_result = drain_stderr(&self.stderr_buffer).await;
     }
@@ -2268,37 +2307,49 @@ impl LifecycleAction {
     }
 }
 
+/// Encode the launcher's private presentation intent for the app handshake.
+fn client_capabilities(presentation: Presentation) -> ClientCapabilities {
+    ClientCapabilities::default().with_experimental_capability(
+        EXPERIMENTAL_PRESENTATION_CAPABILITY,
+        serde_json::Value::String(presentation.as_str().to_string()),
+    )
+}
+
 /// Spawn the app via `cargo run` and connect an MCP client over stdio.
 async fn spawn_app(
     config: &LaunchConfig,
     log_state: LogState,
 ) -> Result<AppProcess, AppStartError> {
-    log_state.record_line("edev: spawning app");
-    let mut command = config.app_command();
-    command.kill_on_drop(true);
-    configure_child_process(&mut command);
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        log_state.record_line(&format!("edev: spawn failed: {error}"));
-        AppStartError::Other(format!("Failed to spawn cargo run: {error}"))
-    })?;
-    log_state.record_line("edev: app process spawned");
-    let process_group_id = process_group_id(&child);
-    let stdout = child.stdout.take().ok_or_else(|| {
-        terminate_process_group(process_group_id, &log_state);
-        AppStartError::Other("Failed to capture app stdout".to_string())
-    })?;
-    let stdin = child.stdin.take().ok_or_else(|| {
-        terminate_process_group(process_group_id, &log_state);
-        AppStartError::Other("Failed to capture app stdin".to_string())
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        terminate_process_group(process_group_id, &log_state);
-        AppStartError::Other("Failed to capture app stderr".to_string())
-    })?;
+    let mut process = process_lifecycle::spawn(config, log_state.clone())
+        .await
+        .map_err(AppStartError::Other)?;
+    let stdout = match process.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            process_lifecycle::shutdown_spawned(process, &log_state).await;
+            return Err(AppStartError::Other(
+                "failed to capture process stdout".to_string(),
+            ));
+        }
+    };
+    let stdin = match process.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            process_lifecycle::shutdown_spawned(process, &log_state).await;
+            return Err(AppStartError::Other(
+                "failed to capture process stdin".to_string(),
+            ));
+        }
+    };
+    let stderr = match process.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            process_lifecycle::shutdown_spawned(process, &log_state).await;
+            return Err(AppStartError::Other(
+                "failed to capture process stderr".to_string(),
+            ));
+        }
+    };
 
     let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
     let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
@@ -2323,34 +2374,84 @@ async fn spawn_app(
     });
 
     let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
+        .with_capabilities(client_capabilities(config.presentation))
         .with_request_timeout(APP_REQUEST_TIMEOUT);
     if let Err(error) = client.connect_stream_raw(stdout, stdin).await {
+        drop(client);
         return Err(fail_startup_handshake(
-            &mut child,
-            process_group_id,
+            process,
+            stderr_task,
             &stderr_buffer,
-            &log_state,
             "connect",
             &error,
+            &log_state,
         )
         .await);
     }
     if let Err(error) = client.init().await {
+        drop(client);
         return Err(fail_startup_handshake(
-            &mut child,
-            process_group_id,
+            process,
+            stderr_task,
             &stderr_buffer,
-            &log_state,
             "init",
             &error,
+            &log_state,
         )
         .await);
     }
     log_state.record_line("edev: app MCP connected");
 
+    let app_record = match process.app_launch.as_ref() {
+        Some(launch) => match read_app_record_for_path(&launch.entry_path) {
+            Ok(Some(record)) => Some(record),
+            Ok(None) => {
+                drop(client);
+                return Err(fail_startup_handshake(
+                    process,
+                    stderr_task,
+                    &stderr_buffer,
+                    "record",
+                    &McpError::InternalError("supervisor app record is missing".to_string()),
+                    &log_state,
+                )
+                .await);
+            }
+            Err(error) => {
+                drop(client);
+                return Err(fail_startup_handshake(
+                    process,
+                    stderr_task,
+                    &stderr_buffer,
+                    "record",
+                    &McpError::InternalError(format!(
+                        "failed to read supervisor app record: {error}"
+                    )),
+                    &log_state,
+                )
+                .await);
+            }
+        },
+        None => None,
+    };
+    let process_group_id = app_record
+        .as_ref()
+        .map(|record| record.app_process_group_id)
+        .or(process.process_group_id);
+    let child = process.child.take();
+    let supervisor_pid = process.supervisor_pid;
+    let supervisor_exit_task = process.supervisor_exit_task.take();
+    let ownership_writer = process.ownership_writer.take();
+    let app_launch = process.app_launch.take();
+
     Ok(AppProcess {
-        child: Some(child),
+        child,
         process_group_id,
+        supervisor_pid,
+        supervisor_exit_task,
+        app_launch,
+        app_record,
+        ownership_writer,
         client: Arc::new(AsyncMutex::new(client)),
         stderr_task: Some(stderr_task),
         stderr_buffer,
@@ -2361,17 +2462,17 @@ async fn spawn_app(
 
 /// Finalize app startup after an MCP handshake failure.
 async fn fail_startup_handshake(
-    child: &mut Child,
-    process_group_id: Option<i32>,
+    process: process_lifecycle::SpawnedProcess,
+    stderr_task: JoinHandle<()>,
     stderr_buffer: &Arc<Mutex<Vec<u8>>>,
-    log_state: &LogState,
     stage: &str,
     error: &McpError,
+    log_state: &LogState,
 ) -> AppStartError {
     log_state.record_line(&format!("edev: app {stage} failed: {error}"));
-    terminate_process_group(process_group_id, log_state);
+    process_lifecycle::shutdown_spawned(process, log_state).await;
+    let _stderr_result = stderr_task.await;
     let output = drain_stderr(stderr_buffer).await;
-    let _wait_result = child.wait().await;
     AppStartError::StartupFailed(format_startup_output(error, &output))
 }
 
@@ -2483,62 +2584,6 @@ fn append_tail_capped(buffer: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
     if data.len() > APP_LOG_TAIL_LIMIT + APP_LOG_TAIL_TRIM_SLACK {
         let drop_len = data.len() - APP_LOG_TAIL_LIMIT;
         data.drain(..drop_len);
-    }
-}
-
-/// Fetch the process group id for a spawned child process.
-fn process_group_id(child: &Child) -> Option<i32> {
-    child.id().and_then(|id| i32::try_from(id).ok())
-}
-
-/// Configure child process behavior for cleanup and termination.
-fn configure_child_process(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-    }
-    #[cfg(all(unix, target_os = "linux"))]
-    {
-        let parent_pid = libc::pid_t::try_from(std::process::id()).ok();
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                    return Err(std_io::Error::last_os_error());
-                }
-                if let Some(parent_pid) = parent_pid
-                    && libc::getppid() != parent_pid
-                {
-                    return Err(std_io::Error::other("parent process changed before exec"));
-                }
-                Ok(())
-            });
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = command;
-    }
-}
-
-/// Terminate the process group for a running app process tree.
-fn terminate_process_group(process_group_id: Option<i32>, log_state: &LogState) {
-    #[cfg(unix)]
-    {
-        if let Some(pgid) = process_group_id {
-            let result = unsafe { libc::killpg(pgid, libc::SIGKILL) };
-            if result != 0 {
-                let error = std_io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    log_state.record_line(&format!(
-                        "edev: failed to kill process group {pgid}: {error}"
-                    ));
-                }
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (process_group_id, log_state);
     }
 }
 
@@ -2923,11 +2968,16 @@ struct StatusReport {
     state: &'static str,
     app_present: bool,
     process_group_id: Option<i32>,
+    supervisor_pid: Option<u32>,
+    launch_id: Option<String>,
+    registry_entry_path: Option<PathBuf>,
     startup_output: Option<String>,
     mcp_client_attached: bool,
     idle_shutdown: IdleShutdownReport,
     app_health: Option<serde_json::Value>,
     app_health_error: Option<String>,
+    #[cfg(target_os = "macos")]
+    presentation: PresentationStatus,
 }
 
 #[allow(clippy::missing_docs_in_private_items)]
@@ -2942,7 +2992,19 @@ impl StatusReport {
     /// Attach app health data or a health proxy error to the status report.
     fn with_app_health(mut self, health: Result<serde_json::Value, String>) -> Self {
         match health {
-            Ok(health) => self.app_health = Some(health),
+            Ok(health) => {
+                #[cfg(target_os = "macos")]
+                if let Some(value) = health.get("macos_presentation").cloned() {
+                    match serde_json::from_value(value) {
+                        Ok(presentation) => self.presentation = presentation,
+                        Err(error) => {
+                            self.app_health_error =
+                                Some(format!("malformed macos_presentation diagnostic: {error}"));
+                        }
+                    }
+                }
+                self.app_health = Some(health);
+            }
             Err(error) => self.app_health_error = Some(error),
         }
         self
@@ -3141,6 +3203,7 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
             "--dev-mcp".to_string(),
         ],
         env: Default::default(),
+        presentation: Presentation::Background,
         verbose: false,
     }
 }
@@ -3995,6 +4058,11 @@ mod tests {
         let app = AppProcess {
             child: None,
             process_group_id: None,
+            supervisor_pid: None,
+            supervisor_exit_task: None,
+            app_launch: None,
+            app_record: None,
+            ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4026,6 +4094,11 @@ mod tests {
         let app = AppProcess {
             child: None,
             process_group_id: None,
+            supervisor_pid: None,
+            supervisor_exit_task: None,
+            app_launch: None,
+            app_record: None,
+            ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4057,6 +4130,11 @@ mod tests {
         let app = AppProcess {
             child: None,
             process_group_id: None,
+            supervisor_pid: None,
+            supervisor_exit_task: None,
+            app_launch: None,
+            app_record: None,
+            ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4092,6 +4170,11 @@ mod tests {
         let app = AppProcess {
             child: None,
             process_group_id: None,
+            supervisor_pid: None,
+            supervisor_exit_task: None,
+            app_launch: None,
+            app_record: None,
+            ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4127,6 +4210,11 @@ mod tests {
         let app = AppProcess {
             child: None,
             process_group_id: None,
+            supervisor_pid: None,
+            supervisor_exit_task: None,
+            app_launch: None,
+            app_record: None,
+            ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4452,6 +4540,68 @@ mod tests {
         let report = state.status_report();
         assert_eq!(report.state, "startup_failed");
         assert_eq!(report.startup_output.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn client_capabilities_encode_presentation_intent() {
+        let capabilities = client_capabilities(Presentation::Foreground);
+        assert_eq!(
+            capabilities
+                .experimental
+                .as_ref()
+                .and_then(|values| values.get(EXPERIMENTAL_PRESENTATION_CAPABILITY)),
+            Some(&serde_json::json!("foreground"))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn status_report_merges_macos_presentation_diagnostics() {
+        let tempdir = test_tempdir();
+        let report = make_state(&tempdir)
+            .status_report()
+            .with_app_health(Ok(serde_json::json!({
+                "macos_presentation": {
+                    "requested_presentation": "foreground",
+                    "observed_activation_policy": "regular",
+                    "executable": "target/example",
+                    "bundle_root": "target/example.app",
+                    "bundle_identifier": "example.app"
+                }
+            })));
+
+        assert_eq!(
+            report.presentation.requested_presentation,
+            Presentation::Foreground
+        );
+        assert_eq!(
+            report.presentation.observed_activation_policy.as_deref(),
+            Some("regular")
+        );
+        assert_eq!(
+            report.presentation.bundle_identifier.as_deref(),
+            Some("example.app")
+        );
+        let malformed =
+            make_state(&tempdir)
+                .status_report()
+                .with_app_health(Ok(serde_json::json!({
+                    "macos_presentation": {
+                        "requested_presentation": 42
+                    }
+                })));
+
+        assert!(malformed.app_health.is_some());
+        assert!(
+            malformed
+                .app_health_error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("malformed macos_presentation diagnostic:"))
+        );
+        assert_eq!(
+            malformed.presentation.requested_presentation,
+            Presentation::Background
+        );
     }
 
     #[test]

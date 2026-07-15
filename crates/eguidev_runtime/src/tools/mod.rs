@@ -13,6 +13,8 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+#[cfg(target_os = "macos")]
+use eguidev::internal::presentation::PresentationStatus;
 use image::codecs::jpeg::JpegEncoder;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -36,6 +38,7 @@ use crate::{
     overlay::{
         OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry, parse_color,
     },
+    presentation::parse_client_capabilities,
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
     screenshots::{ScreenshotKind, ScreenshotState},
@@ -157,6 +160,8 @@ struct AppHealthReport {
     known_viewports: Vec<String>,
     stalled: bool,
     viewports: Vec<ViewportHealthReport>,
+    #[cfg(target_os = "macos")]
+    macos_presentation: PresentationStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -481,7 +486,7 @@ fn update_scroll_stability(
     }
 }
 
-fn app_health_report(inner: &Inner) -> AppHealthReport {
+async fn app_health_report(inner: &Inner, runtime: &Runtime) -> AppHealthReport {
     let snapshots = inner.viewports.viewports_snapshot();
     let mut by_viewport = snapshots
         .into_iter()
@@ -523,6 +528,8 @@ fn app_health_report(inner: &Inner) -> AppHealthReport {
             .collect(),
         stalled: viewports.iter().any(|viewport| viewport.stalled),
         viewports,
+        #[cfg(target_os = "macos")]
+        macos_presentation: runtime.presentation_status().await,
     }
 }
 
@@ -985,7 +992,7 @@ fn invisible_interaction_error(
     )
 }
 
-#[mcp_server(initialize_fn = initialize)]
+#[mcp_server(initialize_fn = initialize, shutdown_fn = shutdown)]
 impl DevMcpServer {
     #[cfg(test)]
     pub(crate) fn new(inner: Arc<Inner>) -> Self {
@@ -1377,13 +1384,26 @@ impl DevMcpServer {
         &self,
         _context: &ServerCtx,
         _protocol_version: String,
-        _capabilities: ClientCapabilities,
+        capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {
+        let presentation =
+            parse_client_capabilities(&capabilities).map_err(tmcp::Error::InvalidParams)?;
+        self.runtime
+            .configure_presentation(presentation)
+            .await
+            .map_err(tmcp::Error::InternalError)?;
         let version = env!("CARGO_PKG_VERSION").to_string();
         Ok(InitializeResult::new("eguidev")
             .with_version(version)
             .with_tools(Some(true)))
+    }
+
+    async fn shutdown(&self) -> tmcp::Result<()> {
+        self.runtime
+            .disconnect_presentation()
+            .await
+            .map_err(tmcp::Error::InternalError)
     }
 
     /// List viewports and their properties.
@@ -2721,12 +2741,13 @@ impl DevMcpServer {
     /// Report automation frame health for the attached app.
     async fn health(&self) -> ToolResult<CallToolResult> {
         Ok(
-            CallToolResult::structured(app_health_report(&self.inner)).map_err(|error| {
-                ToolError::new(
-                    ErrorCode::Internal,
-                    format!("Failed to serialize health report: {error}"),
-                )
-            })?,
+            CallToolResult::structured(app_health_report(&self.inner, &self.runtime).await)
+                .map_err(|error| {
+                    ToolError::new(
+                        ErrorCode::Internal,
+                        format!("Failed to serialize health report: {error}"),
+                    )
+                })?,
         )
     }
 

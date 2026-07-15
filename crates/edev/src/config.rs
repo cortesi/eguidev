@@ -12,12 +12,14 @@ use std::{
     time::Duration,
 };
 
-use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
+use eguidev::internal::presentation;
 use eguidev_runtime::{
     ScriptArgValue, ScriptArgs,
     smoke::{SuiteConfig, SuiteRunMode},
 };
 use serde::Deserialize;
+#[cfg(not(target_os = "macos"))]
 use tokio::process::Command;
 
 use crate::EdevError;
@@ -29,6 +31,21 @@ const DEFAULT_SUITE_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_SCRIPT_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_IDLE_SHUTDOWN_AFTER_SECS: u64 = 20 * 60;
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPresentation {
+    Background,
+    Foreground,
+}
+
+impl From<CliPresentation> for presentation::Presentation {
+    fn from(value: CliPresentation) -> Self {
+        match value {
+            CliPresentation::Background => Self::Background,
+            CliPresentation::Foreground => Self::Foreground,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 /// Fully resolved app launch configuration.
 pub struct LaunchConfig {
@@ -38,12 +55,15 @@ pub struct LaunchConfig {
     pub(crate) command: Vec<String>,
     /// Extra environment variables injected into the app process.
     pub(crate) env: BTreeMap<String, String>,
+    /// Presentation policy requested from the embedded app MCP server.
+    pub(crate) presentation: presentation::Presentation,
     /// Whether launcher lifecycle logs are enabled.
     pub(crate) verbose: bool,
 }
 
 impl LaunchConfig {
     /// Build the app command from the resolved argv and process settings.
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn app_command(&self) -> Command {
         let mut command = Command::new(&self.command[0]);
         command.args(&self.command[1..]);
@@ -282,6 +302,7 @@ impl EdevCommand {
 #[derive(Debug, Default, Clone)]
 struct CommonCliOptions {
     cwd: Option<PathBuf>,
+    presentation: Option<presentation::Presentation>,
     verbose: Option<bool>,
     command: Option<Vec<String>>,
 }
@@ -386,6 +407,9 @@ struct CommonArgs {
     /// Override the app working directory.
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Choose whether the app remains in the background while connected.
+    #[arg(long, value_enum)]
+    presentation: Option<CliPresentation>,
     /// Enable verbose launcher output.
     #[arg(long, short = 'v', action = ArgAction::SetTrue, conflicts_with = "quiet")]
     verbose: bool,
@@ -551,6 +575,7 @@ impl From<CommonArgs> for CommonCliOptions {
     fn from(args: CommonArgs) -> Self {
         Self {
             cwd: args.cwd,
+            presentation: args.presentation.map(Into::into),
             verbose: if args.verbose {
                 Some(true)
             } else if args.quiet {
@@ -722,6 +747,7 @@ struct FileConfig {
 struct FileAppConfig {
     cwd: Option<PathBuf>,
     command: Option<Vec<String>>,
+    presentation: Option<presentation::Presentation>,
     #[serde(default)]
     env: BTreeMap<String, String>,
 }
@@ -1009,10 +1035,15 @@ fn resolve_launch_config(
             "app command must not be empty".to_string(),
         ));
     }
+    let presentation = cli
+        .presentation
+        .or_else(|| file_app.and_then(|app| app.presentation))
+        .unwrap_or(presentation::Presentation::Background);
     Ok(LaunchConfig {
         cwd,
         command,
         env: file_app.map(|app| app.env.clone()).unwrap_or_default(),
+        presentation,
         verbose: cli
             .verbose
             .or_else(|| file_mcp.and_then(|mcp| mcp.verbose))
@@ -1191,6 +1222,69 @@ mod tests {
         };
         assert_eq!(config.launch.command[0], "cargo");
         assert_eq!(config.launch.command.last().expect("last arg"), "--dev-mcp");
+    }
+
+    #[test]
+    fn presentation_defaults_to_background_and_accepts_cli_override() {
+        let current_dir = env::current_dir().unwrap();
+        let command = EdevCommand::parse_args_in_dir(
+            &os_args(&["mcp", "--presentation", "foreground", "--", "cargo", "run"]),
+            &current_dir,
+        )
+        .expect("parse command");
+        let EdevCommand::Mcp(config) = command else {
+            panic!("expected mcp command");
+        };
+        assert_eq!(
+            config.launch.presentation,
+            presentation::Presentation::Foreground
+        );
+
+        let command =
+            EdevCommand::parse_args_in_dir(&os_args(&["mcp", "--", "cargo", "run"]), &current_dir)
+                .expect("parse command");
+        let EdevCommand::Mcp(config) = command else {
+            panic!("expected mcp command");
+        };
+        assert_eq!(
+            config.launch.presentation,
+            presentation::Presentation::Background
+        );
+    }
+
+    #[test]
+    fn file_presentation_is_used_and_cli_wins() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        fs::write(
+            repo_root.join(DEFAULT_CONFIG_FILE),
+            "[app]\ncommand = [\"cargo\", \"run\"]\npresentation = \"foreground\"\n",
+        )
+        .expect("write config");
+
+        let command =
+            EdevCommand::parse_args_in_dir(&os_args(&["mcp"]), &repo_root).expect("parse command");
+        let EdevCommand::Mcp(config) = command else {
+            panic!("expected mcp command");
+        };
+        assert_eq!(
+            config.launch.presentation,
+            presentation::Presentation::Foreground
+        );
+
+        let command = EdevCommand::parse_args_in_dir(
+            &os_args(&["mcp", "--presentation", "background"]),
+            &repo_root,
+        )
+        .expect("parse command");
+        let EdevCommand::Mcp(config) = command else {
+            panic!("expected mcp command");
+        };
+        assert_eq!(
+            config.launch.presentation,
+            presentation::Presentation::Background
+        );
     }
 
     #[test]

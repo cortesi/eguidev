@@ -24,6 +24,7 @@ mod dump;
 mod error;
 #[cfg(target_os = "macos")]
 mod macos;
+mod presentation;
 mod runtime;
 mod screenshots;
 mod script_docs;

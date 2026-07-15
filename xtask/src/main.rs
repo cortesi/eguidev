@@ -12,10 +12,7 @@ use std::{
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
-use ruau::{
-    analysis::AnalysisMode,
-    typecheck::{Checker, Config},
-};
+use ruau::typecheck::{Checker, Config, Mode};
 use serde_json::{Value, json};
 use tmcp::{Client, schema::CallToolResult};
 use tokio::{process::Command as TokioCommand, runtime::Builder};
@@ -344,7 +341,7 @@ fn check_luau_source(path: &Path, module_name: &str, source: &str) -> Result<(),
 
 /// Return the checker settings used for shipped script validation.
 fn luau_checker_config() -> Config {
-    Config::with_source_mode(AnalysisMode::Strict)
+    Config::with_source_mode(Mode::Strict)
 }
 
 /// Enumerate checked-in example scripts that should type-check against the API definitions.

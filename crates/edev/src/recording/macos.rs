@@ -175,18 +175,23 @@ pub fn process_group_members(process_group_id: Option<i32>) -> Vec<i32> {
     let Some(process_group_id) = process_group_id else {
         return Vec::new();
     };
-    let Ok(pgrpid) = u32::try_from(process_group_id) else {
-        return Vec::new();
-    };
-    let mut pids = processes::pids_by_type(ProcFilter::ByProgramGroup { pgrpid })
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|pid| i32::try_from(pid).ok())
-        .collect::<Vec<_>>();
+    let mut pids = live_process_group_members(process_group_id);
     pids.push(process_group_id);
     pids.sort_unstable();
     pids.dedup();
     pids
+}
+
+/// Return only currently live process ids in one process group.
+pub fn live_process_group_members(process_group_id: i32) -> Vec<i32> {
+    let Ok(pgrpid) = u32::try_from(process_group_id) else {
+        return Vec::new();
+    };
+    processes::pids_by_type(ProcFilter::ByProgramGroup { pgrpid })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|pid| i32::try_from(pid).ok())
+        .collect::<Vec<_>>()
 }
 
 /// Start a native recording session.

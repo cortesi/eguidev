@@ -6,19 +6,19 @@ use std::{
 };
 
 #[cfg(test)]
-use ruau::ast::parse::{ParseConfig, parse_file_with};
+use ruau::syntax::parse;
 use ruau::{
     bytecode::{CompileError, CompileErrorKind, CompileOptions},
-    decl::DeclSource,
-    module::{NativeBinding, NativeModuleBuilder},
+    declaration::DeclarationSource,
+    module::{self, Binding},
     vm::{
         Ambient, AsyncHostContext, AsyncHostFunction, CallOptions, Deadline, FromLua, FromLuaMulti,
-        IntoLuaMulti, Limits, LoadedModule, MarshaledScriptError, MarshaledValue, MultiValue,
-        RuntimeCapabilities, RuntimeError, Scope, ScopedValue, SourceLocation, StashedClosure,
-        StashedValue, Table, TracebackFrame, Vm, async_host_fn,
+        HostReturn, IntoLuaMulti, Limits, LoadedModule, MarshaledScriptError, ModuleBinding,
+        MultiValue, NativeModule, OwnedValue, RuntimeCapabilities, RuntimeError, RuntimeErrorKind,
+        Scope, ScopedValue, SourceLocation, StashedClosure, StashedValue, Table, TracebackFrame,
+        ValueSnapshot, Vm, async_host_fn,
         serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
     },
-    vm_api::{HostReturn, ModuleBinding, NativeModule, OwnedValue, RuntimeErrorKind},
 };
 use serde_json::Value;
 use tokio::{
@@ -368,7 +368,7 @@ async fn run_script_eval_local(
 
 #[cfg(test)]
 fn is_supported_by_initial_ruau_slice(script: &str) -> bool {
-    let result = parse_file_with(script, &ParseConfig::default());
+    let result = parse::parse_with_config(script, &parse::Config::default());
     if !result.is_ok() {
         return false;
     }
@@ -671,7 +671,7 @@ fn prelude_error_info(label: &str, mut info: ScriptErrorInfo) -> ScriptErrorInfo
 
 fn values_to_script_value(
     runtime: &ScriptRuntime,
-    values: &[MarshaledValue],
+    values: &[ValueSnapshot],
 ) -> Result<super::types::ScriptValue, ScriptErrorInfo> {
     let json_values = values
         .iter()
@@ -685,15 +685,15 @@ fn values_to_script_value(
     Ok(script_value_from_json(runtime, value))
 }
 
-fn marshaled_script_value_to_json(value: &MarshaledValue) -> Result<Value, RuntimeError> {
+fn marshaled_script_value_to_json(value: &ValueSnapshot) -> Result<Value, RuntimeError> {
     match marshaled_to_json(value) {
         Ok(value) => Ok(value),
         Err(error) => marshaled_sparse_array_to_json(value).unwrap_or(Err(error)),
     }
 }
 
-fn marshaled_sparse_array_to_json(value: &MarshaledValue) -> Option<Result<Value, RuntimeError>> {
-    let MarshaledValue::Table(pairs) = value else {
+fn marshaled_sparse_array_to_json(value: &ValueSnapshot) -> Option<Result<Value, RuntimeError>> {
+    let ValueSnapshot::Table(pairs) = value else {
         return None;
     };
     let max_index = pairs
@@ -729,24 +729,24 @@ fn marshaled_sparse_array_to_json(value: &MarshaledValue) -> Option<Result<Value
     )
 }
 
-fn marshaled_positive_array_index(value: &MarshaledValue) -> Option<usize> {
+fn marshaled_positive_array_index(value: &ValueSnapshot) -> Option<usize> {
     match value {
-        MarshaledValue::Integer(value) => usize::try_from(*value).ok().filter(|value| *value > 0),
-        MarshaledValue::Number(value) => {
+        ValueSnapshot::Integer(value) => usize::try_from(*value).ok().filter(|value| *value > 0),
+        ValueSnapshot::Number(value) => {
             if value.fract() == 0.0 && *value >= 1.0 && *value <= usize::MAX as f64 {
                 Some(*value as usize)
             } else {
                 None
             }
         }
-        MarshaledValue::Nil
-        | MarshaledValue::Boolean(_)
-        | MarshaledValue::Vector(_)
-        | MarshaledValue::String(_)
-        | MarshaledValue::Buffer(_)
-        | MarshaledValue::Table(_)
-        | MarshaledValue::LightUserdata { .. }
-        | MarshaledValue::Opaque(_) => None,
+        ValueSnapshot::Nil
+        | ValueSnapshot::Boolean(_)
+        | ValueSnapshot::Vector(_)
+        | ValueSnapshot::String(_)
+        | ValueSnapshot::Buffer(_)
+        | ValueSnapshot::Table(_)
+        | ValueSnapshot::LightUserdata { .. }
+        | ValueSnapshot::Opaque(_) => None,
     }
 }
 
@@ -905,7 +905,7 @@ fn error_type_for_kind(kind: RuntimeErrorKind) -> &'static str {
     }
 }
 
-fn marshaled_error_text(value: &MarshaledValue) -> String {
+fn marshaled_error_text(value: &ValueSnapshot) -> String {
     match marshaled_to_json(value) {
         Ok(Value::String(message)) => message,
         Ok(value) if !value.is_null() => value.to_string(),
@@ -1002,7 +1002,7 @@ struct EguidevModule {
 }
 
 struct DeclaredModuleBuilder<'a> {
-    builder: &'a mut NativeModuleBuilder,
+    builder: &'a mut module::Builder,
 }
 
 impl DeclaredModuleBuilder<'_> {
@@ -1028,20 +1028,20 @@ impl DeclaredModuleBuilder<'_> {
     }
 }
 
-fn declared_binding(binding: ModuleBinding) -> NativeBinding {
+fn declared_binding(binding: ModuleBinding) -> Binding {
     match binding {
-        ModuleBinding::Global => NativeBinding::declared_global(),
-        ModuleBinding::GlobalOverride => NativeBinding::declared_global_override(),
-        ModuleBinding::Library(name) => NativeBinding::declared_library(name),
-        ModuleBinding::Hidden(name) => NativeBinding::hidden(name),
+        ModuleBinding::Global => Binding::declared_global(),
+        ModuleBinding::GlobalOverride => Binding::declared_global_override(),
+        ModuleBinding::Library(name) => Binding::declared_library(name),
+        ModuleBinding::Hidden(name) => Binding::hidden(name),
     }
 }
 
 impl EguidevModule {
     fn build(self) -> Arc<dyn NativeModule> {
-        let mut native = NativeModuleBuilder::from_declaration(
+        let mut native = module::Builder::from_declaration(
             "eguidev_initial",
-            DeclSource::Text(&self.declaration),
+            DeclarationSource::Text(&self.declaration),
         );
         let mut builder = DeclaredModuleBuilder {
             builder: &mut native,

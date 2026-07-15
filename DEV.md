@@ -121,23 +121,36 @@ eval; it does not attach to an already-running `edev mcp` app.
 Stock eframe 0.35 stops running `App::ui` and painting when a window is minimized or
 occluded (`ViewportInfo::visible()` gates `run_ui`), so automation would freeze as soon
 as the developer's windows fully cover an instrumented app, and no `request_repaint()`
-can revive it. `eguidev_runtime::attach` therefore installs two macOS process tweaks:
+can revive it. On macOS, `eguidev_runtime::attach` installs the process-wide observation
+hook, but attachment alone leaves native presentation and occlusion behavior unchanged.
 
-- `-[NSWindow occlusionState]` is replaced to always report the window visible, so winit
-  never emits `Occluded(true)` and eframe keeps running the UI, painting, and servicing
-  screenshots in a fully covered background window.
-- The original `occlusionState` and `isMiniaturized` values are still recorded locally.
-  Script and status surfaces expose them as `ViewportState.os_occluded` and
-  `ViewportState.os_minimized`. On macOS automation runs, `ViewportState.occluded` is
-  the spoofed egui/winit value; use `os_occluded` when a test needs the real platform
-  state.
-- The app is demoted to the accessory activation policy and deactivated, so launching an
-  instrumented app does not raise its window or steal the developer's focus.
+When an Edev client connects, its typed presentation setting controls the session:
 
-Both tweaks apply only when automation is attached (`--dev-mcp` style runs) and can be
-disabled by setting `EGUIDEV_FOREGROUND` in the app environment. Never work around an
-occlusion stall by raising the app window; developers keep using the machine while
-automation runs.
+- `background`, the default, temporarily applies the accessory activation policy,
+  deactivates without raising the app, and makes `-[NSWindow occlusionState]` report the
+  window visible to winit. Eframe keeps running the UI, painting, and servicing
+  screenshots while another window covers the app.
+- `foreground` keeps ordinary foreground presentation while retaining Eguidev's real
+  window-state observations and automation support. Configure it with
+  `presentation = "foreground"` under `[app]` or the command's
+  `--presentation foreground` override.
+- Disconnect restores the activation policy that preceded the session and disables the
+  occlusion shim. A later connection starts a fresh session transition.
+
+The original `occlusionState` and `isMiniaturized` values are always recorded locally.
+Script and status surfaces expose them as `ViewportState.os_occluded` and
+`ViewportState.os_minimized`. During background automation,
+`ViewportState.occluded` is the spoofed egui/winit value; use `os_occluded` when a test
+needs the real platform state. Edev status also reports the requested presentation and,
+when available, the observed activation policy, executable path, bundle root, and bundle
+identifier. These identity fields are diagnostics, not launch requirements.
+
+Edev owns managed-process lifetime as well as presentation. On macOS, losing the owning
+launcher terminates the complete app process group without a later cleanup command.
+Applications should therefore launch their ordinary executable, keep a stable installed
+bundle when they have one, and avoid automation-only or per-run `.app` identities. App
+code must not repeatedly force foreground activation while a background session is
+connected.
 
 The local occlusion workaround is macOS-specific. Linux and Windows background occlusion
 semantics are out of scope until a concrete downstream workflow needs them. Minimized

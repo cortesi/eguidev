@@ -3,11 +3,16 @@
 use std::{any::Any, sync::Arc};
 
 use egui::Context;
-use eguidev::internal::{devmcp::RuntimeHooks, registry::Inner};
+#[cfg(target_os = "macos")]
+use eguidev::internal::presentation::PresentationStatus;
+use eguidev::internal::{devmcp::RuntimeHooks, presentation::Presentation, registry::Inner};
 use tokio::sync::Notify;
 
 #[cfg(target_os = "macos")]
-use crate::macos::platform_window_states;
+use crate::macos::{
+    configure_session, disconnect_session, platform_window_states, presentation_status,
+    reassert_background_policy,
+};
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
@@ -114,6 +119,36 @@ impl Runtime {
             .log_screenshot(inner.verbose_logging(), message);
     }
 
+    pub(crate) async fn configure_presentation(
+        &self,
+        presentation: Presentation,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            let frame_complete = self.frame_notify.notified();
+            let needs_frame = configure_session(presentation).await?;
+            if needs_frame {
+                frame_complete.await;
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = presentation;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn disconnect_presentation(&self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        disconnect_session().await?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) async fn presentation_status(&self) -> PresentationStatus {
+        presentation_status().await
+    }
+
     fn capture_screenshot_events(&self, inner: &Inner, events: &[egui::Event]) {
         self.screenshots.capture_screenshot_events(
             events,
@@ -145,6 +180,12 @@ impl Runtime {
         inner
             .viewports
             .merge_platform_state(&platform_window_states());
+        #[cfg(target_os = "macos")]
+        if let Some(conflict) = reassert_background_policy() {
+            let diagnostic = serde_json::to_string(&conflict)
+                .expect("macOS presentation conflict should serialize");
+            eprintln!("eguidev: macos.presentation_conflict {diagnostic}");
+        }
         inner.paint_overlays(ctx);
         self.frame_notify.notify_waiters();
     }
@@ -176,8 +217,8 @@ fn attach_internal(devmcp: DevMcp, should_start_server: bool) -> DevMcp {
 
     #[cfg(target_os = "macos")]
     {
-        use crate::macos::install_background_automation;
-        install_background_automation();
+        use crate::macos::install_occlusion_hook;
+        install_occlusion_hook();
     }
 
     let inner = Arc::new(Inner::new());

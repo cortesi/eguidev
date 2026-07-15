@@ -1,4 +1,4 @@
-//! macOS process tweaks for background automation.
+//! macOS presentation and occlusion support for connected automation.
 //!
 //! eframe 0.35 skips `App::ui` and painting for minimized or occluded
 //! windows (`ViewportInfo::visible()` gates `run_ui` in the glow and wgpu
@@ -10,23 +10,25 @@
 //! winit then never emits `Occluded(true)` and eframe keeps running the UI
 //! and painting in the background.
 //!
-//! We also demote the app to the accessory activation policy so launching
-//! an instrumented app does not activate it, raise its window, or steal the
-//! developer's focus.
-//!
-//! Set `EGUIDEV_FOREGROUND` in the app environment to skip both tweaks and
-//! get ordinary window behavior under automation.
+//! The process-wide window hook is installed when instrumentation attaches, but
+//! its visible-state override is enabled only for a connected MCP session.
 
 use std::{
     collections::{HashMap, HashSet},
     env,
     ffi::{CStr, c_char},
-    mem, process,
-    sync::{Mutex, OnceLock},
+    mem,
+    path::{Path, PathBuf},
+    process, ptr,
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use core_foundation::{
     base::{CFRange, CFType, TCFType},
+    bundle::CFBundle,
     dictionary::CFDictionary,
     number::CFNumber,
     string::{CFString, CFStringRef},
@@ -42,19 +44,24 @@ use core_graphics::{
         kCGWindowListOptionIncludingWindow, kCGWindowName, kCGWindowNumber, kCGWindowOwnerPID,
     },
 };
+use dispatch2::DispatchQueue;
+use eguidev::internal::presentation::{Presentation, PresentationStatus};
 use foreign_types::ForeignTypeRef;
 use objc2::{
     MainThreadMarker, class, msg_send,
     runtime::{AnyClass, AnyObject, Imp, Sel},
     sel,
 };
+use serde::Serialize;
+use tokio::sync::oneshot;
 
-use crate::viewports::PlatformViewportState;
+use crate::{
+    presentation::{PresentationSession, PresentationTransition},
+    viewports::PlatformViewportState,
+};
 
 /// `NSWindowOcclusionStateVisible`.
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
-/// `NSApplicationActivationPolicyAccessory`.
-const ACTIVATION_POLICY_ACCESSORY: isize = 1;
 const CG_IMAGE_ALPHA_INFO_MASK: u32 = 0x1f;
 const CG_IMAGE_BYTE_ORDER_MASK: u32 = 0x7000;
 
@@ -62,21 +69,23 @@ type OcclusionStateFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> usiz
 
 static ORIGINAL_OCCLUSION_STATE: OnceLock<OcclusionStateFn> = OnceLock::new();
 static WINDOW_STATES: OnceLock<Mutex<HashMap<usize, PlatformViewportState>>> = OnceLock::new();
+static PRESENTATION_SESSION: OnceLock<Mutex<PresentationSession>> = OnceLock::new();
+static SPOOF_OCCLUSION: AtomicBool = AtomicBool::new(false);
+
+const ACTIVATION_POLICY_REGULAR: i64 = 0;
+const ACTIVATION_POLICY_ACCESSORY: i64 = 1;
+const ACTIVATION_POLICY_PROHIBITED: i64 = 2;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGImageGetBitmapInfo(image: CGImageRef) -> u32;
 }
 
-/// Install the background-automation tweaks once per process.
-pub fn install_background_automation() {
+/// Install the process-wide window hook once per process.
+pub fn install_occlusion_hook() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     let _ = INSTALLED.get_or_init(|| {
-        if env::var_os("EGUIDEV_FOREGROUND").is_some() {
-            return;
-        }
         spoof_occlusion_state();
-        demote_activation_policy();
     });
 }
 
@@ -236,7 +245,7 @@ fn spoof_occlusion_state() {
             .map(|original| unsafe { original(this, sel) })
             .unwrap_or(OCCLUSION_STATE_VISIBLE);
         record_window_state(this, real_state);
-        OCCLUSION_STATE_VISIBLE
+        spoofed_occlusion_state(real_state)
     }
 
     let Some(class) = AnyClass::get(c"NSWindow") else {
@@ -298,20 +307,253 @@ unsafe fn window_title(window: *mut AnyObject) -> Option<String> {
     )
 }
 
-/// Switch the app to the accessory activation policy and drop any activation
-/// acquired during launch, so automation runs never steal focus.
-fn demote_activation_policy() {
-    let Some(_mtm) = MainThreadMarker::new() else {
-        // Attach ran off the main thread; skip rather than race AppKit.
-        return;
+fn spoofed_occlusion_state(real_state: usize) -> usize {
+    occlusion_state(real_state, SPOOF_OCCLUSION.load(Ordering::Acquire))
+}
+
+fn occlusion_state(real_state: usize, spoof: bool) -> usize {
+    if spoof {
+        OCCLUSION_STATE_VISIBLE
+    } else {
+        real_state
+    }
+}
+
+fn presentation_session() -> &'static Mutex<PresentationSession> {
+    PRESENTATION_SESSION.get_or_init(|| Mutex::new(PresentationSession::default()))
+}
+
+/// Apply a session presentation and return whether a live window needs a frame.
+pub async fn configure_session(presentation: Presentation) -> Result<bool, String> {
+    install_occlusion_hook();
+    SPOOF_OCCLUSION.store(true, Ordering::Release);
+    let result = match run_on_main(move || {
+        let observed_policy = activation_policy();
+        let transition = presentation_session()
+            .lock()
+            .expect("presentation session lock poisoned")
+            .configure(presentation, observed_policy, ACTIVATION_POLICY_ACCESSORY);
+        apply_transition(transition)?;
+        Ok::<_, String>(reevaluate_live_windows() > 0)
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(error),
     };
-    // SAFETY: standard AppKit messaging on the main thread; the selectors
-    // and argument types match the NSApplication declarations.
+    if result.is_err() {
+        SPOOF_OCCLUSION.store(false, Ordering::Release);
+        *presentation_session()
+            .lock()
+            .expect("presentation session lock poisoned") = PresentationSession::default();
+    }
+    result
+}
+
+/// Restore the policy captured for the current session and disable spoofing.
+pub async fn disconnect_session() -> Result<(), String> {
+    let result = match run_on_main(|| {
+        let transition = presentation_session()
+            .lock()
+            .expect("presentation session lock poisoned")
+            .disconnect();
+        if let Some(transition) = transition {
+            apply_transition(transition)?;
+        }
+        SPOOF_OCCLUSION.store(false, Ordering::Release);
+        reevaluate_live_windows();
+        Ok::<_, String>(())
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        SPOOF_OCCLUSION.store(false, Ordering::Release);
+        *presentation_session()
+            .lock()
+            .expect("presentation session lock poisoned") = PresentationSession::default();
+    }
+    result
+}
+
+/// Reassert background presentation after an app frame if the app changed it.
+pub fn reassert_background_policy() -> Option<PolicyConflict> {
+    let _mtm = MainThreadMarker::new()?;
+    let observed_policy = activation_policy();
+    let mut session = presentation_session()
+        .lock()
+        .expect("presentation session lock poisoned");
+    if !session.should_reassert(observed_policy, ACTIVATION_POLICY_ACCESSORY) {
+        return None;
+    }
+    let first_conflict = session.report_conflict(observed_policy, ACTIVATION_POLICY_ACCESSORY);
+    drop(session);
+    if observed_policy != Some(ACTIVATION_POLICY_ACCESSORY) {
+        let _ = set_activation_policy(ACTIVATION_POLICY_ACCESSORY);
+        deactivate_application();
+    }
+    first_conflict.then_some(PolicyConflict {
+        observed_activation_policy: observed_policy.map(activation_policy_name),
+        requested_presentation: Presentation::Background,
+    })
+}
+
+/// Structured diagnostic emitted when app code conflicts with background mode.
+#[derive(Debug, Clone, Serialize)]
+pub struct PolicyConflict {
+    requested_presentation: Presentation,
+    observed_activation_policy: Option<String>,
+}
+
+/// Query macOS status without touching app-owned launch identity.
+pub async fn presentation_status() -> PresentationStatus {
+    let observed_activation_policy =
+        run_on_main(|| activation_policy().map(activation_policy_name))
+            .await
+            .ok()
+            .flatten();
+    let executable_path = env::current_exe().unwrap_or_default();
+    PresentationStatus {
+        requested_presentation: presentation_session()
+            .lock()
+            .expect("presentation session lock poisoned")
+            .requested(),
+        observed_activation_policy,
+        executable: Some(executable_path.display().to_string()),
+        bundle_root: bundle_root(&executable_path),
+        bundle_identifier: bundle_identifier(),
+    }
+}
+
+fn apply_transition(transition: PresentationTransition) -> Result<(), String> {
+    if let Some(policy) = transition.target_activation_policy
+        && !set_activation_policy(policy)
+    {
+        return Err(format!("NSApplication rejected activation policy {policy}"));
+    }
+    if transition.deactivate {
+        deactivate_application();
+    }
+    Ok(())
+}
+
+fn activation_policy() -> Option<i64> {
+    // SAFETY: this function is called only on the AppKit main thread.
     unsafe {
         let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-        let _: bool = msg_send![app, setActivationPolicy: ACTIVATION_POLICY_ACCESSORY];
-        let _: () = msg_send![app, deactivate];
+        if app.is_null() {
+            return None;
+        }
+        let policy: isize = msg_send![app, activationPolicy];
+        Some(policy as i64)
     }
+}
+
+fn set_activation_policy(policy: i64) -> bool {
+    // SAFETY: this function is called only on the AppKit main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let policy = policy as isize;
+        let applied: bool = msg_send![app, setActivationPolicy: policy];
+        applied
+    }
+}
+
+fn deactivate_application() {
+    // SAFETY: this function is called only on the AppKit main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if !app.is_null() {
+            let _: () = msg_send![app, deactivate];
+        }
+    }
+}
+
+fn reevaluate_live_windows() -> usize {
+    // SAFETY: this function is called only on the AppKit main thread. The
+    // delegate selector is checked before it is invoked.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return 0;
+        }
+        let windows: *mut AnyObject = msg_send![app, windows];
+        if windows.is_null() {
+            return 0;
+        }
+        let count: usize = msg_send![windows, count];
+        let mut reevaluated = 0;
+        for index in 0..count {
+            let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
+            if window.is_null() {
+                continue;
+            }
+            let delegate: *mut AnyObject = msg_send![window, delegate];
+            if delegate.is_null() {
+                continue;
+            }
+            let selector = sel!(windowDidChangeOcclusionState:);
+            let responds: bool = msg_send![delegate, respondsToSelector: selector];
+            if responds {
+                reevaluated += 1;
+                let _: () = msg_send![delegate, windowDidChangeOcclusionState: ptr::null_mut::<AnyObject>()];
+            }
+        }
+        reevaluated
+    }
+}
+
+fn activation_policy_name(policy: i64) -> String {
+    match policy {
+        ACTIVATION_POLICY_REGULAR => "regular".to_string(),
+        ACTIVATION_POLICY_ACCESSORY => "accessory".to_string(),
+        ACTIVATION_POLICY_PROHIBITED => "prohibited".to_string(),
+        other => format!("unknown({other})"),
+    }
+}
+
+fn bundle_root(executable: &Path) -> Option<String> {
+    let mut root = PathBuf::new();
+    for component in executable.components() {
+        root.push(component.as_os_str());
+        if component.as_os_str().to_string_lossy().ends_with(".app") {
+            return Some(root.display().to_string());
+        }
+    }
+    None
+}
+
+fn bundle_identifier() -> Option<String> {
+    let bundle = CFBundle::main_bundle();
+    let key = CFString::from_static_string("CFBundleIdentifier");
+    bundle
+        .info_dictionary()
+        .find(&key)
+        .and_then(|value| value.downcast::<CFString>())
+        .map(|value| value.to_string())
+}
+
+async fn run_on_main<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    if MainThreadMarker::new().is_some() {
+        return Ok(operation());
+    }
+
+    let (sender, receiver) = oneshot::channel();
+    DispatchQueue::main().exec_async(move || {
+        drop(sender.send(operation()));
+    });
+    receiver
+        .await
+        .map_err(|_| "macOS main-thread operation was cancelled".to_string())
 }
 
 fn color_image_from_cg_image(image: &CGImage) -> Result<egui::ColorImage, String> {
@@ -436,5 +678,29 @@ mod tests {
         assert!(validate_cg_image_format(8, 32, expected_info).is_ok());
         assert!(validate_cg_image_format(16, 32, expected_info).is_err());
         assert!(validate_cg_image_format(8, 32, kCGImageAlphaPremultipliedFirst).is_err());
+    }
+
+    #[test]
+    fn occlusion_state_is_real_until_a_session_enables_spoofing() {
+        assert_eq!(occlusion_state(0, false), 0);
+        assert_eq!(
+            occlusion_state(OCCLUSION_STATE_VISIBLE, false),
+            OCCLUSION_STATE_VISIBLE
+        );
+        assert_eq!(occlusion_state(0, true), OCCLUSION_STATE_VISIBLE);
+    }
+
+    #[test]
+    fn status_helpers_use_stable_diagnostic_values() {
+        assert_eq!(activation_policy_name(ACTIVATION_POLICY_REGULAR), "regular");
+        assert_eq!(
+            activation_policy_name(ACTIVATION_POLICY_ACCESSORY),
+            "accessory"
+        );
+        assert_eq!(bundle_root(Path::new("bin/example")), None);
+        assert_eq!(
+            bundle_root(Path::new("build/example.app/Contents/MacOS/example")),
+            Some("build/example.app".to_string())
+        );
     }
 }
