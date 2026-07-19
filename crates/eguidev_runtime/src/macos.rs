@@ -20,12 +20,14 @@ use std::{
     mem,
     path::{Path, PathBuf},
     process, ptr,
+    ptr::NonNull,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
     },
 };
 
+use block2::RcBlock;
 use core_foundation::{
     base::{CFRange, CFType, TCFType},
     bundle::CFBundle,
@@ -71,6 +73,12 @@ static ORIGINAL_OCCLUSION_STATE: OnceLock<OcclusionStateFn> = OnceLock::new();
 static WINDOW_STATES: OnceLock<Mutex<HashMap<usize, PlatformViewportState>>> = OnceLock::new();
 static PRESENTATION_SESSION: OnceLock<Mutex<PresentationSession>> = OnceLock::new();
 static SPOOF_OCCLUSION: AtomicBool = AtomicBool::new(false);
+/// Whether the app opted into the background-launch activation guard.
+static BACKGROUND_LAUNCH: AtomicBool = AtomicBool::new(false);
+/// Whether the current activation came from a user mouse interaction.
+static USER_ACTIVATION: AtomicBool = AtomicBool::new(false);
+/// Pid of the most recent frontmost application other than this process.
+static LAST_OTHER_FRONTMOST_PID: AtomicI32 = AtomicI32::new(0);
 
 const ACTIVATION_POLICY_REGULAR: i64 = 0;
 const ACTIVATION_POLICY_ACCESSORY: i64 = 1;
@@ -378,9 +386,235 @@ pub async fn disconnect_session() -> Result<(), String> {
     result
 }
 
+/// Enable the launch-to-exit activation guard for a background launch.
+///
+/// Call from the app before its event loop starts. While the session
+/// presentation is background (the default), any activation of this app that
+/// was not caused by a user mouse interaction is handed back to the
+/// previously frontmost application in the same runloop turn, so instrumented
+/// windows never take focus from the app the developer is working in. A
+/// foreground presentation session suspends the guard; disconnecting resumes
+/// it.
+pub fn enable_background_launch_guard() {
+    static OBSERVERS: OnceLock<()> = OnceLock::new();
+    BACKGROUND_LAUNCH.store(true, Ordering::Release);
+    let _ = OBSERVERS.get_or_init(|| {
+        seed_frontmost_target();
+        install_activation_observers();
+    });
+}
+
+/// Return whether the activation guard currently applies.
+fn activation_guard_enabled() -> bool {
+    BACKGROUND_LAUNCH.load(Ordering::Acquire)
+        && presentation_session()
+            .lock()
+            .expect("presentation session lock poisoned")
+            .requested()
+            == Presentation::Background
+}
+
+/// Record the frontmost application as the activation hand-back target.
+fn seed_frontmost_target() {
+    // SAFETY: NSWorkspace lookups are thread-safe reads.
+    unsafe {
+        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
+            return;
+        }
+        let frontmost: *mut AnyObject = msg_send![workspace, frontmostApplication];
+        record_frontmost_target(frontmost);
+    }
+}
+
+/// Remember `app` as the hand-back target when it is another process.
+///
+/// # Safety
+///
+/// `app` must be nil or a valid `NSRunningApplication`.
+unsafe fn record_frontmost_target(app: *mut AnyObject) {
+    if app.is_null() {
+        return;
+    }
+    let pid: i32 = unsafe { msg_send![app, processIdentifier] };
+    if pid > 0 && pid != process::id() as i32 {
+        LAST_OTHER_FRONTMOST_PID.store(pid, Ordering::Release);
+    }
+}
+
+/// Build an autoreleased `NSString` from a static C string.
+///
+/// # Safety
+///
+/// Standard AppKit string construction; safe for any valid C string.
+unsafe fn nsstring(value: &'static CStr) -> *mut AnyObject {
+    unsafe { msg_send![class!(NSString), stringWithUTF8String: value.as_ptr()] }
+}
+
+/// Register one block observer on a notification center.
+///
+/// # Safety
+///
+/// `center` must be a valid `NSNotificationCenter`. Registration passes a nil
+/// queue, so the block runs on the posting thread.
+unsafe fn add_observer(
+    center: *mut AnyObject,
+    name: &'static CStr,
+    block: &RcBlock<dyn Fn(NonNull<AnyObject>)>,
+) {
+    unsafe {
+        let name = nsstring(name);
+        let _: *mut AnyObject = msg_send![
+            center,
+            addObserverForName: name,
+            object: ptr::null_mut::<AnyObject>(),
+            queue: ptr::null_mut::<AnyObject>(),
+            usingBlock: &**block
+        ];
+    }
+}
+
+/// Install the workspace and application activation observers.
+fn install_activation_observers() {
+    let did_activate = RcBlock::new(|notification: NonNull<AnyObject>| {
+        // SAFETY: the notification's application entry is an
+        // NSRunningApplication; the notification is posted on the main thread.
+        unsafe {
+            let info: *mut AnyObject = msg_send![notification.as_ptr(), userInfo];
+            if info.is_null() {
+                return;
+            }
+            let key = nsstring(c"NSWorkspaceApplicationKey");
+            let app: *mut AnyObject = msg_send![info, objectForKey: key];
+            record_frontmost_target(app);
+        }
+    });
+    let became_active = RcBlock::new(|_notification: NonNull<AnyObject>| {
+        guard_became_active();
+    });
+    let resigned = RcBlock::new(|_notification: NonNull<AnyObject>| {
+        USER_ACTIVATION.store(false, Ordering::Release);
+    });
+
+    // SAFETY: notification names are stable AppKit constants and both centers
+    // are process singletons.
+    unsafe {
+        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
+            return;
+        }
+        let workspace_center: *mut AnyObject = msg_send![workspace, notificationCenter];
+        add_observer(
+            workspace_center,
+            c"NSWorkspaceDidActivateApplicationNotification",
+            &did_activate,
+        );
+        let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+        add_observer(
+            center,
+            c"NSApplicationDidBecomeActiveNotification",
+            &became_active,
+        );
+        add_observer(
+            center,
+            c"NSApplicationDidResignActiveNotification",
+            &resigned,
+        );
+    }
+}
+
+/// Handle this app becoming active while the guard applies.
+fn guard_became_active() {
+    if !activation_guard_enabled() {
+        return;
+    }
+    if activation_was_user_mouse() {
+        USER_ACTIVATION.store(true, Ordering::Release);
+        return;
+    }
+    hand_back_activation();
+}
+
+/// Return whether the in-flight event that caused activation was a mouse
+/// interaction, which marks the activation as user-intended.
+fn activation_was_user_mouse() -> bool {
+    // SAFETY: this function is called only on the AppKit main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let event: *mut AnyObject = msg_send![app, currentEvent];
+        if event.is_null() {
+            return false;
+        }
+        let kind: usize = msg_send![event, type];
+        // Left/right/other mouse down and up.
+        matches!(kind, 1 | 2 | 3 | 4 | 25 | 26)
+    }
+}
+
+/// Return whether this app is currently the active application.
+fn application_is_active() -> bool {
+    // SAFETY: this function is called only on the AppKit main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let active: bool = msg_send![app, isActive];
+        active
+    }
+}
+
+/// Hand activation to the remembered frontmost application, or deactivate.
+fn hand_back_activation() {
+    // SAFETY: this function is called only on the AppKit main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if app.is_null() {
+            return;
+        }
+        let mut yielded = false;
+        let target_pid = LAST_OTHER_FRONTMOST_PID.load(Ordering::Acquire);
+        if target_pid > 0 {
+            let target: *mut AnyObject = msg_send![
+                class!(NSRunningApplication),
+                runningApplicationWithProcessIdentifier: target_pid
+            ];
+            if !target.is_null() {
+                let terminated: bool = msg_send![target, isTerminated];
+                if !terminated {
+                    let _: () = msg_send![app, yieldActivationToApplication: target];
+                    let current: *mut AnyObject =
+                        msg_send![class!(NSRunningApplication), currentApplication];
+                    let cooperative = sel!(activateFromApplication:options:);
+                    let responds: bool = msg_send![target, respondsToSelector: cooperative];
+                    yielded = if responds {
+                        msg_send![target, activateFromApplication: current, options: 0usize]
+                    } else {
+                        msg_send![target, activateWithOptions: 0usize]
+                    };
+                }
+            }
+        }
+        if !yielded {
+            let _: () = msg_send![app, deactivate];
+        }
+    }
+}
+
 /// Reassert background presentation after an app frame if the app changed it.
 pub fn reassert_background_policy() -> Option<PolicyConflict> {
     let _mtm = MainThreadMarker::new()?;
+    if activation_guard_enabled()
+        && !USER_ACTIVATION.load(Ordering::Acquire)
+        && application_is_active()
+    {
+        // A hand-back denied inside the activation notification is retried
+        // here once per frame until the app has genuinely ceded activation.
+        hand_back_activation();
+    }
     let observed_policy = activation_policy();
     let mut session = presentation_session()
         .lock()

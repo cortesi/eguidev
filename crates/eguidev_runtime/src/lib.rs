@@ -70,6 +70,18 @@ pub(crate) mod viewports {
 
 pub use eguidev::{DevMcp, ScrollAreaMeta};
 
+/// Keep a background-launched app from taking focus for its whole run.
+///
+/// On macOS this enables the activation guard: while the automation
+/// presentation is background (the default), any activation of the app that
+/// was not caused by a user mouse interaction is immediately handed back to
+/// the previously frontmost application. Call before the app's event loop
+/// starts. On other platforms this is a no-op.
+pub fn enable_background_launch_guard() {
+    #[cfg(target_os = "macos")]
+    macos::enable_background_launch_guard();
+}
+
 pub use crate::{
     runtime::{attach, eval_script},
     script_docs::{
