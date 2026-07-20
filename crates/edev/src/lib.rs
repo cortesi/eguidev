@@ -41,7 +41,8 @@ use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
         CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock, Cursor, ImageContent,
-        Implementation, InitializeResult, ListToolsResult, TaskMetadata, Tool, ToolSchema,
+        Implementation, InitializeResult, ListToolsResult, TaskMetadata, Tool,
+        ToolResultDecodeError, ToolResultExtractError, ToolResultMode, ToolSchema,
     },
 };
 use tokio::{
@@ -798,17 +799,29 @@ fn parse_structured_tool_result<T: DeserializeOwned>(
     result: &CallToolResult,
     tool_name: &str,
 ) -> Result<T, String> {
-    let payload = if let Some(structured) = &result.structured_content {
-        structured.clone()
-    } else {
-        let Some(text) = result.text() else {
-            return Err(format!("{tool_name} response was missing JSON content"));
-        };
-        serde_json::from_str(text)
-            .map_err(|error| format!("failed to parse {tool_name} response: {error}"))?
-    };
-    serde_json::from_value(payload)
-        .map_err(|error| format!("failed to decode {tool_name} response: {error}"))
+    decode_tool_result(result, tool_name, &format!("{tool_name} response"))
+}
+
+/// Decodes structured content or the first JSON text block with stable domain errors.
+fn decode_tool_result<T: DeserializeOwned>(
+    result: &CallToolResult,
+    tool_name: &str,
+    decoded_name: &str,
+) -> Result<T, String> {
+    result
+        .extract_as(ToolResultMode::StructuredOrFirstJsonText)
+        .map_err(|error| match error {
+            ToolResultDecodeError::Extract(ToolResultExtractError::MissingTextContent) => {
+                format!("{tool_name} response was missing JSON content")
+            }
+            ToolResultDecodeError::Extract(ToolResultExtractError::InvalidJsonText { message }) => {
+                format!("failed to parse {tool_name} response: {message}")
+            }
+            ToolResultDecodeError::Deserialize { message } => {
+                format!("failed to decode {decoded_name}: {message}")
+            }
+            other => format!("failed to parse {tool_name} response: {other}"),
+        })
 }
 
 /// Print the textual dump returned by `dump_text()`.
@@ -2864,17 +2877,7 @@ async fn run_smoke_suite(
 
 /// Decode a proxied `script_eval` tool result back into the checked-in outcome shape.
 fn parse_script_eval_outcome(result: &CallToolResult) -> Result<ScriptEvalOutcome, String> {
-    let payload = if let Some(structured) = &result.structured_content {
-        structured.clone()
-    } else {
-        let Some(text) = result.text() else {
-            return Err("script_eval response was missing JSON content".to_string());
-        };
-        serde_json::from_str(text)
-            .map_err(|error| format!("failed to parse script_eval response: {error}"))?
-    };
-    serde_json::from_value(payload)
-        .map_err(|error| format!("failed to decode script_eval outcome: {error}"))
+    decode_tool_result(result, "script_eval", "script_eval outcome")
 }
 
 /// Serialize a `script_eval` request into an MCP arguments object.
@@ -3267,6 +3270,29 @@ mod tests {
                 .expect("script eval json"),
         )
         .expect("script eval outcome")
+    }
+
+    #[test]
+    fn script_eval_outcome_accepts_json_text_with_image_sidecars() {
+        let result = CallToolResult::new()
+            .with_content(ContentBlock::image("AQID", "image/png"))
+            .with_json_text(serde_json::json!({
+                "success": true,
+                "value": 42,
+                "logs": [],
+                "assertions": [],
+                "timing": {
+                    "compile_ms": 0,
+                    "exec_ms": 0,
+                    "total_ms": 0
+                }
+            }))
+            .expect("script eval json")
+            .with_content(ContentBlock::image("BAUG", "image/png"));
+
+        let outcome = parse_script_eval_outcome(&result).expect("script eval outcome");
+
+        assert_eq!(outcome.value, Some(serde_json::json!(42)));
     }
 
     fn dump_config(tempdir: &TempDir) -> DumpConfig {

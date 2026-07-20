@@ -14,7 +14,10 @@ use clap::{Args as ClapArgs, Parser, Subcommand};
 use eguidev_runtime::script_definitions;
 use ruau::typecheck::{Checker, Config, Mode};
 use serde_json::{Value, json};
-use tmcp::{Client, schema::CallToolResult};
+use tmcp::{
+    Client,
+    schema::{CallToolResult, ToolResultMode},
+};
 use tokio::{process::Command as TokioCommand, runtime::Builder};
 
 /// Project maintenance runner.
@@ -508,13 +511,7 @@ fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
 
 /// Parse the leading text block of a tool result as JSON.
 fn parse_tool_json_text(result: &CallToolResult) -> Result<Value, Box<dyn Error>> {
-    if let Some(content) = &result.structured_content {
-        return Ok(content.clone());
-    }
-    let text = result
-        .text()
-        .ok_or("tool result did not include a text or structured payload")?;
-    Ok(serde_json::from_str(text)?)
+    Ok(result.extract_as(ToolResultMode::StructuredOrFirstJsonText)?)
 }
 
 /// Run a command and surface failures.
