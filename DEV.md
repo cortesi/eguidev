@@ -12,6 +12,18 @@ Good doc comments explain *why* and *how*, not *what* — the signature already 
   comment, an example adds nothing. Only include examples when they clarify a non-obvious
   interaction or a surprising calling convention.
 
+## Tests
+
+Run the test lane from `xtask`:
+
+```sh
+cargo xtask test
+```
+
+Only smoketests launch a real app, so only they put a window on the desktop. Tests in this lane must
+stay headless. Lifecycle tests that need a managed app process launch the `edev_test_app` binary,
+which serves the app side of the launcher handshake over stdio and opens no window.
+
 ## Smoketests
 
 Run the default smoke wrapper from `xtask`:

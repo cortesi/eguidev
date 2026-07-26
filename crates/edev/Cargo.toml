@@ -10,6 +10,8 @@ readme.workspace = true
 keywords.workspace = true
 categories = ["command-line-utilities", "development-tools"]
 description = "MCP launcher, fixture runner, and smoketest harness for eguidev apps"
+# Test-only binary; it must not ship to users of the published crate.
+exclude = ["src/bin/edev_test_app.rs"]
 
 [lints]
 workspace = true

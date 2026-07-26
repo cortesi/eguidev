@@ -196,13 +196,6 @@ mod tests {
             .expect("tempdir")
     }
 
-    fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .expect("workspace root")
-    }
-
     fn launcher_command(config_path: &Path, cwd: &Path) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_edev"));
         command.process_group(0);
@@ -230,29 +223,12 @@ mod tests {
         .expect("write config");
     }
 
-    fn write_demo_config(path: &Path, cwd: &Path, workspace: &Path, with_secret: bool) {
-        let manifest_path = workspace.join("Cargo.toml");
-        let manifest_path = manifest_path.to_string_lossy().into_owned();
-        write_config(
-            path,
-            cwd,
-            &[
-                "cargo".to_string(),
-                "run".to_string(),
-                "--quiet".to_string(),
-                "--manifest-path".to_string(),
-                manifest_path,
-                "-p".to_string(),
-                "eguidev_demo".to_string(),
-                "--features".to_string(),
-                "devtools".to_string(),
-                "--bin".to_string(),
-                "eguidev_demo".to_string(),
-                "--".to_string(),
-                "--dev-mcp".to_string(),
-            ],
-            with_secret,
-        );
+    /// Configure the headless test app, which supervision treats like any app.
+    ///
+    /// These tests cover the process boundary only, so they never launch a GUI
+    /// app and never open a window.
+    fn write_app_config(path: &Path, cwd: &Path, with_secret: bool) {
+        write_config(path, cwd, &[env!("CARGO_BIN_EXE_edev_test_app")], with_secret);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -365,12 +341,11 @@ mod tests {
     async fn normal_start_stop_clears_app_but_preserves_launcher_until_unregister()
     -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
-        let workspace = workspace_root();
         let config_path = tempdir.path().join("normal-stop.toml");
-        write_demo_config(&config_path, tempdir.path(), &workspace, false);
+        write_app_config(&config_path, tempdir.path(), false);
 
         let mut client = Client::new("normal-stop-watchdog-test", env!("CARGO_PKG_VERSION"))
-            .with_request_timeout(Duration::from_secs(120));
+            .with_request_timeout(Duration::from_secs(10));
         let spawned = client
             .connect_process(launcher_command(&config_path, tempdir.path()))
             .await?;
@@ -501,12 +476,11 @@ mod tests {
     async fn supervisor_death_recovers_group_and_restart_uses_fresh_identity()
     -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
-        let workspace = workspace_root();
         let config_path = tempdir.path().join("supervisor-recovery.toml");
-        write_demo_config(&config_path, tempdir.path(), &workspace, false);
+        write_app_config(&config_path, tempdir.path(), false);
 
         let mut client = Client::new("supervisor-recovery-test", env!("CARGO_PKG_VERSION"))
-            .with_request_timeout(Duration::from_secs(120));
+            .with_request_timeout(Duration::from_secs(10));
         let spawned = client
             .connect_process(launcher_command(&config_path, tempdir.path()))
             .await?;
@@ -597,12 +571,11 @@ mod tests {
         assert_secret_free_args: bool,
     ) -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
-        let workspace = workspace_root();
-        let config_path = tempdir.path().join("demo.toml");
-        write_demo_config(&config_path, tempdir.path(), &workspace, true);
+        let config_path = tempdir.path().join("app.toml");
+        write_app_config(&config_path, tempdir.path(), true);
 
         let mut client = Client::new("hup-watchdog-test", env!("CARGO_PKG_VERSION"))
-            .with_request_timeout(Duration::from_secs(120));
+            .with_request_timeout(Duration::from_secs(10));
         let spawned = client
             .connect_process(launcher_command(&config_path, tempdir.path()))
             .await?;
