@@ -9,15 +9,15 @@ use serde_json::{Value, json};
 use crate::{
     error::{ErrorCode, ToolError},
     registry::{lock, viewport_id_to_string},
-    types::{RoleState, WidgetLayout, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetValue},
+    types::{WidgetLayout, WidgetRef, WidgetRegistryEntry, WidgetRoleMeta, WidgetValue},
     viewports::{ViewportSnapshot, ViewportState},
 };
 
 /// Metadata for a widget used during tracking and layout analysis.
 #[derive(Debug, Clone, Default)]
 pub struct WidgetMeta {
-    /// Role taxonomy entry.
-    pub role: WidgetRole,
+    /// Role taxonomy entry with the metadata that the role requires.
+    pub role: WidgetRoleMeta,
     /// Optional label.
     pub label: Option<String>,
     /// Optional widget value for stateful controls.
@@ -26,10 +26,18 @@ pub struct WidgetMeta {
     pub data: Option<Value>,
     /// Optional layout metadata.
     pub layout: Option<WidgetLayout>,
-    /// Role-specific metadata. Leave as `None` for custom widgets.
-    pub role_state: Option<RoleState>,
-    /// Whether the widget is visible.
+    /// Whether the widget is visible to automation.
+    ///
+    /// This defaults to `false`, which hides the widget from every default
+    /// lookup, so set it on every recorded widget. Response-backed helpers pass
+    /// `ui.is_visible() && ui.is_rect_visible(rect)`; a painter-drawn rect has
+    /// no other visibility signal, so it must state its own.
     pub visible: bool,
+    /// Whether the widget accepts interaction.
+    ///
+    /// `None` takes the value from the `egui::Response` when there is one, and
+    /// treats a response-free published rect as enabled.
+    pub enabled: Option<bool>,
     /// Optional explicit rect override.
     pub rect: Option<egui::Rect>,
     /// Optional explicit interaction rect override.
@@ -327,9 +335,9 @@ pub fn record_widget(
             native_id: response.id.value(),
             rect: meta.rect.unwrap_or(response.rect),
             interact_rect: meta.interact_rect.unwrap_or(response.interact_rect),
+            enabled: meta.enabled.unwrap_or_else(|| response.enabled()),
             meta,
             parent_id,
-            enabled: response.enabled(),
             focused: response.ctx.memory(|mem| mem.has_focus(response.id)),
         },
     );
@@ -355,9 +363,9 @@ pub fn record_rect_meta(
             native_id,
             rect: meta.rect.unwrap_or(rect),
             interact_rect: meta.interact_rect.unwrap_or(rect),
+            enabled: meta.enabled.unwrap_or(true),
             meta,
             parent_id,
-            enabled: true,
             focused: false,
         },
     );
@@ -406,12 +414,12 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         layer_id: format!("{layer_id:?}"),
         rect: rect.into(),
         interact_rect: interact_rect.into(),
-        role: meta.role,
+        role: meta.role.role(),
+        role_state: meta.role.state(),
         label: meta.label,
         value,
         data,
         layout: meta.layout,
-        role_state: meta.role_state,
         parent_id,
         enabled,
         visible: meta.visible,

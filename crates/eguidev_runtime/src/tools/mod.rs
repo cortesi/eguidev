@@ -951,17 +951,33 @@ pub fn collect_widget_list(
     Ok(widgets)
 }
 
+/// Fraction of the widget that survives clipping, or 1.0 with no layout metadata.
+fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
+    widget
+        .layout
+        .as_ref()
+        .map_or(1.0, |layout| layout.visible_fraction)
+}
+
+/// Whether a widget exists in a state that can accept an interaction.
+///
+/// This one predicate governs pointer admission, the visibility waits, and the
+/// poll that `scroll_into_view` runs. Keeping them identical means a wait that
+/// passes cannot be followed by a click that fails for the same reason.
+pub fn interaction_ready(widget: &WidgetRegistryEntry) -> bool {
+    widget.visible && widget_visible_fraction(widget) > 0.0
+}
+
+/// Remedy named by the invisible-interaction error and by its `hint` detail.
+pub const INTERACTION_READY_HINT: &str =
+    "call wait_for_visible() after scroll_into_view(), or check clipping";
+
 fn invisible_interaction_error(
     inner: &Inner,
     widget: &WidgetRegistryEntry,
     viewport_id: egui::ViewportId,
 ) -> Option<ToolError> {
-    let visible_fraction = widget
-        .layout
-        .as_ref()
-        .map(|layout| layout.visible_fraction)
-        .unwrap_or(1.0);
-    if widget.visible && visible_fraction > 0.0 {
+    if interaction_ready(widget) {
         return None;
     }
     let viewport = viewport_snapshot_for(inner, viewport_id);
@@ -974,13 +990,13 @@ fn invisible_interaction_error(
         ToolError::new(
             ErrorCode::InvisibleInteraction,
             format!(
-                "Cannot interact with widget {:?}: {reason}; call scroll_into_view() or check clipping",
+                "Cannot interact with widget {:?}: {reason}; {INTERACTION_READY_HINT}",
                 widget.id
             ),
         )
         .with_details(json!({
             "reason": "invisible_interaction",
-            "hint": "call scroll_into_view() or check clipping",
+            "hint": INTERACTION_READY_HINT,
             "widget": WidgetState::from(widget),
             "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
                 json!({
@@ -1165,6 +1181,23 @@ impl DevMcpServer {
                     anchor,
                     matched,
                     format!("current value: {actual:?}"),
+                    Some(current_state),
+                )
+            }
+            AnchorCheck::Data { pointer, equals } => {
+                let resolved = widget
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.pointer(pointer.as_str()));
+                let detail = match resolved {
+                    Some(actual) => format!("current data at {pointer:?}: {actual}"),
+                    None if widget.data.is_none() => "widget publishes no data yet".to_string(),
+                    None => format!("widget data has no value at {pointer:?}"),
+                };
+                anchor_status(
+                    anchor,
+                    resolved == Some(equals),
+                    detail,
                     Some(current_state),
                 )
             }
@@ -1564,6 +1597,7 @@ impl DevMcpServer {
             target.clone(),
             Some(timeout_ms),
             None,
+            "to take keyboard focus",
             |widget| widget.is_some_and(|widget| widget.focused),
         )
         .await
@@ -1974,12 +2008,14 @@ impl DevMcpServer {
     }
 
     /// Wait for a widget to match a predicate over its current snapshot.
+    #[allow(clippy::too_many_arguments)]
     async fn wait_for_widget_state<F>(
         &self,
         viewport_id: Option<String>,
         target: WidgetRef,
         timeout_ms: Option<u64>,
         poll_interval_ms: Option<u64>,
+        condition: &str,
         mut predicate: F,
     ) -> ToolResult<Option<WidgetRegistryEntry>>
     where
@@ -2069,7 +2105,7 @@ impl DevMcpServer {
         Err(ToolError::new(
             ErrorCode::Timeout,
             wait_timeout_message(
-                format!("Timed out waiting for widget predicate after {timeout_ms}ms"),
+                format!("Timed out waiting for widget {condition} after {timeout_ms}ms"),
                 &observation,
             ),
         )
@@ -2482,24 +2518,26 @@ impl DevMcpServer {
         root: Option<WidgetRef>,
     ) -> ToolResult<Vec<LayoutIssue>> {
         let viewport_id = self.resolve_scope_viewport(viewport_id, root.as_ref())?;
-        let mut widgets = self.inner.widgets.widget_list(viewport_id);
+        let registry = self.inner.widgets.widget_list(viewport_id);
         let viewport_id_str = viewport_id_to_string(viewport_id);
-        if let Some(root) = root.as_ref() {
-            let root = resolve_widget(&self.inner, Some(viewport_id_str.as_str()), root)?;
-            widgets = collect_subtree(&widgets, &root);
-        }
+        // The scope selects what the result reports; structure always resolves
+        // against the complete viewport registry.
+        let scope = match root.as_ref() {
+            Some(root) => {
+                let root = resolve_widget(&self.inner, Some(viewport_id_str.as_str()), root)?;
+                collect_subtree(&registry, &root)
+            }
+            None => registry.clone(),
+        };
 
-        let viewport_rect = viewport_rect(&self.inner, viewport_id);
-        let mut issues = Vec::new();
-        issues.extend(check_zero_size(&widgets));
-        issues.extend(check_clipping(&widgets, viewport_rect));
-        issues.extend(check_overflow(&widgets, viewport_rect));
-        issues.extend(check_overlaps(&widgets, viewport_rect));
-        if let Some(viewport_rect) = viewport_rect {
-            issues.extend(check_offscreen(&widgets, viewport_rect));
-        }
+        let analysis = LayoutAnalysis::new(&registry, viewport_rect(&self.inner, viewport_id));
+        let mut issues = analysis.zero_size(&scope);
+        issues.extend(analysis.clipping(&scope));
+        issues.extend(analysis.overflow(&scope));
+        issues.extend(analysis.overlaps(&scope));
+        issues.extend(analysis.offscreen(&scope));
         if let Some(ctx) = self.inner.context_for(viewport_id) {
-            issues.extend(check_text_truncation(&ctx, &widgets)?);
+            issues.extend(analysis.text_truncation(&ctx, &scope)?);
         }
         Ok(issues)
     }
@@ -3421,7 +3459,7 @@ mod tests {
         tools::types::LayoutIssueKind,
         types::{
             Modifiers, Pos2, Rect, RoleState, Vec2, WidgetLayout, WidgetRange, WidgetRef,
-            WidgetRegistryEntry, WidgetRole, WidgetValue,
+            WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetValue,
         },
         viewports::InputSnapshot,
         widget_registry::{WidgetMeta, record_widget},
@@ -5756,6 +5794,103 @@ return { first = catalog[1].name, count = #catalog }"#
     }
 
     #[tokio::test]
+    async fn fixture_data_anchor_waits_for_the_installed_data() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("viewer.mixed", "Analysed and unanalysed games.").anchor_data(
+                "status.summary",
+                "/analysed",
+                3,
+            ),
+        ]);
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
+
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        drop(ctx.run_ui(raw_input, |_| {}));
+
+        // The widget set never changes; only the published data does.
+        let publish = |analysed: i64| {
+            let mut entry = make_entry("status.summary", 1, WidgetRole::Label);
+            entry.data = Some(json!({ "analysed": analysed }));
+            inner.widgets.clear_registry(egui::ViewportId::ROOT);
+            inner.widgets.record_widget(egui::ViewportId::ROOT, entry);
+            inner.widgets.finalize_registry(egui::ViewportId::ROOT);
+        };
+        publish(0);
+        capture_test_frame(&inner, &ctx);
+
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let inner_for_capture = Arc::clone(&inner);
+        tokio::spawn(async move {
+            let capture_ctx = egui::Context::default();
+            let raw_input = egui::RawInput {
+                viewport_id: egui::ViewportId::ROOT,
+                ..Default::default()
+            };
+            drop(capture_ctx.run_ui(raw_input, |_| {}));
+            sleep(Duration::from_millis(20)).await;
+            let mut entry = make_entry("status.summary", 1, WidgetRole::Label);
+            entry.data = Some(json!({ "analysed": 3 }));
+            inner_for_capture
+                .widgets
+                .clear_registry(egui::ViewportId::ROOT);
+            inner_for_capture
+                .widgets
+                .record_widget(egui::ViewportId::ROOT, entry);
+            inner_for_capture
+                .widgets
+                .finalize_registry(egui::ViewportId::ROOT);
+            capture_test_frame(&inner_for_capture, &capture_ctx);
+        });
+
+        server
+            .fixture("viewer.mixed".to_string(), None, Some(500))
+            .await
+            .expect("fixture");
+    }
+
+    #[tokio::test]
+    async fn fixture_data_anchor_times_out_on_unmatched_data() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("viewer.mixed", "Analysed and unanalysed games.").anchor_data(
+                "status.summary",
+                "/analysed",
+                3,
+            ),
+        ]);
+        set_runtime_fixture_handler(&inner, |_call| fixture_ok());
+
+        let ctx = egui::Context::default();
+        let raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        drop(ctx.run_ui(raw_input, |_| {}));
+        let mut entry = make_entry("status.summary", 1, WidgetRole::Label);
+        entry.data = Some(json!({ "analysed": 1 }));
+        inner.widgets.clear_registry(egui::ViewportId::ROOT);
+        inner.widgets.record_widget(egui::ViewportId::ROOT, entry);
+        inner.widgets.finalize_registry(egui::ViewportId::ROOT);
+        capture_test_frame(&inner, &ctx);
+
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let error = server
+            .fixture("viewer.mixed".to_string(), None, Some(80))
+            .await
+            .expect_err("unmatched data must leave the anchor unsatisfied");
+        assert!(
+            error.message.contains("/analysed"),
+            "timeout should name the pointer: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
     async fn fixture_waits_for_scroll_anchor_stability() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![
@@ -6058,7 +6193,12 @@ return { first = catalog[1].name, count = #catalog }"#
                     "slider".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::Slider,
+                        role: WidgetRoleMeta::Slider {
+                            range: WidgetRange {
+                                min: 0.0,
+                                max: 100.0,
+                            },
+                        },
                         value: Some(WidgetValue::Float(f64::from(value))),
                         visible,
                         ..Default::default()
@@ -6126,7 +6266,10 @@ return { first = catalog[1].name, count = #catalog }"#
                     "notes".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::TextEdit,
+                        role: WidgetRoleMeta::TextEdit {
+                            multiline: false,
+                            password: false,
+                        },
                         value: Some(WidgetValue::Text(text.clone())),
                         visible,
                         ..Default::default()
@@ -6208,6 +6351,39 @@ return { first = catalog[1].name, count = #catalog }"#
                 .iter()
                 .any(|action| matches!(action, InputAction::Text { text } if text == "World"))
         );
+    }
+
+    #[test]
+    fn interaction_ready_requires_visibility_and_a_visible_fraction() {
+        let rect = Rect {
+            min: Pos2 { x: 0.0, y: 0.0 },
+            max: Pos2 { x: 10.0, y: 10.0 },
+        };
+        let clipped_layout = |visible_fraction| WidgetLayout {
+            desired_size: Vec2 { x: 10.0, y: 10.0 },
+            actual_size: Vec2 { x: 10.0, y: 10.0 },
+            clip_rect: rect,
+            clipped: true,
+            overflow: false,
+            available_rect: rect,
+            visible_fraction,
+        };
+
+        // No layout metadata means nothing is known to clip the widget.
+        let plain = make_entry("plain", 1, WidgetRole::Button);
+        assert!(interaction_ready(&plain));
+
+        let mut hidden = make_entry("hidden", 1, WidgetRole::Button);
+        hidden.visible = false;
+        assert!(!interaction_ready(&hidden));
+
+        let mut clipped = make_entry("clipped", 1, WidgetRole::Button);
+        clipped.layout = Some(clipped_layout(0.0));
+        assert!(!interaction_ready(&clipped));
+
+        let mut partly_clipped = make_entry("partly", 1, WidgetRole::Button);
+        partly_clipped.layout = Some(clipped_layout(0.25));
+        assert!(interaction_ready(&partly_clipped));
     }
 
     #[tokio::test]
@@ -6294,7 +6470,10 @@ return { first = catalog[1].name, count = #catalog }"#
                     "notes".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::TextEdit,
+                        role: WidgetRoleMeta::TextEdit {
+                            multiline: false,
+                            password: false,
+                        },
                         value: Some(WidgetValue::Text(text.clone())),
                         visible,
                         ..Default::default()
@@ -6324,7 +6503,10 @@ return { first = catalog[1].name, count = #catalog }"#
                     "notes".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::TextEdit,
+                        role: WidgetRoleMeta::TextEdit {
+                            multiline: false,
+                            password: false,
+                        },
                         value: Some(WidgetValue::Text(text.clone())),
                         visible,
                         ..Default::default()
@@ -6413,7 +6595,7 @@ return { first = catalog[1].name, count = #catalog }"#
                             "visible".to_string(),
                             &visible,
                             WidgetMeta {
-                                role: WidgetRole::Button,
+                                role: WidgetRoleMeta::Button { selected: None },
                                 visible: visible_flag,
                                 ..Default::default()
                             },
@@ -6428,7 +6610,7 @@ return { first = catalog[1].name, count = #catalog }"#
                             "hidden".to_string(),
                             &hidden,
                             WidgetMeta {
-                                role: WidgetRole::Button,
+                                role: WidgetRoleMeta::Button { selected: None },
                                 visible: hidden_flag,
                                 ..Default::default()
                             },
@@ -6742,7 +6924,9 @@ return { first = catalog[1].name, count = #catalog }"#
                     "toggle".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::Checkbox,
+                        role: WidgetRoleMeta::Checkbox {
+                            indeterminate: None,
+                        },
                         label: Some("Enabled".to_string()),
                         value: Some(WidgetValue::Bool(checked)),
                         visible,
@@ -7043,7 +7227,9 @@ return { first = catalog[1].name, count = #catalog }"#
                     "basic.enabled".to_string(),
                     &checkbox,
                     WidgetMeta {
-                        role: WidgetRole::Checkbox,
+                        role: WidgetRoleMeta::Checkbox {
+                            indeterminate: None,
+                        },
                         label: Some("Enabled".to_string()),
                         value: Some(WidgetValue::Bool(checked)),
                         visible: checkbox_visible,
@@ -7058,7 +7244,12 @@ return { first = catalog[1].name, count = #catalog }"#
                     "basic.intensity".to_string(),
                     &slider,
                     WidgetMeta {
-                        role: WidgetRole::Slider,
+                        role: WidgetRoleMeta::Slider {
+                            range: WidgetRange {
+                                min: 0.0,
+                                max: 100.0,
+                            },
+                        },
                         value: Some(WidgetValue::Float(f64::from(intensity))),
                         visible: slider_visible,
                         ..Default::default()
@@ -7250,10 +7441,17 @@ return { first = catalog[1].name, count = #catalog }"#
         inner.widgets.finalize_registry(viewport_id);
 
         let result = server
-            .wait_for_widget_state(None, widget_ref_id("status"), Some(50), Some(1), |widget| {
-                widget.and_then(|widget| widget.value.as_ref())
-                    == Some(&WidgetValue::Text("Ready".to_string()))
-            })
+            .wait_for_widget_state(
+                None,
+                widget_ref_id("status"),
+                Some(50),
+                Some(1),
+                "predicate",
+                |widget| {
+                    widget.and_then(|widget| widget.value.as_ref())
+                        == Some(&WidgetValue::Text("Ready".to_string()))
+                },
+            )
             .await
             .expect("wait for widget");
         assert!(result.is_some());
@@ -7270,6 +7468,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 widget_ref_id("missing"),
                 Some(50),
                 Some(1),
+                "predicate",
                 |widget| widget.is_none(),
             )
             .await
@@ -7305,6 +7504,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 widget_ref_id("status"),
                 Some(100),
                 Some(1),
+                "predicate",
                 |widget| widget.is_some_and(|widget| widget.visible),
             )
             .await
@@ -7337,6 +7537,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 widget_ref_id("status"),
                 Some(100),
                 Some(1),
+                "predicate",
                 |widget| widget.is_some(),
             )
             .await
@@ -7724,6 +7925,7 @@ return { first = catalog[1].name, count = #catalog }"#
                 widget_ref_id("custom.value"),
                 Some(100),
                 Some(1),
+                "predicate",
                 |_| false,
             )
             .await
@@ -7960,7 +8162,7 @@ return { first = catalog[1].name, count = #catalog }"#
                     "label".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::Label,
+                        role: WidgetRoleMeta::Plain(WidgetRole::Label),
                         label: Some(text.clone()),
                         value: Some(WidgetValue::Text(text.clone())),
                         visible,
@@ -7998,7 +8200,7 @@ return { first = catalog[1].name, count = #catalog }"#
                     "label".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::Label,
+                        role: WidgetRoleMeta::Plain(WidgetRole::Label),
                         label: Some(text.clone()),
                         value: Some(WidgetValue::Text(text.clone())),
                         visible,
@@ -8244,7 +8446,10 @@ return { first = catalog[1].name, count = #catalog }"#
                             "input".to_string(),
                             &response,
                             WidgetMeta {
-                                role: WidgetRole::TextEdit,
+                                role: WidgetRoleMeta::TextEdit {
+                                    multiline: false,
+                                    password: false,
+                                },
                                 value: Some(WidgetValue::Text(text.clone())),
                                 visible,
                                 ..Default::default()
@@ -8330,7 +8535,10 @@ return { first = catalog[1].name, count = #catalog }"#
                     "input".to_string(),
                     &response,
                     WidgetMeta {
-                        role: WidgetRole::TextEdit,
+                        role: WidgetRoleMeta::TextEdit {
+                            multiline: false,
+                            password: false,
+                        },
                         value: Some(WidgetValue::Text(text.clone())),
                         visible,
                         ..Default::default()

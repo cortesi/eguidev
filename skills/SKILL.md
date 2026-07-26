@@ -31,6 +31,15 @@ the configured tools are unavailable, use `edev docs`, place self-contained
 probes under the app's `tmp/` directory, run them with `edev eval <path>`, and
 use `edev smoke` for persistent scenarios.
 
+The CLI answers the discovery questions faster than a throwaway script:
+
+- `edev docs` prints the canonical Luau reference.
+- `edev fixtures` lists fixture names, descriptions, params, tags, and anchors.
+  `edev fixtures --markdown` renders the same catalog for docs.
+- `edev fixture NAME --param k=v` applies one fixture.
+- `edev dump --fixture NAME` prints the widget tree for a baseline.
+- `edev eval PATH` runs one script and prints its structured outcome.
+
 ## Instrumentation
 
 Widget ids are the canonical selectors. Explicit ids must be unique in a
@@ -105,34 +114,66 @@ disappearing while the new captured row set is installed.
 - Use `fixture_raw()` only for manual or debugging setup flows.
 
 
+## Choosing A Wait
+
+The wrong wait is the main source of flake.
+
+| The script is waiting for            | Use                              |
+| ------------------------------------ | -------------------------------- |
+| a widget to exist and be interactable | `w:wait_for_visible()`           |
+| a widget to reach a state             | `w:wait_for(predicate)`          |
+| a widget to disappear                 | `w:wait_for_absent()`            |
+| a scroll area to stabilize            | `w:wait_for_scroll_ready()`      |
+| a viewport-wide condition             | `vp:wait_for(predicate)`         |
+| queued input to be applied            | `vp:wait_for_settle()`           |
+| an app-wide condition                 | `wait_until(predicate)`          |
+
+`wait_for_visible` holds the same condition pointer input requires, so a widget
+that satisfies it can be clicked. `scroll_into_view()` already waits for that
+condition, so an interaction straight after it needs no manual wait.
+
+`wait_for_frames()` counts frames and proves nothing about content. Reach for it
+only when the script genuinely means "let some frames pass".
+
+Every wait takes `WaitOptions` (`timeout_ms`, `poll_interval_ms`, `viewport`)
+and every action takes `ActionOptions` (`settle`) or an action-specific
+extension of it, in the last argument position.
+
+
 ## Inspection
 
 Prefer programmatic inspection over screenshots:
 
-- `widget(...)`, `try_widget(...)`, `widget_list`, `widget_get`, `state()`,
-  `children()`, and `parent()` for structure and values.
+- Globals resolve handles: `widget(id)`, `try_widget(id)`, `root()`,
+  `viewport(...)`. Everything else is a method on the handle you get back:
+  `vp:widget_list(...)`, `vp:widget_get(id)`, `w:state()`, `w:children()`,
+  `w:parent()`.
 - Use `widget(id)` for cross-viewport lookup. Use `viewport({ name = "..." })`,
   `viewport({ title = "..." })`, or `viewport({ title_contains = "..." })`
   when you need a viewport handle; keep names and titles unique because
   ambiguous matches throw.
-- Use `widget_list({ label = "..." })`, `widget_list({ label_contains = "..." })`,
-  `widget_list({ role = "button" })`, or `widget_list({ id_prefix = "settings" })`
-  to discover widgets without fetching state for every item.
+- `widget_list` is a `Viewport` method: `vp:widget_list({ label = "..." })`,
+  `vp:widget_list({ label_contains = "..." })`, `vp:widget_list({ role = "button" })`,
+  or `vp:widget_list({ id_prefix = "settings" })` discovers widgets without
+  fetching state for every item.
 - `wait_for_widget` with predicates for state readiness -- widget existence
   does not imply state readiness.
 - `expect(...)`, `expect_absent(...)`, geometry assertions, `expect_text_fits`,
   `expect_tree`, and `expect_painted` for common verification.
 - `capture():diff()` to compare widget state before and after an action.
-- `check_layout()` for layout problems (clipping, overflow, overlap).
-- `text_measure()` for text sizing and truncation.
+- `vp:check_layout()` or `w:check_layout()` for layout problems. Structure
+  resolves against the whole viewport, so a widget-scoped check still
+  recognizes an enclosing scroll area, clip region, or container.
+- `w:text_measure()` for text sizing and truncation.
 
-Use `screenshot()` only when the question is genuinely visual: alignment,
+Use `vp:screenshot()` or `w:screenshot()` only when the question is genuinely visual: alignment,
 clipping, rendering quality, image content. Returned `ImageRef` values produce
 image blocks in the MCP response.
 On macOS, child viewport screenshots can fall back to native Quartz window capture after the
 egui screenshot event path times out; this requires Screen Recording permission and a unique
 recorded window title.
-Use `sample_pixels()` for exact fixed-color assertions; it samples RGBA data
+Use `vp:sample_pixels(...)` or `w:sample_pixels(...)` for exact fixed-color
+assertions; it samples RGBA data
 before screenshot JPEG encoding. Prefer `hex` for exact color equality. `rgba`
 channels are Luau numbers, so use them for arithmetic thresholds only when that
 is clearer than an exact fixed-color check.
@@ -193,10 +234,11 @@ Smoketest scripts follow the same shape as good `script_eval` scripts:
 6. **Smoketest** -- run the suite to confirm nothing else broke.
 
 When debugging:
-- Use `state()` on a widget handle to inspect current role, value, geometry,
-  enabled/visible/focused state.
-- Use `dismiss_popups()` or a fresh `fixture()` when open menus or transient focus
-  might leak between actions.
-- Use `show_debug_overlay("bounds")` to visualize widget rects.
-- Use `check_layout()` to find clipping, overflow, and overlap issues.
+- Use `w:state()` to inspect current role, value, geometry, and
+  enabled/visible/focused state. Every state carries its own `(viewport_id, id)`
+  pair, so a state a wait returns already names its widget.
+- Use `vp:dismiss_popups()` or a fresh `fixture()` when open menus or transient
+  focus might leak between actions.
+- Use `vp:show_debug_overlay("bounds")` to visualize widget rects.
+- Use `vp:check_layout()` to find clipping, overflow, and overlap issues.
 - Use `log()` liberally -- logs appear in the script result payload.

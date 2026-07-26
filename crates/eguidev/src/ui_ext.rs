@@ -6,7 +6,7 @@ use egui::{collapsing_header::CollapsingResponse, scroll_area::ScrollAreaOutput}
 
 use crate::{
     instrument::{active_inner, capture_layout, container, swallow_panic},
-    types::{RoleState, WidgetRange, WidgetRole, WidgetValue},
+    types::{WidgetRange, WidgetRole, WidgetRoleMeta, WidgetValue},
     widget_registry::{WidgetMeta, record_widget},
 };
 
@@ -249,9 +249,8 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Button,
+            WidgetRoleMeta::Button { selected: None },
             Some(label),
-            None,
             None,
         );
         response
@@ -270,12 +269,11 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Button,
+            WidgetRoleMeta::Button {
+                selected: Some(options.selected),
+            },
             Some(label),
             None,
-            Some(RoleState::Button {
-                selected: options.selected,
-            }),
         );
         response
     }
@@ -292,9 +290,8 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Link,
+            WidgetRoleMeta::Plain(WidgetRole::Link),
             Some(label),
-            None,
             None,
         );
         response
@@ -308,10 +305,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Link,
+            WidgetRoleMeta::Plain(WidgetRole::Link),
             Some(url.clone()),
             Some(WidgetValue::Text(url)),
-            None,
         );
         response
     }
@@ -330,10 +326,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Link,
+            WidgetRoleMeta::Plain(WidgetRole::Link),
             Some(text),
             Some(WidgetValue::Text(url)),
-            None,
         );
         response
     }
@@ -351,10 +346,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Image,
+            WidgetRoleMeta::Plain(WidgetRole::Image),
             Some(description.clone()),
             Some(WidgetValue::Text(description)),
-            None,
         );
         response
     }
@@ -371,10 +365,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Label,
+            WidgetRoleMeta::Plain(WidgetRole::Label),
             Some(label.clone()),
             Some(WidgetValue::Text(label)),
-            None,
         );
         response
     }
@@ -395,10 +388,11 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Checkbox,
+            WidgetRoleMeta::Checkbox {
+                indeterminate: None,
+            },
             Some(label),
             Some(WidgetValue::Bool(*value)),
-            None,
         );
         response
     }
@@ -421,12 +415,11 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Checkbox,
+            WidgetRoleMeta::Checkbox {
+                indeterminate: Some(options.indeterminate),
+            },
             Some(label),
             Some(WidgetValue::Bool(*value)),
-            Some(RoleState::Checkbox {
-                indeterminate: options.indeterminate,
-            }),
         );
         response
     }
@@ -456,13 +449,12 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::TextEdit,
-            None,
-            Some(WidgetValue::Text(text.clone())),
-            Some(RoleState::TextEdit {
+            WidgetRoleMeta::TextEdit {
                 multiline: options.multiline,
                 password: options.password,
-            }),
+            },
+            None,
+            Some(WidgetValue::Text(text.clone())),
         );
         response
     }
@@ -483,10 +475,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Slider,
+            WidgetRoleMeta::Slider { range: range_meta },
             None,
             Some(WidgetValue::Float(f64::from(*value))),
-            Some(RoleState::Slider { range: range_meta }),
         );
         response
     }
@@ -526,12 +517,11 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::ComboBox,
+            WidgetRoleMeta::ComboBox {
+                options: option_labels,
+            },
             Some(label_text),
             Some(WidgetValue::Int(*selected as i64)),
-            Some(RoleState::ComboBox {
-                options: option_labels,
-            }),
         );
         response
     }
@@ -546,10 +536,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::DragValue,
+            WidgetRoleMeta::DragValue { range: None },
             None,
             Some(WidgetValue::Float(f64::from(*value))),
-            Some(RoleState::DragValue { range: None }),
         );
         response
     }
@@ -570,12 +559,11 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::DragValue,
+            WidgetRoleMeta::DragValue {
+                range: Some(range_meta),
+            },
             None,
             Some(WidgetValue::Float(f64::from(*value))),
-            Some(RoleState::DragValue {
-                range: Some(range_meta),
-            }),
         );
         response
     }
@@ -590,10 +578,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::DragValue,
+            WidgetRoleMeta::DragValue { range: None },
             None,
             Some(WidgetValue::Int(i64::from(*value))),
-            Some(RoleState::DragValue { range: None }),
         );
         response
     }
@@ -614,12 +601,11 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::DragValue,
+            WidgetRoleMeta::DragValue {
+                range: Some(range_meta),
+            },
             None,
             Some(WidgetValue::Int(i64::from(*value))),
-            Some(RoleState::DragValue {
-                range: Some(range_meta),
-            }),
         );
         response
     }
@@ -655,10 +641,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::Toggle,
+            WidgetRoleMeta::Plain(WidgetRole::Toggle),
             Some(label),
             Some(WidgetValue::Bool(*selected)),
-            None,
         );
         response
     }
@@ -676,7 +661,7 @@ impl DevUiExt for egui::Ui {
             current,
             alternative,
             text,
-            ChoiceWidgetMeta::new(WidgetRole::Radio),
+            WidgetRole::Radio,
             Self::radio_value,
         )
     }
@@ -694,7 +679,7 @@ impl DevUiExt for egui::Ui {
             current,
             alternative,
             text,
-            ChoiceWidgetMeta::new(WidgetRole::Selectable),
+            WidgetRole::Selectable,
             Self::selectable_value,
         )
     }
@@ -702,14 +687,28 @@ impl DevUiExt for egui::Ui {
     fn dev_separator(&mut self, id: impl Into<String>) -> egui::Response {
         let id = id.into();
         let response = self.separator();
-        record_widget_with_layout(self, id, &response, WidgetRole::Separator, None, None, None);
+        record_widget_with_layout(
+            self,
+            id,
+            &response,
+            WidgetRoleMeta::Plain(WidgetRole::Separator),
+            None,
+            None,
+        );
         response
     }
 
     fn dev_spinner(&mut self, id: impl Into<String>) -> egui::Response {
         let id = id.into();
         let response = self.spinner();
-        record_widget_with_layout(self, id, &response, WidgetRole::Spinner, None, None, None);
+        record_widget_with_layout(
+            self,
+            id,
+            &response,
+            WidgetRoleMeta::Plain(WidgetRole::Spinner),
+            None,
+            None,
+        );
         response
     }
 
@@ -740,10 +739,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::ProgressBar,
+            WidgetRoleMeta::Plain(WidgetRole::ProgressBar),
             label,
             Some(WidgetValue::Float(f64::from(progress))),
-            None,
         );
         response
     }
@@ -762,10 +760,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &response,
-            WidgetRole::ColorPicker,
+            WidgetRoleMeta::Plain(WidgetRole::ColorPicker),
             None,
             Some(WidgetValue::Text(format_color_hex(*color))),
-            None,
         );
         response
     }
@@ -784,10 +781,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &output.response,
-            WidgetRole::MenuButton,
+            WidgetRoleMeta::Plain(WidgetRole::MenuButton),
             Some(label),
             Some(WidgetValue::Bool(output.inner.is_some())),
-            None,
         );
         output
     }
@@ -818,10 +814,9 @@ impl DevUiExt for egui::Ui {
             self,
             id,
             &output.header_response,
-            WidgetRole::CollapsingHeader,
+            WidgetRoleMeta::Plain(WidgetRole::CollapsingHeader),
             Some(label),
             Some(WidgetValue::Bool(*open)),
-            None,
         );
         output
     }
@@ -935,23 +930,13 @@ fn take_usize_override(ui: &egui::Ui, id: &str) -> Option<usize> {
     }
 }
 
-struct ChoiceWidgetMeta {
-    role: WidgetRole,
-}
-
-impl ChoiceWidgetMeta {
-    fn new(role: WidgetRole) -> Self {
-        Self { role }
-    }
-}
-
 fn record_choice_widget<V>(
     ui: &mut egui::Ui,
     id: String,
     current: &mut V,
     alternative: V,
     text: impl Into<egui::WidgetText>,
-    meta: ChoiceWidgetMeta,
+    role: WidgetRole,
     add_widget: impl FnOnce(&mut egui::Ui, &mut V, V, egui::WidgetText) -> egui::Response,
 ) -> egui::Response
 where
@@ -968,10 +953,9 @@ where
         ui,
         id,
         &response,
-        meta.role,
+        WidgetRoleMeta::Plain(role),
         Some(label),
         Some(WidgetValue::Bool(selected)),
-        None,
     );
     response
 }
@@ -981,10 +965,9 @@ fn record_widget_with_layout(
     ui: &egui::Ui,
     id: String,
     response: &egui::Response,
-    role: WidgetRole,
+    role: WidgetRoleMeta,
     label: Option<String>,
     value: Option<WidgetValue>,
-    role_state: Option<RoleState>,
 ) {
     let Some(inner) = active_inner() else {
         return;
@@ -1001,7 +984,6 @@ fn record_widget_with_layout(
                 label,
                 value,
                 layout,
-                role_state,
                 visible,
                 ..Default::default()
             },

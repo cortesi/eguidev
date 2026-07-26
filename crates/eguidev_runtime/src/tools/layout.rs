@@ -1,3 +1,5 @@
+use std::{collections::HashMap, iter};
+
 use egui::{Color32, TextStyle};
 
 use crate::{
@@ -7,8 +9,11 @@ use crate::{
         results::{LayoutIssue, TextMeasure, TextMeasureLine},
         types::LayoutIssueKind,
     },
-    types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetValue},
+    types::{Pos2, Rect, RoleState, WidgetRegistryEntry, WidgetRole, WidgetValue},
 };
+
+/// Largest coordinate difference still treated as an exact match.
+const RECT_EPSILON: f32 = 0.5;
 
 pub fn widget_text(widget: &WidgetRegistryEntry) -> Option<String> {
     match widget.value.as_ref() {
@@ -56,202 +61,302 @@ pub fn measure_text(
     })
 }
 
-pub fn check_text_truncation(
-    ctx: &egui::Context,
-    widgets: &[WidgetRegistryEntry],
-) -> Result<Vec<LayoutIssue>, ToolError> {
-    let mut issues = Vec::new();
-    for widget in widgets {
-        if widget_text(widget).is_none() {
-            continue;
-        }
-        let measurement = measure_text(ctx, widget)?;
-        if measurement.desired_size.x > measurement.actual_size.x && measurement.lines.len() <= 1 {
-            issues.push(LayoutIssue {
-                kind: LayoutIssueKind::TextTruncation,
-                widgets: vec![widget.id.clone()],
-                message: format!(
-                    "Text truncated (needs {:.1}px, has {:.1}px)",
-                    measurement.desired_size.x, measurement.actual_size.x
-                ),
-                rect: Some(widget.rect),
-            });
+/// Layout analysis over one viewport's complete widget registry.
+///
+/// Structure always resolves against the complete registry: ancestry, the
+/// effective clip rect, and the extent an ancestor scroll area declares. The
+/// `scope` slice passed to each check selects only which widgets the check
+/// reports on, so a check scoped to one row still sees the scroll area that
+/// holds the row.
+pub struct LayoutAnalysis<'a> {
+    /// Every widget captured for the viewport.
+    registry: &'a [WidgetRegistryEntry],
+    /// Registry index by canonical widget id.
+    by_id: HashMap<&'a str, &'a WidgetRegistryEntry>,
+    /// Viewport rect, when the viewport reported one.
+    viewport_rect: Option<Rect>,
+}
+
+impl<'a> LayoutAnalysis<'a> {
+    /// Index one viewport's registry for structural queries.
+    pub fn new(registry: &'a [WidgetRegistryEntry], viewport_rect: Option<Rect>) -> Self {
+        let by_id = registry
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry))
+            .collect();
+        Self {
+            registry,
+            by_id,
+            viewport_rect,
         }
     }
-    Ok(issues)
-}
 
-pub fn check_zero_size(widgets: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
-    widgets
-        .iter()
-        .filter_map(|widget| {
-            let size = rect_size(widget.rect);
-            if size.x <= 0.0 || size.y <= 0.0 {
-                Some(LayoutIssue {
-                    kind: LayoutIssueKind::ZeroSize,
-                    widgets: vec![widget.id.clone()],
-                    message: "Widget has zero size".to_string(),
-                    rect: Some(widget.rect),
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
+    /// Report widgets whose rect has collapsed on either axis.
+    pub fn zero_size(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+        scope
+            .iter()
+            .filter(|widget| {
+                let size = rect_size(widget.rect);
+                size.x <= 0.0 || size.y <= 0.0
+            })
+            .map(|widget| LayoutIssue {
+                kind: LayoutIssueKind::ZeroSize,
+                widgets: vec![widget.id.clone()],
+                message: "Widget has zero size".to_string(),
+                rect: Some(widget.rect),
+            })
+            .collect()
+    }
 
-pub fn check_clipping(
-    widgets: &[WidgetRegistryEntry],
-    viewport_rect: Option<Rect>,
-) -> Vec<LayoutIssue> {
-    widgets
-        .iter()
-        .filter_map(|widget| {
-            let layout = widget.layout.as_ref()?;
-            let clipped = layout.clipped || layout.visible_fraction < 1.0;
-            if clipped && !has_nested_clip_region(widget, viewport_rect) {
-                Some(LayoutIssue {
+    /// Report widgets clipped by the viewport rather than by a container.
+    pub fn clipping(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+        scope
+            .iter()
+            .filter_map(|widget| {
+                let layout = widget.layout.as_ref()?;
+                let clipped = layout.clipped || layout.visible_fraction < 1.0;
+                (clipped && !self.clipped_by_container(widget)).then(|| LayoutIssue {
                     kind: LayoutIssueKind::Clipping,
                     widgets: vec![widget.id.clone()],
                     message: "Widget is clipped".to_string(),
                     rect: Some(widget.rect),
                 })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub fn check_overflow(
-    widgets: &[WidgetRegistryEntry],
-    viewport_rect: Option<Rect>,
-) -> Vec<LayoutIssue> {
-    widgets
-        .iter()
-        .filter_map(|widget| {
-            let layout = widget.layout.as_ref()?;
-            let starts_within_slot = point_in_rect(widget.rect.min, layout.available_rect);
-            if layout.overflow
-                && starts_within_slot
-                && !has_nested_clip_region(widget, viewport_rect)
-            {
-                Some(LayoutIssue {
-                    kind: LayoutIssueKind::Overflow,
-                    widgets: vec![widget.id.clone()],
-                    message: "Widget overflows its clip rect".to_string(),
-                    rect: Some(widget.rect),
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub fn check_overlaps(
-    widgets: &[WidgetRegistryEntry],
-    viewport_rect: Option<Rect>,
-) -> Vec<LayoutIssue> {
-    let mut issues = Vec::new();
-    for (i, first) in widgets.iter().enumerate() {
-        for second in widgets.iter().skip(i + 1) {
-            if !first.visible || !second.visible {
-                continue;
-            }
-            if first.role == WidgetRole::ScrollArea || second.role == WidgetRole::ScrollArea {
-                continue;
-            }
-            if are_ancestor_descendant(first, second, widgets) {
-                continue;
-            }
-            let Some(first_rect) = overlap_check_rect(first, viewport_rect) else {
-                continue;
-            };
-            let Some(second_rect) = overlap_check_rect(second, viewport_rect) else {
-                continue;
-            };
-            if let Some(overlap_rect) = rect_intersection(first_rect, second_rect) {
-                issues.push(LayoutIssue {
-                    kind: LayoutIssueKind::Overlap,
-                    widgets: vec![first.id.clone(), second.id.clone()],
-                    message: "Widgets overlap".to_string(),
-                    rect: Some(overlap_rect),
-                });
-            }
-        }
+            })
+            .collect()
     }
-    issues
-}
 
-fn overlap_check_rect(widget: &WidgetRegistryEntry, viewport_rect: Option<Rect>) -> Option<Rect> {
-    if has_nested_clip_region(widget, viewport_rect) {
-        let layout = widget.layout.as_ref()?;
-        rect_intersection(widget.rect, layout.clip_rect)
-    } else {
-        Some(widget.rect)
-    }
-}
-
-fn are_ancestor_descendant(
-    first: &WidgetRegistryEntry,
-    second: &WidgetRegistryEntry,
-    widgets: &[WidgetRegistryEntry],
-) -> bool {
-    has_ancestor(first, &second.id, widgets) || has_ancestor(second, &first.id, widgets)
-}
-
-fn has_ancestor(
-    descendant: &WidgetRegistryEntry,
-    ancestor_id: &str,
-    widgets: &[WidgetRegistryEntry],
-) -> bool {
-    let mut parent_id = descendant.parent_id.as_deref();
-    let mut visited = 0usize;
-    while let Some(current_parent_id) = parent_id {
-        if current_parent_id == ancestor_id {
-            return true;
-        }
-        visited += 1;
-        if visited > widgets.len() {
-            return false;
-        }
-        parent_id = widgets
+    /// Report widgets that start inside their slot and then overrun it.
+    pub fn overflow(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+        scope
             .iter()
-            .find(|widget| widget.id == current_parent_id)
-            .and_then(|widget| widget.parent_id.as_deref());
+            .filter_map(|widget| {
+                let layout = widget.layout.as_ref()?;
+                let starts_within_slot = point_in_rect(widget.rect.min, layout.available_rect);
+                (layout.overflow && starts_within_slot && !self.clipped_by_container(widget)).then(
+                    || LayoutIssue {
+                        kind: LayoutIssueKind::Overflow,
+                        widgets: vec![widget.id.clone()],
+                        message: "Widget overflows its clip rect".to_string(),
+                        rect: Some(widget.rect),
+                    },
+                )
+            })
+            .collect()
     }
-    false
-}
 
-pub fn check_offscreen(widgets: &[WidgetRegistryEntry], viewport_rect: Rect) -> Vec<LayoutIssue> {
-    widgets
-        .iter()
-        .filter_map(|widget| {
-            if has_nested_clip_region(widget, Some(viewport_rect)) {
-                return None;
+    /// Report unrelated widget pairs in scope whose visible rects intersect.
+    pub fn overlaps(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+        let mut issues = Vec::new();
+        for (index, first) in scope.iter().enumerate() {
+            for second in scope.iter().skip(index + 1) {
+                if !first.visible || !second.visible {
+                    continue;
+                }
+                if first.role == WidgetRole::ScrollArea || second.role == WidgetRole::ScrollArea {
+                    continue;
+                }
+                // Separate egui layers stack on purpose. A window, menu, or
+                // tooltip covering the surface below it is the intent, not a
+                // layout defect.
+                if first.layer_id != second.layer_id {
+                    continue;
+                }
+                if self.are_ancestor_descendant(first, second) {
+                    continue;
+                }
+                let (Some(first_rect), Some(second_rect)) =
+                    (self.visible_rect(first), self.visible_rect(second))
+                else {
+                    continue;
+                };
+                if let Some(overlap_rect) = rect_intersection(first_rect, second_rect) {
+                    issues.push(LayoutIssue {
+                        kind: LayoutIssueKind::Overlap,
+                        widgets: vec![first.id.clone(), second.id.clone()],
+                        message: "Widgets overlap".to_string(),
+                        rect: Some(overlap_rect),
+                    });
+                }
             }
-            if rect_contains_rect(viewport_rect, widget.rect) {
-                return None;
-            }
-            Some(LayoutIssue {
+        }
+        issues
+    }
+
+    /// Report widgets outside the viewport whose position no ancestor explains.
+    ///
+    /// An ancestor scroll area explains the position when the widget lies
+    /// inside the extent that scroll area declares, which is where scrolled
+    /// content sits. Any other ancestor explains it when its clip rect differs
+    /// from the viewport rect, which is where clipped content sits.
+    pub fn offscreen(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+        let Some(viewport_rect) = self.viewport_rect else {
+            return Vec::new();
+        };
+        scope
+            .iter()
+            .filter(|widget| {
+                !rect_contains_rect(viewport_rect, widget.rect)
+                    && !self.has_nested_clip_region(widget)
+                    && !self.within_ancestor_scroll_extent(widget)
+            })
+            .map(|widget| LayoutIssue {
                 kind: LayoutIssueKind::Offscreen,
                 widgets: vec![widget.id.clone()],
                 message: "Widget is outside the viewport".to_string(),
                 rect: Some(widget.rect),
             })
+            .collect()
+    }
+
+    /// Report text that needs more width than its widget was given.
+    pub fn text_truncation(
+        &self,
+        ctx: &egui::Context,
+        scope: &[WidgetRegistryEntry],
+    ) -> Result<Vec<LayoutIssue>, ToolError> {
+        let mut issues = Vec::new();
+        for widget in scope {
+            if widget_text(widget).is_none() {
+                continue;
+            }
+            let measurement = measure_text(ctx, widget)?;
+            if measurement.desired_size.x > measurement.actual_size.x
+                && measurement.lines.len() <= 1
+            {
+                issues.push(LayoutIssue {
+                    kind: LayoutIssueKind::TextTruncation,
+                    widgets: vec![widget.id.clone()],
+                    message: format!(
+                        "Text truncated (needs {:.1}px, has {:.1}px)",
+                        measurement.desired_size.x, measurement.actual_size.x
+                    ),
+                    rect: Some(widget.rect),
+                });
+            }
+        }
+        Ok(issues)
+    }
+
+    /// The part of the widget rect a viewer can actually see.
+    ///
+    /// A widget is bounded by its clip region and by every scroll area that
+    /// holds it, so the scrolled-away remainder cannot overlap anything.
+    /// Returns `None` when no part of the widget survives.
+    fn visible_rect(&self, widget: &WidgetRegistryEntry) -> Option<Rect> {
+        let mut rect = widget.rect;
+        if let Some(clip_rect) = self.effective_clip_rect(widget) {
+            rect = rect_intersection(rect, clip_rect)?;
+        }
+        for scroll in self
+            .ancestors(widget)
+            .filter(|ancestor| ancestor.role == WidgetRole::ScrollArea)
+        {
+            rect = rect_intersection(rect, scroll.rect)?;
+        }
+        Some(rect)
+    }
+
+    /// Whether a container, not the viewport edge, bounds this widget.
+    ///
+    /// Clipping inside a scroll area is what a scroll area is for, and a
+    /// nested clip region is a deliberate boundary. Neither is a layout defect.
+    fn clipped_by_container(&self, widget: &WidgetRegistryEntry) -> bool {
+        self.has_nested_clip_region(widget) || self.has_ancestor_scroll_area(widget)
+    }
+
+    /// Whether any ancestor of the widget is a scroll area.
+    fn has_ancestor_scroll_area(&self, widget: &WidgetRegistryEntry) -> bool {
+        self.ancestors(widget)
+            .any(|ancestor| ancestor.role == WidgetRole::ScrollArea)
+    }
+
+    /// Whether the widget sits inside a clip region narrower than the viewport.
+    fn has_nested_clip_region(&self, widget: &WidgetRegistryEntry) -> bool {
+        let (Some(viewport_rect), Some(clip_rect)) =
+            (self.viewport_rect, self.effective_clip_rect(widget))
+        else {
+            return false;
+        };
+        !rect_approx_eq(clip_rect, viewport_rect)
+    }
+
+    /// The widget's own clip rect, or the nearest ancestor's when it has none.
+    ///
+    /// A rect published without an `egui::Response` carries no layout, so it
+    /// inherits the clip region of the container that published it.
+    fn effective_clip_rect(&self, widget: &WidgetRegistryEntry) -> Option<Rect> {
+        if let Some(layout) = widget.layout.as_ref() {
+            return Some(layout.clip_rect);
+        }
+        self.ancestors(widget)
+            .find_map(|ancestor| ancestor.layout.as_ref())
+            .map(|layout| layout.clip_rect)
+    }
+
+    /// Whether an ancestor scroll area declares an extent holding this widget.
+    fn within_ancestor_scroll_extent(&self, widget: &WidgetRegistryEntry) -> bool {
+        self.ancestors(widget)
+            .filter_map(scroll_content_rect)
+            .any(|content_rect| rect_contains_rect(content_rect, widget.rect))
+    }
+
+    fn are_ancestor_descendant(
+        &self,
+        first: &WidgetRegistryEntry,
+        second: &WidgetRegistryEntry,
+    ) -> bool {
+        self.has_ancestor(first, &second.id) || self.has_ancestor(second, &first.id)
+    }
+
+    fn has_ancestor(&self, descendant: &WidgetRegistryEntry, ancestor_id: &str) -> bool {
+        self.ancestors(descendant)
+            .any(|ancestor| ancestor.id == ancestor_id)
+    }
+
+    /// Walk parents from the widget upward, stopping on a missing id or a cycle.
+    fn ancestors(
+        &self,
+        widget: &WidgetRegistryEntry,
+    ) -> impl Iterator<Item = &'a WidgetRegistryEntry> {
+        let mut parent_id = widget.parent_id.clone();
+        let mut remaining = self.registry.len();
+        iter::from_fn(move || {
+            let id = parent_id.take()?;
+            if remaining == 0 {
+                return None;
+            }
+            remaining -= 1;
+            let ancestor = *self.by_id.get(id.as_str())?;
+            parent_id = ancestor.parent_id.clone();
+            Some(ancestor)
         })
-        .collect()
+    }
 }
 
-fn has_nested_clip_region(widget: &WidgetRegistryEntry, viewport_rect: Option<Rect>) -> bool {
-    let Some(layout) = widget.layout.as_ref() else {
-        return false;
+/// The extent a scroll area declares, in viewport coordinates.
+///
+/// The extent starts at the scroll area rect offset backwards by the current
+/// scroll position and spans the full content size, so it covers the rows that
+/// have scrolled out of view on either side.
+fn scroll_content_rect(widget: &WidgetRegistryEntry) -> Option<Rect> {
+    if widget.role != WidgetRole::ScrollArea {
+        return None;
+    }
+    let scroll = widget
+        .role_state
+        .as_ref()
+        .and_then(RoleState::scroll_state)?;
+    let min = Pos2 {
+        x: widget.rect.min.x - scroll.offset.x,
+        y: widget.rect.min.y - scroll.offset.y,
     };
-    let Some(viewport_rect) = viewport_rect else {
-        return false;
-    };
-    !rect_approx_eq(layout.clip_rect, viewport_rect)
+    Some(Rect {
+        min,
+        max: Pos2 {
+            x: min.x + scroll.content_size.x,
+            y: min.y + scroll.content_size.y,
+        },
+    })
 }
 
 fn rect_approx_eq(left: Rect, right: Rect) -> bool {
@@ -262,24 +367,27 @@ fn rect_approx_eq(left: Rect, right: Rect) -> bool {
 }
 
 fn approx_eq(left: f32, right: f32) -> bool {
-    (left - right).abs() <= 0.5
+    (left - right).abs() <= RECT_EPSILON
 }
 
 pub fn point_in_rect(pos: Pos2, rect: Rect) -> bool {
     pos.x >= rect.min.x && pos.x <= rect.max.x && pos.y >= rect.min.y && pos.y <= rect.max.y
 }
 
+/// Whether `outer` contains `inner`, tolerating sub-pixel rounding.
 pub fn rect_contains_rect(outer: Rect, inner: Rect) -> bool {
-    inner.min.x >= outer.min.x
-        && inner.min.y >= outer.min.y
-        && inner.max.x <= outer.max.x
-        && inner.max.y <= outer.max.y
+    inner.min.x >= outer.min.x - RECT_EPSILON
+        && inner.min.y >= outer.min.y - RECT_EPSILON
+        && inner.max.x <= outer.max.x + RECT_EPSILON
+        && inner.max.y <= outer.max.y + RECT_EPSILON
 }
 
 #[cfg(test)]
 mod tests {
+    use std::slice;
+
     use super::*;
-    use crate::types::{WidgetLayout, WidgetRole};
+    use crate::types::{Vec2, WidgetLayout, WidgetRole};
 
     fn rect(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Rect {
         Rect {
@@ -310,6 +418,44 @@ mod tests {
         }
     }
 
+    fn layout(clip_rect: Rect, available_rect: Rect) -> WidgetLayout {
+        WidgetLayout {
+            desired_size: egui::vec2(100.0, 20.0).into(),
+            actual_size: egui::vec2(100.0, 20.0).into(),
+            clip_rect,
+            clipped: false,
+            overflow: false,
+            available_rect,
+            visible_fraction: 1.0,
+        }
+    }
+
+    /// A scroll area that fills the viewport, holding rows with the same clip rect.
+    fn viewport_filling_scroll(
+        viewport_rect: Rect,
+        offset_y: f32,
+        content_height: f32,
+    ) -> WidgetRegistryEntry {
+        let mut scroll = entry("scroll", WidgetRole::ScrollArea, viewport_rect, true);
+        scroll.parent_id = None;
+        scroll.layout = Some(layout(viewport_rect, viewport_rect));
+        scroll.role_state = Some(RoleState::ScrollArea {
+            offset: Vec2 {
+                x: 0.0,
+                y: offset_y,
+            },
+            viewport_size: Vec2 {
+                x: viewport_rect.max.x - viewport_rect.min.x,
+                y: viewport_rect.max.y - viewport_rect.min.y,
+            },
+            content_size: Vec2 {
+                x: viewport_rect.max.x - viewport_rect.min.x,
+                y: content_height,
+            },
+        });
+        scroll
+    }
+
     #[test]
     fn layout_checks_ignore_nested_scroll_clipping() {
         let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
@@ -322,18 +468,119 @@ mod tests {
             false,
         );
         row.layout = Some(WidgetLayout {
-            desired_size: egui::vec2(100.0, 50.0).into(),
-            actual_size: egui::vec2(100.0, 50.0).into(),
-            clip_rect: scroll_rect,
             clipped: true,
             overflow: true,
-            available_rect: viewport_rect,
             visible_fraction: 0.2,
+            ..layout(scroll_rect, viewport_rect)
         });
 
-        assert!(check_clipping(&[row.clone()], Some(viewport_rect)).is_empty());
-        assert!(check_overflow(&[row.clone()], Some(viewport_rect)).is_empty());
-        assert!(check_offscreen(&[row], viewport_rect).is_empty());
+        let registry = vec![row];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.clipping(&registry).is_empty());
+        assert!(analysis.overflow(&registry).is_empty());
+        assert!(analysis.offscreen(&registry).is_empty());
+    }
+
+    #[test]
+    fn scrolled_row_in_viewport_filling_scroll_area_is_not_offscreen() {
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        let scroll = viewport_filling_scroll(viewport_rect, 200.0, 500.0);
+        // The row scrolled above the viewport but stays inside the content extent.
+        let mut row = entry(
+            "row",
+            WidgetRole::Label,
+            rect(0.0, -180.0, 100.0, -160.0),
+            false,
+        );
+        row.parent_id = Some("scroll".to_string());
+        row.layout = Some(layout(viewport_rect, viewport_rect));
+
+        let registry = vec![scroll, row.clone()];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.offscreen(slice::from_ref(&row)).is_empty());
+    }
+
+    #[test]
+    fn published_rect_inside_a_scroll_area_is_not_offscreen() {
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        let scroll = viewport_filling_scroll(viewport_rect, 200.0, 500.0);
+        // A published rect carries no layout, so it inherits the scroll clip rect.
+        let mut marker = entry(
+            "marker",
+            WidgetRole::Unknown,
+            rect(0.0, -180.0, 20.0, -160.0),
+            true,
+        );
+        marker.parent_id = Some("scroll".to_string());
+
+        let registry = vec![scroll, marker.clone()];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.offscreen(slice::from_ref(&marker)).is_empty());
+    }
+
+    #[test]
+    fn widget_beyond_the_declared_content_extent_is_offscreen() {
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        let scroll = viewport_filling_scroll(viewport_rect, 0.0, 300.0);
+        let mut stray = entry(
+            "stray",
+            WidgetRole::Label,
+            rect(0.0, 320.0, 100.0, 340.0),
+            true,
+        );
+        stray.parent_id = Some("scroll".to_string());
+        stray.layout = Some(layout(viewport_rect, viewport_rect));
+
+        let registry = vec![scroll, stray.clone()];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        let issues = analysis.offscreen(slice::from_ref(&stray));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].widgets, vec!["stray"]);
+    }
+
+    #[test]
+    fn widget_off_a_non_scrollable_axis_is_offscreen() {
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        // The content is only as wide as the viewport, so horizontal escape is a defect.
+        let scroll = viewport_filling_scroll(viewport_rect, 0.0, 500.0);
+        let mut wide = entry(
+            "wide",
+            WidgetRole::Label,
+            rect(160.0, 10.0, 220.0, 30.0),
+            true,
+        );
+        wide.parent_id = Some("scroll".to_string());
+        wide.layout = Some(layout(viewport_rect, viewport_rect));
+
+        let registry = vec![scroll, wide.clone()];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        let issues = analysis.offscreen(slice::from_ref(&wide));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].widgets, vec!["wide"]);
+    }
+
+    #[test]
+    fn scoped_analysis_still_resolves_the_ancestor_scroll_area() {
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        let scroll = viewport_filling_scroll(viewport_rect, 200.0, 500.0);
+        let mut row = entry(
+            "row",
+            WidgetRole::Label,
+            rect(0.0, -180.0, 100.0, -160.0),
+            false,
+        );
+        row.parent_id = Some("scroll".to_string());
+        row.layout = Some(layout(viewport_rect, viewport_rect));
+
+        let registry = vec![scroll, row.clone()];
+        let scope = vec![row];
+        // The scope holds the row alone; the analysis still sees the scroll area.
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.offscreen(&scope).is_empty());
+
+        // Without the surrounding registry the same scope reports the row.
+        let blind = LayoutAnalysis::new(&scope, Some(viewport_rect));
+        assert_eq!(blind.offscreen(&scope).len(), 1);
     }
 
     #[test]
@@ -352,7 +599,9 @@ mod tests {
             false,
         );
 
-        assert!(check_overlaps(&[scroll, row, hidden], None).is_empty());
+        let registry = vec![scroll, row, hidden];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        assert!(analysis.overlaps(&registry).is_empty());
     }
 
     #[test]
@@ -377,9 +626,101 @@ mod tests {
             true,
         );
 
-        let issues = check_overlaps(&[panel, child, sibling], None);
+        let registry = vec![panel, child, sibling];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        let issues = analysis.overlaps(&registry);
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].widgets, vec!["child", "sibling"]);
+    }
+
+    #[test]
+    fn overlap_ancestry_resolves_through_widgets_outside_the_scope() {
+        let mut canvas = entry(
+            "canvas",
+            WidgetRole::Unknown,
+            rect(0.0, 0.0, 100.0, 100.0),
+            true,
+        );
+        canvas.parent_id = None;
+        let mut square = entry(
+            "square",
+            WidgetRole::Unknown,
+            rect(0.0, 0.0, 20.0, 20.0),
+            true,
+        );
+        square.parent_id = Some("canvas".to_string());
+
+        let registry = vec![canvas, square];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        // The scope excludes nothing here, and containment is intentional.
+        assert!(analysis.overlaps(&registry).is_empty());
+    }
+
+    #[test]
+    fn overlap_checks_ignore_widgets_in_separate_layers() {
+        let panel = entry(
+            "panel",
+            WidgetRole::Label,
+            rect(0.0, 0.0, 200.0, 200.0),
+            true,
+        );
+        let mut window = entry(
+            "window.label",
+            WidgetRole::Label,
+            rect(20.0, 20.0, 120.0, 60.0),
+            true,
+        );
+        window.layer_id = "window_layer".to_string();
+        window.parent_id = None;
+
+        let registry = vec![panel, window];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        assert!(analysis.overlaps(&registry).is_empty());
+    }
+
+    #[test]
+    fn overlap_checks_report_siblings_in_the_same_layer() {
+        let first = entry(
+            "first",
+            WidgetRole::Button,
+            rect(0.0, 0.0, 60.0, 20.0),
+            true,
+        );
+        let second = entry(
+            "second",
+            WidgetRole::Button,
+            rect(30.0, 0.0, 90.0, 20.0),
+            true,
+        );
+
+        let registry = vec![first, second];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        assert_eq!(analysis.overlaps(&registry).len(), 1);
+    }
+
+    #[test]
+    fn clipping_and_overflow_ignore_content_inside_a_scroll_area() {
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        let scroll = viewport_filling_scroll(viewport_rect, 40.0, 500.0);
+        let mut row = entry(
+            "row",
+            WidgetRole::Label,
+            rect(0.0, 80.0, 100.0, 130.0),
+            true,
+        );
+        row.parent_id = Some("scroll".to_string());
+        row.layout = Some(WidgetLayout {
+            clipped: true,
+            overflow: true,
+            visible_fraction: 0.4,
+            ..layout(viewport_rect, viewport_rect)
+        });
+
+        let registry = vec![scroll, row.clone()];
+        let scope = slice::from_ref(&row);
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.clipping(scope).is_empty());
+        assert!(analysis.overflow(scope).is_empty());
     }
 
     #[test]
@@ -399,16 +740,14 @@ mod tests {
             true,
         );
         scroll_text.layout = Some(WidgetLayout {
-            desired_size: egui::vec2(180.0, 140.0).into(),
-            actual_size: egui::vec2(180.0, 140.0).into(),
-            clip_rect,
             clipped: true,
-            overflow: false,
-            available_rect: viewport_rect,
             visible_fraction: 0.3,
+            ..layout(clip_rect, viewport_rect)
         });
 
-        assert!(check_overlaps(&[toolbar, scroll_text], Some(viewport_rect)).is_empty());
+        let registry = vec![toolbar, scroll_text];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.overlaps(&registry).is_empty());
     }
 
     #[test]
@@ -421,15 +760,29 @@ mod tests {
             true,
         );
         button.layout = Some(WidgetLayout {
-            desired_size: egui::vec2(40.0, 20.0).into(),
-            actual_size: egui::vec2(40.0, 20.0).into(),
-            clip_rect: viewport_rect,
-            clipped: false,
             overflow: true,
-            available_rect: rect(50.0, 0.0, 100.0, 100.0),
-            visible_fraction: 1.0,
+            ..layout(viewport_rect, rect(50.0, 0.0, 100.0, 100.0))
         });
 
-        assert!(check_overflow(&[button], Some(viewport_rect)).is_empty());
+        let registry = vec![button];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+        assert!(analysis.overflow(&registry).is_empty());
+    }
+
+    #[test]
+    fn ancestor_walk_terminates_on_a_parent_cycle() {
+        let mut first = entry("first", WidgetRole::Label, rect(0.0, 0.0, 10.0, 10.0), true);
+        first.parent_id = Some("second".to_string());
+        let mut second = entry(
+            "second",
+            WidgetRole::Label,
+            rect(0.0, 0.0, 10.0, 10.0),
+            true,
+        );
+        second.parent_id = Some("first".to_string());
+
+        let registry = vec![first.clone(), second];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        assert!(!analysis.has_ancestor(&first, "missing"));
     }
 }

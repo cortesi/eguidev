@@ -1,6 +1,7 @@
 #![allow(clippy::missing_docs_in_private_items, clippy::result_large_err)]
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -263,7 +264,7 @@ async fn run_script_eval_local(
     let compile_start = Instant::now();
     let runtime_capabilities = RuntimeCapabilities::default();
 
-    let module = EguidevModule {
+    let (module, _surface) = EguidevModule {
         args: script_args_to_luau_json(&args),
         runtime: Arc::clone(&script_runtime),
         declaration: script_declarations(&app_preludes),
@@ -1001,8 +1002,39 @@ struct EguidevModule {
     declaration: String,
 }
 
+/// Names the module registers, grouped by the table that receives them.
+///
+/// Ruau audits declared globals against the declaration source, but a hidden
+/// method table has no declaration to audit. This record is what the
+/// declaration parity test compares `eguidev.d.luau` against.
+#[derive(Debug, Default)]
+struct ModuleSurface {
+    /// Global function names.
+    globals: BTreeSet<String>,
+    /// Method names keyed by hidden table name.
+    methods: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ModuleSurface {
+    fn record(&mut self, name: &str, binding: &ModuleBinding) {
+        match binding {
+            ModuleBinding::Global | ModuleBinding::GlobalOverride => {
+                self.globals.insert(name.to_string());
+            }
+            ModuleBinding::Hidden(table) => {
+                self.methods
+                    .entry(table.to_string())
+                    .or_default()
+                    .insert(name.to_string());
+            }
+            ModuleBinding::Library(_) => {}
+        }
+    }
+}
+
 struct DeclaredModuleBuilder<'a> {
     builder: &'a mut module::Builder,
+    surface: ModuleSurface,
 }
 
 impl DeclaredModuleBuilder<'_> {
@@ -1013,6 +1045,7 @@ impl DeclaredModuleBuilder<'_> {
             + Sync
             + 'static,
     {
+        self.surface.record(name, &binding);
         self.builder
             .borrowed_function(name, declared_binding(binding), function);
     }
@@ -1023,6 +1056,7 @@ impl DeclaredModuleBuilder<'_> {
         binding: ModuleBinding,
         function: Box<dyn AsyncHostFunction>,
     ) {
+        self.surface.record(name, &binding);
         self.builder
             .async_function(name, declared_binding(binding), Arc::from(function));
     }
@@ -1038,22 +1072,26 @@ fn declared_binding(binding: ModuleBinding) -> Binding {
 }
 
 impl EguidevModule {
-    fn build(self) -> Arc<dyn NativeModule> {
+    /// Build the native module and report the surface it registered.
+    fn build(self) -> (Arc<dyn NativeModule>, ModuleSurface) {
         let mut native = module::Builder::from_declaration(
             "eguidev_initial",
             DeclarationSource::Text(&self.declaration),
         );
         let mut builder = DeclaredModuleBuilder {
             builder: &mut native,
+            surface: ModuleSurface::default(),
         };
         self.register_core_globals(&mut builder);
         self.register_viewport_methods(&mut builder);
         self.register_widget_methods(&mut builder);
         self.register_capture_methods(&mut builder);
         self.register_script_utility_globals(&mut builder);
-        native
+        let surface = builder.surface;
+        let module = native
             .build()
-            .expect("Eguidev declaration matches its runtime bindings")
+            .expect("Eguidev declaration matches its runtime bindings");
+        (module, surface)
     }
 
     fn register_core_globals(&self, builder: &mut DeclaredModuleBuilder<'_>) {
@@ -1261,23 +1299,25 @@ impl EguidevModule {
         builder.async_function(
             "wait_for_widget_visible",
             ModuleBinding::hidden("viewport_methods"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportStringArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.receiver.options_with_viewport(None);
-                    let target = Value::String(args.value);
-                    let value = runtime
-                        .wait_for_widget_visible(
-                            pos,
-                            &target,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
-                }
-            }),
+            async_host_fn(
+                move |ctx: AsyncHostContext, args: ViewportStringOptionsArgs| {
+                    let runtime = Arc::clone(&runtime);
+                    async move {
+                        let pos = script_position_from_context(&ctx).await?;
+                        let options = args.options_with_viewport();
+                        let target = Value::String(args.value);
+                        let value = runtime
+                            .wait_for_widget_visible(
+                                pos,
+                                &target,
+                                options.as_ref().and_then(Value::as_object),
+                            )
+                            .await
+                            .map_err(host_script_error)?;
+                        typed_json_host_return(&ctx, value).await
+                    }
+                },
+            ),
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
@@ -1336,12 +1376,17 @@ impl EguidevModule {
         builder.async_function(
             "focus",
             ModuleBinding::hidden("viewport_methods"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
+                    let options = args.options_with_viewport();
                     let value = runtime
-                        .focus_window(pos, viewport.id)
+                        .focus_window(
+                            pos,
+                            args.receiver.id,
+                            options.as_ref().and_then(Value::as_object),
+                        )
                         .await
                         .map_err(host_script_error)?;
                     typed_scalar_host_return(value)
@@ -1352,11 +1397,11 @@ impl EguidevModule {
         builder.async_function(
             "wait_for_settle",
             ModuleBinding::hidden("viewport_methods"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let options = viewport.options_with_viewport(None);
+                    let options = args.options_with_viewport();
                     let value = runtime
                         .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
                         .await
@@ -1369,11 +1414,11 @@ impl EguidevModule {
         builder.async_function(
             "wait_for_capture",
             ModuleBinding::hidden("viewport_methods"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let options = viewport.options_with_viewport(None);
+                    let options = args.options_with_viewport();
                     let value = runtime
                         .wait_for_capture(pos, options.as_ref().and_then(Value::as_object))
                         .await
@@ -1386,12 +1431,17 @@ impl EguidevModule {
         builder.async_function(
             "dismiss_popups",
             ModuleBinding::hidden("viewport_methods"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
+                    let options = args.options_with_viewport();
                     let value = runtime
-                        .viewport_dismiss_popups(pos, Some(viewport.id))
+                        .viewport_dismiss_popups(
+                            pos,
+                            Some(args.receiver.id),
+                            options.as_ref().and_then(Value::as_object),
+                        )
                         .await
                         .map_err(host_script_error)?;
                     typed_scalar_host_return(value)
@@ -1792,12 +1842,17 @@ impl EguidevModule {
         builder.async_function(
             "focus",
             ModuleBinding::hidden("widget_methods"),
-            async_host_fn(move |ctx: AsyncHostContext, receiver: WidgetReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
+                    let options = args.options_with_viewport();
                     let value = runtime
-                        .action_focus(pos, &receiver.value)
+                        .action_focus(
+                            pos,
+                            &args.receiver.value,
+                            options.as_ref().and_then(Value::as_object),
+                        )
                         .await
                         .map_err(host_script_error)?;
                     typed_scalar_host_return(value)
@@ -2256,13 +2311,17 @@ impl EguidevModule {
         builder.async_function(
             "wait_for_frames",
             ModuleBinding::Global,
-            async_host_fn(move |ctx: AsyncHostContext, count: Option<f64>| {
+            async_host_fn(move |ctx: AsyncHostContext, args: FrameCountOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let count = optional_luau_number_to_json(count)?;
+                    let count = optional_luau_number_to_json(args.count)?;
                     let value = runtime
-                        .wait_for_frames(pos, &count)
+                        .wait_for_frames(
+                            pos,
+                            &count,
+                            args.options.as_ref().and_then(Value::as_object),
+                        )
                         .await
                         .map_err(host_script_error)?;
                     typed_scalar_host_return(value)
@@ -2310,6 +2369,33 @@ impl<'s> FromLua<'s> for JsonArg {
         scoped_value_to_json(scope, value)
             .map(normalize_integral_numbers)
             .map(Self)
+    }
+}
+
+struct FrameCountOptionsArgs {
+    count: Option<f64>,
+    options: Option<Value>,
+}
+
+impl<'s> FromLuaMulti<'s> for FrameCountOptionsArgs {
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec();
+        if values.len() > 2 {
+            return Err(RuntimeError::runtime(format!(
+                "wait_for_frames expected optional count and optional options, got {} arguments",
+                values.len()
+            )));
+        }
+        let options = if values.len() == 2 {
+            optional_json_value(scope, values.pop())?
+        } else {
+            None
+        };
+        let count = match values.pop() {
+            Some(value) => Option::<f64>::from_lua(value, scope)?,
+            None => None,
+        };
+        Ok(Self { count, options })
     }
 }
 
@@ -2386,6 +2472,32 @@ impl<'s> FromLuaMulti<'s> for ViewportReceiver {
             )));
         }
         Self::from_lua(values.remove(0), scope)
+    }
+}
+
+struct ViewportOptionsArgs {
+    receiver: ViewportReceiver,
+    options: Option<Value>,
+}
+
+impl ViewportOptionsArgs {
+    fn options_with_viewport(&self) -> Option<Value> {
+        self.receiver.options_with_viewport(self.options.clone())
+    }
+}
+
+impl<'s> FromLuaMulti<'s> for ViewportOptionsArgs {
+    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
+        let mut values = values.into_vec();
+        if !(1..=2).contains(&values.len()) {
+            return Err(RuntimeError::runtime(format!(
+                "method expected viewport self and optional options, got {} arguments",
+                values.len()
+            )));
+        }
+        let receiver = ViewportReceiver::from_lua(values.remove(0), scope)?;
+        let options = optional_json_value(scope, values.pop())?;
+        Ok(Self { receiver, options })
     }
 }
 
@@ -3011,7 +3123,11 @@ impl<'s> FromLuaMulti<'s> for WidgetDragRelativeArgs {
         let mut options = optional_json_value(scope, values.pop())?;
         if let Some(third) = third {
             let value = JsonArg::from_lua(third, scope)?.0;
-            if has_fourth || is_vec2_value(&value) {
+            // An explicit `nil` in the `from` position reads the same as
+            // omitting it, so `drag_relative(delta, nil, options)` works.
+            if value.is_null() {
+                // Nothing to record.
+            } else if has_fourth || is_vec2_value(&value) {
                 insert_option(&mut options, "from", value)?;
             } else {
                 options = Some(value);
@@ -3895,29 +4011,179 @@ fn host_script_error(info: ScriptErrorInfo) -> RuntimeError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
     };
 
     use serde_json::json;
     use tokio::runtime::Builder as TokioRuntimeBuilder;
 
     use super::{
+        CORE_DECLARATION, EguidevModule, ModuleSurface, ScriptRuntime,
         is_supported_by_initial_ruau_slice, promote_integer_numbers_to_luau_numbers,
-        run_script_eval_blocking,
+        run_script_eval_blocking, script_declarations,
     };
     use crate::{
         DevMcp,
         fixtures::FixtureHandler,
         registry::Inner,
         runtime::{self, Runtime},
-        tools::script::types::{ScriptArgValue, ScriptArgs},
+        tools::script::{
+            declaration::{DeclaredMethod, declared_methods},
+            types::{ScriptArgValue, ScriptArgs},
+        },
         types::{
             FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, WidgetRegistryEntry,
             WidgetRole, WidgetValue,
         },
     };
+
+    /// Script-facing type paired with the hidden table that carries its methods.
+    const METHOD_TABLES: &[(&str, &str)] = &[
+        ("Widget", "widget_methods"),
+        ("Viewport", "viewport_methods"),
+        ("Capture", "capture_methods"),
+    ];
+
+    /// Build the module once and report the surface it registered.
+    fn registered_surface() -> ModuleSurface {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let script_runtime = Arc::new(ScriptRuntime::new(
+            inner,
+            runtime,
+            "declaration_parity".to_string(),
+            1_000,
+        ));
+        let (_module, surface) = EguidevModule {
+            args: serde_json::Value::Object(serde_json::Map::new()),
+            runtime: script_runtime,
+            declaration: script_declarations(&[]),
+        }
+        .build();
+        surface
+    }
+
+    #[test]
+    fn declared_methods_match_the_runtime_binding_tables() {
+        let surface = registered_surface();
+        for (type_name, table) in METHOD_TABLES {
+            let declared = declared_methods(CORE_DECLARATION, type_name);
+            let declared_names = declared.keys().cloned().collect::<BTreeSet<_>>();
+            let registered = surface
+                .methods
+                .get(*table)
+                .unwrap_or_else(|| panic!("no runtime bindings registered for {table}"));
+            let undeclared = registered.difference(&declared_names).collect::<Vec<_>>();
+            let unbound = declared_names.difference(registered).collect::<Vec<_>>();
+            assert!(
+                undeclared.is_empty() && unbound.is_empty(),
+                "{type_name} declaration and {table} disagree: \
+                 bound but undeclared {undeclared:?}, declared but unbound {unbound:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_declared_wait_accepts_wait_options() {
+        for (type_name, _) in METHOD_TABLES {
+            for method in declared_methods(CORE_DECLARATION, type_name).values() {
+                if !method.name.starts_with("wait_for") {
+                    continue;
+                }
+                assert_eq!(
+                    method.last_parameter_type(),
+                    Some("WaitOptions?"),
+                    "{type_name}:{} must declare a trailing WaitOptions? argument, found {:?}",
+                    method.name,
+                    method.parameters
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_declared_action_accepts_an_options_table() {
+        // Queries read the current snapshot and change nothing.
+        const QUERIES: &[&str] = &[
+            "check_layout",
+            "children",
+            "diff",
+            "hide_debug_overlay",
+            "hide_highlight",
+            "parent",
+            "sample_grid",
+            "sample_pixels",
+            "screenshot",
+            "show_debug_overlay",
+            "show_highlight",
+            "state",
+            "text_measure",
+            "viewport",
+            "widget_at_point",
+            "widget_get",
+            "widget_list",
+        ];
+        // Raw injection deliberately queues one event and settles nothing, and
+        // the viewport setters take required configuration rather than options.
+        const RAW_FORMS: &[&str] = &[
+            "raw_key",
+            "raw_pointer_button",
+            "raw_pointer_move",
+            "raw_scroll",
+            "raw_text",
+            "set_inner_size",
+            "set_resize_options",
+        ];
+        for (type_name, _) in METHOD_TABLES {
+            for method in declared_methods(CORE_DECLARATION, type_name).values() {
+                let name = method.name.as_str();
+                if QUERIES.contains(&name) || RAW_FORMS.contains(&name) {
+                    continue;
+                }
+                assert!(
+                    method.takes_options(),
+                    "{type_name}:{name} must declare a trailing options table, found {:?}",
+                    method.parameters
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn declared_globals_match_the_runtime_bindings() {
+        let surface = registered_surface();
+        // Ruau installs `wait_until` from the setup chunk, not the module.
+        let declaration_only = ["wait_until"];
+        for name in &surface.globals {
+            if name.starts_with("__eguidev") {
+                continue;
+            }
+            assert!(
+                CORE_DECLARATION.contains(&format!("declare function {name}("))
+                    || CORE_DECLARATION.contains(&format!("declare {name}:")),
+                "global {name} is bound but not declared"
+            );
+        }
+        for name in declaration_only {
+            assert!(
+                CORE_DECLARATION.contains(&format!("declare function {name}(")),
+                "expected {name} to stay declared"
+            );
+        }
+    }
+
+    #[test]
+    fn declaration_reader_finds_the_shipped_widget_surface() {
+        // Guards the parity tests against a reader that silently reads nothing.
+        let widget: BTreeMap<String, DeclaredMethod> = declared_methods(CORE_DECLARATION, "Widget");
+        assert!(widget.len() > 20, "read {} Widget methods", widget.len());
+        assert!(widget.contains_key("wait_for_visible"));
+    }
 
     #[test]
     fn initial_ruau_slice_accepts_value_and_log_scripts() {

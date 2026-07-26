@@ -170,7 +170,11 @@ impl DevMcp {
         self
     }
 
-    /// Register a runtime-thread fixture handler.
+    /// Register the fixture handler, to run on the automation thread.
+    ///
+    /// An app registers exactly one fixture handler. Calling this after either
+    /// handler is already registered returns a `duplicate_fixture_handler`
+    /// configuration error. The handler reaches app state by closing over it.
     pub fn on_fixture_runtime<F>(mut self, handler: F) -> Result<Self, DevMcpConfigError>
     where
         F: Fn(&FixtureCall) -> FixtureResult + Send + Sync + 'static,
@@ -185,7 +189,12 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register a UI-thread fixture handler.
+    /// Register the fixture handler, to run on the egui UI thread.
+    ///
+    /// Use this when setup must touch the `egui::Context`. An app registers
+    /// exactly one fixture handler. Calling this after either handler is
+    /// already registered returns a `duplicate_fixture_handler` configuration
+    /// error. The handler reaches app state by closing over it.
     pub fn on_fixture_ui<F>(mut self, handler: F) -> Result<Self, DevMcpConfigError>
     where
         F: FnMut(&Context, &FixtureCall) -> FixtureResult + Send + 'static,

@@ -13,8 +13,8 @@ use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::Scro
 use eguidev::{
     Anchor, ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall,
     FixtureError, FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, ProgressBarOptions,
-    RoleState, ScriptPrelude, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange,
-    WidgetRole, WidgetValue,
+    ScriptPrelude, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange, WidgetRole,
+    WidgetRoleMeta, WidgetValue,
 };
 #[cfg(feature = "devtools")]
 use eguidev_runtime::attach as attach_runtime;
@@ -104,6 +104,36 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "Deliberately register duplicate viewport names for fault testing.",
         )
         .anchor_label("basic.status", "Fixture: duplicate viewport names"),
+        FixtureSpec::new(
+            "analysis.loaded",
+            "Run the staged analysis pass to completion.",
+        )
+        .anchor_label("basic.status", "Fixture: analysis loaded")
+        .anchor("status.summary")
+        // `/complete` alone would already hold at zero of zero, so the static
+        // anchor names the pass itself and the handler returns the count.
+        .anchor_data("status.summary", "/pass", "analysis")
+        .param(
+            FixtureParam::int("games", "Games the staged pass analyses.")
+                .default(6)
+                .range(1.0, 60.0),
+        )
+        .tag("data"),
+        FixtureSpec::new(
+            "layout.gate",
+            "Replace the root surface with a viewport-filling scroll area.",
+        )
+        .anchor("gate.scroll")
+        .anchor_scroll("gate.scroll")
+        .param(FixtureParam::float("offset", "Vertical scroll offset in points.").default(0.0))
+        .param(
+            FixtureParam::bool(
+                "offenders",
+                "Publish rects no ancestor can explain, so the gate reports them.",
+            )
+            .default(false),
+        )
+        .tag("layout"),
     ]
 }
 
@@ -250,6 +280,21 @@ enum DemoMode {
     Beta,
 }
 
+/// Which root surface the demo renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootSurface {
+    /// The ordinary widget playground.
+    Playground,
+    /// A viewport-filling scroll area used to exercise the layout gate.
+    LayoutGate,
+}
+
+/// Rows rendered by the layout-gate scroll area.
+const GATE_ROW_COUNT: usize = 80;
+
+/// Squares along one edge of the painter-drawn board.
+const BOARD_EDGE: usize = 3;
+
 /// Mutable demo state shared between the app and the fixture handler.
 struct DemoState {
     /// Name field.
@@ -332,6 +377,16 @@ struct DemoState {
     root_drag_offset: egui::Vec2,
     /// Whether the floating demo window is open.
     widget_window_open: bool,
+    /// Which root surface is rendered.
+    root_surface: RootSurface,
+    /// Scroll state for the viewport-filling layout-gate list.
+    gate_scroll_state: ScrollAreaState,
+    /// Whether the layout gate publishes its deliberate offenders.
+    gate_offenders: bool,
+    /// Total games the analysis pass will process.
+    analysis_total: usize,
+    /// Games analysed so far. Advances one per frame to model a staged load.
+    analysed: usize,
 }
 
 /// Application state for the demo app.
@@ -388,6 +443,11 @@ impl DemoState {
             last_modifiers: egui::Modifiers::default(),
             root_drag_offset: egui::Vec2::ZERO,
             widget_window_open: true,
+            root_surface: RootSurface::Playground,
+            gate_scroll_state: ScrollAreaState::default(),
+            gate_offenders: false,
+            analysis_total: 0,
+            analysed: 0,
         }
     }
 
@@ -432,6 +492,11 @@ impl DemoState {
         self.last_modifiers = egui::Modifiers::default();
         self.root_drag_offset = egui::Vec2::ZERO;
         self.widget_window_open = true;
+        self.root_surface = RootSurface::Playground;
+        self.gate_scroll_state.reset();
+        self.gate_offenders = false;
+        self.analysis_total = 0;
+        self.analysed = 0;
     }
 
     /// Apply a named fixture to the demo state.
@@ -498,6 +563,24 @@ impl DemoState {
                 self.status = "Fixture: duplicate viewport names".to_string();
                 Ok(FixtureResponse::new())
             }
+            "analysis.loaded" => {
+                let games = call.params.int("games").max(0) as usize;
+                self.analysis_total = games;
+                self.analysed = 0;
+                self.status = "Fixture: analysis loaded".to_string();
+                Ok(FixtureResponse::new()
+                    .value("games", games as i64)
+                    .anchor(Anchor::data("status.summary", "/analysed", games as i64)))
+            }
+            "layout.gate" => {
+                let offset = call.params.float("offset");
+                self.root_surface = RootSurface::LayoutGate;
+                self.gate_offenders = call.params.bool("offenders");
+                self.gate_scroll_state
+                    .jump_to(egui::vec2(0.0, offset as f32));
+                self.status = "Fixture: layout gate".to_string();
+                Ok(FixtureResponse::new().value("offset", offset))
+            }
             _ => Err(FixtureError::new(
                 "unknown_fixture",
                 format!("unknown fixture: {}", call.name),
@@ -555,6 +638,11 @@ impl DemoApp {
                 );
             }
             ui.dev_label("basic.status", &s.status);
+            Self::render_analysis_status(s, ui);
+
+            ui.separator();
+            ui.label("Painter-drawn board:");
+            Self::render_board(ui);
 
             ui.separator();
             ui.label("Root Draggable Region:");
@@ -581,7 +669,7 @@ impl DemoApp {
                 "basic.drag",
                 &response,
                 eguidev::WidgetMeta {
-                    role: WidgetRole::Unknown,
+                    role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
                     label: Some("root drag region".to_string()),
                     rect: Some(drag_rect),
                     interact_rect: Some(drag_rect),
@@ -631,7 +719,7 @@ impl DemoApp {
                 "basic.visual.sample_target",
                 &sample_response,
                 eguidev::WidgetMeta {
-                    role: WidgetRole::Image,
+                    role: WidgetRoleMeta::Plain(WidgetRole::Image),
                     label: Some("Sample target".to_string()),
                     visible: true,
                     ..Default::default()
@@ -650,7 +738,7 @@ impl DemoApp {
                 "demo.gutter.error_marker",
                 gutter_rect,
                 eguidev::WidgetMeta {
-                    role: WidgetRole::Unknown,
+                    role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
                     label: Some("Error marker".to_string()),
                     visible: true,
                     ..Default::default()
@@ -679,7 +767,7 @@ impl DemoApp {
                     "basic.visual.painted_canvas",
                     painted_rect,
                     eguidev::WidgetMeta {
-                        role: WidgetRole::Image,
+                        role: WidgetRoleMeta::Plain(WidgetRole::Image),
                         label: Some("Painted canvas".to_string()),
                         visible: true,
                         ..Default::default()
@@ -698,7 +786,7 @@ impl DemoApp {
                     "basic.visual.flat_canvas",
                     flat_rect,
                     eguidev::WidgetMeta {
-                        role: WidgetRole::Image,
+                        role: WidgetRoleMeta::Plain(WidgetRole::Image),
                         label: Some("Flat canvas".to_string()),
                         visible: true,
                         ..Default::default()
@@ -890,8 +978,193 @@ impl DemoApp {
         });
     }
 
+    /// Render the analysis status whose readiness only its data expresses.
+    ///
+    /// The label never changes while the pass runs, so a label or value anchor
+    /// cannot tell a half-loaded state from a finished one. Only the published
+    /// data can.
+    fn render_analysis_status(s: &DemoState, ui: &mut egui::Ui) {
+        let response = ui.label("Analysis status");
+        eguidev::track_response_full(
+            "status.summary",
+            &response,
+            eguidev::WidgetMeta {
+                role: WidgetRoleMeta::Plain(WidgetRole::Label),
+                label: Some("Analysis status".to_string()),
+                layout: Some(eguidev::capture_layout(ui, &response)),
+                visible: true,
+                ..Default::default()
+            }
+            .with_data(json!({
+                "pass": if s.analysis_total == 0 { "idle" } else { "analysis" },
+                "analysed": s.analysed,
+                "total": s.analysis_total,
+                "complete": s.analysis_total > 0 && s.analysed >= s.analysis_total,
+            })),
+        );
+    }
+
+    /// Render a painter-drawn board as one canvas with nested squares.
+    fn render_board(ui: &mut egui::Ui) {
+        let cell = 28.0;
+        let edge = BOARD_EDGE as f32 * cell;
+        let (board_rect, _) = ui.allocate_exact_size(egui::vec2(edge, edge), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(board_rect, 0.0, Color32::from_rgb(0x1c, 0x22, 0x2c));
+        let _board = eguidev::publish_rect_container(
+            ui,
+            "board.canvas",
+            board_rect,
+            eguidev::WidgetMeta {
+                role: WidgetRoleMeta::Plain(WidgetRole::Image),
+                label: Some("Board canvas".to_string()),
+                visible: true,
+                ..Default::default()
+            },
+        );
+        for row in 0..BOARD_EDGE {
+            for col in 0..BOARD_EDGE {
+                let min = board_rect.min + egui::vec2(col as f32 * cell, row as f32 * cell);
+                let square = egui::Rect::from_min_size(min, egui::vec2(cell, cell));
+                let dark = (row + col) % 2 == 1;
+                let fill = if dark {
+                    Color32::from_rgb(0x33, 0x44, 0x55)
+                } else {
+                    Color32::from_rgb(0x88, 0x99, 0xaa)
+                };
+                ui.painter().rect_filled(square.shrink(1.0), 0.0, fill);
+                eguidev::publish_rect_meta(
+                    ui,
+                    format!("board.square.{row}{col}"),
+                    square,
+                    eguidev::WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Image),
+                        label: Some(format!("Square {row}{col}")),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// Render the viewport-filling scroll area used to exercise the layout gate.
+    ///
+    /// The scroll area fills the root viewport, so its rows carry the viewport
+    /// clip rect and only the declared content extent can explain a scrolled
+    /// row's position.
+    fn render_layout_gate(s: &mut DemoState, ui: &mut egui::Ui) {
+        let offenders = s.gate_offenders;
+        let _output = s.gate_scroll_state.show(
+            egui::ScrollArea::vertical()
+                .id_salt("gate_scroll")
+                .auto_shrink([false, false]),
+            ui,
+            "gate.scroll",
+            |ui| {
+                if offenders {
+                    // Publish the intersecting pair at the top of the content so
+                    // it is on screen at the origin offset.
+                    let (overlap_rect, _) =
+                        ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
+                    Self::publish_gate_overlap(ui, overlap_rect);
+                }
+                for row in 0..GATE_ROW_COUNT {
+                    ui.dev_label(format!("gate.row.{row}"), format!("Gate row {row}"));
+                }
+                // A painter-published marker inside the scroll content carries no
+                // layout of its own and must inherit the scroll clip region.
+                let (marker_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(marker_rect, 0.0, Color32::from_rgb(0x2f, 0x80, 0xed));
+                eguidev::publish_rect_meta(
+                    ui,
+                    "gate.marker",
+                    marker_rect,
+                    eguidev::WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Image),
+                        label: Some("Gate marker".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+                if offenders {
+                    Self::publish_gate_offenders(ui, marker_rect);
+                }
+            },
+        );
+    }
+
+    /// Publish two sibling rects that deliberately intersect on screen.
+    fn publish_gate_overlap(ui: &egui::Ui, anchor: egui::Rect) {
+        let first = egui::Rect::from_min_size(anchor.min, egui::vec2(40.0, 20.0));
+        let second = first.translate(egui::vec2(20.0, 0.0));
+        for (id, rect, fill) in [
+            ("gate.overlap.a", first, Color32::from_rgb(0xe5, 0x48, 0x4d)),
+            (
+                "gate.overlap.b",
+                second,
+                Color32::from_rgb(0xf2, 0xc9, 0x4c),
+            ),
+        ] {
+            ui.painter().rect_filled(rect, 0.0, fill);
+            eguidev::publish_rect_meta(
+                ui,
+                id,
+                rect,
+                eguidev::WidgetMeta {
+                    role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
+                    label: Some("Overlapping sibling".to_string()),
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    /// Publish the two positions no ancestor can explain.
+    ///
+    /// One sits past the end of the declared content extent; the other sits off
+    /// the axis the scroll area does not scroll. Both must still report.
+    fn publish_gate_offenders(ui: &egui::Ui, anchor: egui::Rect) {
+        let beyond = egui::Rect::from_min_size(
+            anchor.min + egui::vec2(0.0, 4_000.0),
+            egui::vec2(120.0, 20.0),
+        );
+        eguidev::publish_rect_meta(
+            ui,
+            "gate.beyond_extent",
+            beyond,
+            eguidev::WidgetMeta {
+                role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
+                label: Some("Beyond the content extent".to_string()),
+                visible: true,
+                ..Default::default()
+            },
+        );
+        let off_axis = egui::Rect::from_min_size(
+            anchor.min + egui::vec2(4_000.0, 0.0),
+            egui::vec2(120.0, 20.0),
+        );
+        eguidev::publish_rect_meta(
+            ui,
+            "gate.off_axis",
+            off_axis,
+            eguidev::WidgetMeta {
+                role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
+                label: Some("Off the non-scrollable axis".to_string()),
+                visible: true,
+                ..Default::default()
+            },
+        );
+    }
+
     /// Render the floating window that exercises the remaining widget roles.
     fn render_widget_surface_window(s: &mut DemoState, ui: &mut egui::Ui) {
+        // The window widget itself is recorded after the body closes, so open
+        // its container scope here to make the contents its descendants.
+        let _window = eguidev::begin_container(ui, "basic.window.surface");
         eguidev::container(ui, "basic.window.surface.body", |ui| {
             ui.dev_label("basic.window.surface.label", "Floating window ready.");
             ui.dev_combo_box(
@@ -1045,7 +1318,7 @@ impl DemoApp {
                 "viewports.drag",
                 &response,
                 eguidev::WidgetMeta {
-                    role: WidgetRole::Unknown,
+                    role: WidgetRoleMeta::Plain(WidgetRole::Unknown),
                     label: Some("drag region".to_string()),
                     rect: Some(drag_rect),
                     interact_rect: Some(drag_rect),
@@ -1077,15 +1350,14 @@ impl DemoApp {
                 "viewports.unwired.value",
                 &response,
                 eguidev::WidgetMeta {
-                    role: WidgetRole::Slider,
-                    label: Some("unwired custom value".to_string()),
-                    value: Some(WidgetValue::Int(s.secondary_unwired_value)),
-                    role_state: Some(RoleState::Slider {
+                    role: WidgetRoleMeta::Slider {
                         range: WidgetRange {
                             min: 0.0,
                             max: 10.0,
                         },
-                    }),
+                    },
+                    label: Some("unwired custom value".to_string()),
+                    value: Some(WidgetValue::Int(s.secondary_unwired_value)),
                     visible: true,
                     ..Default::default()
                 },
@@ -1241,6 +1513,17 @@ impl App for DemoApp {
         let ctx = ui.ctx().clone();
         eguidev::frame_scope(&devmcp, ui, "root.frame", |ui| {
             let mut s = self.state.lock().expect("demo state lock");
+            // Advance the staged analysis pass by one item per frame.
+            if s.analysed < s.analysis_total {
+                s.analysed += 1;
+                ui.ctx().request_repaint();
+            }
+            if s.root_surface == RootSurface::LayoutGate {
+                // No panel margin, so the scroll area fills the viewport and its
+                // rows carry the viewport clip rect.
+                egui::Frame::NONE.show(ui, |ui| Self::render_layout_gate(&mut s, ui));
+                return;
+            }
             egui::Frame::central_panel(ui.style()).show(ui, |ui| {
                 Self::render_root(&mut s, &self.preview_texture, ui);
             });
@@ -1258,7 +1541,7 @@ impl App for DemoApp {
                     "basic.window.surface",
                     &window.response,
                     eguidev::WidgetMeta {
-                        role: WidgetRole::Window,
+                        role: WidgetRoleMeta::Plain(WidgetRole::Window),
                         label: Some("Widget Surface Window".to_string()),
                         visible: true,
                         ..Default::default()

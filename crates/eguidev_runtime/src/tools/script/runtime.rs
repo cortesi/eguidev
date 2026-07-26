@@ -18,10 +18,10 @@ use tokio::{task::spawn_blocking, time::timeout};
 use super::{
     super::{
         DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode,
-        OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError, capture_screenshot,
-        collect_widget_list, parse_key_combo, resolve_screenshot_viewport,
-        resolve_widget_and_viewport, viewport_snapshot_for, wait_timeout_details,
-        wait_timeout_message,
+        INTERACTION_READY_HINT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError,
+        capture_screenshot, collect_widget_list, interaction_ready, parse_key_combo,
+        resolve_screenshot_viewport, resolve_widget_and_viewport, viewport_snapshot_for,
+        wait_timeout_details, wait_timeout_message,
     },
     parse::{
         map_has_any, map_value, parse_modifiers, parse_optional_bool, parse_optional_f32,
@@ -767,6 +767,7 @@ impl ScriptRuntime {
                     target,
                     timeout_ms,
                     poll_interval_ms,
+                    "to exist",
                     |widget| widget.is_some(),
                 ),
             )
@@ -835,6 +836,7 @@ impl ScriptRuntime {
                     target,
                     timeout_ms,
                     poll_interval_ms,
+                    "to accept the requested value",
                     |widget| {
                         widget
                             .and_then(|widget| widget.value.as_ref())
@@ -982,16 +984,17 @@ impl ScriptRuntime {
         &self,
         pos: ScriptPosition,
         target: &Value,
+        options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
-        let target =
-            parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let action_viewport_id = self.resolve_target_viewport(pos, None, &target)?;
+        let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
         self.await_tool(
             pos,
-            self.server.action_focus(Some(action_viewport_id), target),
+            self.server
+                .action_focus(Some(action_viewport_id.clone()), target),
         )
         .await?;
-        self.to_json(pos, ())
+        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+            .await
     }
 
     pub(super) async fn action_drag(
@@ -1138,6 +1141,7 @@ impl ScriptRuntime {
                     target,
                     timeout_ms,
                     poll_interval_ms,
+                    "to reach the requested scroll offset",
                     |widget| {
                         widget
                             .and_then(|widget| widget.role_state.as_ref())
@@ -1163,11 +1167,32 @@ impl ScriptRuntime {
         self.await_tool(
             pos,
             self.server
-                .action_scroll_into_view(Some(action_viewport_id.clone()), target),
+                .action_scroll_into_view(Some(action_viewport_id.clone()), target.clone()),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
-            .await
+        let settle_enabled = self.action_settle_enabled(pos, options)?;
+        self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
+            .await?;
+        if settle_enabled {
+            // Requesting the offsets only queues them. An animated scroll area
+            // needs the target polled to the interaction-ready predicate, or
+            // the next click fails on the call that just returned.
+            let timeout_ms = self.configured_timeout_ms();
+            let poll_interval_ms = self.configured_poll_interval_ms();
+            self.await_tool(
+                pos,
+                self.server.wait_for_widget_state(
+                    Some(action_viewport_id),
+                    target,
+                    timeout_ms,
+                    poll_interval_ms,
+                    "to become interaction-ready after scroll_into_view",
+                    |widget| widget.is_some_and(interaction_ready),
+                ),
+            )
+            .await?;
+        }
+        self.to_json(pos, ())
     }
 
     pub(super) async fn action_key(
@@ -1656,7 +1681,9 @@ impl ScriptRuntime {
                 )
                 .map(|(widget, _)| widget)
                 {
-                    Ok(widget) => Ok::<_, ScriptErrorInfo>((widget.visible, Some(widget))),
+                    Ok(widget) => {
+                        Ok::<_, ScriptErrorInfo>((interaction_ready(&widget), Some(widget)))
+                    }
                     Err(error) if error.code == ErrorCode::NotFound => Ok((false, None)),
                     Err(error) => Err(self.tool_error(pos, error.into())),
                 };
@@ -1686,7 +1713,7 @@ impl ScriptRuntime {
                             ErrorCode::Timeout,
                             wait_timeout_message(
                                 format!(
-                                    "Timed out waiting for widget visibility predicate after {timeout_ms}ms"
+                                    "Timed out waiting for widget to become interaction-ready after {timeout_ms}ms; {INTERACTION_READY_HINT}"
                                 ),
                                 &observation,
                             ),
@@ -1794,10 +1821,14 @@ impl ScriptRuntime {
         &self,
         pos: ScriptPosition,
         count: &Value,
+        options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let count =
             parse_optional_u64_val(count).map_err(|error| self.type_error(pos, error.message))?;
-        let timeout_ms = self.configured_timeout_ms();
+        // Frame counting is app-wide, so only the timeout applies here.
+        let (_viewport_id, timeout_ms, _poll_interval_ms) =
+            self.parse_wait_options(pos, options)?;
+        let timeout_ms = timeout_ms.or_else(|| self.configured_timeout_ms());
         let result = self
             .await_tool(pos, self.server.wait_for_frame_count(count, timeout_ms))
             .await?;
@@ -2310,20 +2341,27 @@ impl ScriptRuntime {
         &self,
         pos: ScriptPosition,
         viewport: String,
+        options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.focus_window(viewport))
+        self.await_tool(pos, self.server.focus_window(viewport.clone()))
             .await?;
-        self.to_json(pos, ())
+        self.finish_action(pos, options, Some(viewport), (), None)
+            .await
     }
 
     pub(super) async fn viewport_dismiss_popups(
         &self,
         pos: ScriptPosition,
         viewport_id: Option<String>,
+        options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.viewport_dismiss_popups(viewport_id))
-            .await?;
-        self.to_json(pos, ())
+        self.await_tool(
+            pos,
+            self.server.viewport_dismiss_popups(viewport_id.clone()),
+        )
+        .await?;
+        self.finish_action(pos, options, viewport_id, (), None)
+            .await
     }
 
     pub(super) async fn fixture(
@@ -2506,6 +2544,7 @@ impl ScriptRuntime {
                 target,
                 timeout_ms,
                 poll_interval_ms,
+                "to exist",
                 |widget| widget.is_some(),
             ),
         )
@@ -2523,6 +2562,15 @@ fn widget_values_match(current: &WidgetValue, expected: &WidgetValue) -> bool {
             (*current as f64 - *expected).abs() < f64::EPSILON
         }
         _ => current == expected,
+    }
+}
+
+/// Compare two optional widget values, tolerating an int/float round trip.
+fn optional_widget_values_match(before: Option<&WidgetValue>, after: Option<&WidgetValue>) -> bool {
+    match (before, after) {
+        (None, None) => true,
+        (Some(before), Some(after)) => widget_values_match(before, after),
+        _ => false,
     }
 }
 
@@ -2658,7 +2706,9 @@ fn changed_widget_fields(
     if before.label != after.label {
         fields.push("label");
     }
-    if before.value != after.value {
+    // A capture crosses into Luau, where every number is a float, so a value
+    // is compared by what it holds rather than by which variant carries it.
+    if !optional_widget_values_match(before.value.as_ref(), after.value.as_ref()) {
         fields.push("value");
     }
     if before.value_text != after.value_text {
@@ -2686,12 +2736,63 @@ fn image_ref_json(id: String) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::ScriptRuntime;
+    use super::{ScriptRuntime, changed_widget_fields};
+    use crate::types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue};
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    fn state(value: Option<WidgetValue>) -> WidgetState {
+        let rect = Rect {
+            min: Pos2 { x: 0.0, y: 0.0 },
+            max: Pos2 { x: 10.0, y: 10.0 },
+        };
+        WidgetState::from(&WidgetRegistryEntry {
+            id: "slider".to_string(),
+            explicit_id: true,
+            native_id: 1,
+            viewport_id: "root".to_string(),
+            layer_id: "layer".to_string(),
+            rect,
+            interact_rect: rect,
+            role: WidgetRole::Slider,
+            label: None,
+            value,
+            data: None,
+            layout: None,
+            role_state: None,
+            parent_id: None,
+            enabled: true,
+            visible: true,
+            focused: false,
+        })
+    }
 
     #[test]
     fn script_runtime_is_send_sync() {
         assert_send_sync::<ScriptRuntime>();
+    }
+
+    #[test]
+    fn diff_ignores_the_int_float_round_trip_a_capture_takes_through_luau() {
+        // Luau has one number type, so a captured Float(42.0) returns as Int(42).
+        let before = state(Some(WidgetValue::Int(42)));
+        let after = state(Some(WidgetValue::Float(42.0)));
+        assert!(changed_widget_fields(&before, &after, 0.5).is_empty());
+    }
+
+    #[test]
+    fn diff_still_reports_a_real_value_change() {
+        let before = state(Some(WidgetValue::Float(42.0)));
+        let after = state(Some(WidgetValue::Float(43.0)));
+        assert_eq!(
+            changed_widget_fields(&before, &after, 0.5),
+            vec!["value", "value_text"]
+        );
+
+        let cleared = state(None);
+        assert_eq!(
+            changed_widget_fields(&before, &cleared, 0.5),
+            vec!["value", "value_text"]
+        );
     }
 }

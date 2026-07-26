@@ -70,10 +70,19 @@
 //! ui.dev_slider("settings.level", &mut level, 0.0..=100.0);
 //! ```
 //!
-//! For custom widgets, use [`id`] (geometry only) or [`id_with_meta`] (explicit
-//! role/value/label). If you already have an `egui::Response`, use
-//! [`track_response_full`] to register it after the fact. Use [`container`] to
-//! annotate hierarchy so scripts can traverse parent/child relationships.
+//! Custom widgets have their own recording primitives. Pick by what you hold:
+//!
+//! | You hold                              | Use                          |
+//! | ------------------------------------- | ---------------------------- |
+//! | a closure that draws and returns a response | [`id`], [`id_with_meta`] |
+//! | an `egui::Response` already            | [`track_response_full`]      |
+//! | a painter-drawn rect                   | [`publish_rect_meta`]        |
+//! | a painter-drawn rect with children     | [`publish_rect_container`]   |
+//! | a scope whose widget is recorded elsewhere | [`begin_container`]      |
+//! | a scope and its widget together        | [`container`]                |
+//!
+//! Set [`WidgetMeta::visible`] on every widget you record by hand. It defaults
+//! to `false`, and an invisible widget is hidden from the default lookups.
 //!
 //! Custom widgets that should accept scripted `set_value(...)` calls must also
 //! consume queued overrides before rendering:
@@ -89,15 +98,29 @@
 //!     id,
 //!     &response,
 //!     WidgetMeta {
-//!         role: WidgetRole::ComboBox,
-//!         value: Some(WidgetValue::Int(*selected as i64)),
-//!         role_state: Some(RoleState::ComboBox {
+//!         role: WidgetRoleMeta::ComboBox {
 //!             options: mode_labels.clone(),
-//!         }),
+//!         },
+//!         value: Some(WidgetValue::Int(*selected as i64)),
+//!         visible: ui.is_visible() && ui.is_rect_visible(response.rect),
 //!         ..Default::default()
 //!     },
 //! );
 //! ```
+//!
+//! Only the variant the script sends is consumed. A `set_value` whose type does
+//! not match the pattern above is dropped, so match the variant your role
+//! publishes.
+//!
+//! [`WidgetRoleMeta`] carries the metadata that each role requires, so a
+//! recorded scroll area always has a content size and a recorded slider always
+//! has a range. Use [`WidgetRoleMeta::Plain`] only for roles with no metadata,
+//! such as a label or a separator.
+//!
+//! Painter-drawn output has no `egui::Response`. Publish a rect with
+//! [`publish_rect_meta`], and publish a painter-drawn hierarchy with
+//! [`publish_rect_container`] so the children nest under their canvas instead
+//! of overlapping it.
 //!
 //! Widget ids are the one canonical selector in the scripting API. Explicit ids
 //! must be unique within a captured frame; duplicates are treated as a hard
@@ -108,6 +131,9 @@
 //! Apps register fixtures with [`DevMcp::fixtures`] and exactly one handler:
 //! [`DevMcp::on_fixture_runtime`] for automation-thread setup or
 //! [`DevMcp::on_fixture_ui`] for setup that must run on the egui UI thread.
+//! Registering a second handler, of either kind, is a configuration error.
+//! A handler reaches app state by closing over it, usually an
+//! `Arc<Mutex<AppState>>` shared with the app's render code.
 //! Each fixture must be independently invokable from any prior state and must
 //! leave the app in a baseline that can be described with readiness anchors.
 //! Use typed fixture params for controlled variants, preconditions for state
@@ -149,15 +175,16 @@ pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
     instrument::{
-        ContainerGuard, ScrollAreaState, capture_layout, container, id, id_with_meta,
-        name_viewport, publish_rect_meta, track_response_full,
+        ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, id,
+        id_with_meta, name_viewport, publish_rect_container, publish_rect_meta,
+        track_response_full,
     },
     script_prelude::ScriptPrelude,
     types::{
         Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
         FixtureResponse, FixtureResult, FixtureSpec, ParamKind, RoleState, ScrollAreaMeta,
         ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange,
-        WidgetRole, WidgetState, WidgetValue,
+        WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -221,8 +248,8 @@ pub mod internal {
             Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
             FixtureResponse, FixtureResult, FixtureSpec, Modifiers, ParamKind, Pos2, Rect,
             RoleState, ScrollAreaMeta, Vec2, ViewportNameError, ViewportSel, ViewportSelParseError,
-            WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetState,
-            WidgetValue,
+            WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta,
+            WidgetState, WidgetValue,
         };
     }
 

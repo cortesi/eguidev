@@ -326,6 +326,7 @@ pub struct Anchor {
 
 /// Declarative readiness checks for fixture anchors.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum AnchorCheck {
     /// Widget exists and is visible.
     Visible,
@@ -342,6 +343,43 @@ pub enum AnchorCheck {
         /// Allowed absolute error per axis.
         tolerance: f32,
     },
+    /// Widget data matches at a JSON pointer.
+    ///
+    /// The widget set alone cannot express which data a fixture installed, so
+    /// two fixtures that publish the same widgets and differ only in their
+    /// domain data share every other check. Absent data and an unmatched path
+    /// leave the anchor unsatisfied rather than failed, so the wait continues
+    /// until the timeout.
+    ///
+    /// Point at a value that only becomes correct once the work is done. A
+    /// derived flag such as `loaded == 0 of 0` already holds before the work
+    /// starts, so anchor on the count the fixture installed instead.
+    Data {
+        /// RFC 6901 pointer into the widget's `data` value. Empty selects all.
+        pointer: String,
+        /// Value the pointer must resolve to.
+        equals: serde_json::Value,
+    },
+}
+
+/// Whether a string is a well-formed RFC 6901 JSON pointer.
+///
+/// An empty pointer selects the whole document. Any other pointer starts with
+/// `/`, and `~` only introduces the `~0` and `~1` escapes.
+fn is_valid_json_pointer(pointer: &str) -> bool {
+    if pointer.is_empty() {
+        return true;
+    }
+    if !pointer.starts_with('/') {
+        return false;
+    }
+    let mut chars = pointer.chars();
+    while let Some(current) = chars.next() {
+        if current == '~' && !matches!(chars.next(), Some('0' | '1')) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Supported scalar kinds for fixture parameters.
@@ -571,6 +609,41 @@ impl FixtureSpec {
             AnchorCheck::ScrollAt {
                 offset: offset.into(),
                 tolerance,
+            },
+        )
+    }
+
+    /// Add a widget-data readiness anchor.
+    pub fn anchor_data(
+        self,
+        widget_id: impl Into<String>,
+        pointer: impl Into<String>,
+        equals: impl Into<serde_json::Value>,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            None,
+            AnchorCheck::Data {
+                pointer: pointer.into(),
+                equals: equals.into(),
+            },
+        )
+    }
+
+    /// Add a widget-data readiness anchor scoped to a viewport.
+    pub fn anchor_data_in(
+        self,
+        widget_id: impl Into<String>,
+        pointer: impl Into<String>,
+        equals: impl Into<serde_json::Value>,
+        viewport: impl Into<ViewportSel>,
+    ) -> Self {
+        self.push_anchor(
+            widget_id.into(),
+            Some(viewport.into().to_selector_string()),
+            AnchorCheck::Data {
+                pointer: pointer.into(),
+                equals: equals.into(),
             },
         )
     }
@@ -1092,6 +1165,22 @@ impl Anchor {
         }
     }
 
+    /// Create a widget-data anchor.
+    pub fn data(
+        widget_id: impl Into<String>,
+        pointer: impl Into<String>,
+        equals: impl Into<serde_json::Value>,
+    ) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            check: AnchorCheck::Data {
+                pointer: pointer.into(),
+                equals: equals.into(),
+            },
+        }
+    }
+
     /// Scope this anchor to a viewport selector.
     pub fn in_viewport(mut self, viewport: impl Into<ViewportSel>) -> Self {
         self.viewport_id = Some(viewport.into().to_selector_string());
@@ -1126,6 +1215,9 @@ impl Anchor {
             {
                 Err("scroll_at tolerance must be finite and greater than 0".to_string())
             }
+            AnchorCheck::Data { pointer, .. } if !is_valid_json_pointer(pointer) => Err(format!(
+                "data pointer {pointer:?} is not an RFC 6901 JSON pointer"
+            )),
             _ => Ok(()),
         }
     }
@@ -1146,6 +1238,7 @@ impl fmt::Display for AnchorCheck {
                 "scroll_at ({:.1}, {:.1}) ± {:.2}",
                 offset.x, offset.y, tolerance
             ),
+            Self::Data { pointer, equals } => write!(f, "data {pointer:?} == {equals}"),
         }
     }
 }
@@ -1531,6 +1624,117 @@ pub enum RoleState {
     },
 }
 
+/// Role taxonomy entry together with the metadata that the role requires.
+///
+/// Instrumentation authors this type; the registry records the flat
+/// [`WidgetRole`] and [`RoleState`] that it projects. Every role that can carry
+/// metadata has its own variant, so a scroll area cannot be recorded without a
+/// content size and a slider cannot be recorded without a range. `Plain` is
+/// only for roles that carry no metadata at all, such as a label or a
+/// separator; a button with no known selection state is
+/// `Button { selected: None }`, never `Plain(WidgetRole::Button)`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WidgetRoleMeta {
+    /// A role that carries no role-specific metadata.
+    Plain(WidgetRole),
+    /// Scroll area with its current geometry.
+    ScrollArea {
+        /// Current scroll offset.
+        offset: Vec2,
+        /// Viewport size available to the scroll contents.
+        viewport_size: Vec2,
+        /// Total content size within the scroll area.
+        content_size: Vec2,
+    },
+    /// Slider with its allowed range.
+    Slider {
+        /// Allowed numeric range.
+        range: WidgetRange,
+    },
+    /// Drag value, optionally constrained to a range.
+    DragValue {
+        /// Allowed numeric range when the app constrains one.
+        range: Option<WidgetRange>,
+    },
+    /// Combo box with its option labels.
+    ComboBox {
+        /// Available option labels.
+        options: Vec<String>,
+    },
+    /// Button, optionally carrying a selected state.
+    Button {
+        /// Whether the button is in a selected state, when the app tracks one.
+        selected: Option<bool>,
+    },
+    /// Checkbox, optionally carrying a third visual state.
+    Checkbox {
+        /// Whether the checkbox is visually indeterminate, when the app tracks it.
+        indeterminate: Option<bool>,
+    },
+    /// Text edit with its input configuration.
+    TextEdit {
+        /// Whether the edit is multiline.
+        multiline: bool,
+        /// Whether the edit masks its input.
+        password: bool,
+    },
+}
+
+impl WidgetRoleMeta {
+    /// Project the flat taxonomy entry that scripts filter on.
+    pub fn role(&self) -> WidgetRole {
+        match self {
+            Self::Plain(role) => role.clone(),
+            Self::ScrollArea { .. } => WidgetRole::ScrollArea,
+            Self::Slider { .. } => WidgetRole::Slider,
+            Self::DragValue { .. } => WidgetRole::DragValue,
+            Self::ComboBox { .. } => WidgetRole::ComboBox,
+            Self::Button { .. } => WidgetRole::Button,
+            Self::Checkbox { .. } => WidgetRole::Checkbox,
+            Self::TextEdit { .. } => WidgetRole::TextEdit,
+        }
+    }
+
+    /// Project the role-specific metadata recorded on the registry entry.
+    pub(crate) fn state(&self) -> Option<RoleState> {
+        match self {
+            Self::Plain(_) => None,
+            Self::ScrollArea {
+                offset,
+                viewport_size,
+                content_size,
+            } => Some(RoleState::ScrollArea {
+                offset: *offset,
+                viewport_size: *viewport_size,
+                content_size: *content_size,
+            }),
+            Self::Slider { range } => Some(RoleState::Slider { range: *range }),
+            Self::DragValue { range } => Some(RoleState::DragValue { range: *range }),
+            Self::ComboBox { options } => Some(RoleState::ComboBox {
+                options: options.clone(),
+            }),
+            Self::Button { selected } => selected.map(|selected| RoleState::Button { selected }),
+            Self::Checkbox { indeterminate } => {
+                indeterminate.map(|indeterminate| RoleState::Checkbox { indeterminate })
+            }
+            Self::TextEdit {
+                multiline,
+                password,
+            } => Some(RoleState::TextEdit {
+                multiline: *multiline,
+                password: *password,
+            }),
+        }
+    }
+}
+
+impl Default for WidgetRoleMeta {
+    /// The unknown role, which carries no metadata.
+    fn default() -> Self {
+        Self::Plain(WidgetRole::Unknown)
+    }
+}
+
 impl RoleState {
     /// Project scroll-area metadata into the flat scripting shape.
     pub fn scroll_state(&self) -> Option<ScrollAreaMeta> {
@@ -1594,9 +1798,160 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        FixtureParam, FixtureSpec, RoleState, Vec2, ViewportSel, WidgetValue,
-        validate_viewport_name,
+        Anchor, AnchorCheck, FixtureParam, FixtureSpec, RoleState, Vec2, ViewportSel, WidgetRange,
+        WidgetRole, WidgetRoleMeta, WidgetValue, validate_viewport_name,
     };
+
+    #[test]
+    fn role_meta_projects_role_and_state_for_every_variant() {
+        let cases = [
+            (
+                WidgetRoleMeta::Plain(WidgetRole::Label),
+                WidgetRole::Label,
+                None,
+            ),
+            (
+                WidgetRoleMeta::ScrollArea {
+                    offset: Vec2 { x: 0.0, y: 8.0 },
+                    viewport_size: Vec2 { x: 100.0, y: 40.0 },
+                    content_size: Vec2 { x: 100.0, y: 400.0 },
+                },
+                WidgetRole::ScrollArea,
+                Some(RoleState::ScrollArea {
+                    offset: Vec2 { x: 0.0, y: 8.0 },
+                    viewport_size: Vec2 { x: 100.0, y: 40.0 },
+                    content_size: Vec2 { x: 100.0, y: 400.0 },
+                }),
+            ),
+            (
+                WidgetRoleMeta::Slider {
+                    range: WidgetRange {
+                        min: 0.0,
+                        max: 10.0,
+                    },
+                },
+                WidgetRole::Slider,
+                Some(RoleState::Slider {
+                    range: WidgetRange {
+                        min: 0.0,
+                        max: 10.0,
+                    },
+                }),
+            ),
+            (
+                WidgetRoleMeta::DragValue { range: None },
+                WidgetRole::DragValue,
+                Some(RoleState::DragValue { range: None }),
+            ),
+            (
+                WidgetRoleMeta::ComboBox {
+                    options: vec!["Alpha".to_string()],
+                },
+                WidgetRole::ComboBox,
+                Some(RoleState::ComboBox {
+                    options: vec!["Alpha".to_string()],
+                }),
+            ),
+            (
+                WidgetRoleMeta::Button { selected: None },
+                WidgetRole::Button,
+                None,
+            ),
+            (
+                WidgetRoleMeta::Button {
+                    selected: Some(true),
+                },
+                WidgetRole::Button,
+                Some(RoleState::Button { selected: true }),
+            ),
+            (
+                WidgetRoleMeta::Checkbox {
+                    indeterminate: Some(false),
+                },
+                WidgetRole::Checkbox,
+                Some(RoleState::Checkbox {
+                    indeterminate: false,
+                }),
+            ),
+            (
+                WidgetRoleMeta::TextEdit {
+                    multiline: true,
+                    password: false,
+                },
+                WidgetRole::TextEdit,
+                Some(RoleState::TextEdit {
+                    multiline: true,
+                    password: false,
+                }),
+            ),
+        ];
+
+        for (meta, role, state) in cases {
+            assert_eq!(meta.role(), role, "role projection for {meta:?}");
+            assert_eq!(meta.state(), state, "state projection for {meta:?}");
+        }
+    }
+
+    #[test]
+    fn data_anchor_validation_follows_rfc_6901() {
+        let accepted = ["", "/analysed", "/a~0b", "/a~1b", "/nested/0/name"];
+        for pointer in accepted {
+            Anchor::data("status.summary", pointer, 3)
+                .validate()
+                .unwrap_or_else(|error| panic!("pointer {pointer:?} rejected: {error}"));
+        }
+
+        let rejected = ["analysed", "/a~", "/a~2b"];
+        for pointer in rejected {
+            let error = Anchor::data("status.summary", pointer, 3)
+                .validate()
+                .expect_err("malformed pointer must be rejected");
+            assert!(error.contains("RFC 6901"), "{error}");
+        }
+    }
+
+    #[test]
+    fn fixture_validation_reports_a_malformed_data_anchor_pointer() {
+        let error = FixtureSpec::new("viewer.mixed", "Mixed games")
+            .anchor("status.summary")
+            .anchor_data("status.summary", "analysed", 3)
+            .validate(true)
+            .expect_err("malformed pointer must fail fixture validation");
+        assert!(error.contains("anchor 2"), "{error}");
+    }
+
+    #[test]
+    fn anchor_checks_serialize_with_snake_case_tags() {
+        let cases = [
+            (AnchorCheck::Visible, serde_json::json!("visible")),
+            (AnchorCheck::ScrollReady, serde_json::json!("scroll_ready")),
+            (
+                AnchorCheck::Label("Ready".to_string()),
+                serde_json::json!({ "label": "Ready" }),
+            ),
+            (
+                AnchorCheck::Data {
+                    pointer: "/analysed".to_string(),
+                    equals: serde_json::json!(3),
+                },
+                serde_json::json!({ "data": { "pointer": "/analysed", "equals": 3 } }),
+            ),
+        ];
+        for (check, expected) in cases {
+            assert_eq!(serde_json::to_value(&check).expect("serialize"), expected);
+            assert_eq!(
+                serde_json::from_value::<AnchorCheck>(expected).expect("deserialize"),
+                check
+            );
+        }
+    }
+
+    #[test]
+    fn role_meta_defaults_to_the_unknown_plain_role() {
+        let meta = WidgetRoleMeta::default();
+        assert_eq!(meta.role(), WidgetRole::Unknown);
+        assert_eq!(meta.state(), None);
+    }
 
     fn fixture_param_map<const N: usize>(
         entries: [(&str, WidgetValue); N],
@@ -1860,8 +2215,16 @@ pub struct WidgetRegistryEntry {
 }
 
 /// Live widget snapshot exposed to scripting surfaces.
+///
+/// `(viewport_id, id)` is the one widget identity across handles, states,
+/// dumps, deltas, waits, and error details, so a state that a wait returns
+/// names its own widget without a second lookup.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WidgetState {
+    /// Canonical widget id.
+    pub id: String,
+    /// Id of the viewport that holds the widget.
+    pub viewport_id: String,
     /// Widget rect.
     pub rect: Rect,
     /// Widget interaction rect.
@@ -1928,6 +2291,8 @@ impl From<&WidgetRegistryEntry> for WidgetState {
                 (Some(multiline), Some(password))
             });
         Self {
+            id: entry.id.clone(),
+            viewport_id: entry.viewport_id.clone(),
             rect: entry.rect,
             interact_rect: entry.interact_rect,
             role: entry.role.clone(),

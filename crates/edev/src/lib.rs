@@ -4447,7 +4447,7 @@ mod tests {
             {
                 "name": "basic.default",
                 "description": "baseline",
-                "anchors": [{ "widget_id": "basic.status", "check": "Visible" }],
+                "anchors": [{ "widget_id": "basic.status", "check": "visible" }],
                 "params": [{
                     "name": "offset",
                     "kind": "float",

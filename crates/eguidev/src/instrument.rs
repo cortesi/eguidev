@@ -11,7 +11,7 @@ use egui::scroll_area::{ScrollAreaOutput, State};
 
 use crate::{
     registry::Inner,
-    types::{RoleState, WidgetLayout, WidgetRole, WidgetValue},
+    types::{WidgetLayout, WidgetRoleMeta, WidgetValue},
     ui_ext::DevScrollAreaExt,
     widget_registry::{WidgetMeta, record_rect_meta, record_widget},
 };
@@ -83,7 +83,7 @@ pub fn id(
 pub fn id_with_meta(
     ui: &mut egui::Ui,
     id: impl Into<String>,
-    role: WidgetRole,
+    role: WidgetRoleMeta,
     label: Option<String>,
     value: Option<WidgetValue>,
     add: impl FnOnce(&mut egui::Ui) -> egui::Response,
@@ -130,9 +130,11 @@ pub fn track_response_full(id: impl Into<String>, response: &egui::Response, met
 
 /// Publish metadata for a painter-drawn rect that has no `egui::Response`.
 ///
-/// The rect is interpreted in the current UI layer and transformed to global coordinates.
-/// Response-free entries default to enabled and unfocused; override `visible` through
-/// [`WidgetMeta`].
+/// The rect is interpreted in the current UI layer and transformed to global
+/// coordinates. A published rect has no `egui::Response`, so it is unfocused,
+/// it is enabled unless [`WidgetMeta::enabled`] says otherwise, and it is
+/// invisible to automation unless [`WidgetMeta::visible`] is set. Use
+/// [`publish_rect_container`] when the rect is a parent for further rects.
 pub fn publish_rect_meta(ui: &egui::Ui, id: impl Into<String>, rect: egui::Rect, meta: WidgetMeta) {
     let Some(inner) = active_inner() else {
         return;
@@ -141,6 +143,41 @@ pub fn publish_rect_meta(ui: &egui::Ui, id: impl Into<String>, rect: egui::Rect,
     swallow_panic("publish_rect_meta", || {
         record_rect_meta(&inner.widgets, id, ui, rect, meta);
     });
+}
+
+/// Publish a painter-drawn rect and open a container scope with the same id.
+///
+/// This is the documented form for a painter-drawn hierarchy. Every rect that
+/// [`publish_rect_meta`] publishes while the returned guard lives becomes a
+/// child of `id`, so `check_layout` reads containment as intentional structure
+/// instead of one overlap per child, and the children inherit the parent's clip
+/// rect. The guard pops the scope on drop.
+///
+/// Set [`WidgetMeta::visible`] on the canvas and on each child. A published
+/// rect has no `egui::Response` to derive visibility from, and the field
+/// defaults to `false`.
+///
+/// ```rust,ignore
+/// let _board = publish_rect_container(ui, "board.canvas", board_rect, canvas_meta());
+/// for (name, rect) in squares {
+///     publish_rect_meta(ui, format!("board.square.{name}"), rect, square_meta());
+/// }
+/// ```
+pub fn publish_rect_container(
+    ui: &egui::Ui,
+    id: impl Into<String>,
+    rect: egui::Rect,
+    meta: WidgetMeta,
+) -> ContainerGuard {
+    let id = id.into();
+    let inner = active_inner();
+    if let Some(inner) = inner.as_ref() {
+        let published = id.clone();
+        swallow_panic("publish_rect_container", || {
+            record_rect_meta(&inner.widgets, published, ui, rect, meta);
+        });
+    }
+    begin_container_with_inner(ui, inner, id)
 }
 
 /// RAII guard that pops a container scope when dropped.
@@ -158,6 +195,12 @@ impl Drop for ContainerGuard {
 }
 
 /// Begin a container scope with an explicit id.
+///
+/// Every widget recorded while the guard lives takes `id` as its parent. Use
+/// this when the container widget itself is recorded elsewhere, such as a
+/// window whose response is only available after its contents have rendered.
+/// Use [`container`] when the scope and the container widget can be recorded
+/// together, and [`publish_rect_container`] for a painter-drawn parent.
 pub fn begin_container(ui: &egui::Ui, id: impl Into<String>) -> ContainerGuard {
     let inner = active_inner();
     begin_container_with_inner(ui, inner, id)
@@ -275,6 +318,7 @@ impl ScrollAreaState {
         } else {
             scroll_area
         };
+        let previous_offset = self.offset;
         // Use our extension trait method
         let output = scroll_area.dev_show_viewport(ui, id, add_contents);
         let effective_offset = State::load(ui.ctx(), output.id)
@@ -282,8 +326,12 @@ impl ScrollAreaState {
             .unwrap_or(output.state.offset);
         self.offset = effective_offset;
         self.pending_offset = requested_offset.filter(|offset| {
-            let delta = effective_offset - *offset;
-            delta.length_sq() > 0.25
+            let outstanding = (effective_offset - *offset).length_sq() > 0.25;
+            // An offset past the content extent clamps and never arrives.
+            // Retrying it every frame would keep re-applying the unreachable
+            // request, so stop as soon as the scroll area stops moving.
+            let still_moving = (effective_offset - previous_offset).length_sq() > 0.25;
+            outstanding && still_moving
         });
         output
     }
@@ -348,13 +396,12 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
             id,
             &response,
             WidgetMeta {
-                role: WidgetRole::ScrollArea,
-                layout,
-                role_state: Some(RoleState::ScrollArea {
+                role: WidgetRoleMeta::ScrollArea {
                     offset: output.state.offset.into(),
                     viewport_size: output.inner_rect.size().into(),
                     content_size: output.content_size.into(),
-                }),
+                },
+                layout,
                 visible,
                 ..Default::default()
             },
@@ -384,7 +431,7 @@ mod tests {
         DevMcp, WidgetState,
         devmcp::RuntimeHooks,
         registry::Inner,
-        types::WidgetRegistryEntry,
+        types::{RoleState, WidgetRegistryEntry, WidgetRole},
         ui_ext::{ButtonOptions, CheckboxOptions, DevUiExt, ProgressBarOptions, TextEditOptions},
     };
 
@@ -962,6 +1009,127 @@ mod tests {
             .find(|entry| entry.id == "leaf")
             .expect("leaf widget");
         assert_eq!(leaf.parent_id.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn publish_rect_container_nests_published_children() {
+        let devmcp = devmcp_enabled();
+        let ctx = Context::default();
+        run_panel(&ctx, egui::RawInput::default(), |ctx, ui| {
+            devmcp.begin_frame(ctx);
+            let canvas = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(80.0, 80.0));
+            let _board = publish_rect_container(
+                ui,
+                "board.canvas",
+                canvas,
+                WidgetMeta {
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+            publish_rect_meta(
+                ui,
+                "board.square.a1",
+                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 10.0)),
+                WidgetMeta {
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+            devmcp.end_frame(ctx);
+        });
+
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        assert_eq!(
+            widget_by_id(&widgets, "board.square.a1")
+                .parent_id
+                .as_deref(),
+            Some("board.canvas")
+        );
+        assert_ne!(
+            widget_by_id(&widgets, "board.canvas").parent_id.as_deref(),
+            Some("board.canvas"),
+            "the canvas must not become its own parent"
+        );
+    }
+
+    #[test]
+    fn published_rects_take_their_enabled_state_from_the_metadata() {
+        let devmcp = devmcp_enabled();
+        let ctx = Context::default();
+        run_panel(&ctx, egui::RawInput::default(), |ctx, ui| {
+            devmcp.begin_frame(ctx);
+            let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 10.0));
+            publish_rect_meta(
+                ui,
+                "square.default",
+                rect,
+                WidgetMeta {
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+            publish_rect_meta(
+                ui,
+                "square.disabled",
+                rect,
+                WidgetMeta {
+                    visible: true,
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+            );
+            devmcp.end_frame(ctx);
+        });
+
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        assert!(widget_by_id(&widgets, "square.default").enabled);
+        assert!(!widget_by_id(&widgets, "square.disabled").enabled);
+    }
+
+    #[test]
+    fn publish_rect_container_scope_ends_with_the_guard() {
+        let devmcp = devmcp_enabled();
+        let ctx = Context::default();
+        run_panel(&ctx, egui::RawInput::default(), |ctx, ui| {
+            devmcp.begin_frame(ctx);
+            {
+                let _board = publish_rect_container(
+                    ui,
+                    "board.canvas",
+                    egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(80.0, 80.0)),
+                    WidgetMeta {
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            }
+            publish_rect_meta(
+                ui,
+                "sibling",
+                egui::Rect::from_min_size(egui::pos2(90.0, 0.0), egui::vec2(10.0, 10.0)),
+                WidgetMeta {
+                    visible: true,
+                    ..Default::default()
+                },
+            );
+            devmcp.end_frame(ctx);
+        });
+
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        assert_eq!(widget_by_id(&widgets, "sibling").parent_id, None);
     }
 
     #[test]

@@ -2,6 +2,8 @@ use std::sync::LazyLock;
 
 use tokio::sync::Mutex as AsyncMutex;
 
+#[cfg(test)]
+mod declaration;
 mod eval;
 mod outcome;
 mod parse;

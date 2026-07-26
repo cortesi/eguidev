@@ -141,33 +141,70 @@ export type ViewportWaitPredicate = (viewport: ViewportState) -> boolean
 
 -- Widgets are returned by `widget_get`, `widget_list`, and other discovery
 -- functions. All interactions (click, type, drag, ...) are methods on Widget.
+--
+-- Every wait takes WaitOptions; every action takes ActionOptions or an
+-- action-specific extension of it.
 export type Widget = {
     id: string,
     viewport_id: string,
+
+    --- Choosing a wait:
+    ---   widget must exist and be visible   -> widget:wait_for_visible()
+    ---   widget must reach a state          -> widget:wait_for(predicate)
+    ---   scroll area must be stable         -> widget:wait_for_scroll_ready()
+    ---   widget must disappear              -> widget:wait_for_absent()
+    ---   app-wide condition                 -> wait_until(predicate)
+    --- An animated scroll area needs a visibility wait, not a frame count.
+    --- wait_for_frames() counts frames and proves nothing about content.
+
+    --- Poll until this widget exists, is visible, and is not fully clipped.
+    --- This is the same condition pointer input requires, so a widget that
+    --- satisfies this wait can be clicked.
+    --- Returns the terminal widget snapshot on success.
+    wait_for_visible: (self: Widget, options: WaitOptions?) -> WidgetState,
+    --- Poll this widget until `predicate` returns true.
+    --- The predicate receives the latest widget snapshot. When the widget is
+    --- missing, the predicate is skipped (treated as false).
+    --- Returns the terminal widget snapshot on success.
+    --- Throws a timeout error if the predicate never matches.
+    wait_for: (self: Widget, predicate: WidgetWaitPredicate, options: WaitOptions?) -> WidgetState,
+    --- Wait until this widget's scroll_state is initialized and stable across captures.
+    --- Returns the terminal widget snapshot on success.
+    wait_for_scroll_ready: (self: Widget, options: WaitOptions?) -> WidgetState,
+    --- Poll until this widget is no longer present.
+    --- Throws a timeout error if the widget does not disappear in time.
+    wait_for_absent: (self: Widget, options: WaitOptions?) -> (),
+
     viewport: (self: Widget) -> Viewport,
     --- Click waits for input to drain and for a clean post-action capture unless
     --- `settle = false` is passed.
     click: (self: Widget, options: ActionOptions?) -> (),
     hover: (self: Widget, options: HoverOptions?) -> (),
     type_text: (self: Widget, text: string, options: TypeTextOptions?) -> (),
-    focus: (self: Widget) -> (),
+    focus: (self: Widget, options: ActionOptions?) -> (),
     --- Set the widget's value. Booleans for checkboxes/toggles, numbers for
     --- sliders/drag values/combo boxes (zero-based index), strings for text
     --- edits.
     set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> (),
     drag: (self: Widget, to: Pos, options: ActionOptions?) -> (),
-    drag_relative: (self: Widget, relative: Vec, from: Vec?) -> (),
+    --- Coordinates are normalized to 0 through 1 within the widget rect.
+    drag_relative: (self: Widget, relative: Vec, from: Vec?, options: ActionOptions?) -> (),
     drag_to: (self: Widget, to: Widget, options: ActionOptions?) -> (),
     scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> (),
     scroll_to: (self: Widget, options: ScrollToOptions?) -> (),
-    --- Scroll ancestor scroll areas just enough to reveal this widget.
-    --- No-op when the widget has no scroll-area ancestor.
+    --- Scroll ancestor scroll areas just enough to reveal this widget, then
+    --- wait until the widget is interaction-ready, so the next click succeeds
+    --- without a manual wait. With `settle = false` the offsets are only
+    --- requested and the call returns at once.
+    --- No-op when the widget has no scroll-area ancestor and is already ready.
     scroll_into_view: (self: Widget, options: ActionOptions?) -> (),
     state: (self: Widget) -> WidgetState,
     parent: (self: Widget) -> Widget?,
     children: (self: Widget) -> { Widget },
     text_measure: (self: Widget) -> TextMeasure,
-    -- Checks this widget and its descendants for layout problems.
+    -- Checks this widget and its descendants for layout problems. Structure
+    -- resolves against the whole viewport, so a scoped check still recognizes
+    -- an enclosing scroll area or clip region.
     check_layout: (self: Widget) -> { LayoutIssue },
     screenshot: (self: Widget) -> ImageRef,
     --- Capture this widget's viewport once and sample positions relative to
@@ -187,25 +224,13 @@ export type Widget = {
     show_debug_overlay: (self: Widget, mode: OverlayDebugMode?, options: OverlayDebugOptions?) -> (),
     --- Hide the debug overlay for this widget's subtree.
     hide_debug_overlay: (self: Widget) -> (),
-    --- Poll this widget until `predicate` returns true.
-    --- The predicate receives the latest widget snapshot. When the widget is
-    --- missing, the predicate is skipped (treated as false).
-    --- Returns the terminal widget snapshot on success.
-    --- Throws a timeout error if the predicate never matches.
-    wait_for: (self: Widget, predicate: WidgetWaitPredicate) -> WidgetState,
-    --- Poll until this widget both exists and is visible.
-    --- Returns the terminal widget snapshot on success.
-    --- Throws a timeout error if the widget never becomes visible.
-    wait_for_visible: (self: Widget) -> WidgetState,
-    --- Wait until this widget's scroll_state is initialized and stable across captures.
-    --- Returns the terminal widget snapshot on success.
-    wait_for_scroll_ready: (self: Widget) -> WidgetState,
-    --- Poll until this widget is no longer present.
-    --- Throws a timeout error if the widget does not disappear in time.
-    wait_for_absent: (self: Widget) -> (),
 }
 
+-- `(viewport_id, id)` is the one widget identity across handles, states,
+-- dumps, deltas, waits, and error details, so a state alone names its widget.
 export type WidgetState = {
+    id: string,
+    viewport_id: string,
     rect: Rect,
     interact_rect: Rect,
     role: WidgetRole,
@@ -338,8 +363,44 @@ export type PixelSample = {
     hex: string,
 }
 
+-- Every wait takes WaitOptions; every action takes ActionOptions or an
+-- action-specific extension of it.
 export type Viewport = {
     id: string,
+
+    --- Choosing a wait:
+    ---   widget must exist and be visible   -> vp:wait_for_widget_visible(id)
+    ---   widget must reach a state          -> vp:wait_for_widget(id, predicate)
+    ---   widget must disappear              -> vp:wait_for_widget_absent(id)
+    ---   viewport must reach a state        -> vp:wait_for(predicate)
+    ---   queued input must be applied       -> vp:wait_for_settle()
+
+    --- Poll until the widget with the given id exists, is visible, and is not
+    --- fully clipped. This is the same condition pointer input requires.
+    --- Returns the terminal widget snapshot on success.
+    wait_for_widget_visible: (self: Viewport, id: string, options: WaitOptions?) -> WidgetState,
+    wait_for_widget: (
+        self: Viewport,
+        id: string,
+        predicate: WidgetWaitPredicate,
+        options: WaitOptions?
+    ) -> WidgetState,
+    --- Poll until the widget with the given id is no longer present.
+    --- Throws a timeout error if the widget does not disappear in time.
+    wait_for_widget_absent: (self: Viewport, id: string, options: WaitOptions?) -> (),
+    --- Poll this viewport until `predicate` returns true.
+    --- The predicate receives the latest viewport snapshot on each poll.
+    --- Returns the terminal viewport snapshot that satisfied the predicate.
+    --- Throws a timeout error if the predicate never matches.
+    wait_for: (self: Viewport, predicate: ViewportWaitPredicate, options: WaitOptions?) -> ViewportState,
+    --- Wait until the viewport has processed pending actions and commands and
+    --- observed a fresh frame. Returns per-phase settle status.
+    --- Throws a timeout error if the viewport does not settle in time.
+    wait_for_settle: (self: Viewport, options: WaitOptions?) -> SettleReport,
+    --- Wait until this viewport has produced a fresh captured snapshot.
+    --- Throws a timeout error if no new capture arrives in time.
+    wait_for_capture: (self: Viewport, options: WaitOptions?) -> (),
+
     state: (self: Viewport) -> ViewportState,
     widget_list: (self: Viewport, options: WidgetListOptions?) -> { Widget },
     widget_get: (self: Viewport, id: string) -> Widget,
@@ -347,32 +408,8 @@ export type Viewport = {
     --- also occupy the point but are beneath it in the z-order. With
     --- `all_layers`, returns all overlapping widgets sorted topmost-first.
     widget_at_point: (self: Viewport, pos: Pos, all_layers: boolean?) -> { Widget },
-    wait_for_widget: (
-        self: Viewport,
-        id: string,
-        predicate: WidgetWaitPredicate
-    ) -> WidgetState,
-    --- Poll until the widget with the given id both exists and is visible.
-    --- Returns the terminal widget snapshot on success.
-    --- Throws a timeout error if the widget never becomes visible.
-    wait_for_widget_visible: (self: Viewport, id: string) -> WidgetState,
-    --- Poll until the widget with the given id is no longer present.
-    --- Throws a timeout error if the widget does not disappear in time.
-    wait_for_widget_absent: (self: Viewport, id: string) -> (),
-    --- Wait until the viewport has processed pending actions and commands and
-    --- observed a fresh frame. Returns per-phase settle status.
-    --- Throws a timeout error if the viewport does not settle in time.
-    wait_for_settle: (self: Viewport) -> SettleReport,
-    --- Wait until this viewport has produced a fresh captured snapshot.
-    --- Throws a timeout error if no new capture arrives in time.
-    wait_for_capture: (self: Viewport) -> (),
     --- Close transient popups/menus and stop active text input for this viewport.
-    dismiss_popups: (self: Viewport) -> (),
-    --- Poll this viewport until `predicate` returns true.
-    --- The predicate receives the latest viewport snapshot on each poll.
-    --- Returns the terminal viewport snapshot that satisfied the predicate.
-    --- Throws a timeout error if the predicate never matches.
-    wait_for: (self: Viewport, predicate: ViewportWaitPredicate) -> ViewportState,
+    dismiss_popups: (self: Viewport, options: ActionOptions?) -> (),
     --- Simulate a full key press-release cycle. The key argument is a combo
     --- string: optional modifiers joined by "-", then the key name.
     ---
@@ -420,7 +457,7 @@ export type Viewport = {
     raw_scroll: (self: Viewport, delta: Vec, modifiers: Modifiers?) -> (),
     --- Request OS-level window focus. Only use this for testing focus events
     --- themselves; all other automation works without OS focus.
-    focus: (self: Viewport) -> (),
+    focus: (self: Viewport, options: ActionOptions?) -> (),
     set_inner_size: (self: Viewport, size: Vec) -> (),
     set_resize_options: (self: Viewport, options: ResizeOptions) -> (),
     screenshot: (self: Viewport) -> ImageRef,
@@ -630,15 +667,24 @@ export type Fixture = {
     preconditions: { Anchor }?,
     anchors: { Anchor },
     params: { FixtureParam }?,
+    --- Freeform labels the app chose for searching and grouping. There is no
+    --- fixed vocabulary; read `description` for what a fixture actually does.
     tags: { string }?,
 }
 
+-- `data` selects a widget's app-domain `data` with an RFC 6901 pointer. An
+-- empty pointer selects the whole value. Absent data and unmatched paths leave
+-- the anchor unsatisfied, so the fixture wait continues until its timeout.
+-- Point at a value that is only correct once the work is done. A derived flag
+-- such as `loaded == 0 of 0` is already true before the work starts, so anchor
+-- on the count the fixture installed instead.
 export type AnchorCheck =
-    "Visible"
-    | "ScrollReady"
-    | { Label: string }
-    | { Value: WidgetValue }
-    | { ScrollAt: { offset: Vec, tolerance: number } }
+    "visible"
+    | "scroll_ready"
+    | { label: string }
+    | { value: WidgetValue }
+    | { scroll_at: { offset: Vec, tolerance: number } }
+    | { data: { pointer: string, equals: any } }
 
 export type Anchor = {
     widget_id: string,
@@ -708,7 +754,10 @@ declare function diagnostics(): DiagnosticsSnapshot
 --- Wait for at least `count` more frames to be observed.
 --- Returns the ending frame count on success.
 --- Throws a timeout error if the requested frames are not observed in time.
-declare function wait_for_frames(count: number?): number
+--- A frame count proves nothing about content. Prefer a widget or viewport
+--- wait whenever the script is really waiting for a state.
+--- Frame counting is app-wide, so only `timeout_ms` applies here.
+declare function wait_for_frames(count: number?, options: WaitOptions?): number
 --- Wait until the root viewport has produced a fresh captured snapshot.
 declare function wait_for_capture(options: WaitOptions?): ()
 --- Poll a predicate until it returns true. The predicate may call yielding helpers.
