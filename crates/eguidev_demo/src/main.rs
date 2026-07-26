@@ -665,7 +665,7 @@ impl DemoApp {
                 egui::FontId::proportional(16.0),
                 egui::Color32::WHITE,
             );
-            eguidev::track_response_full(
+            eguidev::track_response(
                 "basic.drag",
                 &response,
                 eguidev::WidgetMeta {
@@ -715,7 +715,7 @@ impl DemoApp {
                 ui.allocate_exact_size(egui::vec2(48.0, 24.0), egui::Sense::hover());
             ui.painter()
                 .rect_filled(sample_rect, 0.0, Color32::from_rgb(0x2f, 0x80, 0xed));
-            eguidev::track_response_full(
+            eguidev::track_response(
                 "basic.visual.sample_target",
                 &sample_response,
                 eguidev::WidgetMeta {
@@ -985,7 +985,7 @@ impl DemoApp {
     /// data can.
     fn render_analysis_status(s: &DemoState, ui: &mut egui::Ui) {
         let response = ui.label("Analysis status");
-        eguidev::track_response_full(
+        eguidev::track_response(
             "status.summary",
             &response,
             eguidev::WidgetMeta {
@@ -1314,7 +1314,7 @@ impl DemoApp {
                 egui::FontId::proportional(16.0),
                 egui::Color32::WHITE,
             );
-            eguidev::track_response_full(
+            eguidev::track_response(
                 "viewports.drag",
                 &response,
                 eguidev::WidgetMeta {
@@ -1346,7 +1346,7 @@ impl DemoApp {
                 egui::FontId::proportional(14.0),
                 egui::Color32::WHITE,
             );
-            eguidev::track_response_full(
+            eguidev::track_response(
                 "viewports.unwired.value",
                 &response,
                 eguidev::WidgetMeta {
@@ -1537,7 +1537,7 @@ impl App for DemoApp {
                     Self::render_widget_surface_window(&mut s, ui);
                 })
             {
-                eguidev::track_response_full(
+                eguidev::track_response(
                     "basic.window.surface",
                     &window.response,
                     eguidev::WidgetMeta {

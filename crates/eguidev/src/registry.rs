@@ -470,7 +470,7 @@ impl Inner {
     }
 
     pub fn queue_action(&self, viewport_id: egui::ViewportId, action: InputAction) {
-        self.queue_action_with_timing(viewport_id, ActionTiming::Current, action);
+        self.queue_action_with_timing(viewport_id, ActionTiming::Immediate, action);
     }
 
     pub fn queue_action_with_timing(

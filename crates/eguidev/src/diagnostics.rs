@@ -23,6 +23,14 @@ use crate::registry::lock;
 pub type DiagnosticResult = Result<Value, DiagnosticError>;
 
 /// Structured failure returned by an app diagnostic provider.
+///
+/// An app chooses its own `code` values. `eguidev` produces these itself when
+/// it cannot reach a provider:
+///
+/// - `timeout`: a UI-thread provider did not answer before the deadline.
+/// - `panic`: the provider panicked, and `message` carries the payload.
+/// - `internal`: the provider was dropped without returning a result.
+/// - `pending_ui`: the provider needs a UI frame that has not run yet.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticError {
     /// Stable machine-readable error code.
@@ -73,6 +81,19 @@ impl DiagnosticError {
 }
 
 /// Configuration error returned while building a [`crate::DevMcp`] handle.
+///
+/// Every code names a registration the handle refuses:
+///
+/// - `duplicate_fixture_handler`: a fixture handler is already registered. An
+///   app registers exactly one, from either `on_fixture_ui` or
+///   `on_fixture_runtime`.
+/// - `duplicate_idle_provider`: an idle provider is already registered.
+/// - `duplicate_diagnostic`: that diagnostic name is already registered.
+/// - `empty_diagnostic_name`: the diagnostic name was blank.
+/// - `duplicate_script_prelude_namespace`: that prelude namespace is taken.
+/// - `empty_script_prelude_namespace`: the prelude namespace was blank.
+/// - `invalid_script_prelude_namespace`: the namespace is not a Luau identifier.
+/// - `reserved_script_prelude_namespace`: the namespace is one eguidev owns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Error)]
 #[error("{message}")]
 pub struct DevMcpConfigError {

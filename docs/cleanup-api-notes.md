@@ -5,10 +5,10 @@ in the cleanup plan.
 
 ## Current public surface
 
-- `eguidev` default build: inert `DevMcp`, `FrameGuard`, helper functions
-  (`id`, `id_with_meta`, `id_label`, `track_response`,
-  `track_response_with_meta`, `raw_input_hook`), `DevUiExt`, fixture types,
-  and widget metadata/types.
+- `eguidev` default build: inert `DevMcp`, `FrameGuard`, the recording
+  functions (`track_widget`, `track_widget_with_meta`, `track_response`,
+  `publish_rect_meta`, `publish_rect_container`, `container`,
+  `begin_container`), `DevUiExt`, fixture types, and widget metadata/types.
 - `eguidev` with `devtools`: adds `runtime::attach()`, the embedded MCP
   server, script evaluation/types, screenshots, and smoke helpers.
 - `edev`: `run()` and `EdevError` remain the only public items.

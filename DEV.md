@@ -30,6 +30,9 @@ cargo xtask smoke --list
 cargo xtask smoke --list --json --only '*visual*'
 ```
 
+Repeat `--only` to select more scripts. A script runs when it matches any
+pattern, so narrow with one more specific glob rather than with a second flag.
+
 Run repeated rounds against one app process when chasing intermittent behavior:
 
 ```sh

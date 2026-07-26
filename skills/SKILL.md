@@ -53,8 +53,14 @@ use `--search <term>` to find specific items.
 When editing instrumentation, prefer established Rust APIs:
 
 - standard widgets: `dev_*` helpers from `DevUiExt`
-- hierarchy: `container()`
-- publish state with `track_response_full(...)` or `id_with_meta(...)`
+- custom widgets that have an `egui::Response`: `track_widget(...)`,
+  `track_widget_with_meta(...)`, or `track_response(...)`
+- painter-drawn geometry, which has no response: `publish_rect_meta(...)`, and
+  `publish_rect_container(...)` when the rect is a parent for further rects
+- hierarchy: `container(...)`, or `begin_container(...)` when the container
+  widget itself is recorded after its contents
+- set `WidgetMeta::visible`; it defaults to `false` and an invisible widget is
+  hidden from the default lookups
 - consume queued `set_value(...)` updates with
   `take_widget_value_override(...)` before rendering the widget
 
@@ -218,9 +224,10 @@ Smoketest scripts follow the same shape as good `script_eval` scripts:
 - Keep scripts independent -- no reliance on state from earlier tests.
 - Use assertions for pass/fail and `log()` for diagnostics.
 - Treat smoketests as regression tests and executable API documentation.
-- Use `edev smoke --list [--json]` and repeatable `--only GLOB` filters while
-  authoring. Use `--repeat N` or `--until-fail N` to hunt flaky settle or
-  rendering behavior, and `--bundle` / `--bundle-dir PATH` for failure bundles.
+- Use `edev smoke --list [--json]` while authoring. Repeat `--only GLOB` to
+  select more scripts; a script runs when it matches any pattern. Use
+  `--repeat N` or `--until-fail N` to hunt flaky settle or rendering behavior,
+  and `--bundle` / `--bundle-dir PATH` for failure bundles.
 
 
 ## Iterative Development Workflow

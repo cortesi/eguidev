@@ -187,7 +187,11 @@ export type Widget = {
     --- edits.
     set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> (),
     drag: (self: Widget, to: Pos, options: ActionOptions?) -> (),
-    --- Coordinates are normalized to 0 through 1 within the widget rect.
+    --- Drag inside this widget. Both coordinates are positions normalized to
+    --- 0 through 1 within the widget rect, not deltas: `relative` is where the
+    --- drag ends and `from` is where it starts, defaulting to the centre.
+    --- `drag_relative({ x = 1, y = 0.5 })` therefore drags the centre to the
+    --- right edge.
     drag_relative: (self: Widget, relative: Vec, from: Vec?, options: ActionOptions?) -> (),
     drag_to: (self: Widget, to: Widget, options: ActionOptions?) -> (),
     scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> (),

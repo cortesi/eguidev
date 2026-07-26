@@ -55,18 +55,19 @@ pub fn name_viewport(ctx: &egui::Context, name: impl Into<String>) {
         .name_viewport(ctx.viewport_id(), name.into());
 }
 
-/// Record a widget with an explicit id and geometry only.
+/// Draw a custom widget and record its geometry under an explicit id.
 ///
-/// Prefer `DevUiExt` for standard widgets. Use `id` for custom widgets where metadata is
-/// unnecessary.
-pub fn id(
+/// Prefer `DevUiExt` for standard widgets. Use this when geometry is all the
+/// automation needs, and [`track_widget_with_meta`] when it needs a role, a
+/// label, or a value.
+pub fn track_widget(
     ui: &mut egui::Ui,
     id: impl Into<String>,
     add: impl FnOnce(&mut egui::Ui) -> egui::Response,
 ) -> egui::Response {
     let response = add(ui);
     let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
-    track_response_full(
+    track_response(
         id,
         &response,
         WidgetMeta {
@@ -77,10 +78,11 @@ pub fn id(
     response
 }
 
-/// Record a widget with an explicit id and explicit metadata.
+/// Draw a custom widget and record it with explicit role metadata.
 ///
-/// Use this when you need control over role/type/value/label metadata for custom widgets.
-pub fn id_with_meta(
+/// Use this when automation needs the role, label, or value of a custom widget.
+/// Use [`track_response`] when the response already exists.
+pub fn track_widget_with_meta(
     ui: &mut egui::Ui,
     id: impl Into<String>,
     role: WidgetRoleMeta,
@@ -95,7 +97,7 @@ pub fn id_with_meta(
     let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
     let layout = Some(capture_layout(ui, &response));
     let id = id.into();
-    swallow_panic("id_with_meta", || {
+    swallow_panic("track_widget_with_meta", || {
         record_widget(
             &inner.widgets,
             id,
@@ -113,17 +115,22 @@ pub fn id_with_meta(
     response
 }
 
-/// Track an already-created widget response with explicit metadata.
+/// Record an already-created widget response with explicit metadata.
 ///
-/// Use this when you have an `egui::Response` from a custom widget and cannot
-/// wrap it with [`id`] or [`id_with_meta`]. Prefer the `DevUiExt` helpers or
-/// the wrapping functions for standard widgets.
-pub fn track_response_full(id: impl Into<String>, response: &egui::Response, meta: WidgetMeta) {
+/// Use this when you hold an `egui::Response` from a custom widget and cannot
+/// wrap it with [`track_widget`] or [`track_widget_with_meta`]. Prefer the
+/// `DevUiExt` helpers for standard widgets.
+///
+/// The `track_*` functions record something that has an `egui::Response`, so
+/// they can read its enabled, focused, and interaction state. The
+/// `publish_rect_*` functions publish painter-drawn geometry, which has none of
+/// that, so [`WidgetMeta`] must supply it.
+pub fn track_response(id: impl Into<String>, response: &egui::Response, meta: WidgetMeta) {
     let Some(inner) = active_inner() else {
         return;
     };
     let id = id.into();
-    swallow_panic("track_response_full", || {
+    swallow_panic("track_response", || {
         record_widget(&inner.widgets, id, response, meta);
     });
 }
@@ -567,7 +574,7 @@ mod tests {
         run_panel(&ctx, raw_input, |ctx, ui| {
             devmcp.begin_frame(ctx);
             let response = ui.button("Save");
-            track_response_full(
+            track_response(
                 "save",
                 &response,
                 WidgetMeta {

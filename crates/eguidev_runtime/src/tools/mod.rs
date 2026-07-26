@@ -2255,8 +2255,11 @@ impl DevMcpServer {
         }
         let queue_action = |action| {
             if queue_for_next_frame {
-                self.inner
-                    .queue_action_with_timing(viewport_id, ActionTiming::Next, action);
+                self.inner.queue_action_with_timing(
+                    viewport_id,
+                    ActionTiming::AfterOneFrame,
+                    action,
+                );
             } else {
                 self.inner.queue_action(viewport_id, action);
             }
@@ -6123,7 +6126,7 @@ return { first = catalog[1].name, count = #catalog }"#
         );
         inner.queue_action_with_timing(
             viewport_id,
-            ActionTiming::Next,
+            ActionTiming::AfterOneFrame,
             InputAction::Text {
                 text: "staged".to_string(),
             },
@@ -6219,27 +6222,19 @@ return { first = catalog[1].name, count = #catalog }"#
             .await
             .expect("drag relative");
 
-        let mut raw_input = egui::RawInput {
-            viewport_id,
-            ..Default::default()
-        };
-        apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run_ui(raw_input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
+        // The drag stages one step per frame: land, press, move, release.
+        while inner.actions.has_pending_actions(viewport_id) {
+            let mut raw_input = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            apply_actions(&inner, &mut raw_input);
+            let _output = ctx.run_ui(raw_input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
+                });
             });
-        });
-
-        let mut raw_input = egui::RawInput {
-            viewport_id,
-            ..Default::default()
-        };
-        apply_actions(&inner, &mut raw_input);
-        let _output = ctx.run_ui(raw_input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.add(egui::Slider::new(&mut value, 0.0..=100.0));
-            });
-        });
+        }
 
         assert!(value > 42.0_f32);
     }

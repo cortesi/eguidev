@@ -24,6 +24,7 @@ Useful authoring commands:
 ```sh
 cargo xtask smoke --list
 cargo xtask smoke --only '*visual*'
+cargo xtask smoke --only '*visual*' --only '*layout*'
 cargo xtask smoke --repeat 5 --only '*layout*'
 cargo xtask smoke --until-fail 50
 cargo xtask smoke --bundle --fail-fast

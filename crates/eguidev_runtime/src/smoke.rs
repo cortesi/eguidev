@@ -651,12 +651,15 @@ fn filter_suite_scripts(
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
+    // Repeating `--only` selects more scripts. A script runs when it matches
+    // any pattern, which is what a repeatable selector reads as; narrow with
+    // one more specific glob instead.
     Ok(scripts
         .into_iter()
         .filter(|script| {
             patterns
                 .iter()
-                .all(|pattern| pattern.matches(&script.display_path))
+                .any(|pattern| pattern.matches(&script.display_path))
         })
         .collect())
 }
@@ -846,8 +849,8 @@ mod tests {
     }
 
     #[test]
-    fn discover_suite_scripts_lists_sizes_and_intersects_only_filters() {
-        let root = test_root("discover_suite_scripts_lists_sizes_and_intersects_only_filters");
+    fn discover_suite_scripts_lists_sizes_and_unions_only_filters() {
+        let root = test_root("discover_suite_scripts_lists_sizes_and_unions_only_filters");
         let suite_dir = root.join("suite");
         drop(fs::remove_dir_all(&root));
         fs::create_dir_all(suite_dir.join("nested")).expect("create suite dir");
@@ -860,12 +863,20 @@ mod tests {
         .expect("write nested");
 
         let mut config = suite_config(suite_dir);
-        config.only = vec!["*layout.luau".to_string(), "nested/*".to_string()];
+        config.only = vec!["10_bootstrap.luau".to_string(), "nested/*".to_string()];
         let scripts = discover_suite_scripts(&config).expect("discover scripts");
 
-        assert_eq!(scripts.len(), 1);
-        assert_eq!(scripts[0].path, "nested/30_layout.luau");
-        assert_eq!(scripts[0].size, "return false".len() as u64);
+        let selected = scripts
+            .iter()
+            .map(|script| script.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec!["10_bootstrap.luau", "nested/30_layout.luau"]);
+        assert_eq!(scripts[1].size, "return false".len() as u64);
+
+        // One glob still narrows.
+        config.only = vec!["*layout.luau".to_string()];
+        let narrowed = discover_suite_scripts(&config).expect("discover scripts");
+        assert_eq!(narrowed.len(), 2);
 
         drop(fs::remove_dir_all(&root));
     }

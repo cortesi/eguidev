@@ -447,6 +447,17 @@ pub struct FixtureResponse {
 pub type FixtureResult = Result<FixtureResponse, FixtureError>;
 
 /// Structured fixture handler failure.
+///
+/// A handler chooses its own `code` values, such as `unknown_fixture`.
+/// `eguidev` produces these itself before or around the handler:
+///
+/// - `no_handler`: the app registered no fixture handler.
+/// - `unknown_param`, `missing_param`, `invalid_param_type`,
+///   `invalid_param_choice`, `param_below_min`, `param_above_max`: the call did
+///   not satisfy the fixture's declared params, and `details` names the param.
+/// - `timeout`: a UI-thread handler did not run before the deadline.
+/// - `panic`: the handler panicked, and `message` carries the payload.
+/// - `internal`: the handler was dropped without returning a result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FixtureError {
     /// Stable machine-readable error code.
@@ -1562,6 +1573,10 @@ impl ScrollAreaMeta {
 }
 
 /// Min/max bounds for a numeric widget.
+///
+/// The bounds are `f64` even though `DevUiExt` sliders and drag values take
+/// `f32` or `i32`. Scripts see one numeric type, so every recorded range widens
+/// to the type that carries all of them without loss.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WidgetRange {
     /// Minimum allowed value.

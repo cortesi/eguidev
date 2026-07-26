@@ -263,9 +263,14 @@ pub fn queue_drag(
     end: Pos2,
     modifiers: Modifiers,
 ) {
+    // Land the pointer a frame before pressing. egui reports the whole jump
+    // from wherever the pointer was as this frame's pointer delta, and a
+    // widget that accumulates drag_delta() would take that jump as part of the
+    // drag if the button went down in the same frame.
     inner.queue_action(viewport_id, InputAction::PointerMove { pos: start });
-    inner.queue_action(
+    inner.queue_action_with_timing(
         viewport_id,
+        ActionTiming::AfterOneFrame,
         InputAction::PointerButton {
             pos: start,
             button: PointerButton::Primary,
@@ -273,17 +278,16 @@ pub fn queue_drag(
             modifiers,
         },
     );
-    // Add an intermediate frame with ONLY the end movement to ensure egui
-    // processes the drag delta before the release.
+    // A frame carrying only the end movement, so egui reports the drag delta
+    // before the release.
     inner.queue_action_with_timing(
         viewport_id,
-        ActionTiming::Next,
+        ActionTiming::AfterTwoFrames,
         InputAction::PointerMove { pos: end },
     );
-    // Release in the frame after that.
     inner.queue_action_with_timing(
         viewport_id,
-        ActionTiming::AfterNext,
+        ActionTiming::AfterThreeFrames,
         InputAction::PointerButton {
             pos: end,
             button: PointerButton::Primary,
@@ -843,6 +847,55 @@ pub fn apply_overlay_debug_options(
 mod tests {
     use super::*;
     use crate::types::{RoleState, WidgetRange};
+
+    /// Describe one queued action for an order assertion.
+    fn describe(action: &InputAction) -> String {
+        match action {
+            InputAction::PointerMove { pos } => format!("move {} {}", pos.x, pos.y),
+            InputAction::PointerButton { pressed, .. } => {
+                if *pressed {
+                    "press".to_string()
+                } else {
+                    "release".to_string()
+                }
+            }
+            _ => "other".to_string(),
+        }
+    }
+
+    #[test]
+    fn queue_drag_lands_the_pointer_a_frame_before_pressing() {
+        let inner = Inner::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        let start = Pos2 { x: 10.0, y: 20.0 };
+        let end = Pos2 { x: 40.0, y: 20.0 };
+        queue_drag(&inner, viewport_id, start, end, Modifiers::default());
+
+        // One stage drains per frame. The press must not share a frame with the
+        // move that lands the pointer, or the whole jump from wherever the
+        // pointer was reads as part of the drag.
+        let frames = (0..4)
+            .map(|frame| {
+                inner
+                    .actions
+                    .drain_actions(viewport_id, frame)
+                    .iter()
+                    .map(describe)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            frames,
+            vec![
+                vec!["move 10 20".to_string()],
+                vec!["press".to_string()],
+                vec!["move 40 20".to_string()],
+                vec!["release".to_string()],
+            ]
+        );
+        assert!(!inner.actions.has_pending_actions(viewport_id));
+    }
 
     fn widget(role: WidgetRole, value: Option<WidgetValue>) -> WidgetRegistryEntry {
         WidgetRegistryEntry {

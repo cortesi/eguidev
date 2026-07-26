@@ -86,7 +86,8 @@ impl InputAction {
     }
 }
 
-const ACTION_STAGE_COUNT: usize = 3;
+/// Frames an action can be staged ahead of the next drain.
+const ACTION_STAGE_COUNT: usize = 4;
 
 type ActionMap = HashMap<egui::ViewportId, Vec<InputAction>>;
 
@@ -97,27 +98,46 @@ pub struct ActionQueueStats {
     pub last_drain_frame: Option<u64>,
 }
 
+/// How many whole frames an action waits before it reaches the app.
+///
+/// Each drain delivers the immediate stage and moves every later stage one
+/// step closer, so a sequence that must span frames stages one step per frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionTiming {
-    Current,
-    Next,
-    AfterNext,
+    /// Deliver at the next drain.
+    Immediate,
+    /// Deliver one frame after the next drain.
+    AfterOneFrame,
+    /// Deliver two frames after the next drain.
+    AfterTwoFrames,
+    /// Deliver three frames after the next drain.
+    AfterThreeFrames,
 }
+
+/// Every stage, nearest first.
+const ACTION_STAGES: [ActionTiming; ACTION_STAGE_COUNT] = [
+    ActionTiming::Immediate,
+    ActionTiming::AfterOneFrame,
+    ActionTiming::AfterTwoFrames,
+    ActionTiming::AfterThreeFrames,
+];
 
 impl ActionTiming {
     fn index(self) -> usize {
         match self {
-            Self::Current => 0,
-            Self::Next => 1,
-            Self::AfterNext => 2,
+            Self::Immediate => 0,
+            Self::AfterOneFrame => 1,
+            Self::AfterTwoFrames => 2,
+            Self::AfterThreeFrames => 3,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            Self::Current => "actions lock",
-            Self::Next => "actions next lock",
-            Self::AfterNext => "actions next next lock",
+            Self::Immediate => "actions lock",
+            Self::AfterOneFrame => "actions next lock",
+            Self::AfterTwoFrames => "actions next next lock",
+            Self::AfterThreeFrames => "actions next next next lock",
         }
     }
 }
@@ -159,9 +179,10 @@ impl ActionQueue {
     }
 
     pub fn drain_actions(&self, viewport_id: egui::ViewportId, frame: u64) -> Vec<InputAction> {
-        let current = self.take_staged_actions(ActionTiming::Current, viewport_id);
-        self.promote_staged_actions(ActionTiming::Current, ActionTiming::Next, viewport_id);
-        self.promote_staged_actions(ActionTiming::Next, ActionTiming::AfterNext, viewport_id);
+        let current = self.take_staged_actions(ActionTiming::Immediate, viewport_id);
+        for stage in ACTION_STAGES.windows(2) {
+            self.promote_staged_actions(stage[0], stage[1], viewport_id);
+        }
         self.record_drain(viewport_id, current.len(), frame);
         current
     }
@@ -172,11 +193,7 @@ impl ActionQueue {
     }
 
     pub fn clear_all(&self) {
-        for timing in [
-            ActionTiming::Current,
-            ActionTiming::Next,
-            ActionTiming::AfterNext,
-        ] {
+        for timing in ACTION_STAGES {
             lock(&self.staged_actions[timing.index()], timing.label()).clear();
         }
         lock(&self.commands, "commands lock").clear();
@@ -191,13 +208,7 @@ impl ActionQueue {
     }
 
     pub fn has_pending_actions(&self, viewport_id: egui::ViewportId) -> bool {
-        [
-            ActionTiming::Current,
-            ActionTiming::Next,
-            ActionTiming::AfterNext,
-        ]
-        .into_iter()
-        .any(|timing| {
+        ACTION_STAGES.into_iter().any(|timing| {
             has_pending(
                 &self.staged_actions[timing.index()],
                 timing.label(),
@@ -207,20 +218,16 @@ impl ActionQueue {
     }
 
     pub fn pending_action_count(&self, viewport_id: egui::ViewportId) -> usize {
-        [
-            ActionTiming::Current,
-            ActionTiming::Next,
-            ActionTiming::AfterNext,
-        ]
-        .into_iter()
-        .map(|timing| {
-            pending_count(
-                &self.staged_actions[timing.index()],
-                timing.label(),
-                viewport_id,
-            )
-        })
-        .sum()
+        ACTION_STAGES
+            .into_iter()
+            .map(|timing| {
+                pending_count(
+                    &self.staged_actions[timing.index()],
+                    timing.label(),
+                    viewport_id,
+                )
+            })
+            .sum()
     }
 
     pub fn has_pending_commands(&self, viewport_id: egui::ViewportId) -> bool {
@@ -314,21 +321,21 @@ mod tests {
 
         queue.queue_action_with_timing(
             viewport_id,
-            ActionTiming::Current,
+            ActionTiming::Immediate,
             InputAction::Text {
                 text: "current".to_string(),
             },
         );
         queue.queue_action_with_timing(
             viewport_id,
-            ActionTiming::Next,
+            ActionTiming::AfterOneFrame,
             InputAction::Text {
                 text: "next".to_string(),
             },
         );
         queue.queue_action_with_timing(
             viewport_id,
-            ActionTiming::AfterNext,
+            ActionTiming::AfterTwoFrames,
             InputAction::Text {
                 text: "later".to_string(),
             },
@@ -369,7 +376,7 @@ mod tests {
 
         queue.queue_action_with_timing(
             viewport_id,
-            ActionTiming::Current,
+            ActionTiming::Immediate,
             InputAction::Text {
                 text: "typed".to_string(),
             },

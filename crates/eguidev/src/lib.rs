@@ -72,14 +72,20 @@
 //!
 //! Custom widgets have their own recording primitives. Pick by what you hold:
 //!
-//! | You hold                              | Use                          |
-//! | ------------------------------------- | ---------------------------- |
-//! | a closure that draws and returns a response | [`id`], [`id_with_meta`] |
-//! | an `egui::Response` already            | [`track_response_full`]      |
-//! | a painter-drawn rect                   | [`publish_rect_meta`]        |
-//! | a painter-drawn rect with children     | [`publish_rect_container`]   |
-//! | a scope whose widget is recorded elsewhere | [`begin_container`]      |
-//! | a scope and its widget together        | [`container`]                |
+//! | You hold                                    | Use                        |
+//! | ------------------------------------------- | -------------------------- |
+//! | a closure that draws and returns a response  | [`track_widget`]           |
+//! | the same, and a role to declare              | [`track_widget_with_meta`] |
+//! | an `egui::Response` already                  | [`track_response`]         |
+//! | a painter-drawn rect                         | [`publish_rect_meta`]      |
+//! | a painter-drawn rect with children           | [`publish_rect_container`] |
+//! | a scope whose widget is recorded elsewhere   | [`begin_container`]        |
+//! | a scope and its widget together              | [`container`]              |
+//!
+//! `track_*` records something that has an `egui::Response`, so enabled,
+//! focused, and visible state come from egui. `publish_rect_*` publishes
+//! painter-drawn geometry, which has no response, so [`WidgetMeta`] states that
+//! metadata instead.
 //!
 //! Set [`WidgetMeta::visible`] on every widget you record by hand. It defaults
 //! to `false`, and an invisible widget is hidden from the default lookups.
@@ -94,7 +100,7 @@
 //! }
 //!
 //! let response = render_custom_mode_picker(ui, selected);
-//! track_response_full(
+//! track_response(
 //!     id,
 //!     &response,
 //!     WidgetMeta {
@@ -175,9 +181,9 @@ pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
     instrument::{
-        ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, id,
-        id_with_meta, name_viewport, publish_rect_container, publish_rect_meta,
-        track_response_full,
+        ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, name_viewport,
+        publish_rect_container, publish_rect_meta, track_response, track_widget,
+        track_widget_with_meta,
     },
     script_prelude::ScriptPrelude,
     types::{
