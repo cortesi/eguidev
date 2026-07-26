@@ -26,8 +26,26 @@ The MCP server exposes six tools:
 - `script_eval` for all app inspection, interaction, waits, screenshots, and
   verification
 
-Do not edit global MCP configuration merely to unblock one repository task. If
-the configured tools are unavailable, use `edev docs`, place self-contained
+Do not change global MCP configuration merely to unblock one repository task.
+Declare the server in the app repository instead. For Codex that is the
+repository's own `.codex/config.toml`, never the user-wide
+`~/.codex/config.toml`. Edit the project file directly, because `codex mcp add`
+writes user-wide configuration.
+
+```toml
+[mcp_servers.my-app-edev]
+command = "edev"
+args = ["mcp"]
+```
+
+`edev` finds `.edev.toml` by walking up from its working directory to the
+repository root, so the server needs no `cwd` of its own. Start Codex from the
+app repository, and restart it after adding the server. Project config is
+ignored until the repository is trusted. Add `startup_timeout_sec` when the
+command builds `edev` from source, as this repository's `.codex/config.toml`
+does.
+
+If the configured tools are unavailable, use `edev docs`, place self-contained
 probes under the app's `tmp/` directory, run them with `edev eval <path>`, and
 use `edev smoke` for persistent scenarios.
 
@@ -114,6 +132,13 @@ disappearing while the new captured row set is installed.
 - Let Edev own every process it launches. Normal stop and launcher failure clean
   up the complete managed process group; no manual process cleanup should be
   required between runs.
+- Treat `.edev-instances/` in the app working directory as Edev-owned live
+  launcher and app state. Add it to the app repository's `.gitignore`; never
+  commit or edit its generated records.
+- Do not delete `.edev-instances/` while an Edev launcher or managed app is
+  active. Rely on Edev to remove owned records during normal shutdown and prune
+  stale records when the next launcher registers; registry deletion is not
+  process management.
 - Call `fixture()` at the start of scripts for a known in-app baseline.
 - `fixture()` waits for declared readiness anchors on fresh captures; still
   wait/assert the specific widget or viewport state your script depends on.
