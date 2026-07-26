@@ -38,12 +38,25 @@ command = "edev"
 args = ["mcp"]
 ```
 
-`edev` finds `.edev.toml` by walking up from its working directory to the
-repository root, so the server needs no `cwd` of its own. Start Codex from the
-app repository, and restart it after adding the server. Project config is
-ignored until the repository is trusted. Add `startup_timeout_sec` when the
-command builds `edev` from source, as this repository's `.codex/config.toml`
-does.
+`edev` finds `.edev.toml` by walking up from its working directory, stopping at
+the repository root. A config inside the app repository therefore needs no `cwd`
+of its own, whether it sits at the root or under `.codex/`.
+
+Set `cwd` only when the config lives outside the app repository, such as an
+umbrella directory holding several app repositories. The upward walk never
+descends, so point `cwd` at the app repository root:
+
+```toml
+[mcp_servers.my-app-edev]
+command = "edev"
+args = ["mcp"]
+cwd = "my-app"
+```
+
+Start Codex from the app repository, and restart it after adding the server.
+Project config is ignored until the repository is trusted. Add
+`startup_timeout_sec` when the command builds `edev` from source, as this
+repository's `.codex/config.toml` does.
 
 If the configured tools are unavailable, use `edev docs`, place self-contained
 probes under the app's `tmp/` directory, run them with `edev eval <path>`, and
