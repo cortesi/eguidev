@@ -11,9 +11,6 @@ keywords.workspace = true
 categories = ["development-tools", "gui"]
 description = "AI-assisted development tooling and in-process instrumentation for egui apps"
 
-[lib]
-doctest = false
-
 [lints]
 workspace = true
 

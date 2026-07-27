@@ -75,6 +75,9 @@ definitions while stopped.
 Smoke authoring:
 
 - `edev smoke --list [--json]` prints the selected script set without launching the app.
+- Smoke runs fail when a script leaves egui identity diagnostics undismissed. Set
+  `[smoke] fail_on_egui_diagnostics = false` to retain the diagnostics in verbose output and
+  failure bundles without changing script status.
 - `--only GLOB` filters discovered scripts by forward-slash display path. Repeating the flag
   intersects filters. Explicit positional script paths remain exact selections and cannot be
   combined with `--only`.
@@ -91,7 +94,8 @@ Failure bundles:
   run of the same script. Multi-round runs add `round-N` to the directory key and record the round
   in `meta.json`.
 - Bundles include `meta.json`, `failure.txt`, `tree.json`, `tree.txt`, `diagnostics.json`, one
-  `viewport-*.jpg` per captured viewport, `app.stderr.log`, and `app.stdout.log`.
+  `viewport-*.jpg` per captured viewport, `app.stderr.log`, and `app.stdout.log`. Script metadata
+  and failure text include undismissed egui diagnostics.
 - `app.stdout.log` contains captured stdout only when stdout is not reserved for the stdio MCP
   transport; current stdio launches write an explanatory note instead.
 - If post-failure collection fails, the bundle keeps the original failure files and records the
@@ -120,10 +124,11 @@ Failure points:
 ## Input pipeline (`eguidev`)
 
 1. Tool calls enqueue `InputAction` and `ViewportCommand` events into `ActionQueue`.
-2. The `InputInjectionPlugin` egui plugin's `input_hook` drains queued actions for the pass's
-   viewport and appends egui events, running inside `Context::begin_pass` for every viewport.
+2. The automation egui plugin's `input_hook` drains queued actions for the pass's viewport and
+   appends egui events, running inside `Context::begin_pass` for every viewport.
 3. Frame processing consumes injected egui events.
-4. `end_frame` captures widget/input snapshots, applies viewport commands, invokes the attached
+4. The plugin's `output_hook` captures egui identity diagnostics from the completed pass.
+5. `end_frame` captures widget/input snapshots, applies viewport commands, invokes the attached
    runtime hooks for frame waiters, screenshot capture, and fixture wakeups, and requests the next
    immediate repaint when runtime keep-alive is enabled.
 

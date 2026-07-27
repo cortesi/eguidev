@@ -11,7 +11,8 @@ use serde::Serialize;
 use tokio::runtime::Handle;
 
 use crate::{
-    DevMcp, FixtureApplication, ScriptArgs, ScriptEvalOptions, ScriptEvalOutcome, runtime,
+    DevMcp, EguiDiagnosticBatch, EguiDiagnosticKind, FixtureApplication, ScriptArgs,
+    ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, runtime,
 };
 
 const SUITE_RESULT_PATH: &str = "<suite>";
@@ -33,6 +34,8 @@ pub struct SuiteConfig {
     pub script_timeout: Option<Duration>,
     /// Stop after the first failure.
     pub fail_fast: bool,
+    /// Fail scripts that leave egui identity diagnostics undismissed.
+    pub fail_on_egui_diagnostics: bool,
     /// Repetition behavior for the selected suite.
     pub run_mode: SuiteRunMode,
     /// Args passed to every script in the suite.
@@ -52,6 +55,47 @@ impl SuiteConfig {
     fn stop_after_failure_reason(&self) -> Option<&'static str> {
         self.stop_on_failure()
             .then_some("stopped after earlier smoketest failure")
+    }
+
+    /// Apply suite-level egui diagnostic policy to one script outcome.
+    pub fn apply_egui_diagnostic_policy(&self, outcome: &mut ScriptEvalOutcome) {
+        if !self.fail_on_egui_diagnostics || outcome.egui_diagnostics.is_empty() {
+            return;
+        }
+        if outcome
+            .error
+            .as_ref()
+            .is_some_and(error_has_egui_diagnostic_details)
+        {
+            return;
+        }
+        let diagnostic_details =
+            serde_json::to_value(&outcome.egui_diagnostics).unwrap_or(serde_json::Value::Null);
+        if outcome.success {
+            outcome.success = false;
+            outcome.error = Some(ScriptErrorInfo {
+                error_type: "egui_diagnostics".to_string(),
+                message: egui_diagnostic_failure_message(&outcome.egui_diagnostics),
+                location: None,
+                backtrace: None,
+                code: Some("egui_diagnostics".to_string()),
+                details: Some(serde_json::json!({
+                    "egui_diagnostics": diagnostic_details,
+                })),
+            });
+            return;
+        }
+        if let Some(error) = outcome.error.as_mut() {
+            let mut details = match error.details.take() {
+                Some(serde_json::Value::Object(details)) => details,
+                Some(original) => {
+                    serde_json::Map::from_iter([("original_details".to_string(), original)])
+                }
+                None => serde_json::Map::new(),
+            };
+            details.insert("egui_diagnostics".to_string(), diagnostic_details);
+            error.details = Some(serde_json::Value::Object(details));
+        }
     }
 }
 
@@ -119,6 +163,8 @@ pub struct ScriptResult {
     pub logs: Vec<String>,
     /// Fixtures applied during the script.
     pub fixtures: Vec<FixtureApplication>,
+    /// Undismissed egui diagnostics retained by the evaluation.
+    pub egui_diagnostics: EguiDiagnosticBatch,
     /// Verbose failure details from the script runtime.
     pub details: Option<String>,
 }
@@ -134,6 +180,7 @@ impl ScriptResult {
             message: None,
             logs,
             fixtures: Vec::new(),
+            egui_diagnostics: EguiDiagnosticBatch::default(),
             details: None,
         }
     }
@@ -144,6 +191,7 @@ impl ScriptResult {
         elapsed_ms: u64,
         logs: Vec<String>,
         fixtures: Vec<FixtureApplication>,
+        egui_diagnostics: EguiDiagnosticBatch,
     ) -> Self {
         Self {
             round,
@@ -153,6 +201,7 @@ impl ScriptResult {
             message: None,
             logs,
             fixtures,
+            egui_diagnostics,
             details: None,
         }
     }
@@ -177,6 +226,7 @@ impl ScriptResult {
             message: Some(message),
             logs,
             fixtures: Vec::new(),
+            egui_diagnostics: EguiDiagnosticBatch::default(),
             details,
         }
     }
@@ -189,6 +239,7 @@ impl ScriptResult {
         outcome: ScriptEvalOutcome,
         details: Option<String>,
     ) -> Self {
+        let egui_diagnostics = outcome.egui_diagnostics.clone();
         Self {
             round,
             path,
@@ -197,6 +248,7 @@ impl ScriptResult {
             message: Some(message),
             logs: outcome.logs,
             fixtures: outcome.fixtures,
+            egui_diagnostics,
             details,
         }
     }
@@ -210,6 +262,7 @@ impl ScriptResult {
             message: Some(message),
             logs: Vec::new(),
             fixtures: Vec::new(),
+            egui_diagnostics: EguiDiagnosticBatch::default(),
             details: None,
         }
     }
@@ -278,6 +331,12 @@ impl SuiteResult {
                         format!("LOG: {}", serde_json::to_string(log).unwrap_or_default())
                     }),
                 );
+                if !script.egui_diagnostics.is_empty() {
+                    lines.push(format!(
+                        "EGUI: {}",
+                        egui_diagnostic_failure_message(&script.egui_diagnostics)
+                    ));
+                }
             }
             match script.status {
                 ScriptStatus::Pass => {
@@ -467,7 +526,7 @@ where
             });
             let elapsed_ms = script_start.elapsed().as_millis() as u64;
 
-            let outcome = match outcome {
+            let mut outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(message) => {
                     results.push(ScriptResult::fail(
@@ -485,6 +544,7 @@ where
                     continue;
                 }
             };
+            config.apply_egui_diagnostic_policy(&mut outcome);
 
             if outcome.success {
                 results.push(ScriptResult::pass_with_fixtures(
@@ -493,6 +553,7 @@ where
                     elapsed_ms,
                     outcome.logs,
                     outcome.fixtures,
+                    outcome.egui_diagnostics,
                 ));
                 continue;
             }
@@ -705,9 +766,17 @@ fn script_failure_summary(outcome: &ScriptEvalOutcome) -> String {
         let column = location.column.unwrap_or(1);
         format!(":{}:{}", location.line, column)
     });
-    match location {
+    let summary = match location {
         Some(location) => format!("{} at{}", error.message, location),
         None => error.message.clone(),
+    };
+    if outcome.egui_diagnostics.is_empty() || error.error_type == "egui_diagnostics" {
+        summary
+    } else {
+        format!(
+            "{summary}; {}",
+            egui_diagnostic_failure_message(&outcome.egui_diagnostics)
+        )
     }
 }
 
@@ -716,6 +785,40 @@ fn script_failure_details(outcome: &ScriptEvalOutcome) -> Option<String> {
     serde_json::to_string_pretty(details)
         .ok()
         .or_else(|| Some(details.to_string()))
+}
+
+fn error_has_egui_diagnostic_details(error: &ScriptErrorInfo) -> bool {
+    error.error_type == "egui_diagnostics"
+        || error
+            .details
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|details| details.contains_key("egui_diagnostics"))
+}
+
+fn egui_diagnostic_failure_message(batch: &EguiDiagnosticBatch) -> String {
+    let mut diagnostics = batch
+        .entries
+        .iter()
+        .map(|entry| {
+            let kind = match entry.kind {
+                EguiDiagnosticKind::IdClash => "id_clash",
+                EguiDiagnosticKind::RectChangedId => "rect_changed_id",
+            };
+            let rect = entry
+                .rect
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |rect| format!("{rect:?}"));
+            format!(
+                "{kind} viewport={} frame={} rect={rect} message={:?}",
+                entry.viewport_id, entry.frame, entry.message
+            )
+        })
+        .collect::<Vec<_>>();
+    if batch.dropped > 0 {
+        diagnostics.push(format!("dropped={}", batch.dropped));
+    }
+    format!("undismissed egui diagnostics: {}", diagnostics.join("; "))
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -747,7 +850,11 @@ mod tests {
         collect_suite_paths, collect_suite_scripts, discover_suite_scripts, normalize_path,
         run_suite, run_suite_with,
     };
-    use crate::{DevMcp, ScriptArgValue, ScriptArgs, ScriptEvalOutcome, runtime};
+    use crate::{
+        DevMcp, EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
+        ScriptArgValue, ScriptArgs, ScriptEvalOutcome, runtime,
+        types::{Pos2, Rect},
+    };
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -766,6 +873,7 @@ mod tests {
             suite_timeout: Duration::from_secs(10),
             script_timeout: None,
             fail_fast: false,
+            fail_on_egui_diagnostics: true,
             run_mode: SuiteRunMode::ONCE,
             args: ScriptArgs::default(),
         }
@@ -801,6 +909,108 @@ mod tests {
             }
         }))
         .expect("deserialize failure outcome")
+    }
+
+    fn diagnostic_batch(dropped: u64) -> EguiDiagnosticBatch {
+        EguiDiagnosticBatch {
+            entries: vec![EguiDiagnostic {
+                kind: EguiDiagnosticKind::RectChangedId,
+                severity: EguiDiagnosticSeverity::Warning,
+                message: "rectangle changed identity".to_string(),
+                viewport_id: "root".to_string(),
+                frame: 12,
+                rect: Some(Rect {
+                    min: Pos2 { x: 1.0, y: 2.0 },
+                    max: Pos2 { x: 3.0, y: 4.0 },
+                }),
+            }],
+            dropped,
+        }
+    }
+
+    #[test]
+    fn diagnostic_policy_fails_success_and_lists_exact_evidence() {
+        let config = suite_config(PathBuf::from("unused"));
+        let mut outcome = success_outcome();
+        outcome.egui_diagnostics = diagnostic_batch(2);
+
+        config.apply_egui_diagnostic_policy(&mut outcome);
+
+        assert!(!outcome.success);
+        let error = outcome.error.expect("diagnostic error");
+        assert_eq!(error.code.as_deref(), Some("egui_diagnostics"));
+        for evidence in [
+            "rect_changed_id",
+            "viewport=root",
+            "frame=12",
+            "rect=Rect",
+            "rectangle changed identity",
+            "dropped=2",
+        ] {
+            assert!(error.message.contains(evidence), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_policy_opt_out_preserves_success_and_batch() {
+        let mut config = suite_config(PathBuf::from("unused"));
+        config.fail_on_egui_diagnostics = false;
+        let mut outcome = success_outcome();
+        outcome.egui_diagnostics = diagnostic_batch(0);
+
+        config.apply_egui_diagnostic_policy(&mut outcome);
+
+        assert!(outcome.success);
+        assert_eq!(outcome.egui_diagnostics.entries.len(), 1);
+    }
+
+    #[test]
+    fn diagnostic_policy_preserves_original_failure_and_adds_details() {
+        let config = suite_config(PathBuf::from("unused"));
+        let mut outcome = failure_outcome("original failure");
+        outcome.egui_diagnostics = diagnostic_batch(0);
+
+        config.apply_egui_diagnostic_policy(&mut outcome);
+
+        let error = outcome.error.expect("original error");
+        assert_eq!(error.message, "original failure");
+        assert_eq!(
+            error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("egui_diagnostics"))
+                .and_then(|batch| batch.get("entries"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn suite_results_retain_diagnostics_when_policy_is_disabled() {
+        let root = test_root("suite_results_retain_diagnostics_when_policy_is_disabled");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite");
+        fs::write(suite_dir.join("10_probe.luau"), "return true").expect("write script");
+        let mut config = suite_config(suite_dir);
+        config.fail_on_egui_diagnostics = false;
+
+        let result = run_suite_with(&config, |_request| {
+            let mut outcome = success_outcome();
+            outcome.egui_diagnostics = diagnostic_batch(0);
+            Ok(outcome)
+        });
+
+        assert!(result.success());
+        assert_eq!(result.results[0].egui_diagnostics.entries.len(), 1);
+        assert!(
+            result
+                .render_lines(true)
+                .iter()
+                .any(|line| line.starts_with("EGUI: undismissed egui diagnostics:"))
+        );
+        drop(fs::remove_dir_all(&root));
     }
 
     #[test]

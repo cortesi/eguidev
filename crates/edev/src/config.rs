@@ -760,6 +760,7 @@ struct FileSmokeConfig {
     suite_timeout_secs: Option<u64>,
     script_timeout_secs: Option<u64>,
     fail_fast: Option<bool>,
+    fail_on_egui_diagnostics: Option<bool>,
     #[serde(rename = "artifact_dir")]
     legacy_artifact_dir: Option<PathBuf>,
     bundle_dir: Option<PathBuf>,
@@ -949,6 +950,9 @@ fn resolve_smoke_config(
             .fail_fast
             .or_else(|| file_smoke.and_then(|smoke| smoke.fail_fast))
             .unwrap_or(false),
+        fail_on_egui_diagnostics: file_smoke
+            .and_then(|smoke| smoke.fail_on_egui_diagnostics)
+            .unwrap_or(true),
         run_mode: cli
             .until_fail
             .map(SuiteRunMode::UntilFail)
@@ -1624,6 +1628,47 @@ args = { name = \"File\", count = 4 }
             Some(&ScriptArgValue::String("Cli".to_string()))
         );
         assert_eq!(config.args.get("count"), Some(&ScriptArgValue::Int(4)));
+    }
+
+    #[test]
+    fn smoke_egui_diagnostic_policy_defaults_on_and_accepts_opt_out() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        let config_path = repo_root.join(DEFAULT_CONFIG_FILE);
+        fs::write(
+            &config_path,
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+",
+        )
+        .expect("write default config");
+
+        let defaulted =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke"]), &repo_root).expect("parse");
+        let EdevCommand::Smoke(defaulted) = defaulted else {
+            panic!("expected smoke command");
+        };
+        assert!(defaulted.suite.fail_on_egui_diagnostics);
+
+        fs::write(
+            &config_path,
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[smoke]
+fail_on_egui_diagnostics = false
+",
+        )
+        .expect("write opt-out config");
+        let opted_out =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke"]), &repo_root).expect("parse");
+        let EdevCommand::Smoke(opted_out) = opted_out else {
+            panic!("expected smoke command");
+        };
+        assert!(!opted_out.suite.fail_on_egui_diagnostics);
     }
 
     #[test]

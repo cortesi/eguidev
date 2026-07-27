@@ -1566,6 +1566,7 @@ fn bundle_meta(
             "message": script_eval_error_message(outcome.error.as_ref(), "script failed"),
             "details": outcome.error.as_ref().and_then(|error| error.details.clone()),
             "error": &outcome.error,
+            "egui_diagnostics": &outcome.egui_diagnostics,
         },
     });
     pretty_json(&value)
@@ -1609,6 +1610,10 @@ fn failure_text(outcome: &ScriptEvalOutcome) -> Result<String, EdevError> {
     if !outcome.fixtures.is_empty() {
         text.push_str("\nfixtures:\n");
         text.push_str(&pretty_json(&outcome.fixtures)?);
+    }
+    if !outcome.egui_diagnostics.is_empty() {
+        text.push_str("\negui diagnostics:\n");
+        text.push_str(&pretty_json(&outcome.egui_diagnostics)?);
     }
     Ok(text)
 }
@@ -2847,7 +2852,8 @@ async fn run_smoke_suite(
                         .map_err(|error| error.to_string())
                 })
             })?;
-            let outcome = parse_script_eval_outcome(&result)?;
+            let mut outcome = parse_script_eval_outcome(&result)?;
+            config.suite.apply_egui_diagnostic_policy(&mut outcome);
             if !outcome.success
                 && let Some(context) = bundle_context.as_ref()
             {
@@ -3437,6 +3443,16 @@ mod tests {
                         "exec_ms": 1,
                         "total_ms": 1
                     },
+                    "egui_diagnostics": {
+                        "entries": [{
+                            "kind": "id_clash",
+                            "severity": "warning",
+                            "message": "duplicate id",
+                            "viewport_id": "root",
+                            "frame": 4
+                        }],
+                        "dropped": 0
+                    },
                     "error": {
                         "type": "assertion",
                         "message": "expected ready",
@@ -3470,11 +3486,17 @@ mod tests {
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
         assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
         assert_eq!(meta["failure"]["details"]["widget"], "basic.status");
+        assert_eq!(
+            meta["failure"]["egui_diagnostics"]["entries"][0]["kind"],
+            "id_clash"
+        );
 
         let text = failure_text(&outcome).expect("failure text");
         assert!(text.contains("failure: expected ready"));
         assert!(text.contains("before failure"));
         assert!(text.contains("basic.default"));
+        assert!(text.contains("egui diagnostics"));
+        assert!(text.contains("duplicate id"));
     }
 
     #[test]
@@ -3548,6 +3570,7 @@ mod tests {
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
                 fail_fast: false,
+                fail_on_egui_diagnostics: true,
                 run_mode: SuiteRunMode::ONCE,
                 args: ScriptArgs::from([(
                     "name".to_string(),
@@ -3641,6 +3664,7 @@ mod tests {
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
                 fail_fast: false,
+                fail_on_egui_diagnostics: true,
                 run_mode: SuiteRunMode::Repeat(2),
                 args: ScriptArgs::default(),
             },
@@ -3709,6 +3733,7 @@ mod tests {
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
                 fail_fast: false,
+                fail_on_egui_diagnostics: true,
                 run_mode: SuiteRunMode::ONCE,
                 args: ScriptArgs::default(),
             },

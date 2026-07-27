@@ -11,9 +11,6 @@ keywords.workspace = true
 categories = ["development-tools", "gui"]
 description = "Native embedded runtime for eguidev automation"
 
-[lib]
-doctest = false
-
 [lints]
 workspace = true
 
