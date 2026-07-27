@@ -5,7 +5,11 @@ use std::{any::Any, sync::Arc};
 use egui::{Context, FullOutput};
 #[cfg(target_os = "macos")]
 use eguidev::internal::presentation::PresentationStatus;
-use eguidev::internal::{devmcp::RuntimeHooks, presentation::Presentation, registry::Inner};
+use eguidev::internal::{
+    devmcp::RuntimeHooks,
+    presentation::Presentation,
+    registry::{Inner, viewport_id_to_string},
+};
 use tokio::sync::Notify;
 
 #[cfg(target_os = "macos")]
@@ -199,7 +203,7 @@ impl Runtime {
 
     fn capture_egui_output(&self, inner: &Inner, ctx: &Context, output: &FullOutput) {
         self.egui_diagnostics.record_output(
-            eguidev::internal::registry::viewport_id_to_string(ctx.viewport_id()),
+            viewport_id_to_string(ctx.viewport_id()),
             inner.frame_count(),
             output,
         );

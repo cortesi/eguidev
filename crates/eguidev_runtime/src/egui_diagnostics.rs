@@ -73,9 +73,9 @@ struct JournalEntry {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OutputCompletion {
-    pub(crate) sequence: u64,
-    pub(crate) frame: u64,
+pub struct OutputCompletion {
+    pub sequence: u64,
+    pub frame: u64,
 }
 
 #[derive(Debug)]
@@ -100,14 +100,14 @@ impl JournalState {
 }
 
 #[derive(Debug)]
-pub(crate) struct DiagnosticSelection {
-    pub(crate) batch: EguiDiagnosticBatch,
-    pub(crate) sequences: Vec<u64>,
+pub struct DiagnosticSelection {
+    pub batch: EguiDiagnosticBatch,
+    pub sequences: Vec<u64>,
 }
 
 /// Process-wide bounded journal of egui identity diagnostics.
 #[derive(Debug)]
-pub(crate) struct EguiDiagnosticJournal {
+pub struct EguiDiagnosticJournal {
     state: Mutex<JournalState>,
     completion_notify: Notify,
 }
@@ -119,7 +119,7 @@ impl Default for EguiDiagnosticJournal {
 }
 
 impl EguiDiagnosticJournal {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(JournalState::new(JOURNAL_CAPACITY)),
             completion_notify: Notify::new(),
@@ -134,7 +134,7 @@ impl EguiDiagnosticJournal {
         }
     }
 
-    pub(crate) fn record_output(&self, viewport_id: String, frame: u64, output: &FullOutput) {
+    pub fn record_output(&self, viewport_id: String, frame: u64, output: &FullOutput) {
         let diagnostics = collect_output_diagnostics(&viewport_id, frame, output);
         let mut state = self
             .state
@@ -160,14 +160,14 @@ impl EguiDiagnosticJournal {
         self.completion_notify.notify_waiters();
     }
 
-    pub(crate) fn tail_sequence(&self) -> u64 {
+    pub fn tail_sequence(&self) -> u64 {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .next_entry_sequence
     }
 
-    pub(crate) fn output_completion(&self, viewport_id: &str) -> Option<OutputCompletion> {
+    pub fn output_completion(&self, viewport_id: &str) -> Option<OutputCompletion> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -176,11 +176,11 @@ impl EguiDiagnosticJournal {
             .copied()
     }
 
-    pub(crate) fn completion_notify(&self) -> &Notify {
+    pub fn completion_notify(&self) -> &Notify {
         &self.completion_notify
     }
 
-    pub(crate) fn select(
+    pub fn select(
         &self,
         start_sequence: u64,
         dismissed: &BTreeSet<u64>,
@@ -373,5 +373,38 @@ mod tests {
         let dismissed = BTreeSet::from([first_sequence]);
         let after_dismissal = journal.select(start, &dismissed, None);
         assert_eq!(after_dismissal.batch.dropped + 1, lost.batch.dropped);
+        assert_eq!(
+            journal
+                .select(start, &dismissed, Some("vp:missing"))
+                .batch
+                .dropped,
+            after_dismissal.batch.dropped,
+            "dropped count is evaluation-wide"
+        );
+    }
+
+    #[test]
+    fn viewport_selection_dismisses_only_matching_entries() {
+        let journal = EguiDiagnosticJournal::new();
+        let output = id_clash_output();
+        journal.record_output("root".to_string(), 1, &output);
+        journal.record_output("vp:2".to_string(), 2, &output);
+
+        let root = journal.select(0, &BTreeSet::new(), Some("root"));
+        assert!(
+            root.batch
+                .entries
+                .iter()
+                .all(|entry| entry.viewport_id == "root")
+        );
+        let dismissed = root.sequences.into_iter().collect::<BTreeSet<_>>();
+        let remaining = journal.select(0, &dismissed, None);
+        assert!(
+            remaining
+                .batch
+                .entries
+                .iter()
+                .all(|entry| entry.viewport_id == "vp:2")
+        );
     }
 }

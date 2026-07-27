@@ -38,6 +38,7 @@ use super::{
 use crate::{
     diagnostics::DiagnosticExecution,
     dump::{DumpOptions, build_tree_dump, dump_text},
+    egui_diagnostics::{DiagnosticSelection, EguiDiagnosticBatch},
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
     screenshots::ScreenshotKind,
@@ -93,11 +94,15 @@ pub(super) struct ScriptRuntime {
     images: Mutex<Vec<ImageCapture>>,
     image_counter: AtomicUsize,
     source_name: String,
+    started_at: Instant,
     deadline: Instant,
     script_timeout_ms: u64,
     config_timeout_ms: Mutex<Option<u64>>,
     config_poll_interval_ms: Mutex<Option<u64>>,
     config_settle: Mutex<Option<bool>>,
+    egui_diagnostic_start: u64,
+    dismissed_egui_diagnostics: Mutex<BTreeSet<u64>>,
+    targeted_viewports: Mutex<BTreeSet<String>>,
 }
 
 fn resolve_widget(
@@ -160,9 +165,11 @@ impl ScriptRuntime {
         source_name: String,
         timeout_ms: u64,
     ) -> Self {
-        let deadline = Instant::now()
+        let started_at = Instant::now();
+        let deadline = started_at
             .checked_add(Duration::from_millis(timeout_ms))
-            .unwrap_or_else(Instant::now);
+            .unwrap_or(started_at);
+        let egui_diagnostic_start = runtime.egui_diagnostics().tail_sequence();
         Self {
             server: DevMcpServer::with_runtime(inner, runtime),
             logs: Mutex::new(Vec::new()),
@@ -171,12 +178,209 @@ impl ScriptRuntime {
             images: Mutex::new(Vec::new()),
             image_counter: AtomicUsize::new(0),
             source_name,
+            started_at,
             deadline,
             script_timeout_ms: timeout_ms,
             config_timeout_ms: Mutex::new(None),
             config_poll_interval_ms: Mutex::new(None),
             config_settle: Mutex::new(None),
+            egui_diagnostic_start,
+            dismissed_egui_diagnostics: Mutex::new(BTreeSet::new()),
+            targeted_viewports: Mutex::new(BTreeSet::new()),
         }
+    }
+
+    fn record_targeted_viewport(&self, viewport_id: impl Into<String>) {
+        self.targeted_viewports
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(viewport_id.into());
+    }
+
+    fn record_current_viewports(&self) {
+        let mut viewports = self
+            .server
+            .inner
+            .viewports
+            .viewports_snapshot()
+            .into_iter()
+            .map(|snapshot| snapshot.viewport_id)
+            .collect::<Vec<_>>();
+        if viewports.is_empty() {
+            viewports.push(viewport_id_to_string(egui::ViewportId::ROOT));
+        }
+        for viewport_id in viewports {
+            self.record_targeted_viewport(viewport_id);
+        }
+    }
+
+    fn targeted_viewports(&self) -> BTreeSet<String> {
+        self.targeted_viewports
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn diagnostic_selection(&self, viewport_id: Option<&str>) -> DiagnosticSelection {
+        let dismissed = self
+            .dismissed_egui_diagnostics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.server.runtime.egui_diagnostics().select(
+            self.egui_diagnostic_start,
+            &dismissed,
+            viewport_id,
+        )
+    }
+
+    fn dismiss_diagnostic_sequences(&self, sequences: impl IntoIterator<Item = u64>) {
+        self.dismissed_egui_diagnostics
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(sequences);
+    }
+
+    fn diagnostic_barrier_error(&self, pending: &[String]) -> ScriptErrorInfo {
+        let completions = pending
+            .iter()
+            .map(|viewport_id| {
+                let completion = self
+                    .server
+                    .runtime
+                    .egui_diagnostics()
+                    .output_completion(viewport_id);
+                (
+                    viewport_id.clone(),
+                    completion.map_or(Value::Null, |completion| {
+                        serde_json::json!({
+                            "sequence": completion.sequence,
+                            "frame": completion.frame,
+                        })
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        ScriptErrorInfo {
+            error_type: "timeout".to_string(),
+            message: format!(
+                "Timed out waiting for completed egui diagnostic output from {}",
+                pending.join(", ")
+            ),
+            location: None,
+            backtrace: None,
+            code: Some("diagnostic_barrier_timeout".to_string()),
+            details: Some(serde_json::json!({
+                "pending_viewports": pending,
+                "last_completions": completions,
+            })),
+        }
+    }
+
+    async fn await_diagnostic_outputs(&self, viewport_ids: &BTreeSet<String>) -> ScriptResult<()> {
+        if viewport_ids.is_empty() {
+            return Ok(());
+        }
+        let journal = self.server.runtime.egui_diagnostics();
+        let mut targets = Vec::new();
+        for viewport_id in viewport_ids {
+            let resolved = resolve_viewport_id(&self.server.inner, Some(viewport_id.clone()))
+                .map_err(|error| {
+                    self.tool_error(ScriptPosition::default(), tmcp::ToolError::from(error))
+                })?;
+            if !self.server.inner.viewports.is_live_viewport(resolved) {
+                continue;
+            }
+            if self.server.inner.context_for(resolved).is_none() {
+                continue;
+            }
+            targets.push((
+                resolved,
+                viewport_id.clone(),
+                journal
+                    .output_completion(viewport_id)
+                    .map(|completion| completion.sequence),
+            ));
+            self.server.inner.request_repaint_of(resolved);
+        }
+
+        loop {
+            let notified = journal.completion_notify().notified();
+            let pending = targets
+                .iter()
+                .filter_map(|(resolved, viewport_id, prior_sequence)| {
+                    if !self.server.inner.viewports.is_live_viewport(*resolved) {
+                        return None;
+                    }
+                    let completed =
+                        journal
+                            .output_completion(viewport_id)
+                            .is_some_and(|completion| {
+                                prior_sequence.is_none_or(|prior| completion.sequence > prior)
+                            });
+                    (!completed).then_some(viewport_id.clone())
+                })
+                .collect::<Vec<_>>();
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let remaining = self
+                .deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            if remaining.is_zero() {
+                return Err(self.diagnostic_barrier_error(&pending));
+            }
+            if timeout(remaining, notified).await.is_err() {
+                return Err(self.diagnostic_barrier_error(&pending));
+            }
+        }
+    }
+
+    pub(super) async fn egui_diagnostics(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: String,
+    ) -> ScriptResult<Value> {
+        let resolved = resolve_viewport_id(&self.server.inner, Some(viewport_id))
+            .map_err(|error| self.tool_error(pos, error.into()))?;
+        let viewport_id = viewport_id_to_string(resolved);
+        self.record_targeted_viewport(viewport_id.clone());
+        self.await_diagnostic_outputs(&BTreeSet::from([viewport_id.clone()]))
+            .await?;
+        let selection = self.diagnostic_selection(Some(&viewport_id));
+        self.dismiss_diagnostic_sequences(selection.sequences);
+        self.to_json(pos, selection.batch)
+    }
+
+    pub(super) async fn clear_egui_diagnostics(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: String,
+    ) -> ScriptResult<()> {
+        let resolved = resolve_viewport_id(&self.server.inner, Some(viewport_id))
+            .map_err(|error| self.tool_error(pos, error.into()))?;
+        let viewport_id = viewport_id_to_string(resolved);
+        self.record_targeted_viewport(viewport_id.clone());
+        self.await_diagnostic_outputs(&BTreeSet::from([viewport_id.clone()]))
+            .await?;
+        let selection = self.diagnostic_selection(Some(&viewport_id));
+        self.dismiss_diagnostic_sequences(selection.sequences);
+        Ok(())
+    }
+
+    pub(super) async fn finish_egui_diagnostics(
+        &self,
+    ) -> (EguiDiagnosticBatch, Option<ScriptErrorInfo>) {
+        let barrier_error = self
+            .await_diagnostic_outputs(&self.targeted_viewports())
+            .await
+            .err();
+        let batch = self.diagnostic_selection(None).batch;
+        (batch, barrier_error)
+    }
+
+    pub(super) fn elapsed_ms(&self) -> u64 {
+        self.started_at.elapsed().as_millis() as u64
     }
 
     pub(super) fn configure(
@@ -434,6 +638,7 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         widget: &WidgetRegistryEntry,
     ) -> ScriptResult<Value> {
+        self.record_targeted_viewport(widget.viewport_id.clone());
         self.to_json(
             pos,
             serde_json::json!({
@@ -457,6 +662,9 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         widgets: &[WidgetRegistryEntry],
     ) -> ScriptResult<Value> {
+        for widget in widgets {
+            self.record_targeted_viewport(widget.viewport_id.clone());
+        }
         self.to_json(
             pos,
             widgets
@@ -473,6 +681,7 @@ impl ScriptRuntime {
     }
 
     fn viewport_handle_json(&self, pos: ScriptPosition, viewport_id: &str) -> ScriptResult<Value> {
+        self.record_targeted_viewport(viewport_id.to_string());
         self.to_json(
             pos,
             serde_json::json!({
@@ -637,7 +846,9 @@ impl ScriptRuntime {
         let (_, resolved_viewport_id) =
             resolve_widget_and_viewport(&self.server.inner, viewport_id, target)
                 .map_err(|error| self.tool_error(pos, error.into()))?;
-        Ok(viewport_id_to_string(resolved_viewport_id))
+        let viewport_id = viewport_id_to_string(resolved_viewport_id);
+        self.record_targeted_viewport(viewport_id.clone());
+        Ok(viewport_id)
     }
 
     async fn settle_after_action(
@@ -2370,6 +2581,7 @@ impl ScriptRuntime {
         name: String,
         params: Option<Value>,
     ) -> ScriptResult<Value> {
+        self.record_current_viewports();
         let timeout_ms = self.configured_timeout_ms();
         let params = fixture_params(params).map_err(|message| self.type_error(pos, message))?;
         let outcome = self
@@ -2378,6 +2590,7 @@ impl ScriptRuntime {
                 self.server.fixture(name.clone(), Some(params), timeout_ms),
             )
             .await?;
+        self.record_current_viewports();
         self.record_fixture(name, outcome.params.clone());
         self.to_json(pos, outcome.values)
     }
@@ -2388,10 +2601,12 @@ impl ScriptRuntime {
         name: String,
         params: Option<Value>,
     ) -> ScriptResult<Value> {
+        self.record_current_viewports();
         let params = fixture_params(params).map_err(|message| self.type_error(pos, message))?;
         let outcome = self
             .await_tool(pos, self.server.fixture_apply(name.clone(), Some(params)))
             .await?;
+        self.record_current_viewports();
         self.record_fixture(name, outcome.params);
         self.to_json(pos, ())
     }
@@ -2736,8 +2951,18 @@ fn image_ref_json(id: String) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::task::yield_now;
+
     use super::{ScriptRuntime, changed_widget_fields};
-    use crate::types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue};
+    use crate::{
+        EguiDiagnosticBatch, EguiDiagnosticKind,
+        registry::Inner,
+        runtime::Runtime,
+        tools::script::types::ScriptPosition,
+        types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue},
+    };
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -2767,9 +2992,133 @@ mod tests {
         })
     }
 
+    fn id_clash_output() -> egui::FullOutput {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
+        ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let id = egui::Id::new("duplicate");
+            ui.ctx().check_for_id_clash(
+                id,
+                egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)),
+                "test widget",
+            );
+            ui.ctx().check_for_id_clash(
+                id,
+                egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
+                "test widget",
+            );
+        })
+    }
+
+    fn script_runtime(timeout_ms: u64) -> (Arc<Runtime>, Arc<ScriptRuntime>) {
+        let inner = Arc::new(Inner::new());
+        inner.remember_context(egui::ViewportId::ROOT, &egui::Context::default());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let script = Arc::new(ScriptRuntime::new(
+            inner,
+            Arc::clone(&runtime),
+            "diagnostics.luau".to_string(),
+            timeout_ms,
+        ));
+        (runtime, script)
+    }
+
     #[test]
     fn script_runtime_is_send_sync() {
         assert_send_sync::<ScriptRuntime>();
+    }
+
+    #[test]
+    fn evaluations_start_at_independent_journal_tails() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let first = ScriptRuntime::new(
+            Arc::clone(&inner),
+            Arc::clone(&runtime),
+            "first.luau".to_string(),
+            1_000,
+        );
+        runtime
+            .egui_diagnostics()
+            .record_output("root".to_string(), 1, &id_clash_output());
+        let second = ScriptRuntime::new(
+            inner,
+            Arc::clone(&runtime),
+            "second.luau".to_string(),
+            1_000,
+        );
+        runtime
+            .egui_diagnostics()
+            .record_output("root".to_string(), 2, &id_clash_output());
+
+        assert!(
+            first.diagnostic_selection(None).batch.entries.len()
+                > second.diagnostic_selection(None).batch.entries.len()
+        );
+        assert!(
+            second
+                .diagnostic_selection(None)
+                .batch
+                .entries
+                .iter()
+                .all(|entry| entry.frame == 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn viewport_read_waits_for_output_and_dismisses_returned_entries() {
+        let (runtime, script) = script_runtime(1_000);
+        runtime
+            .egui_diagnostics()
+            .record_output("root".to_string(), 1, &id_clash_output());
+
+        let read_script = Arc::clone(&script);
+        let read = tokio::spawn(async move {
+            read_script
+                .egui_diagnostics(ScriptPosition::default(), "root".to_string())
+                .await
+        });
+        yield_now().await;
+        runtime.egui_diagnostics().record_output(
+            "root".to_string(),
+            2,
+            &egui::FullOutput::default(),
+        );
+
+        let value = read.await.expect("read task").expect("diagnostic read");
+        let batch: EguiDiagnosticBatch = serde_json::from_value(value).expect("diagnostic batch");
+        assert!(
+            batch
+                .entries
+                .iter()
+                .all(|entry| entry.kind == EguiDiagnosticKind::IdClash)
+        );
+        assert!(script.diagnostic_selection(None).batch.is_empty());
+    }
+
+    #[tokio::test]
+    async fn viewport_clear_dismisses_without_returning_entries() {
+        let (runtime, script) = script_runtime(1_000);
+        runtime
+            .egui_diagnostics()
+            .record_output("root".to_string(), 1, &id_clash_output());
+
+        let clear_script = Arc::clone(&script);
+        let clear = tokio::spawn(async move {
+            clear_script
+                .clear_egui_diagnostics(ScriptPosition::default(), "root".to_string())
+                .await
+        });
+        yield_now().await;
+        runtime.egui_diagnostics().record_output(
+            "root".to_string(),
+            2,
+            &egui::FullOutput::default(),
+        );
+
+        clear.await.expect("clear task").expect("diagnostic clear");
+        assert!(script.diagnostic_selection(None).batch.is_empty());
     }
 
     #[test]

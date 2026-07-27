@@ -47,6 +47,22 @@ export type Rect = {
     max: Pos,
 }
 
+export type EguiDiagnosticKind = "id_clash" | "rect_changed_id"
+
+export type EguiDiagnostic = {
+    kind: EguiDiagnosticKind,
+    severity: "warning",
+    message: string,
+    viewport_id: string,
+    frame: number,
+    rect: Rect?,
+}
+
+export type EguiDiagnosticBatch = {
+    entries: { EguiDiagnostic },
+    dropped: number,
+}
+
 export type Modifiers = {
     ctrl: boolean?,
     shift: boolean?,
@@ -404,6 +420,12 @@ export type Viewport = {
     --- Wait until this viewport has produced a fresh captured snapshot.
     --- Throws a timeout error if no new capture arrives in time.
     wait_for_capture: (self: Viewport, options: WaitOptions?) -> (),
+    --- Return new egui diagnostics for this viewport and dismiss only the
+    --- returned entries.
+    egui_diagnostics: (self: Viewport) -> EguiDiagnosticBatch,
+    --- Dismiss retained egui diagnostics for this viewport without returning
+    --- them.
+    clear_egui_diagnostics: (self: Viewport) -> (),
 
     state: (self: Viewport) -> ViewportState,
     widget_list: (self: Viewport, options: WidgetListOptions?) -> { Widget },

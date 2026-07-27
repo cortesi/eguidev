@@ -28,7 +28,7 @@ use tokio::{
 };
 
 use super::{
-    outcome::{build_error_outcome, build_success_outcome},
+    outcome::{build_error_outcome, build_success_outcome, finalize_outcome},
     runtime::ScriptRuntime,
     types::{
         ScriptArgs, ScriptErrorInfo, ScriptEvalOutcome, ScriptLocation, ScriptPosition,
@@ -154,12 +154,14 @@ const SUPPORTED_GLOBALS: &[&str] = &[
 const SUPPORTED_METHODS: &[&str] = &[
     "check_layout",
     "children",
+    "clear_egui_diagnostics",
     "click",
     "diff",
     "dismiss_popups",
     "drag",
     "drag_relative",
     "drag_to",
+    "egui_diagnostics",
     "focus",
     "hide_debug_overlay",
     "hide_highlight",
@@ -281,11 +283,15 @@ async fn run_script_eval_local(
         Ok(vm) => vm,
         Err(error) => {
             let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-            return build_error_outcome(
+            return finalize_outcome(
                 &script_runtime,
-                runtime_error(format!("failed to build Ruau VM: {error}")),
-                timing,
-            );
+                build_error_outcome(
+                    &script_runtime,
+                    runtime_error(format!("failed to build Ruau VM: {error}")),
+                    timing,
+                ),
+            )
+            .await;
         }
     };
 
@@ -299,28 +305,48 @@ async fn run_script_eval_local(
         Ok(setup) => setup,
         Err(error) => {
             let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-            return build_error_outcome(&script_runtime, error, timing);
+            return finalize_outcome(
+                &script_runtime,
+                build_error_outcome(&script_runtime, error, timing),
+            )
+            .await;
         }
     };
     if let Err(error) = run_setup(&mut vm, &setup).await {
         let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-        return build_error_outcome(&script_runtime, error, timing);
+        return finalize_outcome(
+            &script_runtime,
+            build_error_outcome(&script_runtime, error, timing),
+        )
+        .await;
     }
     if let Err(error) = run_builtin_prelude(&mut vm, &runtime_capabilities).await {
         let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-        return build_error_outcome(&script_runtime, error, timing);
+        return finalize_outcome(
+            &script_runtime,
+            build_error_outcome(&script_runtime, error, timing),
+        )
+        .await;
     }
     if let Err(error) = run_app_preludes(&mut vm, &runtime_capabilities, &app_preludes).await {
         let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-        return build_error_outcome(&script_runtime, error, timing);
+        return finalize_outcome(
+            &script_runtime,
+            build_error_outcome(&script_runtime, error, timing),
+        )
+        .await;
     }
     if let Err(error) = vm.sandbox_for_untrusted() {
         let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-        return build_error_outcome(
+        return finalize_outcome(
             &script_runtime,
-            runtime_error(format!("failed to install Ruau sandbox: {error}")),
-            timing,
-        );
+            build_error_outcome(
+                &script_runtime,
+                runtime_error(format!("failed to install Ruau sandbox: {error}")),
+                timing,
+            ),
+        )
+        .await;
     }
 
     let source_chunk_name = format!("@{source_name}");
@@ -334,7 +360,11 @@ async fn run_script_eval_local(
         Ok(module) => module,
         Err(error) => {
             let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
-            return build_error_outcome(&script_runtime, error, timing);
+            return finalize_outcome(
+                &script_runtime,
+                build_error_outcome(&script_runtime, error, timing),
+            )
+            .await;
         }
     };
 
@@ -348,23 +378,25 @@ async fn run_script_eval_local(
         .await;
     let timing = timing(start, compile_elapsed, exec_start.elapsed());
 
-    match outcome {
+    let outcome = match outcome {
         Ok(values) => match values_to_script_value(&script_runtime, &values) {
             Ok(script_value) => build_success_outcome(&script_runtime, script_value, timing),
             Err(error) => build_error_outcome(&script_runtime, error, timing),
         },
         Err(error) => {
             if let Some(error) = error.script_error() {
-                return build_error_outcome(&script_runtime, ruau_script_error_info(error), timing);
+                build_error_outcome(&script_runtime, ruau_script_error_info(error), timing)
+            } else {
+                let rendered_error = error.to_string();
+                build_error_outcome(
+                    &script_runtime,
+                    fatal_error_info(error.kind(), &rendered_error, timeout_ms),
+                    timing,
+                )
             }
-            let rendered_error = error.to_string();
-            build_error_outcome(
-                &script_runtime,
-                fatal_error_info(error.kind(), &rendered_error, timeout_ms),
-                timing,
-            )
         }
-    }
+    };
+    finalize_outcome(&script_runtime, outcome).await
 }
 
 #[cfg(test)]
@@ -1243,6 +1275,38 @@ impl EguidevModule {
             "state",
             ModuleBinding::hidden("viewport_methods"),
             move |scope, args| viewport_state_host(&runtime, scope, args),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "egui_diagnostics",
+            ModuleBinding::hidden("viewport_methods"),
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .egui_diagnostics(pos, viewport.id)
+                        .await
+                        .map_err(host_script_error)?;
+                    typed_json_host_return(&ctx, value).await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "clear_egui_diagnostics",
+            ModuleBinding::hidden("viewport_methods"),
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    runtime
+                        .clear_egui_diagnostics(pos, viewport.id)
+                        .await
+                        .map_err(host_script_error)?;
+                    Ok(HostReturn::default())
+                }
+            }),
         );
         let runtime = Arc::clone(&self.runtime);
         builder.borrowed_function(
@@ -4112,7 +4176,9 @@ mod tests {
         const QUERIES: &[&str] = &[
             "check_layout",
             "children",
+            "clear_egui_diagnostics",
             "diff",
+            "egui_diagnostics",
             "hide_debug_overlay",
             "hide_highlight",
             "parent",

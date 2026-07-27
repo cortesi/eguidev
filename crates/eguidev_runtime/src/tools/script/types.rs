@@ -4,6 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use tmcp::schema::{CallToolResult, ContentBlock};
 
+use crate::EguiDiagnosticBatch;
 use crate::types::{Rect, WidgetRef, WidgetValue};
 
 pub(super) type ScriptResult<T> = Result<T, ScriptErrorInfo>;
@@ -215,6 +216,10 @@ pub struct ScriptEvalOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Error details when evaluation fails.
     pub error: Option<ScriptErrorInfo>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "EguiDiagnosticBatch::is_empty")]
+    /// Undismissed egui identity diagnostics produced during evaluation.
+    pub egui_diagnostics: EguiDiagnosticBatch,
     #[serde(skip)]
     pub(super) content: Vec<ContentBlock>,
 }
@@ -260,6 +265,7 @@ impl ScriptEvalOutcome {
             fixtures: Vec::new(),
             timing: ScriptTiming::zero(),
             error: Some(error),
+            egui_diagnostics: EguiDiagnosticBatch::default(),
             content: Vec::new(),
         }
     }
