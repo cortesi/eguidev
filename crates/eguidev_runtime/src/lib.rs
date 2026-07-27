@@ -69,7 +69,7 @@ pub(crate) mod viewports {
     pub use eguidev::internal::viewports::*;
 }
 
-pub use eguidev::{DevMcp, ScrollAreaMeta};
+pub use eguidev::{DevMcp, Rect, ScrollAreaMeta};
 
 /// Keep a background-launched app from taking focus for its whole run.
 ///

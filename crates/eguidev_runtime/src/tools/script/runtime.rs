@@ -197,20 +197,17 @@ impl ScriptRuntime {
             .insert(viewport_id.into());
     }
 
-    fn record_current_viewports(&self) {
-        let mut viewports = self
-            .server
-            .inner
-            .viewports
-            .viewports_snapshot()
-            .into_iter()
-            .map(|snapshot| snapshot.viewport_id)
-            .collect::<Vec<_>>();
-        if viewports.is_empty() {
-            viewports.push(viewport_id_to_string(egui::ViewportId::ROOT));
+    fn record_viewport_selector(&self, selector: Option<String>) {
+        if let Ok(viewport_id) = resolve_viewport_id(&self.server.inner, selector) {
+            self.record_targeted_viewport(viewport_id_to_string(viewport_id));
         }
-        for viewport_id in viewports {
-            self.record_targeted_viewport(viewport_id);
+    }
+
+    fn record_fixture_viewports(&self, name: &str) {
+        if let Some(spec) = self.server.inner.fixtures.fixture(name) {
+            for anchor in spec.preconditions.iter().chain(&spec.anchors) {
+                self.record_viewport_selector(anchor.viewport_id.clone());
+            }
         }
     }
 
@@ -277,7 +274,7 @@ impl ScriptRuntime {
     }
 
     async fn await_diagnostic_outputs(&self, viewport_ids: &BTreeSet<String>) -> ScriptResult<()> {
-        if viewport_ids.is_empty() {
+        if viewport_ids.is_empty() || !self.server.runtime.diagnostic_barriers_enabled() {
             return Ok(());
         }
         let journal = self.server.runtime.egui_diagnostics();
@@ -301,6 +298,9 @@ impl ScriptRuntime {
                     .map(|completion| completion.sequence),
             ));
             self.server.inner.request_repaint_of(resolved);
+            if resolved != egui::ViewportId::ROOT {
+                self.server.inner.request_repaint_of(egui::ViewportId::ROOT);
+            }
         }
 
         loop {
@@ -2581,7 +2581,7 @@ impl ScriptRuntime {
         name: String,
         params: Option<Value>,
     ) -> ScriptResult<Value> {
-        self.record_current_viewports();
+        self.record_fixture_viewports(&name);
         let timeout_ms = self.configured_timeout_ms();
         let params = fixture_params(params).map_err(|message| self.type_error(pos, message))?;
         let outcome = self
@@ -2590,7 +2590,9 @@ impl ScriptRuntime {
                 self.server.fixture(name.clone(), Some(params), timeout_ms),
             )
             .await?;
-        self.record_current_viewports();
+        for anchor in &outcome.anchors {
+            self.record_viewport_selector(anchor.viewport_id.clone());
+        }
         self.record_fixture(name, outcome.params.clone());
         self.to_json(pos, outcome.values)
     }
@@ -2601,12 +2603,11 @@ impl ScriptRuntime {
         name: String,
         params: Option<Value>,
     ) -> ScriptResult<Value> {
-        self.record_current_viewports();
+        self.record_fixture_viewports(&name);
         let params = fixture_params(params).map_err(|message| self.type_error(pos, message))?;
         let outcome = self
             .await_tool(pos, self.server.fixture_apply(name.clone(), Some(params)))
             .await?;
-        self.record_current_viewports();
         self.record_fixture(name, outcome.params);
         self.to_json(pos, ())
     }
@@ -3014,7 +3015,7 @@ mod tests {
     fn script_runtime(timeout_ms: u64) -> (Arc<Runtime>, Arc<ScriptRuntime>) {
         let inner = Arc::new(Inner::new());
         inner.remember_context(egui::ViewportId::ROOT, &egui::Context::default());
-        let runtime = Runtime::ensure_for_inner(&inner);
+        let runtime = Runtime::ensure_for_inner_with_diagnostic_barriers(&inner);
         let script = Arc::new(ScriptRuntime::new(
             inner,
             Arc::clone(&runtime),

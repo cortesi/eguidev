@@ -839,10 +839,14 @@ mod tests {
         fs,
         hint::spin_loop,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{Duration, Instant},
     };
 
+    use eguidev::{FixtureResponse, FixtureSpec};
     use tokio::runtime::Builder;
 
     use super::{
@@ -852,7 +856,8 @@ mod tests {
     };
     use crate::{
         DevMcp, EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
-        ScriptArgValue, ScriptArgs, ScriptEvalOutcome, runtime,
+        ScriptArgValue, ScriptArgs, ScriptEvalOutcome,
+        runtime::{self, Runtime},
         types::{Pos2, Rect},
     };
 
@@ -926,6 +931,45 @@ mod tests {
             }],
             dropped,
         }
+    }
+
+    fn real_id_clash_output() -> egui::FullOutput {
+        let ctx = egui::Context::default();
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
+        ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let id = egui::Id::new("smoke duplicate");
+            ui.ctx().check_for_id_clash(
+                id,
+                egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)),
+                "smoke widget",
+            );
+            ui.ctx().check_for_id_clash(
+                id,
+                egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
+                "smoke widget",
+            );
+        })
+    }
+
+    fn diagnostic_fixture_devmcp() -> DevMcp {
+        let devmcp = runtime::attach_for_tests(DevMcp::new());
+        let runtime = Runtime::for_devmcp(&devmcp).expect("attached runtime");
+        let frame = Arc::new(AtomicU64::new(1));
+        devmcp
+            .fixtures([
+                FixtureSpec::new("emit.id_clash", "Emit one real egui ID clash warning.")
+                    .anchor("unused-by-fixture-raw"),
+            ])
+            .on_fixture_runtime(move |_call| {
+                runtime.egui_diagnostics().record_output(
+                    "root".to_string(),
+                    frame.fetch_add(1, Ordering::Relaxed),
+                    &real_id_clash_output(),
+                );
+                Ok(FixtureResponse::new())
+            })
+            .expect("diagnostic fixture handler")
     }
 
     #[test]
@@ -1177,6 +1221,78 @@ mod tests {
         assert_eq!(result.results[0].status, ScriptStatus::Pass);
         assert_eq!(result.results[1].status, ScriptStatus::Fail);
         assert_eq!(result.results[2].status, ScriptStatus::Skip);
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn smoke_runner_handles_read_clear_failure_and_policy_opt_out() {
+        let root = test_root("smoke_runner_handles_read_clear_failure_and_policy_opt_out");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(
+            suite_dir.join("10_read.luau"),
+            r#"
+fixture_raw("emit.id_clash")
+local batch = root():egui_diagnostics()
+assert(batch.dropped == 0)
+assert(#batch.entries > 0)
+return true
+"#,
+        )
+        .expect("write read script");
+        fs::write(
+            suite_dir.join("20_clear.luau"),
+            r#"
+fixture_raw("emit.id_clash")
+root():clear_egui_diagnostics()
+return true
+"#,
+        )
+        .expect("write clear script");
+        let undismissed_path = suite_dir.join("30_undismissed.luau");
+        fs::write(
+            &undismissed_path,
+            r#"
+fixture_raw("emit.id_clash")
+return true
+"#,
+        )
+        .expect("write undismissed script");
+
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let devmcp = diagnostic_fixture_devmcp();
+        let result = run_suite(&devmcp, runtime.handle(), &suite_config(suite_dir.clone()));
+
+        assert_eq!(result.passed(), 2);
+        assert_eq!(result.failed(), 1);
+        assert_eq!(
+            result.results[2].message.as_deref().map(|message| {
+                message.contains("undismissed egui diagnostics")
+                    && message.contains("id_clash")
+                    && message.contains("viewport=root")
+            }),
+            Some(true)
+        );
+        assert!(!result.results[2].egui_diagnostics.is_empty());
+
+        let mut opted_out = suite_config(suite_dir);
+        opted_out.scripts = vec![undismissed_path];
+        opted_out.fail_on_egui_diagnostics = false;
+        let opted_out_result = run_suite(&devmcp, runtime.handle(), &opted_out);
+
+        assert!(opted_out_result.success());
+        assert!(!opted_out_result.results[0].egui_diagnostics.is_empty());
+        assert!(
+            opted_out_result
+                .render_lines(true)
+                .iter()
+                .any(|line| line.contains("EGUI: undismissed egui diagnostics"))
+        );
 
         drop(fs::remove_dir_all(&root));
     }

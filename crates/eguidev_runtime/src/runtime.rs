@@ -30,6 +30,7 @@ pub struct Runtime {
     screenshots: ScreenshotManager,
     frame_notify: Notify,
     egui_diagnostics: EguiDiagnosticJournal,
+    diagnostic_barriers_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -38,11 +39,12 @@ struct RuntimeHooksImpl {
 }
 
 impl Runtime {
-    fn new() -> Self {
+    fn new(diagnostic_barriers_enabled: bool) -> Self {
         Self {
             screenshots: ScreenshotManager::new(),
             frame_notify: Notify::new(),
             egui_diagnostics: EguiDiagnosticJournal::new(),
+            diagnostic_barriers_enabled,
         }
     }
 
@@ -51,7 +53,19 @@ impl Runtime {
         if let Some(runtime) = Self::from_inner(inner) {
             return runtime;
         }
-        let runtime = Arc::new(Self::new());
+        let runtime = Arc::new(Self::new(false));
+        inner.set_runtime_hooks(Arc::new(RuntimeHooksImpl {
+            runtime: Arc::clone(&runtime),
+        }));
+        runtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ensure_for_inner_with_diagnostic_barriers(inner: &Arc<Inner>) -> Arc<Self> {
+        if let Some(runtime) = Self::from_inner(inner) {
+            return runtime;
+        }
+        let runtime = Arc::new(Self::new(true));
         inner.set_runtime_hooks(Arc::new(RuntimeHooksImpl {
             runtime: Arc::clone(&runtime),
         }));
@@ -76,6 +90,10 @@ impl Runtime {
 
     pub(crate) fn egui_diagnostics(&self) -> &EguiDiagnosticJournal {
         &self.egui_diagnostics
+    }
+
+    pub(crate) fn diagnostic_barriers_enabled(&self) -> bool {
+        self.diagnostic_barriers_enabled
     }
 
     pub(crate) fn screenshot_state(&self, request_id: u64) -> Option<ScreenshotState> {
@@ -201,9 +219,14 @@ impl Runtime {
         self.frame_notify.notify_waiters();
     }
 
-    fn capture_egui_output(&self, inner: &Inner, ctx: &Context, output: &FullOutput) {
+    fn capture_egui_output(
+        &self,
+        inner: &Inner,
+        viewport_id: egui::ViewportId,
+        output: &FullOutput,
+    ) {
         self.egui_diagnostics.record_output(
-            viewport_id_to_string(ctx.viewport_id()),
+            viewport_id_to_string(viewport_id),
             inner.frame_count(),
             output,
         );
@@ -223,17 +246,21 @@ impl RuntimeHooks for RuntimeHooksImpl {
         self.runtime.finish_frame(inner, ctx);
     }
 
-    fn on_egui_output(&self, inner: &Inner, ctx: &Context, output: &FullOutput) {
-        self.runtime.capture_egui_output(inner, ctx, output);
+    fn on_egui_output(&self, inner: &Inner, viewport_id: egui::ViewportId, output: &FullOutput) {
+        self.runtime.capture_egui_output(inner, viewport_id, output);
     }
 }
 
 /// Attach the embedded runtime to an inert `DevMcp` handle.
 pub fn attach(devmcp: DevMcp) -> DevMcp {
-    attach_internal(devmcp, true)
+    attach_internal(devmcp, true, true)
 }
 
-fn attach_internal(devmcp: DevMcp, should_start_server: bool) -> DevMcp {
+fn attach_internal(
+    devmcp: DevMcp,
+    should_start_server: bool,
+    diagnostic_barriers_enabled: bool,
+) -> DevMcp {
     if devmcp.is_enabled() {
         return devmcp;
     }
@@ -245,7 +272,7 @@ fn attach_internal(devmcp: DevMcp, should_start_server: bool) -> DevMcp {
     }
 
     let inner = Arc::new(Inner::new());
-    let runtime = Arc::new(Runtime::new());
+    let runtime = Arc::new(Runtime::new(diagnostic_barriers_enabled));
     let hooks = Arc::new(RuntimeHooksImpl {
         runtime: Arc::clone(&runtime),
     });
@@ -258,7 +285,7 @@ fn attach_internal(devmcp: DevMcp, should_start_server: bool) -> DevMcp {
 
 #[cfg(test)]
 pub fn attach_for_tests(devmcp: DevMcp) -> DevMcp {
-    attach_internal(devmcp, false)
+    attach_internal(devmcp, false, false)
 }
 
 /// Evaluate a Luau script directly against this attached `DevMcp` instance.

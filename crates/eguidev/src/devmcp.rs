@@ -37,7 +37,8 @@ pub trait RuntimeHooks: Send + Sync {
 
     fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
 
-    fn on_egui_output(&self, _inner: &Inner, _ctx: &Context, _output: &FullOutput) {}
+    fn on_egui_output(&self, _inner: &Inner, _viewport_id: egui::ViewportId, _output: &FullOutput) {
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,14 +59,14 @@ impl Default for AutomationOptions {
 /// Egui plugin that injects DevMCP-queued input into every pass of every
 /// viewport.
 ///
-/// Registered automatically on the first instrumented frame (see
-/// [`DevMcp::begin_frame`]), so apps do not need to wire anything up
-/// themselves. Because `egui::Plugin::input_hook` runs inside the public
-/// `Context::begin_pass` for root, deferred, and immediate viewports alike,
-/// this makes injected input reach immediate viewports, which the old
-/// app-side `raw_input_hook` override could never do (by the time an
-/// immediate viewport's render callback ran, `begin_pass` had already
-/// consumed that pass's `RawInput`).
+/// Registered automatically on the first instrumented frame of each egui
+/// `Context` (see [`DevMcp::begin_frame`]), so apps do not need to wire
+/// anything up themselves. Because `egui::Plugin::input_hook` runs inside the
+/// public `Context::begin_pass` for root, deferred, and immediate viewports
+/// alike, this makes injected input reach immediate viewports, which the old
+/// app-side `raw_input_hook` override could never do (by the time an immediate
+/// viewport's render callback ran, `begin_pass` had already consumed that
+/// pass's `RawInput`).
 ///
 /// Holding a `DevMcp` here (which transitively remembers `Context`s through
 /// `Inner::remember_context`) creates a reference cycle with the `Context`
@@ -75,6 +76,8 @@ struct AutomationPlugin {
     /// The DevMCP handle whose queued actions should be drained into raw
     /// input for every pass.
     devmcp: DevMcp,
+    /// Viewport reported by the input hook for the output that follows.
+    output_viewport_id: Option<egui::ViewportId>,
 }
 
 impl egui::Plugin for AutomationPlugin {
@@ -83,6 +86,7 @@ impl egui::Plugin for AutomationPlugin {
     }
 
     fn input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
+        self.output_viewport_id = Some(raw_input.viewport_id);
         let Some(inner) = self.devmcp.inner() else {
             return;
         };
@@ -99,7 +103,13 @@ impl egui::Plugin for AutomationPlugin {
         };
         swallow_panic("automation_output_plugin", || {
             if let Some(hooks) = inner.runtime_hooks() {
-                hooks.on_egui_output(inner, ctx, output);
+                hooks.on_egui_output(
+                    inner,
+                    self.output_viewport_id
+                        .take()
+                        .unwrap_or_else(|| ctx.viewport_id()),
+                    output,
+                );
             }
         });
     }
@@ -358,11 +368,10 @@ impl DevMcp {
         let Some(inner) = self.inner() else {
             return;
         };
-        if inner.try_install_automation_plugin() {
-            ctx.add_plugin(AutomationPlugin {
-                devmcp: self.clone(),
-            });
-        }
+        ctx.add_plugin(AutomationPlugin {
+            devmcp: self.clone(),
+            output_viewport_id: Some(ctx.viewport_id()),
+        });
         swallow_panic("begin_frame", || {
             let viewport_id = ctx.viewport_id();
             inner.begin_frame(viewport_id);
@@ -556,6 +565,7 @@ mod inactive_tests {
         raw_input_events: AtomicUsize,
         frame_end_calls: AtomicUsize,
         output_calls: AtomicUsize,
+        output_viewports: Mutex<Vec<egui::ViewportId>>,
     }
 
     impl RuntimeHooks for CountingRuntimeHooks {
@@ -573,8 +583,17 @@ mod inactive_tests {
             self.frame_end_calls.fetch_add(1, AtomicOrdering::Relaxed);
         }
 
-        fn on_egui_output(&self, _inner: &Inner, _ctx: &Context, _output: &FullOutput) {
+        fn on_egui_output(
+            &self,
+            _inner: &Inner,
+            viewport_id: egui::ViewportId,
+            _output: &FullOutput,
+        ) {
             self.output_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            self.output_viewports
+                .lock()
+                .expect("output viewports lock")
+                .push(viewport_id);
         }
     }
 
@@ -582,7 +601,10 @@ mod inactive_tests {
     fn inactive_input_hook_plugin_is_a_noop() {
         let devmcp = DevMcp::new();
         let ctx = Context::default();
-        let mut plugin = AutomationPlugin { devmcp };
+        let mut plugin = AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        };
         let mut raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
             focused: false,
@@ -607,7 +629,10 @@ mod inactive_tests {
             },
         );
         let devmcp = DevMcp::new().activate_runtime(inner, hooks);
-        let mut plugin = AutomationPlugin { devmcp };
+        let mut plugin = AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        };
         let ctx = Context::default();
         let mut raw_input = egui::RawInput {
             viewport_id,
@@ -653,6 +678,46 @@ mod inactive_tests {
             hooks.output_calls.load(AtomicOrdering::Relaxed),
             1,
             "automation plugin should forward completed output"
+        );
+    }
+
+    #[test]
+    fn frame_guard_installs_automation_plugin_on_each_context() {
+        let inner = Arc::new(Inner::new());
+        let hooks = Arc::new(CountingRuntimeHooks::default());
+        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
+        let devmcp = DevMcp::new().activate_runtime(inner, runtime_hooks);
+        let root = Context::default();
+        let secondary = Context::default();
+
+        for (ctx, viewport_id) in [
+            (&root, egui::ViewportId::ROOT),
+            (&secondary, egui::ViewportId::from_hash_of("secondary")),
+        ] {
+            let mut raw_input = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            raw_input.viewports.insert(viewport_id, Default::default());
+            let _output = ctx.run_ui(raw_input, |ui| {
+                let _guard = FrameGuard::new(&devmcp, ui.ctx());
+            });
+        }
+
+        assert_eq!(
+            hooks.output_calls.load(AtomicOrdering::Relaxed),
+            2,
+            "each egui context should forward its completed output"
+        );
+        assert_eq!(
+            *hooks
+                .output_viewports
+                .lock()
+                .expect("output viewports lock"),
+            [
+                egui::ViewportId::ROOT,
+                egui::ViewportId::from_hash_of("secondary"),
+            ]
         );
     }
 

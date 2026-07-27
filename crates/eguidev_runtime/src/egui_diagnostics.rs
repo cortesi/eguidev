@@ -9,7 +9,7 @@ use egui::{Color32, FullOutput, Shape, StrokeKind};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
-use crate::types::Rect;
+use crate::Rect;
 
 const JOURNAL_CAPACITY: usize = 1_024;
 const RECT_CHANGED_MESSAGE: &str = "Widget rectangle changed identity between completed passes";
@@ -196,11 +196,15 @@ impl EguiDiagnosticJournal {
             .map_or(state.next_entry_sequence, |entry| entry.sequence);
         let lost_end = retained_start.min(state.next_entry_sequence);
         let lost_total = lost_end.saturating_sub(start_sequence);
-        let dismissed_lost = dismissed
-            .range(start_sequence..lost_end)
-            .count()
-            .try_into()
-            .unwrap_or(u64::MAX);
+        let dismissed_lost = if start_sequence < lost_end {
+            dismissed
+                .range(start_sequence..lost_end)
+                .count()
+                .try_into()
+                .unwrap_or(u64::MAX)
+        } else {
+            0
+        };
         let dropped = lost_total.saturating_sub(dismissed_lost);
         let retained = state
             .entries

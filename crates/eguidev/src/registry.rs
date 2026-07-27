@@ -59,10 +59,6 @@ pub struct Inner {
     pub script_preludes: ScriptPreludeRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     automation_options: Mutex<AutomationOptions>,
-    /// Whether the egui automation plugin has already been registered
-    /// on a `Context` for this process. Guards `add_plugin` against being
-    /// called more than once even though `DevMcp` is `Clone`.
-    automation_plugin_installed: AtomicBool,
 }
 
 impl Default for Inner {
@@ -142,20 +138,7 @@ impl Inner {
             script_preludes: ScriptPreludeRegistry::new(),
             runtime_hooks: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
-            automation_plugin_installed: AtomicBool::new(false),
         }
-    }
-
-    /// Claim the right to install the automation plugin.
-    ///
-    /// Returns `true` exactly once for the lifetime of this `Inner`; every
-    /// subsequent call returns `false`. Callers use this to register the
-    /// plugin on a `Context` exactly once even when `begin_frame` runs
-    /// repeatedly across clones of the owning `DevMcp`.
-    pub fn try_install_automation_plugin(&self) -> bool {
-        !self
-            .automation_plugin_installed
-            .swap(true, Ordering::SeqCst)
     }
 
     pub fn set_runtime_hooks(&self, hooks: Arc<dyn RuntimeHooks>) {
@@ -280,10 +263,13 @@ impl Inner {
     pub fn request_repaint_all(&self) {
         let contexts = {
             let contexts = lock(&self.contexts, "contexts lock");
-            contexts.values().cloned().collect::<Vec<_>>()
+            contexts
+                .iter()
+                .map(|(viewport_id, ctx)| (*viewport_id, ctx.clone()))
+                .collect::<Vec<_>>()
         };
-        for ctx in contexts {
-            ctx.request_repaint();
+        for (viewport_id, ctx) in contexts {
+            ctx.request_repaint_of(viewport_id);
         }
     }
 
@@ -293,7 +279,7 @@ impl Inner {
             contexts.get(&viewport_id).cloned()
         };
         if let Some(ctx) = ctx {
-            ctx.request_repaint();
+            ctx.request_repaint_of(viewport_id);
         }
     }
 
@@ -563,26 +549,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_repaint_does_not_hold_contexts_lock_across_callback() {
+    fn request_repaint_targets_viewport_without_holding_contexts_lock() {
         let inner = Arc::new(new_test_inner());
         let ctx = Context::default();
-        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        let viewport_id = egui::ViewportId::from_hash_of("secondary");
+        inner.capture_context(viewport_id, &ctx);
 
         let inner_for_callback = Arc::clone(&inner);
         let (sender, receiver) = mpsc::channel();
-        ctx.set_request_repaint_callback(move |_| {
-            assert!(
-                inner_for_callback
-                    .context_for(egui::ViewportId::ROOT)
-                    .is_some()
-            );
-            sender.send(()).expect("notify repaint callback");
+        ctx.set_request_repaint_callback(move |info| {
+            assert!(inner_for_callback.context_for(viewport_id).is_some());
+            sender
+                .send(info.viewport_id)
+                .expect("notify repaint callback");
         });
 
-        inner.request_repaint_of(egui::ViewportId::ROOT);
-        receiver
-            .recv_timeout(Duration::from_secs(1))
-            .expect("repaint callback");
+        inner.request_repaint_of(viewport_id);
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("repaint callback"),
+            viewport_id
+        );
     }
 
     #[test]

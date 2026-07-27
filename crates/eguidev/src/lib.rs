@@ -188,9 +188,9 @@ pub use crate::{
     script_prelude::ScriptPrelude,
     types::{
         Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
-        FixtureResponse, FixtureResult, FixtureSpec, ParamKind, RoleState, ScrollAreaMeta,
-        ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout, WidgetRange,
-        WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+        FixtureResponse, FixtureResult, FixtureSpec, ParamKind, Pos2, Rect, RoleState,
+        ScrollAreaMeta, ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout,
+        WidgetRange, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,

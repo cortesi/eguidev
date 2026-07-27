@@ -4,8 +4,10 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
 use tmcp::schema::{CallToolResult, ContentBlock};
 
-use crate::EguiDiagnosticBatch;
-use crate::types::{Rect, WidgetRef, WidgetValue};
+use crate::{
+    EguiDiagnosticBatch,
+    types::{Rect, WidgetRef, WidgetValue},
+};
 
 pub(super) type ScriptResult<T> = Result<T, ScriptErrorInfo>;
 

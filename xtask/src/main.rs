@@ -219,7 +219,7 @@ fn smoke_with_app_command(
     let workspace_root = workspace_root()?;
     let mut demo_command = Command::new("cargo");
     demo_command.current_dir(&workspace_root);
-    demo_command.args(["run", "-q", "-p", "edev", "--", "smoke"]);
+    demo_command.args(["run", "-q", "-p", "edev", "--bin", "edev", "--", "smoke"]);
     if args.list {
         demo_command.arg("--list");
     }
@@ -257,7 +257,7 @@ fn smoke_with_app_command(
     }
     run_prepared_command_with_timeout(
         demo_command,
-        "cargo run -p edev -- smoke",
+        "cargo run -p edev --bin edev -- smoke",
         Some(Duration::from_secs(15 * 60)),
     )
 }
@@ -383,7 +383,7 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
         .with_request_timeout(Duration::from_secs(120));
     let mut command = TokioCommand::new("cargo");
     command.current_dir(&workspace_root);
-    command.args(["run", "-q", "-p", "edev", "--", "mcp"]);
+    command.args(["run", "-q", "-p", "edev", "--bin", "edev", "--", "mcp"]);
     if verbose {
         command.arg("--verbose");
     }
