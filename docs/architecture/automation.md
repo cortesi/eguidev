@@ -72,10 +72,30 @@ Apps may register namespaced script preludes through `DevMcp::script_prelude(...
 includes those app declarations while the app is running and falls back to the checked-in built-in
 definitions while stopped.
 
+Egui identity diagnostics:
+
+- The runtime reads completed `FullOutput` values. It captures egui `id_clash` text markers and
+  `rect_changed_id` rectangle markers. It ignores all other output shapes.
+- A process-wide journal keeps the newest 1,024 entries in completion order. Each entry contains
+  its viewport, Eguidev frame, warning kind, message, and an optional rectangle.
+- Each script evaluation starts at the current journal tail. Reads and clears dismiss entries only
+  for that evaluation. They do not remove entries or affect a concurrent evaluation.
+- `Viewport:egui_diagnostics()` waits for the latest completed output, returns new diagnostics for
+  that viewport, and dismisses the returned entries. `Viewport:clear_egui_diagnostics()` waits for
+  the same boundary and dismisses retained entries without returning them.
+- Before an evaluation returns, it waits for a completed diagnostic pass on each targeted viewport.
+  A timeout produces `diagnostic_barrier_timeout`. An earlier script error stays primary and
+  receives the barrier error in its details.
+- `ScriptEvalOutcome.egui_diagnostics` contains all undismissed entries from the evaluation range.
+  `dropped` counts undismissed entries that the bounded journal overwrote.
+- Collection follows egui debug options. A warning that egui disables or omits cannot appear in the
+  journal.
+
 Smoke authoring:
 
 - `edev smoke --list [--json]` prints the selected script set without launching the app.
-- Smoke runs fail when a script leaves egui identity diagnostics undismissed. Set
+- Smoke runs fail by default when a script leaves entries undismissed or reports dropped entries.
+  Set
   `[smoke] fail_on_egui_diagnostics = false` to retain the diagnostics in verbose output and
   failure bundles without changing script status.
 - `--only GLOB` filters discovered scripts by forward-slash display path. Repeating the flag
@@ -101,13 +121,13 @@ Failure bundles:
 - If post-failure collection fails, the bundle keeps the original failure files and records the
   collection problem in `collection-error.txt`.
 
-For `eframe` apps, the required integration point is `FrameGuard` around rendered frames; the
-first `FrameGuard` call registers an egui plugin that injects queued input into every viewport's
-pass, so there is no separate raw-input hook for apps to wire up. Runtime-thread fixture handlers
-registered with `DevMcp::on_fixture_runtime()` run through the attached runtime; UI-thread handlers
-registered with `DevMcp::on_fixture_ui()` are queued and drained before the root registry is cleared
-for the next frame. Frame capture and wait/screenshot wakeups remain owned by the instrumentation
-boundary.
+For `eframe` apps, the required integration point is `FrameGuard` around rendered frames. The first
+`FrameGuard` call for each egui `Context` registers a plugin that injects queued input into every
+viewport pass. Apps do not need a separate raw-input hook. Runtime-thread fixture handlers
+registered with `DevMcp::on_fixture_runtime()` run through the attached runtime. UI-thread handlers
+registered with `DevMcp::on_fixture_ui()` are queued and drained before the root registry clears for
+the next frame. The instrumentation boundary continues to own frame capture and wait or screenshot
+wakeups.
 
 Renderer note:
 

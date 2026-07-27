@@ -17,7 +17,8 @@ release updates.
 
 eguidev instruments your app from the inside. You tag widgets with string ids,
 and eguidev captures their state (role, label, value, geometry) at every frame
-boundary and injects input in step with the real event loop.
+boundary and injects input in step with the real event loop. It also captures
+egui debug identity warnings from each completed viewport pass.
 
 Agents talk to the app through MCP, and the agent-facing surface is
 [Luau](https://luau.org/) scripts rather than fine-grained RPC: a single
@@ -123,6 +124,15 @@ The same scripting surface powers developer-facing tooling:
 - Scripts use `widget(...)`, `expect(...)`, geometry/text assertions, `capture()`
   diffs, and `expect_painted(...)` for cross-viewport lookup and concise
   verification.
+- Each script result includes undismissed egui `id_clash` and
+  `rect_changed_id` warnings. `edev smoke` fails on these warnings by default,
+  so transient identity errors cannot pass unnoticed. Set
+  `[smoke] fail_on_egui_diagnostics = false` to retain the warnings without
+  failing the script.
+- Scripts that intentionally produce a warning can inspect and dismiss it with
+  `Viewport:egui_diagnostics()`, or dismiss it without returning it with
+  `Viewport:clear_egui_diagnostics()`. Both methods wait for the completed
+  output of the target viewport.
 - Apps can register `DevMcp::diagnostic(...)`, `DevMcp::diagnostic_ui(...)`,
   app script preludes, fixture catalogs, and runtime/UI-thread fixture handlers
   for structured setup and state that scripts read with `diagnostic(...)`,

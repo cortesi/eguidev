@@ -121,6 +121,33 @@ assert(
 )
 ```
 
+## Egui identity diagnostics
+
+Eguidev captures egui ID clashes and rectangle identity changes from completed viewport passes.
+Each script result contains warnings that the script did not dismiss. `edev smoke` fails on these
+warnings by default.
+
+Use the viewport methods when a script must check that an action stays free of warnings:
+
+```luau
+local vp = root()
+vp:clear_egui_diagnostics()
+vp:key("I")
+
+local batch = vp:egui_diagnostics()
+assert(batch.dropped == 0)
+assert(#batch.entries == 0, `action produced {#batch.entries} egui diagnostics`)
+```
+
+`egui_diagnostics()` returns new entries for its viewport and dismisses only those entries.
+`clear_egui_diagnostics()` dismisses retained entries for its viewport without returning them.
+Both methods wait for the target viewport to complete its latest output pass. Fixture application
+does not clear diagnostics.
+
+The `dropped` field counts undismissed entries that the bounded journal overwrote. Treat a nonzero
+value as a failure because the lost warnings cannot be classified. To retain warnings without
+failing smoke scripts, set `[smoke] fail_on_egui_diagnostics = false` in `.edev.toml`.
+
 ## Common idioms
 
 ```luau

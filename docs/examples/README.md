@@ -63,6 +63,9 @@ Checked-in smoke coverage now has two layers:
   directory separators.
 - `edev smoke --verbose` keeps the same suite but also emits the extra suite summary and launcher
   output that are useful when debugging failures.
+- Smoke scripts fail by default when they leave egui `id_clash` or `rect_changed_id` diagnostics
+  undismissed. Use `Viewport:egui_diagnostics()` to inspect and dismiss expected warnings, or use
+  `Viewport:clear_egui_diagnostics()` to dismiss them without returning them.
 - `edev smoke --repeat N` runs the selected set multiple times against one app
   process. `edev smoke --until-fail N` uses the same repeated mode but stops at
   the first failure, up to `N` rounds. The suite timeout covers the whole
