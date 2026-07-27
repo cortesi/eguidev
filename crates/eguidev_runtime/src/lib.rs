@@ -21,6 +21,7 @@
 compile_error!("eguidev_runtime is native-only and is not supported on wasm32 targets");
 
 mod dump;
+mod egui_diagnostics;
 mod error;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -83,6 +84,9 @@ pub fn enable_background_launch_guard() {
 }
 
 pub use crate::{
+    egui_diagnostics::{
+        EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
+    },
     runtime::{attach, eval_script},
     script_docs::{
         render_script_docs_markdown, script_definitions, script_definitions_with_preludes,

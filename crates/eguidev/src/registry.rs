@@ -59,10 +59,10 @@ pub struct Inner {
     pub script_preludes: ScriptPreludeRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     automation_options: Mutex<AutomationOptions>,
-    /// Whether the egui input-injection plugin has already been registered
+    /// Whether the egui automation plugin has already been registered
     /// on a `Context` for this process. Guards `add_plugin` against being
     /// called more than once even though `DevMcp` is `Clone`.
-    input_plugin_installed: AtomicBool,
+    automation_plugin_installed: AtomicBool,
 }
 
 impl Default for Inner {
@@ -142,18 +142,20 @@ impl Inner {
             script_preludes: ScriptPreludeRegistry::new(),
             runtime_hooks: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
-            input_plugin_installed: AtomicBool::new(false),
+            automation_plugin_installed: AtomicBool::new(false),
         }
     }
 
-    /// Claim the right to install the input-injection plugin.
+    /// Claim the right to install the automation plugin.
     ///
     /// Returns `true` exactly once for the lifetime of this `Inner`; every
     /// subsequent call returns `false`. Callers use this to register the
     /// plugin on a `Context` exactly once even when `begin_frame` runs
     /// repeatedly across clones of the owning `DevMcp`.
-    pub fn try_install_input_plugin(&self) -> bool {
-        !self.input_plugin_installed.swap(true, Ordering::SeqCst)
+    pub fn try_install_automation_plugin(&self) -> bool {
+        !self
+            .automation_plugin_installed
+            .swap(true, Ordering::SeqCst)
     }
 
     pub fn set_runtime_hooks(&self, hooks: Arc<dyn RuntimeHooks>) {

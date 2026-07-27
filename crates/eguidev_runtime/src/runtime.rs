@@ -2,7 +2,7 @@
 
 use std::{any::Any, sync::Arc};
 
-use egui::Context;
+use egui::{Context, FullOutput};
 #[cfg(target_os = "macos")]
 use eguidev::internal::presentation::PresentationStatus;
 use eguidev::internal::{devmcp::RuntimeHooks, presentation::Presentation, registry::Inner};
@@ -15,6 +15,7 @@ use crate::macos::{
 };
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
+    egui_diagnostics::EguiDiagnosticJournal,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
     server::start_server,
     tools::{DEFAULT_SCRIPT_EVAL_TIMEOUT_MS, script::run_script_eval},
@@ -24,6 +25,7 @@ use crate::{
 pub struct Runtime {
     screenshots: ScreenshotManager,
     frame_notify: Notify,
+    egui_diagnostics: EguiDiagnosticJournal,
 }
 
 #[derive(Debug)]
@@ -36,6 +38,7 @@ impl Runtime {
         Self {
             screenshots: ScreenshotManager::new(),
             frame_notify: Notify::new(),
+            egui_diagnostics: EguiDiagnosticJournal::new(),
         }
     }
 
@@ -65,6 +68,10 @@ impl Runtime {
 
     pub(crate) fn frame_notify(&self) -> &Notify {
         &self.frame_notify
+    }
+
+    pub(crate) fn egui_diagnostics(&self) -> &EguiDiagnosticJournal {
+        &self.egui_diagnostics
     }
 
     pub(crate) fn screenshot_state(&self, request_id: u64) -> Option<ScreenshotState> {
@@ -189,6 +196,14 @@ impl Runtime {
         inner.paint_overlays(ctx);
         self.frame_notify.notify_waiters();
     }
+
+    fn capture_egui_output(&self, inner: &Inner, ctx: &Context, output: &FullOutput) {
+        self.egui_diagnostics.record_output(
+            eguidev::internal::registry::viewport_id_to_string(ctx.viewport_id()),
+            inner.frame_count(),
+            output,
+        );
+    }
 }
 
 impl RuntimeHooks for RuntimeHooksImpl {
@@ -202,6 +217,10 @@ impl RuntimeHooks for RuntimeHooksImpl {
 
     fn on_frame_end(&self, inner: &Inner, ctx: &Context) {
         self.runtime.finish_frame(inner, ctx);
+    }
+
+    fn on_egui_output(&self, inner: &Inner, ctx: &Context, output: &FullOutput) {
+        self.runtime.capture_egui_output(inner, ctx, output);
     }
 }
 

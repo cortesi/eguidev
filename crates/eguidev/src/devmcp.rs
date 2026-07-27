@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use egui::Context;
+use egui::{Context, FullOutput};
 
 use crate::{
     actions::InputAction,
@@ -36,6 +36,8 @@ pub trait RuntimeHooks: Send + Sync {
     fn on_raw_input(&self, _inner: &Inner, _events: &[egui::Event]) {}
 
     fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
+
+    fn on_egui_output(&self, _inner: &Inner, _ctx: &Context, _output: &FullOutput) {}
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,15 +71,15 @@ impl Default for AutomationOptions {
 /// `Inner::remember_context`) creates a reference cycle with the `Context`
 /// that owns this plugin. That cycle is benign: both live for the process
 /// lifetime and are torn down together at process exit.
-struct InputInjectionPlugin {
+struct AutomationPlugin {
     /// The DevMCP handle whose queued actions should be drained into raw
     /// input for every pass.
     devmcp: DevMcp,
 }
 
-impl egui::Plugin for InputInjectionPlugin {
+impl egui::Plugin for AutomationPlugin {
     fn debug_name(&self) -> &'static str {
-        "eguidev_input_injection"
+        "eguidev_automation"
     }
 
     fn input_hook(&mut self, ctx: &Context, raw_input: &mut egui::RawInput) {
@@ -88,6 +90,17 @@ impl egui::Plugin for InputInjectionPlugin {
             inner.remember_context(raw_input.viewport_id, ctx);
             self.devmcp
                 .drain_actions_into_raw_input(inner, raw_input.viewport_id, raw_input);
+        });
+    }
+
+    fn output_hook(&mut self, ctx: &Context, output: &mut FullOutput) {
+        let Some(inner) = self.devmcp.inner() else {
+            return;
+        };
+        swallow_panic("automation_output_plugin", || {
+            if let Some(hooks) = inner.runtime_hooks() {
+                hooks.on_egui_output(inner, ctx, output);
+            }
         });
     }
 }
@@ -345,8 +358,8 @@ impl DevMcp {
         let Some(inner) = self.inner() else {
             return;
         };
-        if inner.try_install_input_plugin() {
-            ctx.add_plugin(InputInjectionPlugin {
+        if inner.try_install_automation_plugin() {
+            ctx.add_plugin(AutomationPlugin {
                 devmcp: self.clone(),
             });
         }
@@ -542,6 +555,7 @@ mod inactive_tests {
         raw_input_calls: AtomicUsize,
         raw_input_events: AtomicUsize,
         frame_end_calls: AtomicUsize,
+        output_calls: AtomicUsize,
     }
 
     impl RuntimeHooks for CountingRuntimeHooks {
@@ -558,13 +572,17 @@ mod inactive_tests {
         fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {
             self.frame_end_calls.fetch_add(1, AtomicOrdering::Relaxed);
         }
+
+        fn on_egui_output(&self, _inner: &Inner, _ctx: &Context, _output: &FullOutput) {
+            self.output_calls.fetch_add(1, AtomicOrdering::Relaxed);
+        }
     }
 
     #[test]
     fn inactive_input_hook_plugin_is_a_noop() {
         let devmcp = DevMcp::new();
         let ctx = Context::default();
-        let mut plugin = InputInjectionPlugin { devmcp };
+        let mut plugin = AutomationPlugin { devmcp };
         let mut raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
             focused: false,
@@ -589,7 +607,7 @@ mod inactive_tests {
             },
         );
         let devmcp = DevMcp::new().activate_runtime(inner, hooks);
-        let mut plugin = InputInjectionPlugin { devmcp };
+        let mut plugin = AutomationPlugin { devmcp };
         let ctx = Context::default();
         let mut raw_input = egui::RawInput {
             viewport_id,
@@ -630,6 +648,11 @@ mod inactive_tests {
             hooks.raw_input_events.load(AtomicOrdering::Relaxed),
             1,
             "frame guard should forward input events"
+        );
+        assert_eq!(
+            hooks.output_calls.load(AtomicOrdering::Relaxed),
+            1,
+            "automation plugin should forward completed output"
         );
     }
 
