@@ -242,13 +242,11 @@ impl ScriptEvalOutcome {
                         "message": format!("Failed to serialize output: {error}"),
                     },
                 });
-                CallToolResult::new()
-                    .with_json_text(&fallback)
-                    .unwrap_or_else(|_| {
-                        CallToolResult::new().with_text_content(
-                            r#"{"success":false,"error":{"type":"runtime","message":"Failed to serialize output"}}"#,
-                        )
-                    })
+                CallToolResult::new().with_json_text(&fallback).unwrap_or_else(|_| {
+                    CallToolResult::new().with_text_content(
+                        r#"{"success":false,"error":{"type":"runtime","message":"Failed to serialize output"}}"#,
+                    )
+                })
             }
         };
         for block in &self.content {

@@ -379,9 +379,7 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, EdevError> {
     );
     unsafe {
         SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
-            true,
-            true,
-            &block,
+            true, true, &block,
         );
     }
     rx.recv()

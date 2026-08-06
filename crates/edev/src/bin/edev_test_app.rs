@@ -11,7 +11,7 @@ use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
         CallToolResponse, CallToolResult, ClientCapabilities, Cursor, Implementation,
-        InitializeResult, ListToolsResult, TaskMetadata, Tool, ToolSchema,
+        InitializeResult, ListToolsResult, ProtocolVersion, TaskMetadata, Tool, ToolSchema,
     },
 };
 
@@ -23,7 +23,7 @@ impl ServerHandler for TestApp {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {

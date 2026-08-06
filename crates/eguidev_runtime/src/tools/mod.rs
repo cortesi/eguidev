@@ -20,8 +20,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tmcp::{
     ServerCtx, ToolResult, mcp_server,
-    schema::{CallToolResult, ClientCapabilities, Implementation, InitializeResult},
-    tool, tool_result,
+    schema::{
+        CallToolResult, ClientCapabilities, Implementation, InitializeResult, ProtocolVersion,
+    },
+    tool_result,
 };
 use tokio::{
     task::spawn_blocking,
@@ -1416,7 +1418,7 @@ impl DevMcpServer {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {
@@ -4947,8 +4949,7 @@ return root():widget_list(nil)"#
 
         let result = server
             .script_eval(
-                r#"configure({ timeout_ms = 30 }) root():wait_for_widget_absent("missing") return true"#
-                    .to_string(),
+                r#"configure({ timeout_ms = 30 }) root():wait_for_widget_absent("missing") return true"#.to_string(),
                 None,
                 None,
             )

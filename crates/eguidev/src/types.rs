@@ -1244,11 +1244,13 @@ impl fmt::Display for AnchorCheck {
                 _ => write!(f, "value == {}", value.to_text()),
             },
             Self::ScrollReady => f.write_str("scroll_ready"),
-            Self::ScrollAt { offset, tolerance } => write!(
-                f,
-                "scroll_at ({:.1}, {:.1}) ± {:.2}",
-                offset.x, offset.y, tolerance
-            ),
+            Self::ScrollAt { offset, tolerance } => {
+                write!(
+                    f,
+                    "scroll_at ({:.1}, {:.1}) ± {:.2}",
+                    offset.x, offset.y, tolerance
+                )
+            }
             Self::Data { pointer, equals } => write!(f, "data {pointer:?} == {equals}"),
         }
     }

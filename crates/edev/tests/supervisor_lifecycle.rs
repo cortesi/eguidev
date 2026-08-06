@@ -228,7 +228,12 @@ mod tests {
     /// These tests cover the process boundary only, so they never launch a GUI
     /// app and never open a window.
     fn write_app_config(path: &Path, cwd: &Path, with_secret: bool) {
-        write_config(path, cwd, &[env!("CARGO_BIN_EXE_edev_test_app")], with_secret);
+        write_config(
+            path,
+            cwd,
+            &[env!("CARGO_BIN_EXE_edev_test_app")],
+            with_secret,
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

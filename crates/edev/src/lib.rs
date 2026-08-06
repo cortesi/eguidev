@@ -41,7 +41,7 @@ use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
         CallToolResponse, CallToolResult, ClientCapabilities, ContentBlock, Cursor, ImageContent,
-        Implementation, InitializeResult, ListToolsResult, TaskMetadata, Tool,
+        Implementation, InitializeResult, ListToolsResult, ProtocolVersion, TaskMetadata, Tool,
         ToolResultDecodeError, ToolResultExtractError, ToolResultMode, ToolSchema,
     },
 };
@@ -2621,7 +2621,7 @@ impl ServerHandler for EdevServer {
     async fn initialize(
         &self,
         _context: &ServerCtx,
-        _protocol_version: String,
+        _protocol_version: ProtocolVersion,
         _capabilities: ClientCapabilities,
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {
@@ -3767,7 +3767,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> tmcp::Result<InitializeResult> {
@@ -3826,7 +3826,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> tmcp::Result<InitializeResult> {
@@ -3863,7 +3863,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> tmcp::Result<InitializeResult> {
@@ -3921,7 +3921,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> tmcp::Result<InitializeResult> {
@@ -4058,7 +4058,7 @@ mod tests {
         async fn initialize(
             &self,
             _context: &ServerCtx,
-            _protocol_version: String,
+            _protocol_version: ProtocolVersion,
             _capabilities: ClientCapabilities,
             _client_info: Implementation,
         ) -> tmcp::Result<InitializeResult> {

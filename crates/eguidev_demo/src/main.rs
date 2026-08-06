@@ -901,16 +901,10 @@ impl DemoApp {
                     ui.dev_separator("basic.separator.scroll");
                     ui.label("Scroll area");
                     ui.horizontal(|ui| {
-                        if ui
-                            .dev_button("basic.scroll.jump_top", "Scroll to top")
-                            .clicked()
-                        {
+                        if ui.dev_button("basic.scroll.jump_top", "Scroll to top").clicked() {
                             s.basic_scroll_state.jump_to(egui::Vec2::ZERO);
                         }
-                        if ui
-                            .dev_button("basic.scroll.jump_down", "Jump down")
-                            .clicked()
-                        {
+                        if ui.dev_button("basic.scroll.jump_down", "Jump down").clicked() {
                             s.basic_scroll_state.jump_to(egui::vec2(0.0, 300.0));
                         }
                         ui.dev_label(
@@ -926,24 +920,16 @@ impl DemoApp {
                         "basic.scroll",
                         |ui| {
                             for row in 0..50 {
-                                ui.dev_label(
-                                    format!("basic.scroll.row.{row}"),
-                                    format!("Row {row}"),
-                                );
+                                ui.dev_label(format!("basic.scroll.row.{row}"), format!("Row {row}"));
                             }
                         },
                     );
 
                     ui.dev_separator("viewports.separator.primary");
                     ui.heading("Viewport playground");
-                    ui.label(
-                        "The secondary viewport stays open by default so viewport tooling is always live.",
-                    );
+                    ui.label("The secondary viewport stays open by default so viewport tooling is always live.");
                     ui.horizontal(|ui| {
-                        if ui
-                            .dev_button("viewports.toggle", "Toggle secondary viewport")
-                            .clicked()
-                        {
+                        if ui.dev_button("viewports.toggle", "Toggle secondary viewport").clicked() {
                             s.show_secondary = !s.show_secondary;
                             s.status = if s.show_secondary {
                                 "Secondary viewport opened.".to_string()
@@ -951,28 +937,16 @@ impl DemoApp {
                                 "Secondary viewport hidden.".to_string()
                             };
                         }
-                        ui.dev_label(
-                            "viewports.open",
-                            format!("Secondary open: {}", s.show_secondary),
-                        );
+                        ui.dev_label("viewports.open", format!("Secondary open: {}", s.show_secondary));
                     });
-                    ui.dev_label(
-                        "viewports.selected_row",
-                        format!("Selected row: {}", s.secondary_selected_row),
-                    );
+                    ui.dev_label("viewports.selected_row", format!("Selected row: {}", s.secondary_selected_row));
                     ui.dev_label(
                         "viewports.scroll.offset",
-                        format!(
-                            "Secondary scroll offset: {:.1}",
-                            s.secondary_scroll_state.offset().y
-                        ),
+                        format!("Secondary scroll offset: {:.1}", s.secondary_scroll_state.offset().y),
                     );
                     ui.dev_label(
                         "viewports.drag.offset",
-                        format!(
-                            "Drag offset: {:.1}, {:.1}",
-                            s.secondary_drag_offset.x, s.secondary_drag_offset.y
-                        ),
+                        format!("Drag offset: {:.1}, {:.1}", s.secondary_drag_offset.x, s.secondary_drag_offset.y),
                     );
                 });
         });
