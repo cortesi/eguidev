@@ -10,6 +10,10 @@ use crate::{
     WidgetRoleMeta, WidgetValue, frame_scope, name_viewport, track_widget_with_meta,
 };
 
+fn unchanged_fixture_spec(spec: FixtureSpec) -> FixtureSpec {
+    spec
+}
+
 /// Run one immediate named viewport frame under Eguidev instrumentation.
 pub fn viewport_frame<R>(
     devmcp: &DevMcp,
@@ -65,6 +69,12 @@ impl<K> TypedFixture<K> {
             description,
             decorate,
         }
+    }
+
+    /// Create a typed fixture catalog entry without schema decoration.
+    #[must_use]
+    pub const fn plain(kind: K, name: &'static str, description: &'static str) -> Self {
+        Self::new(kind, name, description, unchanged_fixture_spec)
     }
 
     /// Return the application fixture kind.
@@ -124,6 +134,18 @@ where
         self.definitions.iter().map(TypedFixture::spec).collect()
     }
 
+    /// Build fixture schemas with additional kind-specific decoration.
+    #[must_use]
+    pub fn catalog_with(
+        &self,
+        decorate: impl Fn(&K, FixtureSpec) -> FixtureSpec,
+    ) -> Vec<FixtureSpec> {
+        self.definitions
+            .iter()
+            .map(|definition| decorate(definition.kind(), definition.spec()))
+            .collect()
+    }
+
     /// Resolve a stable runtime name to its application fixture kind.
     #[must_use]
     pub fn kind(&self, name: &str) -> Option<K> {
@@ -133,14 +155,19 @@ where
             .map(|definition| definition.kind)
     }
 
-    /// Queue a runtime fixture call for application on the egui thread.
-    pub fn request(&self, call: &FixtureCall) -> FixtureResult {
-        let kind = self.kind(&call.name).ok_or_else(|| {
+    /// Resolve one runtime fixture call to its application fixture kind.
+    pub fn resolve(&self, call: &FixtureCall) -> Result<K, FixtureError> {
+        self.kind(&call.name).ok_or_else(|| {
             FixtureError::new(
                 "unknown_fixture",
                 format!("unknown fixture `{}`", call.name),
             )
-        })?;
+        })
+    }
+
+    /// Queue a runtime fixture call for application on the egui thread.
+    pub fn request(&self, call: &FixtureCall) -> FixtureResult {
+        let kind = self.resolve(call)?;
         self.pending
             .lock()
             .map_err(|_| FixtureError::new("fixture_queue", "fixture queue lock poisoned"))?
@@ -173,7 +200,7 @@ mod tests {
         TypedFixture::new(Kind::Base, "base", "Base fixture", |spec| {
             spec.anchor("root")
         }),
-        TypedFixture::new(Kind::Detail, "detail", "Detail fixture", |spec| spec),
+        TypedFixture::plain(Kind::Detail, "detail", "Detail fixture"),
     ];
 
     #[test]
@@ -186,7 +213,23 @@ mod tests {
         };
 
         assert_eq!(fixtures.catalog().len(), 2);
+        let catalog = fixtures.catalog_with(|kind, spec| match kind {
+            Kind::Base => spec.anchor("typed-base"),
+            Kind::Detail => spec.anchor("typed-detail"),
+        });
+        assert_eq!(
+            catalog[0].anchors.last().expect("base anchor").widget_id,
+            "typed-base"
+        );
+        assert_eq!(
+            catalog[1].anchors.last().expect("detail anchor").widget_id,
+            "typed-detail"
+        );
         assert_eq!(fixtures.kind("base"), Some(Kind::Base));
+        assert_eq!(
+            fixtures.resolve(&call).expect("resolve fixture"),
+            Kind::Detail
+        );
         requester.request(&call).expect("queue fixture");
         assert_eq!(fixtures.drain(), vec![Kind::Detail]);
         assert!(fixtures.drain().is_empty());
