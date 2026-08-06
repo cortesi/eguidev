@@ -937,7 +937,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.options_mut(|options| options.warn_on_id_clash = true);
         ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
-        ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let id = egui::Id::new("smoke duplicate");
             ui.ctx().check_for_id_clash(
                 id,
@@ -949,7 +949,9 @@ mod tests {
                 egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
                 "smoke widget",
             );
-        })
+        });
+        output.textures_delta.clear();
+        output
     }
 
     fn diagnostic_fixture_devmcp() -> DevMcp {

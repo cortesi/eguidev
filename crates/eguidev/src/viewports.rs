@@ -485,7 +485,7 @@ mod tests {
             .viewports
             .insert(egui::ViewportId::ROOT, Default::default());
         raw_input.viewports.insert(secondary, Default::default());
-        drop(ctx.run_ui(raw_input, |_| {}));
+        ctx.run_ui(raw_input, |_| {}).drop_without_applying_deltas();
         state.update_viewports(&ctx);
 
         let secondary_id = viewport_id_to_string(secondary);
@@ -516,7 +516,7 @@ mod tests {
         root_only
             .viewports
             .insert(egui::ViewportId::ROOT, Default::default());
-        drop(ctx.run_ui(root_only, |_| {}));
+        ctx.run_ui(root_only, |_| {}).drop_without_applying_deltas();
         state.update_viewports(&ctx);
 
         assert_eq!(
@@ -571,7 +571,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        drop(ctx.run_ui(raw_input, |_| {}));
+        ctx.run_ui(raw_input, |_| {}).drop_without_applying_deltas();
         state.update_viewports(&ctx);
 
         state.merge_platform_state(&[PlatformViewportState {

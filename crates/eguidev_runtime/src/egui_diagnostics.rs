@@ -282,7 +282,7 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.options_mut(|options| options.warn_on_id_clash = true);
         ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
-        ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let id = egui::Id::new("duplicate");
             ui.ctx().check_for_id_clash(
                 id,
@@ -294,7 +294,9 @@ mod tests {
                 egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
                 "test widget",
             );
-        })
+        });
+        output.textures_delta.clear();
+        output
     }
 
     fn rect_changed_output() -> FullOutput {
@@ -302,12 +304,15 @@ mod tests {
         ctx.options_mut(|options| options.warn_on_id_clash = false);
         ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = true);
         let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0));
-        drop(ctx.run_ui(egui::RawInput::default(), |ui| {
-            let _ = ui.interact(rect, egui::Id::new("first"), egui::Sense::click());
-        }));
         ctx.run_ui(egui::RawInput::default(), |ui| {
-            let _ = ui.interact(rect, egui::Id::new("second"), egui::Sense::click());
+            let _ = ui.interact(rect, egui::Id::new("first"), egui::Sense::click());
         })
+        .drop_without_applying_deltas();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let _ = ui.interact(rect, egui::Id::new("second"), egui::Sense::click());
+        });
+        output.textures_delta.clear();
+        output
     }
 
     #[test]

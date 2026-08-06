@@ -92,8 +92,13 @@ impl egui::Plugin for AutomationPlugin {
         };
         swallow_panic("input_injection_plugin", || {
             inner.remember_context(raw_input.viewport_id, ctx);
-            self.devmcp
-                .drain_actions_into_raw_input(inner, raw_input.viewport_id, raw_input);
+            let base_modifiers = ctx.input(|input| input.modifiers);
+            self.devmcp.drain_actions_into_raw_input(
+                inner,
+                raw_input.viewport_id,
+                base_modifiers,
+                raw_input,
+            );
         });
     }
 
@@ -449,6 +454,7 @@ impl DevMcp {
         &self,
         inner: &Arc<Inner>,
         viewport_id: egui::ViewportId,
+        base_modifiers: egui::Modifiers,
         raw_input: &mut egui::RawInput,
     ) {
         let actions = inner
@@ -466,14 +472,15 @@ impl DevMcp {
                 );
             }
         }
-        let base_modifiers = raw_input.modifiers;
         let mut current_modifiers = base_modifiers;
+        let mut modifiers_changed = false;
         let mut force_focus = false;
         for action in &actions {
             if let InputAction::Key {
                 pressed, modifiers, ..
             } = action
             {
+                modifiers_changed = true;
                 current_modifiers = if *pressed {
                     base_modifiers.plus((*modifiers).into())
                 } else {
@@ -487,12 +494,16 @@ impl DevMcp {
                 force_focus = true;
             }
         }
-        raw_input.modifiers = current_modifiers;
         if force_focus {
             raw_input.focused = true;
         }
         for action in actions {
             action.apply(raw_input);
+        }
+        if modifiers_changed {
+            raw_input
+                .events
+                .push(egui::Event::ModifiersChanged(current_modifiers));
         }
     }
 }
@@ -660,9 +671,10 @@ mod inactive_tests {
             ..Default::default()
         };
 
-        let _output = ctx.run_ui(raw_input, |ui| {
+        ctx.run_ui(raw_input, |ui| {
             let _guard = FrameGuard::new(&devmcp, ui.ctx());
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert_eq!(
             hooks.raw_input_calls.load(AtomicOrdering::Relaxed),
@@ -699,9 +711,10 @@ mod inactive_tests {
                 ..Default::default()
             };
             raw_input.viewports.insert(viewport_id, Default::default());
-            let _output = ctx.run_ui(raw_input, |ui| {
+            ctx.run_ui(raw_input, |ui| {
                 let _guard = FrameGuard::new(&devmcp, ui.ctx());
-            });
+            })
+            .drop_without_applying_deltas();
         }
 
         assert_eq!(
@@ -775,11 +788,12 @@ mod inactive_tests {
         let ctx = Context::default();
         instrument::reset_test_counters();
 
-        let _output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _guard = FrameGuard::new(&devmcp, &ctx);
             ui.dev_button("inactive.button", "Inactive");
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert!(devmcp.context_for(egui::ViewportId::ROOT).is_none());
         assert_eq!(instrument::test_layout_capture_count(), 0);

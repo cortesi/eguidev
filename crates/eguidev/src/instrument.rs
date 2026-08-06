@@ -467,10 +467,11 @@ mod tests {
         raw_input: egui::RawInput,
         mut add: impl FnMut(&Context, &mut egui::Ui),
     ) {
-        let _output = ctx.run_ui(raw_input, |ui| {
+        ctx.run_ui(raw_input, |ui| {
             let ctx = ui.ctx().clone();
             egui::Frame::central_panel(ui.style()).show(ui, |ui| add(&ctx, ui));
-        });
+        })
+        .drop_without_applying_deltas();
     }
 
     fn assert_combo_widget(widget: &WidgetRegistryEntry) {
