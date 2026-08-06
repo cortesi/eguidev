@@ -165,6 +165,7 @@ mod devmcp;
 mod diagnostics;
 mod error;
 mod fixtures;
+mod helpers;
 mod idle;
 mod instrument;
 mod overlay;
@@ -180,6 +181,7 @@ mod widget_registry;
 pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
+    helpers::{TypedFixture, TypedFixtures, value_anchor, viewport_frame},
     instrument::{
         ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, name_viewport,
         publish_rect_container, publish_rect_meta, track_response, track_widget,
