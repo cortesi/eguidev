@@ -137,6 +137,10 @@ export type Range = {
     max: number,
 }
 
+-- A widget exposes only its id. Handles returned by viewport-scoped discovery
+-- retain that viewport scope internally. Widget equality and all later state,
+-- relationship, wait, action, and observation calls preserve `(viewport_id,
+-- id)` identity across fresh captures.
 export type Widget = {
     id: string,
     state: (self: Widget) -> WidgetState?,
