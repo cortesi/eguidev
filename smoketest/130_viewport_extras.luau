@@ -60,8 +60,8 @@ assert(status ~= nil)
 eguidev.fixture("viewports.duplicate_names")
 eguidev.wait_frames(1)
 assert(#eguidev.viewports({ name = "secondary" }) >= 2, "duplicate fixture should expose both viewports")
-eguidev.fixture("basic.default")
-eguidev.wait_frames(1)
+eguidev.fixture("basic.default", nil, { wait = false })
+eguidev.wait_frames(3)
 assert(#eguidev.viewports({ name = "secondary" }) <= 1, "duplicate viewport should clear after reset")
 
 return {
