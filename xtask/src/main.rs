@@ -145,13 +145,21 @@ fn test() -> Result<(), Box<dyn Error>> {
     run_command("cargo", &["nextest", "run", "--all"], "cargo nextest")?;
     run_command(
         "cargo",
-        &["test", "-q", "-p", "eguidev_runtime"],
-        "cargo test -p eguidev_runtime",
+        &["test", "-q", "-p", "eguidev_runtime", "--tests"],
+        "cargo test -p eguidev_runtime --tests",
     )?;
     run_command(
         "cargo",
-        &["test", "-q", "-p", "eguidev_demo", "--features", "devtools"],
-        "cargo test -p eguidev_demo --features devtools",
+        &[
+            "test",
+            "-q",
+            "-p",
+            "eguidev_demo",
+            "--features",
+            "devtools",
+            "--tests",
+        ],
+        "cargo test -p eguidev_demo --features devtools --tests",
     )?;
     run_command(
         "cargo",
