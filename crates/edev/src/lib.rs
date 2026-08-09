@@ -76,6 +76,8 @@ use session::AppSession;
 
 /// Timeout used for proxied request/response round-trips between edev and app MCP.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Maximum time allowed for a launched app to build and open its direct MCP socket.
+const APP_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum app stdout/stderr bytes retained for diagnostics.
 const APP_LOG_TAIL_LIMIT: usize = 4 * 1024 * 1024;
 /// Extra log bytes retained before trimming back to the stable tail limit.
@@ -817,7 +819,7 @@ fn allocate_mcp_endpoint() -> std_io::Result<String> {
     Ok(listener.local_addr()?.to_string())
 }
 
-/// Connect to a newly launched app, tolerating the short server startup window.
+/// Connect to a newly launched app, including time spent in an app build command.
 // Non-macOS startup probes need mutable access for `Child::try_wait`; macOS
 // probes the supervisor task through the same cross-platform call boundary.
 #[cfg_attr(target_os = "macos", allow(clippy::needless_pass_by_ref_mut))]
@@ -826,7 +828,7 @@ async fn connect_app_client(
     presentation: Presentation,
     process: &mut process_lifecycle::SpawnedProcess,
 ) -> Result<tmcp::Client<()>, McpError> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + APP_CONNECT_TIMEOUT;
     loop {
         let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
             .with_capabilities(client_capabilities(presentation))
