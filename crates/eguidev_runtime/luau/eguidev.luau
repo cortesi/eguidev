@@ -314,12 +314,16 @@ local captureMethods = {} :: any
 local widgetCache: { [string]: Widget } = {}
 local viewportCache: { [string]: Viewport } = {}
 
-local function widget(id: string): Widget
-    local cached = widgetCache[id]
+local function widget(id: string, viewportId: string?): Widget
+    local cacheKey = (viewportId or "") .. "\0" .. id
+    local cached = widgetCache[cacheKey]
     if cached ~= nil then return cached end
-    local reference: Widget = setmetatable({ id = id }, widgetMethods) :: any
+    local reference: Widget = setmetatable({
+        id = id,
+        __viewport_id = viewportId,
+    }, widgetMethods) :: any
     table.freeze(reference)
-    widgetCache[id] = reference
+    widgetCache[cacheKey] = reference
     return reference
 end
 
@@ -333,7 +337,11 @@ local function viewport(id: string): Viewport
 end
 
 widgetMethods.__index = widgetMethods
-widgetMethods.__eq = function(left: Widget, right: Widget): boolean return left.id == right.id end
+widgetMethods.__eq = function(left: Widget, right: Widget): boolean
+    local leftRaw = left :: any
+    local rightRaw = right :: any
+    return left.id == right.id and leftRaw.__viewport_id == rightRaw.__viewport_id
+end
 widgetMethods.__tostring = function(value: Widget): string return `Widget({value.id})` end
 viewportMethods.__index = viewportMethods
 viewportMethods.__eq = function(left: Viewport, right: Viewport): boolean return left.id == right.id end
@@ -368,7 +376,11 @@ end
 local function scopedWidgetTarget(self: Widget): any
     local state = self:state()
     if state == nil then return self end
-    return table.freeze({ id = self.id, __viewport_id = state.viewport_id })
+    return table.freeze({
+        id = self.id,
+        viewport_id = state.viewport_id,
+        __viewport_id = state.viewport_id,
+    })
 end
 
 function widgetMethods.viewport(self: Widget): Viewport?
@@ -380,13 +392,13 @@ end
 function widgetMethods.parent(self: Widget): Widget?
     local result = kernel.query.widget_parent(scopedWidgetTarget(self))
     if result == nil then return nil end
-    return widget(result.id)
+    return widget(result.id, result.viewport_id)
 end
 
 function widgetMethods.children(self: Widget): { Widget }
     local result: any = {}
     for _, child in kernel.query.widget_children(scopedWidgetTarget(self)) do
-        table.insert(result, widget(child.id))
+        table.insert(result, widget(child.id, child.viewport_id))
     end
     return kernel.record.array(result) :: { Widget }
 end
@@ -399,7 +411,7 @@ function widgetMethods.wait(
     if type(condition) ~= "function" then
         local recordCondition = condition :: WidgetCondition
         if recordCondition.present == false then
-            kernel.wait.widget_wait_absent(self, waitOptions(options))
+            kernel.wait.widget_wait_absent(scopedWidgetTarget(self), waitOptions(options))
             return nil
         end
     end
@@ -407,7 +419,7 @@ function widgetMethods.wait(
     local description = if type(condition) == "function"
         then "predicate"
         else widgetConditionDescription(condition :: WidgetCondition)
-    local state = kernel.wait.widget_wait(self, function(rawState: any?): boolean
+    local state = kernel.wait.widget_wait(scopedWidgetTarget(self), function(rawState: any?): boolean
         local currentState = freezeState(rawState) :: WidgetState?
         if type(condition) == "function" then
             return (condition :: WidgetPredicate)(currentState)
@@ -713,7 +725,7 @@ local function filterWidgetReferences(filter: WidgetFilter?, viewportId: string?
             viewportReference,
             widgetFilterOptions(filter, viewportId)
         ) do
-            local reference = widget(raw.id)
+            local reference = widget(raw.id, raw.viewport_id)
             local state = reference:state()
             if state ~= nil
                 and (filter == nil or filter.visible == nil or state.visible == filter.visible)
@@ -736,7 +748,7 @@ end
 function viewportMethods.widgets_at(self: Viewport, position: Pos): { Widget }
     local result: any = {}
     for _, raw in kernel.query.viewport_widget_at_point(self, position, true) do
-        table.insert(result, widget(raw.id))
+        table.insert(result, widget(raw.id, raw.viewport_id))
     end
     return kernel.record.array(result) :: { Widget }
 end
@@ -863,7 +875,7 @@ end
 
 local function fixtureTarget(raw: any): FixtureTarget
     return table.freeze({
-        widget = widget(raw.widget_id),
+        widget = widget(raw.widget_id, raw.viewport_id),
         condition = freezeOwned(raw.condition or {}),
     }) :: any
 end

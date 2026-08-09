@@ -1562,6 +1562,43 @@ return {
     }
 
     #[tokio::test]
+    async fn script_eval_scoped_widget_handle_keeps_its_viewport() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let secondary = egui::ViewportId::from_hash_of("script.scoped.widget.secondary");
+        let secondary_id = viewport_id_to_string(secondary);
+
+        inner.viewports.remember_viewport_id(secondary);
+        inner.widgets.clear_registry(secondary);
+        let mut panel = make_entry("panel", 1, WidgetRole::Label);
+        panel.viewport_id = secondary_id.clone();
+        inner.widgets.record_widget(secondary, panel);
+        inner.widgets.finalize_registry(secondary);
+
+        let result = server
+            .script_eval(
+                format!(
+                    r#"local viewport = eguidev.viewport("{secondary_id}")
+local found = viewport:widgets({{ id_prefix = "panel" }})[1]
+local condition: WidgetCondition = {{ visible = true }}
+local state = found:wait(condition)
+assert(state ~= nil)
+return {{ id = found.id, viewport = state.viewport_id }}"#
+                ),
+                None,
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true, "{json:#}");
+        assert_eq!(
+            json["value"],
+            json!({ "id": "panel", "viewport": secondary_id })
+        );
+    }
+
+    #[tokio::test]
     async fn script_eval_widget_global_reports_ambiguous_matches() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
