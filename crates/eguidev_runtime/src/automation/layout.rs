@@ -217,19 +217,21 @@ impl<'a> LayoutAnalysis<'a> {
     ) -> Result<Vec<LayoutIssue>, ToolError> {
         let mut issues = Vec::new();
         for widget in scope {
-            if widget_text(widget).is_none() {
+            if !widget.visible || widget_text(widget).is_none() {
                 continue;
             }
             let measurement = measure_text(ctx, widget)?;
-            if measurement.desired_size.x > measurement.actual_size.x
-                && measurement.lines.len() <= 1
-            {
+            let (desired_width, actual_width) = widget.layout.as_ref().map_or_else(
+                || (measurement.desired_size.x, measurement.actual_size.x),
+                |layout| (layout.desired_size.x, layout.actual_size.x),
+            );
+            if desired_width > actual_width + RECT_EPSILON && measurement.lines.len() <= 1 {
                 issues.push(LayoutIssue {
                     kind: LayoutIssueKind::TextTruncation,
                     widgets: vec![widget.id.clone()],
                     message: format!(
                         "Text truncated (needs {:.1}px, has {:.1}px)",
-                        measurement.desired_size.x, measurement.actual_size.x
+                        desired_width, actual_width
                     ),
                     rect: Some(widget.rect),
                 });
@@ -670,6 +672,60 @@ mod tests {
         let registry = vec![scroll, row, hidden];
         let analysis = LayoutAnalysis::new(&registry, None);
         assert!(analysis.overlaps(&registry).is_empty());
+    }
+
+    #[test]
+    fn text_truncation_uses_captured_layout_and_ignores_invisible_widgets() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+        let bounds = rect(0.0, 0.0, 12.0, 20.0);
+
+        let mut styled = entry("styled", WidgetRole::Label, bounds, true);
+        styled.value = Some(WidgetValue::Text("Styled text".to_string()));
+        styled.layout = Some(WidgetLayout {
+            desired_size: egui::vec2(12.0, 20.0).into(),
+            actual_size: egui::vec2(12.0, 20.0).into(),
+            ..layout(bounds, bounds)
+        });
+
+        let mut hidden = entry("hidden", WidgetRole::Label, bounds, false);
+        hidden.value = Some(WidgetValue::Text("Hidden metadata".to_string()));
+        hidden.layout = Some(WidgetLayout {
+            desired_size: egui::vec2(100.0, 20.0).into(),
+            actual_size: egui::vec2(1.0, 1.0).into(),
+            ..layout(bounds, bounds)
+        });
+
+        let registry = vec![styled, hidden];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        assert!(
+            analysis
+                .text_truncation(&ctx, &registry)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn text_truncation_reports_captured_intrinsic_overflow() {
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+        let bounds = rect(0.0, 0.0, 45.0, 20.0);
+        let mut label = entry("label", WidgetRole::Label, bounds, true);
+        label.value = Some(WidgetValue::Text("Hello".to_string()));
+        label.layout = Some(WidgetLayout {
+            desired_size: egui::vec2(50.0, 20.0).into(),
+            actual_size: egui::vec2(45.0, 20.0).into(),
+            ..layout(bounds, bounds)
+        });
+
+        let registry = vec![label];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        let issues = analysis.text_truncation(&ctx, &registry).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].widgets, vec!["label"]);
     }
 
     #[test]
