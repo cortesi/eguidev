@@ -1,4 +1,4 @@
-fixture("basic.default")
+eguidev.fixture("basic.default")
 
 local function find_widget(widgets: { WidgetDump }, id: string): any
     for _, widget in ipairs(widgets) do
@@ -13,8 +13,12 @@ local function find_widget(widgets: { WidgetDump }, id: string): any
     return nil
 end
 
-local root_options: DumpOptions = { viewport = "root", root = "basic.panel", fields = "full" }
-local root_tree = dump(root_options) :: any
+local root_options: DumpOptions = {
+    viewport = eguidev.root,
+    root = eguidev.widget("basic.panel"),
+    fields = "full",
+}
+local root_tree = eguidev.dump(root_options) :: any
 assert(#root_tree.viewports == 1, "root viewport dump should be present")
 local root_dump = root_tree.viewports[1]
 assert(root_dump.id == "root", "root dump should use the root viewport id")
@@ -35,20 +39,27 @@ assert(scroll ~= nil, "full subtree dump should include the scroll area")
 assert((scroll :: WidgetDump).scroll_state ~= nil, "full dump should include scroll metadata")
 
 local visible_only_options: DumpOptions = {
-    viewport = "root",
-    root = "basic.root_scroll",
+    viewport = eguidev.root,
+    root = eguidev.widget("basic.root_scroll"),
     include_invisible = false,
 }
-local visible_only_tree = dump(visible_only_options) :: any
+local visible_only_tree = eguidev.dump(visible_only_options) :: any
 assert(find_widget(visible_only_tree.viewports[1].widgets, "basic.scroll.row.49") == nil,
     "include_invisible=false should filter invisible widgets")
-local all_widgets_options: DumpOptions = { viewport = "root", root = "basic.root_scroll" }
-local all_widgets_tree = dump(all_widgets_options) :: any
+local all_widgets_options: DumpOptions = {
+    viewport = eguidev.root,
+    root = eguidev.widget("basic.root_scroll"),
+}
+local all_widgets_tree = eguidev.dump(all_widgets_options) :: any
 assert(find_widget(all_widgets_tree.viewports[1].widgets, "basic.scroll.row.49") ~= nil,
     "include_invisible should default to true for debugging dumps")
 
-local text_options: DumpOptions = { viewport = "root", root = "basic.panel", fields = "full" }
-local text = dump_text(text_options)
+local text_options: DumpOptions = {
+    viewport = eguidev.root,
+    root = eguidev.widget("basic.panel"),
+    fields = "full",
+}
+local text = eguidev.dump_text(text_options)
 assert(string.find(text, 'viewport root "Egui DevMCP Demo"', 1, true) ~= nil,
     "text dump should include the viewport header")
 assert(string.find(text, "  basic.panel unknown", 1, true) ~= nil,
@@ -60,9 +71,11 @@ assert(string.find(text, 'data={"color":"#2f80ed","kind":"sample_target"}', 1, t
 assert(string.find(text, "app.tabs", 1, true) == nil,
     "subtree text dump should exclude widgets outside the requested root")
 
-fixture("viewports.default")
-local secondary_options: DumpOptions = { viewport = "secondary" }
-local secondary_tree = dump(secondary_options) :: any
+eguidev.fixture("viewports.default")
+local secondary = eguidev.viewports({ name = "secondary" })[1]
+assert(secondary ~= nil)
+local secondary_options: DumpOptions = { viewport = secondary }
+local secondary_tree = eguidev.dump(secondary_options) :: any
 assert(#secondary_tree.viewports == 1, "semantic viewport selector should restrict dump")
 local secondary_dump = secondary_tree.viewports[1]
 assert(secondary_dump.name == "secondary", "secondary dump should include semantic name")

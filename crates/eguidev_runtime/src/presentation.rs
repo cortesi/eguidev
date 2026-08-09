@@ -29,12 +29,11 @@ pub fn parse_client_capabilities(
     }
 }
 
-/// State kept for one connected automation session.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Presentation requests held by connected automation sessions.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PresentationSession {
-    requested: Presentation,
     prior_activation_policy: Option<i64>,
-    active: bool,
+    sessions: Vec<(u64, Presentation)>,
     conflict_reported: bool,
 }
 
@@ -51,41 +50,65 @@ impl PresentationSession {
     /// Update the requested presentation and capture the policy for a new session.
     pub fn configure(
         &mut self,
+        session_id: u64,
         requested: Presentation,
         observed_activation_policy: Option<i64>,
         accessory_policy: i64,
     ) -> PresentationTransition {
-        if !self.active {
+        if self.sessions.is_empty() {
             self.prior_activation_policy = observed_activation_policy;
-            self.conflict_reported = false;
         }
-        self.active = true;
-        self.requested = requested;
+        self.sessions.retain(|(id, _)| *id != session_id);
+        self.sessions.push((session_id, requested));
+        self.conflict_reported = false;
+        let desired_policy = match requested {
+            Presentation::Background => Some(accessory_policy),
+            Presentation::Foreground => self.prior_activation_policy,
+        };
         PresentationTransition {
-            target_activation_policy: match requested {
-                Presentation::Background => Some(accessory_policy),
-                Presentation::Foreground => self.prior_activation_policy,
-            },
+            target_activation_policy: desired_policy
+                .filter(|policy| Some(*policy) != observed_activation_policy),
             deactivate: requested == Presentation::Background,
         }
     }
 
-    /// End the session and return the policy captured when it began.
-    pub fn disconnect(&mut self) -> Option<PresentationTransition> {
-        if !self.active {
-            return None;
-        }
-        self.active = false;
+    /// End one connection session and restore the newest remaining request.
+    pub fn disconnect(
+        &mut self,
+        session_id: u64,
+        observed_activation_policy: Option<i64>,
+        accessory_policy: i64,
+    ) -> Option<PresentationTransition> {
+        let position = self.sessions.iter().position(|(id, _)| *id == session_id)?;
+        self.sessions.remove(position);
         self.conflict_reported = false;
+        let requested = self.sessions.last().map(|(_, requested)| *requested);
+        let desired_policy = match requested {
+            Some(Presentation::Background) => Some(accessory_policy),
+            Some(Presentation::Foreground) => self.prior_activation_policy,
+            None => self.prior_activation_policy,
+        };
+        let deactivate = requested == Some(Presentation::Background);
+        if self.sessions.is_empty() {
+            self.prior_activation_policy = None;
+        }
         Some(PresentationTransition {
-            target_activation_policy: self.prior_activation_policy,
-            deactivate: false,
+            target_activation_policy: desired_policy
+                .filter(|policy| Some(*policy) != observed_activation_policy),
+            deactivate,
         })
     }
 
-    /// Return the currently requested presentation, defaulting to background.
+    /// Return whether at least one automation connection is active.
+    pub fn is_active(&self) -> bool {
+        !self.sessions.is_empty()
+    }
+
+    /// Return the newest active presentation request, defaulting to background.
     pub fn requested(&self) -> Presentation {
-        self.requested
+        self.sessions
+            .last()
+            .map_or_else(Presentation::default, |(_, requested)| *requested)
     }
 
     /// Return whether a background policy should be reasserted on this frame.
@@ -94,8 +117,10 @@ impl PresentationSession {
         observed_activation_policy: Option<i64>,
         accessory_policy: i64,
     ) -> bool {
-        self.active
-            && self.requested == Presentation::Background
+        if !self.is_active() {
+            return false;
+        }
+        self.requested() == Presentation::Background
             && observed_activation_policy != Some(accessory_policy)
     }
 
@@ -105,8 +130,8 @@ impl PresentationSession {
         observed_activation_policy: Option<i64>,
         accessory_policy: i64,
     ) -> bool {
-        let conflicting = self.active
-            && self.requested == Presentation::Background
+        let conflicting = self.is_active()
+            && self.requested() == Presentation::Background
             && observed_activation_policy != Some(accessory_policy);
         if !conflicting || self.conflict_reported {
             return false;
@@ -155,25 +180,25 @@ mod tests {
     #[test]
     fn session_transitions_capture_restore_and_reconfigure_idempotently() {
         let mut session = PresentationSession::default();
-        let background = session.configure(Presentation::Background, Some(0), 1);
+        let background = session.configure(1, Presentation::Background, Some(0), 1);
         assert_eq!(background.target_activation_policy, Some(1));
         assert!(background.deactivate);
         assert!(session.should_reassert(Some(0), 1));
         assert!(!session.should_reassert(Some(1), 1));
 
-        let foreground = session.configure(Presentation::Foreground, Some(1), 1);
+        let foreground = session.configure(1, Presentation::Foreground, Some(1), 1);
         assert_eq!(foreground.target_activation_policy, Some(0));
         assert!(!foreground.deactivate);
 
-        let restored = session.disconnect().expect("active session");
-        assert_eq!(restored.target_activation_policy, Some(0));
-        assert!(session.disconnect().is_none());
+        let restored = session.disconnect(1, Some(0), 1).expect("active session");
+        assert_eq!(restored.target_activation_policy, None);
+        assert!(session.disconnect(1, Some(0), 1).is_none());
     }
 
     #[test]
     fn conflicting_policy_is_reported_once() {
         let mut session = PresentationSession::default();
-        session.configure(Presentation::Background, Some(0), 1);
+        session.configure(1, Presentation::Background, Some(0), 1);
         assert!(session.report_conflict(Some(0), 1));
         assert!(!session.report_conflict(Some(0), 1));
         assert!(!session.report_conflict(Some(1), 1));
@@ -182,25 +207,58 @@ mod tests {
     #[test]
     fn session_handles_missing_native_policy_and_repeated_cycles() {
         let mut session = PresentationSession::default();
-        let first = session.configure(Presentation::Background, None, 1);
+        let first = session.configure(1, Presentation::Background, None, 1);
         assert_eq!(first.target_activation_policy, Some(1));
         assert_eq!(
             session
-                .disconnect()
+                .disconnect(1, Some(1), 1)
                 .expect("active session")
                 .target_activation_policy,
             None
         );
-        assert!(session.disconnect().is_none());
+        assert!(session.disconnect(1, None, 1).is_none());
 
-        let second = session.configure(Presentation::Foreground, None, 1);
+        let second = session.configure(2, Presentation::Foreground, None, 1);
         assert_eq!(second.target_activation_policy, None);
         assert_eq!(
             session
-                .disconnect()
+                .disconnect(2, None, 1)
                 .expect("active session")
                 .target_activation_policy,
             None
         );
+    }
+
+    #[test]
+    fn concurrent_sessions_restore_the_newest_remaining_request() {
+        let mut session = PresentationSession::default();
+        let background = session.configure(1, Presentation::Background, Some(0), 1);
+        assert_eq!(background.target_activation_policy, Some(1));
+
+        let duplicate_background = session.configure(2, Presentation::Background, Some(1), 1);
+        assert_eq!(duplicate_background.target_activation_policy, None);
+        assert!(session.is_active());
+
+        let foreground = session.configure(3, Presentation::Foreground, Some(1), 1);
+        assert_eq!(foreground.target_activation_policy, Some(0));
+        assert_eq!(session.requested(), Presentation::Foreground);
+
+        let restore_background = session
+            .disconnect(3, Some(0), 1)
+            .expect("foreground session");
+        assert_eq!(restore_background.target_activation_policy, Some(1));
+        assert_eq!(session.requested(), Presentation::Background);
+
+        let unchanged = session
+            .disconnect(2, Some(1), 1)
+            .expect("second background session");
+        assert_eq!(unchanged.target_activation_policy, None);
+        assert!(session.is_active());
+
+        let restore_prior = session
+            .disconnect(1, Some(1), 1)
+            .expect("first background session");
+        assert_eq!(restore_prior.target_activation_policy, Some(0));
+        assert!(!session.is_active());
     }
 }

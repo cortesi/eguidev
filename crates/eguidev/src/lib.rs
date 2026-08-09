@@ -141,22 +141,21 @@
 //! A handler reaches app state by closing over it, usually an
 //! `Arc<Mutex<AppState>>` shared with the app's render code.
 //! Each fixture must be independently invokable from any prior state and must
-//! leave the app in a baseline that can be described with readiness anchors.
+//! leave the app in a baseline that can be described with ready conditions.
 //! Use typed fixture params for controlled variants, preconditions for state
 //! that must already be true before the handler runs, and handler-returned
-//! values or anchors for dynamic fixture outcomes. Scripts call
-//! `fixture("name", params?)` to apply the named baseline, wait for fresh
-//! captures, verify static plus returned anchors, and receive the returned
-//! values. Widget and viewport handles resolve fresh across fixture boundaries,
-//! so rebinding `root()` after each fixture is usually unnecessary. Use
-//! `fixture_raw("name", params?)` only when you explicitly want the
-//! fire-and-forget behavior for debugging or manual setup flows.
+//! values or ready for dynamic fixture outcomes. Scripts call
+//! `eguidev.fixture("name", params?)` to apply the named baseline, wait for a
+//! fresh capture, verify static and returned ready conditions, and receive the
+//! returned values. Widget and viewport references resolve fresh across fixture
+//! boundaries. Pass `{ wait = false }` only when a script intentionally needs
+//! the state before ready conditions are satisfied.
 //!
 //! # Scripting reference
 //!
 //! The canonical Luau API, direct script evaluation helpers, and the smoketest
-//! runner all live in `eguidev_runtime`. `edev` serves those checked-in
-//! definitions through `script_api` and `edev docs`.
+//! runner all live in `eguidev_runtime`. The app serves the checked-in
+//! definitions through `script_api`; `edev docs` prints the same bytes.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
@@ -171,7 +170,6 @@ mod instrument;
 mod overlay;
 mod presentation;
 mod registry;
-mod script_prelude;
 mod tree;
 pub(crate) mod types;
 mod ui_ext;
@@ -187,12 +185,15 @@ pub use crate::{
         publish_rect_container, publish_rect_meta, track_response, track_widget,
         track_widget_with_meta,
     },
-    script_prelude::ScriptPrelude,
     types::{
-        Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
-        FixtureResponse, FixtureResult, FixtureSpec, ParamKind, Pos2, Rect, RoleState,
-        ScrollAreaMeta, ViewportNameError, ViewportSel, ViewportSelParseError, WidgetLayout,
-        WidgetRange, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+        ActionOptions, ClickOptions, DragOptions, FixtureCall, FixtureError, FixtureParam,
+        FixtureParams, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec,
+        HoverOptions, KeyOptions, PaintExpectation, ParamKind, PointerButton, Pos2, RawInputAction,
+        RawInputEvent, Rect, RelationExpectation, ResizeOptions, RoleState, ScrollAlign,
+        ScrollAreaMeta, ScrollToOptions, TypeTextOptions, Vec2, ViewportCondition,
+        ViewportNameError, ViewportSel, ViewportSelParseError, WaitOptions, WidgetCondition,
+        WidgetExpectation, WidgetLayout, WidgetRange, WidgetRef, WidgetRole, WidgetRoleMeta,
+        WidgetState, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -243,21 +244,20 @@ pub mod internal {
         pub use crate::registry::{Inner, lock, viewport_id_to_string};
     }
 
-    pub mod script_prelude {
-        pub use crate::script_prelude::{ScriptPrelude, ScriptPreludeRegistry};
-    }
-
     pub mod tree {
         pub use crate::tree::collect_subtree;
     }
 
     pub mod types {
         pub use crate::types::{
-            Anchor, AnchorCheck, FixtureCall, FixtureError, FixtureParam, FixtureParams,
-            FixtureResponse, FixtureResult, FixtureSpec, Modifiers, ParamKind, Pos2, Rect,
-            RoleState, ScrollAreaMeta, Vec2, ViewportNameError, ViewportSel, ViewportSelParseError,
-            WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta,
-            WidgetState, WidgetValue,
+            ActionOptions, ClickOptions, DragOptions, FixtureCall, FixtureError, FixtureParam,
+            FixtureParams, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec,
+            HoverOptions, KeyOptions, Modifiers, PaintExpectation, ParamKind, PointerButton, Pos2,
+            RawInputAction, RawInputEvent, Rect, RelationExpectation, ResizeOptions, RoleState,
+            ScrollAlign, ScrollAreaMeta, ScrollToOptions, TypeTextOptions, Vec2, ViewportCondition,
+            ViewportNameError, ViewportSel, ViewportSelParseError, WaitOptions, WidgetCondition,
+            WidgetExpectation, WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry,
+            WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
         };
     }
 

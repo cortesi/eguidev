@@ -31,8 +31,8 @@ Three pieces make this work:
   for native and `wasm32`.
 - **`eguidev_runtime`** -- the native-only embedded runtime: script evaluation,
   screenshots, and the in-process MCP server. Attached once at app startup.
-- **`edev`** -- the CLI. It launches your app, proxies MCP to the agent, and
-  runs scripts, fixtures, and smoketest suites directly.
+- **`edev`** -- the CLI and lifecycle launcher. It starts the app, reports its
+  direct MCP endpoint, and runs scripts, fixtures, and smoketest suites.
 
 ## Getting started
 
@@ -91,8 +91,9 @@ example, with Claude Code:
 claude mcp add eguidev -- edev mcp
 ```
 
-The agent gets tools to start, stop, and observe the app, plus `script_eval`
-to drive it. The repo also ships an agent skill at
+The launcher gives the agent `start`, `stop`, `restart`, and `status`. A
+successful lifecycle result contains the direct app MCP endpoint, where the app
+exposes `script_api` and `script_eval`. The repo also ships an agent skill at
 [`skills/SKILL.md`](./skills/SKILL.md) that teaches agents the workflow.
 
 ## Beyond the MCP server
@@ -121,9 +122,8 @@ The same scripting surface powers developer-facing tooling:
 - `edev fixtures` / `edev fixture <name>` list registered fixtures, pass typed
   params with `--param key=value`, optionally skip anchor waits with
   `--no-wait`, and launch the app in a known baseline state for manual testing.
-- Scripts use `widget(...)`, `expect(...)`, geometry/text assertions, `capture()`
-  diffs, and `expect_painted(...)` for cross-viewport lookup and concise
-  verification.
+- Scripts use the single `eguidev` namespace, immutable widget and viewport
+  references, shared conditions, `Widget:expect(...)`, and capture diffs.
 - Each script result includes undismissed egui `id_clash` and
   `rect_changed_id` warnings. `edev smoke` fails on these warnings by default,
   so transient identity errors cannot pass unnoticed. Set
@@ -134,9 +134,9 @@ The same scripting surface powers developer-facing tooling:
   `Viewport:clear_egui_diagnostics()`. Both methods wait for the completed
   output of the target viewport.
 - Apps can register `DevMcp::diagnostic(...)`, `DevMcp::diagnostic_ui(...)`,
-  app script preludes, fixture catalogs, and runtime/UI-thread fixture handlers
-  for structured setup and state that scripts read with `diagnostic(...)`,
-  `diagnostics()`, `fixtures()`, and `wait_until(...)`.
+  fixture catalogs, and runtime/UI-thread fixture handlers. Scripts read them
+  with `eguidev.diagnostic(...)`, `eguidev.diagnostics()`, and
+  `eguidev.fixtures()`.
 
 Run `edev --help` for the details.
 

@@ -1,27 +1,4 @@
-use egui::PointerButton;
-
 use crate::overlay::OverlayDebugMode;
-
-#[derive(
-    Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema, Default,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum PointerButtonName {
-    #[default]
-    Primary,
-    Secondary,
-    Middle,
-}
-
-impl PointerButtonName {
-    pub fn to_pointer_button(self) -> Option<PointerButton> {
-        match self {
-            Self::Primary => Some(PointerButton::Primary),
-            Self::Secondary => Some(PointerButton::Secondary),
-            Self::Middle => Some(PointerButton::Middle),
-        }
-    }
-}
 
 /// Closed set of issue kinds returned by layout checking.
 #[derive(
@@ -35,16 +12,6 @@ pub enum LayoutIssueKind {
     ZeroSize,
     TextTruncation,
     Offscreen,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ScrollAlign {
-    Top,
-    Center,
-    Bottom,
 }
 
 #[derive(

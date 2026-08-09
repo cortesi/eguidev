@@ -137,7 +137,7 @@ pub struct DumpConfig {
     /// Optional viewport selector to dump.
     pub(crate) viewport: Option<String>,
     /// Whether to wait for a fresh capture before dumping when no fixture is set.
-    pub(crate) wait_for_capture: bool,
+    pub(crate) wait_for_initial_capture: bool,
     /// Emit structured JSON instead of text.
     pub(crate) json: bool,
     /// Optional output file. Stdout is used when unset.
@@ -161,7 +161,7 @@ pub struct FixtureConfig {
     pub(crate) markdown: bool,
     /// Print `dump_text()` after applying a fixture.
     pub(crate) dump: bool,
-    /// Apply without waiting for readiness anchors.
+    /// Apply without waiting for ready conditions.
     pub(crate) no_wait: bool,
 }
 
@@ -566,7 +566,7 @@ struct FixtureArgs {
     /// Print `dump_text()` after applying the fixture.
     #[arg(long, action = ArgAction::SetTrue)]
     dump: bool,
-    /// Apply the fixture without waiting for readiness anchors.
+    /// Apply the fixture without waiting for ready conditions.
     #[arg(long = "no-wait", action = ArgAction::SetTrue)]
     no_wait: bool,
 }
@@ -809,13 +809,13 @@ fn resolve_dump_config(
             "`edev dump --param` requires `--fixture`".to_string(),
         ));
     }
-    let wait_for_capture = cli.fixture.is_none();
+    let wait_for_initial_capture = cli.fixture.is_none();
     Ok(DumpConfig {
         launch,
         fixture: cli.fixture,
         params: cli.params,
         viewport: cli.viewport,
-        wait_for_capture,
+        wait_for_initial_capture,
         json: cli.json,
         out: cli
             .out
@@ -1565,7 +1565,7 @@ mod tests {
             Some(&ScriptArgValue::Bool(true))
         );
         assert_eq!(config.viewport.as_deref(), Some("secondary"));
-        assert!(!config.wait_for_capture);
+        assert!(!config.wait_for_initial_capture);
         assert!(config.json);
         assert_eq!(config.out, Some(current_dir.join("tmp/tree.json")));
         assert_eq!(config.timeout, Some(Duration::from_secs(9)));
@@ -1581,7 +1581,7 @@ mod tests {
             panic!("expected dump command");
         };
 
-        assert!(config.wait_for_capture);
+        assert!(config.wait_for_initial_capture);
     }
 
     #[test]

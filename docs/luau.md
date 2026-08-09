@@ -1,173 +1,144 @@
 # Luau guide
 
-Quick reference for Luau syntax used in eguidev scripts.
-For the canonical API surface and function-level behavior, see
-`crates/eguidev_runtime/luau/eguidev.d.luau` or `script_api`.
+This guide covers Luau syntax and common Eguidev idioms. The complete API reference is
+`crates/eguidev_runtime/luau/eguidev.d.luau`; `script_api` and `edev docs` return those exact
+bytes.
 
-`--!strict` is implicit for all scripts passed to `script_eval`. Write strict Luau, but omit the
-hot comment unless you specifically want it in a checked-in file.
+Every submitted script is checked in strict mode before it runs. The sandbox has no filesystem,
+network, or module-import access. Eguidev adds one global, `eguidev`.
 
-## Values and tables
+## Values, tables, and functions
 
 ```luau
 local ok = true
 local count = 3
 local ratio = 0.25
 local name = "Alice"
-local nothing = nil
 local items = { 1, 2, 3 }
-local opts = { timeout_ms = 2000, key = "value" }
-```
+local options = { timeout_ms = 2000, poll_interval_ms = 16 }
 
-## Operators
-
-```luau
--- Comparison
-x == y    x ~= y    x > y    x < y    x >= y    x <= y
-
--- Logical
-a and b    a or b    not a
-
--- Arithmetic
-x + y    x - y    x * y    x / y    x % y
-```
-
-## Strings
-
-```luau
-local s = "hello"
-#s
-s:find("ell", 1, true) ~= nil
-s .. " world"
-string.upper(s)
-```
-
-## Tables and property access
-
-```luau
-local payload = { a = 1, nested = { c = 2 } }
-payload.a
-payload.nested.c
-
-local vp = root()
-local widget = vp:widget_get("submit")
-local state = widget:state()
-state.rect.min.x
-state.value
-```
-
-## Nil checks
-
-```luau
-local state = root():widget_get("submit"):state()
-if state.label ~= nil then
-    log(state.label)
-end
-```
-
-## Control flow
-
-```luau
-if x > 0 then
-    log("positive")
-elseif x < 0 then
-    log("negative")
-else
-    log("zero")
+local function add(left: number, right: number): number
+    return left + right
 end
 
 for _, item in ipairs(items) do
-    log(item)
-end
-
-while x < 10 do
-    x += 1
+    eguidev.log(add(item, count))
 end
 ```
 
-## Functions
+Tables use dot access for named fields and bracket access for dynamic keys. Strings support the
+standard library and `..` concatenation.
 
 ```luau
-local function add(a: number, b: number): number
-    return a + b
+local payload = { name = "Alice", nested = { count = 2 } }
+assert(payload.nested.count == 2)
+assert(string.find(payload.name, "lic", 1, true) ~= nil)
+```
+
+## Live references and optional state
+
+`eguidev.widget(id)` and `eguidev.viewport(id)` create immutable live references without looking
+up current state. Their `state()` methods return `nil` when the target is absent, so strict scripts
+must narrow the optional value.
+
+```luau
+local submit = eguidev.widget("submit")
+local state = submit:state()
+assert(state ~= nil, "submit should exist")
+eguidev.log(state.rect.min.x)
+
+if state.label ~= nil then
+    eguidev.log(state.label)
 end
-
-local sum = add(1, 2)
 ```
 
-## Options pattern
+References returned by viewport discovery keep their viewport scope. State snapshots carry both
+`viewport_id` and `id`, which form canonical widget identity.
 
-Pass optional parameters as Luau tables. Unspecified keys use defaults.
+## Conditions, waits, and assertions
+
+Use a typed condition for ordinary state waits and a predicate for app-specific logic. The same
+condition model is used by fixture targets.
 
 ```luau
-local vp = root()
-vp:widget_get("submit"):click({ timeout_ms = 1000 })
-expect("status", { value_text_contains = "Done" })
-expect("status", { label = "Ready" })
-local report = vp:wait_for_settle({ timeout_ms = 1000 })
-assert(report.settled)
+local status = eguidev.widget("status")
+local ready = status:wait({ visible = true, value_text_contains = "Ready" })
+assert(ready ~= nil)
+
+local complete = status:wait(function(current)
+    return current ~= nil and current.data ~= nil and current.data.complete == true
+end, { timeout_ms = 2000 })
+assert(complete ~= nil)
 ```
 
-## Assertions
-
-Failed assertions stop evaluation and are also recorded in the `assertions` result array.
-
-```luau
-assert(x > 0)
-assert(x > 0, "x must be positive")
-assert(
-    actual == expected,
-    string.format("expected %s, got %s", tostring(expected), tostring(actual))
-)
-```
-
-## Egui identity diagnostics
-
-Eguidev captures egui ID clashes and rectangle identity changes from completed viewport passes.
-Each script result contains warnings that the script did not dismiss. `edev smoke` fails on these
-warnings by default.
-
-Use the viewport methods when a script must check that an action stays free of warnings:
+`Widget:expect(...)` adds geometry, hierarchy, text-fit, and paint expectations. Failed Eguidev
+expectations are returned in the structured script outcome.
 
 ```luau
-local vp = root()
-vp:clear_egui_diagnostics()
-vp:key("I")
-
-local batch = vp:egui_diagnostics()
-assert(batch.dropped == 0)
-assert(#batch.entries == 0, `action produced {#batch.entries} egui diagnostics`)
-```
-
-`egui_diagnostics()` returns new entries for its viewport and dismisses only those entries.
-`clear_egui_diagnostics()` dismisses retained entries for its viewport without returning them.
-Both methods wait for the target viewport to complete its latest output pass. Fixture application
-does not clear diagnostics.
-
-The `dropped` field counts undismissed entries that the bounded journal overwrote. Treat a nonzero
-value as a failure because the lost warnings cannot be classified. To retain warnings without
-failing smoke scripts, set `[smoke] fail_on_egui_diagnostics = false` in `.edev.toml`.
-
-## Common idioms
-
-```luau
-local toggle = widget("toggle")
-local toggle_state = toggle:state()
-if toggle_state.value == nil or not ((toggle_state.value :: any).bool) then
-    toggle:click()
-end
-
-local buttons = vp:widget_list({ role = "button" })
-for _, button in ipairs(buttons) do
-    log(button.id)
-end
-
-widget("search.input"):hover()
-
-widget("search.input"):type_text("/tmp", {
-    clear = true,
-    enter = false,
-    focus_timeout_ms = 1000,
+local panel = eguidev.widget("panel")
+eguidev.widget("submit"):expect({
+    role = "button",
+    enabled = true,
+    within = panel,
+    text_fits = true,
+    painted = { min_colors = 2 },
 })
-vp:key("Enter", { target = "search.input" })
 ```
+
+## Actions and raw input
+
+High-level actions wait for an actionable target and auto-settle by default. Set `settle = false`
+only when the script intentionally observes an intermediate state.
+
+```luau
+local input = eguidev.widget("name")
+input:type_text("Sky", { clear = true, enter = true })
+eguidev.widget("submit"):click()
+
+local vp = eguidev.root
+vp:key("escape")
+vp:key("enter", { target = input })
+```
+
+`Viewport:input(...)` queues exactly one validated raw event. It does not wait or settle.
+
+```luau
+local vp = eguidev.root
+vp:input({ type = "pointer_move", position = { x = 20, y = 30 } })
+vp:input({ type = "text", text = "raw text" })
+vp:settle()
+```
+
+## Fixtures
+
+Fixtures establish a known baseline. Preconditions always run. Unless `wait = false`, Eguidev
+then waits for one fresh frame and every static or handler-returned ready target.
+
+```luau
+local result = eguidev.fixture("basic.default", { count = 3 })
+eguidev.log(result.values)
+
+for _, observation in ipairs(result.observations) do
+    eguidev.log({ phase = observation.phase, widget = observation.widget.id })
+end
+```
+
+## Capture, diagnostics, and results
+
+Prefer state, dumps, pixel samples, and layout checks for programmatic inspection. Return an
+`ImageRef` when the MCP response should include an image block.
+
+```luau
+local before = eguidev.capture()
+eguidev.widget("submit"):click()
+local changed = before:diff({ id_prefix = "status" })
+
+local vp = eguidev.root
+local issues = vp:layout_issues()
+local image = vp:screenshot()
+return { changes = changed.changes, issues = issues, image = image }
+```
+
+Each script result also includes logs, assertions, fixture applications, timing, and undismissed
+egui identity diagnostics. Script failures use `success = false` with structured error data; they
+are not MCP protocol errors.

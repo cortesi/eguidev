@@ -112,7 +112,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{script_args_to_json, script_return_value_from_json_values};
-    use crate::tools::script::types::{ScriptArgValue, ScriptArgs};
+    use crate::automation::script::types::{ScriptArgValue, ScriptArgs};
 
     #[test]
     fn script_args_to_json_preserves_scalar_args() {

@@ -8,10 +8,11 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 ## Resolved failure modes
 
 1. Fixture execution
-- Fixtures are applied by scripts via `fixture()` with auto-settle.
+- Fixtures are applied by scripts via `eguidev.fixture()` with shared precondition and ready
+  conditions.
 - Restart is fixture-agnostic; it restarts the app and returns phase timing.
 
-2. `wait_for_widget` predicate safety
+2. Wait predicate safety
 - Waits evaluate explicit predicates over typed widget or viewport snapshots.
 - Widget predicates receive `nil` while a widget is missing, so appearance and
   disappearance use the same API.
@@ -20,12 +21,12 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 
 3. Keyboard target routing
 - `key` accepts an optional `target` parameter to resolve + focus before delivery.
-- `type_text` accepts `focus_timeout_ms` for explicit focus handshake.
+- `type_text` uses the action timeout for its explicit focus handshake.
 - Targeted delivery emits typed routing failures:
   `target_not_focusable`, `focus_not_acquired`, `target_detached`.
 
 4. Settle waits
-- `Viewport:wait_for_settle()` returns a `SettleReport` with phase status for input drain,
+- `Viewport:settle()` returns a `SettleReport` with phase status for input drain,
   command drain, action-frame processing, clean capture, fresh frame, and optional app idle.
 - Apps can add deterministic domain-idle checks with `DevMcp::on_idle(...)` or
   `DevMcp::on_idle_ui(...)`.
@@ -40,7 +41,7 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - Follow-up state checks are expressed as explicit waits after the action, which
   keeps action options data-shaped and timeout behavior consistent across the API.
 - Pointer actions fail fast with `invisible_interaction` when the target widget is hidden or fully
-  clipped. Scripts should wait for visibility explicitly or call `scroll_into_view()` before
+  clipped. Scripts should wait for `{ actionable = true }` or call `scroll_into_view()` before
   interacting with content that may be outside the viewport.
 
 6. Fixture reset contract and boundary cleanup
@@ -59,13 +60,13 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   scripts can override this with `configure({ animations = true })`.
 - `Viewport:sample_pixels(...)` and widget-relative `Widget:sample_pixels(...)` sample exact
   `ColorImage` RGBA data before JPEG encoding. `Widget:sample_grid(nx, ny)` samples a clipped
-  visible widget area from one capture, and `expect_painted(id, min_colors?)` catches flat
-  painter-only regions published with `publish_rect_meta`. Use `hex` for exact color equality;
+  visible widget area from one capture, and the `painted` expectation catches flat painter-only
+  regions published with `publish_rect_meta`. Use `hex` for exact color equality;
   use `rgba` channel arithmetic only for threshold checks.
 
 ## Intentional strict semantics
 
-- Wait predicates are explicit; there is no secondary wait-condition DSL to interpret.
+- Shared conditions cover ordinary readiness; predicates remain available for app-specific logic.
 - Targeted key delivery fails fast instead of silently dropping delivery.
 - Actions auto-settle; callers must explicitly opt out when needed.
 - Custom settable widgets that publish values but never call `take_widget_value_override()` surface

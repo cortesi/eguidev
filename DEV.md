@@ -22,7 +22,8 @@ cargo xtask test
 
 Only smoketests launch a real app, so only they put a window on the desktop. Tests in this lane must
 stay headless. Lifecycle tests that need a managed app process launch the `edev_test_app` binary,
-which serves the app side of the launcher handshake over stdio and opens no window.
+which serves the app side of the launcher handshake over a reserved loopback endpoint and opens no
+window.
 
 ## Smoketests
 
@@ -106,11 +107,12 @@ cargo xtask smoke-occlusion
 ```
 
 Smoke scripts should prefer semantic waits and exact visual assertions over frame sleeps.
-Use `Widget:sample_pixels()`, `Widget:sample_grid()`, and `expect_painted()` for painter checks,
-and use `Viewport:dismiss_popups()` or `fixture()` boundaries to isolate transient menus between
-tests. Use `widget(id)` for cross-viewport lookup, or `viewport({ name = "..." })`,
-`viewport({ title = "..." })`, or `viewport({ title_contains = "..." })` when you need a viewport
-handle. Names and exact titles should be unique because ambiguous matches throw.
+Use `Widget:sample_pixels()`, `Widget:sample_grid()`, and
+`Widget:expect({ painted = ... })` for painter checks. Use
+`Viewport:dismiss_popups()` or `eguidev.fixture()` boundaries to isolate transient menus between
+tests. Use `eguidev.widget(id)` for a global live reference, or
+`eguidev.viewports({ name = "..." })` and `Viewport:widgets(...)` for explicit viewport scope.
+Names and exact titles should be unique because ambiguous discovery is an instrumentation fault.
 Use `hex` for exact color equality; `rgba` channels and geometry values are script-facing
 numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
 On macOS, child-viewport screenshots fall back to Quartz window capture after a fresh child

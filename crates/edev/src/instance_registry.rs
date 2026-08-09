@@ -55,7 +55,7 @@ pub struct AppRecord {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-/// Stable process-lifetime anchor sourced from macOS process metadata.
+/// Stable process-lifetime ready sourced from macOS process metadata.
 pub struct ProcessStartTime {
     /// Whole seconds in the process start timestamp.
     seconds: u64,
@@ -581,7 +581,7 @@ mod tests {
         let start_time = process_start_time(i32::try_from(process::id()).expect("current pid"))
             .expect("current process start time");
         let record = AppRecord {
-            launch_id: "anchor-test".to_string(),
+            launch_id: "ready-test".to_string(),
             launcher_pid: process::id(),
             launcher_token: "launcher".to_string(),
             supervisor_pid: process::id(),

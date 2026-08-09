@@ -1,20 +1,20 @@
-fixture("basic.default")
-local vp = root()
+eguidev.fixture("basic.default")
+local vp = eguidev.root
 
-vp:widget_get("basic.link.docs"):hover()
+eguidev.widget("basic.link.docs"):hover()
 
-vp:widget_get("basic.menu.actions"):click()
-widget("basic.menu.actions.mark_ready"):click()
-expect("basic.status", { value_text_contains = "Menu ready clicked" })
+eguidev.widget("basic.menu.actions"):click()
+eguidev.widget("basic.menu.actions.mark_ready"):click()
+eguidev.widget("basic.status"):expect( { value_text_contains = "Menu ready clicked" })
 
-vp:widget_get("basic.advanced"):set_value(true)
-widget("basic.advanced.action"):click()
-expect("basic.status", { value_text_contains = "Advanced action clicked." })
+eguidev.widget("basic.advanced"):set_value(true)
+eguidev.widget("basic.advanced.action"):click()
+eguidev.widget("basic.status"):expect( { value_text_contains = "Advanced action clicked." })
 
-vp:widget_get("basic.scroll"):scroll_into_view()
-vp:widget_get("basic.scroll"):scroll({ x = 0, y = -120 })
-vp:widget_get("basic.scroll"):scroll_to({ align = "bottom" })
-expect("basic.scroll.row.49", { visible = true })
-vp:wait_for_settle()
+eguidev.widget("basic.scroll"):scroll_into_view()
+eguidev.widget("basic.scroll"):scroll({ x = 0, y = -120 })
+eguidev.widget("basic.scroll"):scroll_to({ align = "bottom" })
+eguidev.widget("basic.scroll.row.49"):expect( { visible = true })
+vp:settle()
 
-return vp:widget_get("basic.status"):state()
+return eguidev.widget("basic.status"):state()

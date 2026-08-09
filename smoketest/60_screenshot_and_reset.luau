@@ -1,29 +1,31 @@
-fixture("basic.overlay_reset_probe")
-local vp = root()
+eguidev.fixture("basic.overlay_reset_probe")
+local vp = eguidev.root
 
-vp:widget_get("overlay.fixture_probe.input"):type_text("sticky", { clear = true })
-vp:wait_for_widget("overlay.fixture_probe.input", function(widget)
-    return widget.value == "sticky"
+eguidev.widget("overlay.fixture_probe.input"):type_text("sticky", { clear = true })
+eguidev.widget("overlay.fixture_probe.input"):wait( function(widget)
+    return widget ~= nil and widget.value == "sticky"
 end)
 
-fixture("basic.overlay_reset_probe")
-vp:wait_for_widget("overlay.fixture_probe.input", function(widget)
-    return widget.value == ""
+eguidev.fixture("basic.overlay_reset_probe")
+eguidev.widget("overlay.fixture_probe.input"):wait( function(widget)
+    return widget ~= nil and widget.value == ""
 end)
 
-local widget_image = vp:widget_get("basic.preview.image"):screenshot()
+local widget_image = eguidev.widget("basic.preview.image"):screenshot()
 assert(widget_image.type == "image_ref")
 
 local viewport_image = vp:screenshot()
 assert(viewport_image.type == "image_ref")
 
-local secondary = viewport({ title = "DevMCP secondary viewport" })
+local secondary = eguidev.viewports({ title = "DevMCP secondary viewport" })[1]
 assert(secondary ~= nil, "secondary viewport should exist")
 
 local secondary_image = secondary:screenshot()
 assert(secondary_image.type == "image_ref")
 
-local drag = secondary:widget_get("viewports.drag"):state()
+local drag = eguidev.widget("viewports.drag"):state()
+
+assert(drag ~= nil)
 local drag_sample_point = {
     x = drag.rect.min.x + 20,
     y = drag.rect.min.y + 20,

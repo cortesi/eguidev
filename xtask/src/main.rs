@@ -300,7 +300,6 @@ fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
     let definitions_path = Path::new("crates/eguidev_runtime/luau/eguidev.d.luau");
     let definitions = fs::read_to_string(definitions_path)?;
     check_luau_source(definitions_path, "eguidev.d.luau", &definitions)?;
-    let demo_definitions = demo_script_definitions(&definitions)?;
 
     for source_path in luau_sources()? {
         let source = fs::read_to_string(&source_path)?;
@@ -308,22 +307,11 @@ fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
             .to_str()
             .map(|path| path.replace('\\', "/"))
             .unwrap_or_else(|| "script.luau".to_string());
-        let definitions = if source_path.starts_with("smoketest") {
-            demo_definitions.as_str()
-        } else {
-            definitions.as_str()
-        };
-        let source = source_with_luau_definitions(definitions, &source);
+        let source = source_with_luau_definitions(&definitions, &source);
         check_luau_source(&source_path, &module_name, &source)?;
     }
 
     Ok(())
-}
-
-/// Return the Luau declaration surface used by the demo smoke suite.
-fn demo_script_definitions(definitions: &str) -> Result<String, Box<dyn Error>> {
-    let declarations = fs::read_to_string("crates/eguidev_demo/luau/prelude.d.luau")?;
-    Ok(format!("{definitions}\n\n{}", declarations.trim_end()))
 }
 
 /// Prefix a script with the checked-in declaration surface for Ruau's single-module checker.
@@ -352,6 +340,7 @@ fn luau_sources() -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let mut sources = Vec::new();
     collect_luau_files(Path::new("docs/examples"), &mut sources)?;
     collect_luau_files(Path::new("smoketest"), &mut sources)?;
+    collect_luau_files(Path::new("crates/edev/luau"), &mut sources)?;
     sources.sort();
     Ok(sources)
 }
@@ -392,25 +381,18 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
     let smoke_result = async {
         let tools = client.list_tools(None).await?;
-        for expected in [
-            "start",
-            "stop",
-            "restart",
-            "status",
-            "script_eval",
-            "script_api",
-        ] {
+        for expected in ["start", "stop", "restart", "status"] {
             if !tools.tools.iter().any(|tool| tool.name == expected) {
                 return Err(format!("missing expected tool: {expected}").into());
             }
         }
 
-        let script_api_result = client.call_tool("script_api", json!({})).await?;
-        let script_api = script_api_result
-            .text()
-            .ok_or("script_api response did not include text content")?;
-        if script_api != script_definitions() {
-            return Err("script_api payload did not match checked-in definitions".into());
+        if tools
+            .tools
+            .iter()
+            .any(|tool| tool.name == "script_eval" || tool.name == "script_api")
+        {
+            return Err("launcher exposed app-owned script tools".into());
         }
 
         let status_before = client.call_tool("status", json!({})).await?;
@@ -430,13 +412,33 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
         if start_payload["ok"] != Value::Bool(true) {
             return Err(format!("start returned failure payload: {start_payload}").into());
         }
+        let endpoint = start_payload["report"]["connection"]["endpoint"]
+            .as_str()
+            .ok_or_else(|| format!("start did not return an app endpoint: {start_payload}"))?;
+        let mut app_client = Client::new("xtask-smoke-app", env!("CARGO_PKG_VERSION"))
+            .with_request_timeout(Duration::from_secs(120));
+        app_client.connect_tcp(endpoint.to_string()).await?;
+        let app_tools = app_client.list_tools(None).await?;
+        for expected in ["script_eval", "script_api"] {
+            if !app_tools.tools.iter().any(|tool| tool.name == expected) {
+                return Err(format!("missing app-owned tool: {expected}").into());
+            }
+        }
 
-        let result = client
+        let script_api_result = app_client.call_tool("script_api", json!({})).await?;
+        let script_api = script_api_result
+            .text()
+            .ok_or("script_api response did not include text content")?;
+        if script_api != script_definitions() {
+            return Err("script_api payload did not match checked-in definitions".into());
+        }
+
+        let result = app_client
             .call_tool(
                 "script_eval",
                 json!({
                     "script": r#"
-local available = fixtures()
+local available = eguidev.fixtures()
 local has_default = false
 for _, spec in ipairs(available) do
     if spec.name == "basic.default" then
@@ -445,11 +447,13 @@ for _, spec in ipairs(available) do
     end
 end
 assert(has_default, "basic.default fixture should be registered")
-fixture("basic.default")
-local submit = root():widget_get("basic.submit")
+eguidev.fixture("basic.default")
+local submit = eguidev.widget("basic.submit")
 local submit_state = submit:state()
+assert(submit_state ~= nil)
 assert(submit_state.role == "button", "submit should expose button role")
-local status_state = root():widget_get("basic.status"):state()
+local status_state = eguidev.widget("basic.status"):state()
+assert(status_state ~= nil)
 assert(status_state.label ~= nil, "status should expose text")
 return {
     fixture_count = #available,

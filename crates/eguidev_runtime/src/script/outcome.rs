@@ -81,20 +81,14 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::{
-        registry::Inner,
-        runtime::Runtime,
-        tools::script::types::{ScriptPosition, ScriptValue},
-    };
+    use crate::{automation::script::types::ScriptValue, registry::Inner, runtime::Runtime};
 
     fn runtime_with_expired_barrier() -> ScriptRuntime {
         let inner = Arc::new(Inner::new());
         inner.remember_context(egui::ViewportId::ROOT, &egui::Context::default());
         let runtime = Runtime::ensure_for_inner_with_diagnostic_barriers(&inner);
         let script = ScriptRuntime::new(inner, runtime, "barrier.luau".to_string(), 0);
-        script
-            .root_viewport(ScriptPosition::default())
-            .expect("root viewport");
+        script.record_targeted_viewport("root");
         script
     }
 

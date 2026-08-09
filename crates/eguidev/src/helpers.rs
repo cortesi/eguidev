@@ -198,7 +198,7 @@ mod tests {
 
     static DEFINITIONS: &[TypedFixture<Kind>] = &[
         TypedFixture::new(Kind::Base, "base", "Base fixture", |spec| {
-            spec.anchor("root")
+            spec.ready("root")
         }),
         TypedFixture::plain(Kind::Detail, "detail", "Detail fixture"),
     ];
@@ -214,15 +214,15 @@ mod tests {
 
         assert_eq!(fixtures.catalog().len(), 2);
         let catalog = fixtures.catalog_with(|kind, spec| match kind {
-            Kind::Base => spec.anchor("typed-base"),
-            Kind::Detail => spec.anchor("typed-detail"),
+            Kind::Base => spec.ready("typed-base"),
+            Kind::Detail => spec.ready("typed-detail"),
         });
         assert_eq!(
-            catalog[0].anchors.last().expect("base anchor").widget_id,
+            catalog[0].ready.last().expect("base ready").widget_id,
             "typed-base"
         );
         assert_eq!(
-            catalog[1].anchors.last().expect("detail anchor").widget_id,
+            catalog[1].ready.last().expect("detail ready").widget_id,
             "typed-detail"
         );
         assert_eq!(fixtures.kind("base"), Some(Kind::Base));

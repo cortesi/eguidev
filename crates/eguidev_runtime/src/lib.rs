@@ -20,18 +20,19 @@
 #[cfg(target_arch = "wasm32")]
 compile_error!("eguidev_runtime is native-only and is not supported on wasm32 targets");
 
+mod automation;
 mod dump;
 mod egui_diagnostics;
 mod error;
 #[cfg(target_os = "macos")]
 mod macos;
+mod mcp;
 mod presentation;
 mod runtime;
 mod screenshots;
 mod script_docs;
 mod server;
 pub mod smoke;
-mod tools;
 
 pub(crate) mod actions {
     pub use eguidev::internal::actions::*;
@@ -69,6 +70,7 @@ pub(crate) mod viewports {
     pub use eguidev::internal::viewports::*;
 }
 
+pub(crate) use automation::script;
 pub use eguidev::{DevMcp, Rect, ScrollAreaMeta};
 
 /// Keep a background-launched app from taking focus for its whole run.
@@ -83,19 +85,20 @@ pub fn enable_background_launch_guard() {
     macos::enable_background_launch_guard();
 }
 
+#[doc(hidden)]
+pub use server::MCP_ADDR_ENV;
+
 pub use crate::{
-    egui_diagnostics::{
-        EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
-    },
-    runtime::{attach, eval_script},
-    script_docs::{
-        render_script_docs_markdown, script_definitions, script_definitions_with_preludes,
-    },
-    tools::{
+    automation::{
         FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
         ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
         ScriptTiming,
     },
+    egui_diagnostics::{
+        EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
+    },
+    runtime::{attach, eval_script},
+    script_docs::script_definitions,
 };
 
 #[cfg(test)]

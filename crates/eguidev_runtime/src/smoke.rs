@@ -961,7 +961,7 @@ mod tests {
         devmcp
             .fixtures([
                 FixtureSpec::new("emit.id_clash", "Emit one real egui ID clash warning.")
-                    .anchor("unused-by-fixture-raw"),
+                    .ready("unused-by-fixture-raw"),
             ])
             .on_fixture_runtime(move |_call| {
                 runtime.egui_diagnostics().record_output(
@@ -1193,7 +1193,7 @@ mod tests {
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(
             suite_dir.join("10_args.luau"),
-            "assert(args.name == \"Sky\")\nassert(args.count == 4)\nreturn true",
+            "assert(eguidev.args.name == \"Sky\")\nassert(eguidev.args.count == 4)\nreturn true",
         )
         .expect("write args script");
         fs::write(suite_dir.join("20_fail.luau"), "assert(false, \"boom\")").expect("write fail");
@@ -1236,8 +1236,8 @@ mod tests {
         fs::write(
             suite_dir.join("10_read.luau"),
             r#"
-fixture_raw("emit.id_clash")
-local batch = root():egui_diagnostics()
+eguidev.fixture("emit.id_clash", nil, { wait = false })
+local batch = eguidev.root:egui_diagnostics()
 assert(batch.dropped == 0)
 assert(#batch.entries > 0)
 return true
@@ -1247,8 +1247,8 @@ return true
         fs::write(
             suite_dir.join("20_clear.luau"),
             r#"
-fixture_raw("emit.id_clash")
-root():clear_egui_diagnostics()
+eguidev.fixture("emit.id_clash", nil, { wait = false })
+eguidev.root:clear_egui_diagnostics()
 return true
 "#,
         )
@@ -1257,7 +1257,7 @@ return true
         fs::write(
             &undismissed_path,
             r#"
-fixture_raw("emit.id_clash")
+eguidev.fixture("emit.id_clash", nil, { wait = false })
 return true
 "#,
         )

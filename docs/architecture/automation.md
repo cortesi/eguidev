@@ -1,204 +1,102 @@
-# Automation State Machine
+# Automation architecture
 
-This document describes the runtime state machine used by `eguidev` automation calls and
-`edev` lifecycle orchestration.
+Eguidev separates app instrumentation, in-process automation, and external process lifecycle.
 
-## Layering
+## Layers and MCP ownership
 
-The automation stack now has three explicit layers:
+1. `eguidev` records widget, viewport, fixture, diagnostic, and frame state. It also owns the one
+   shared automation condition and domain-error model.
+2. `eguidev_runtime` attaches to an instrumented app. It owns strict Luau evaluation, waits,
+   actions, screenshots, dumps, and the app MCP server.
+3. `edev` launches the app and owns process lifecycle, CLI sessions, smoke suites, recording, and
+   failure collection.
 
-1. App instrumentation: always-available `eguidev` APIs such as `DevMcp`,
-   `FrameGuard`, `DevUiExt`, widget metadata types, and fixture
-   registration/collection.
-2. Optional embedded runtime: provided by the native-only
-   `eguidev_runtime` crate, attached once through
-   `eguidev_runtime::attach()`, and responsible for the in-process MCP server,
-   script evaluation, screenshots, canonical widget tree dumps, and async
-   automation waits.
-3. `edev` launcher: external process lifecycle and stable host tool surface
-   (`start`, `stop`, `restart`, `status`, `script_eval`, `script_api`).
+The app MCP server lists exactly `script_eval` and `script_api`. The Edev launcher MCP server lists
+exactly `start`, `stop`, `restart`, and `status`; it never proxies app tools. Successful lifecycle
+results include a descriptor with the launch id, transport, and direct app MCP endpoint. A caller
+connects to that endpoint for scripting.
 
-Default and release builds keep layer 1 only. Dev-capable builds add layer 2
-behind one app-local feature boundary such as
-`devtools = ["dep:eguidev_runtime"]`, and `edev` sits entirely outside the app
-binary.
+The CLI performs that sequence internally through one app session: register the launcher, start
+the process, connect to the returned app endpoint, run the command, and shut down with the original
+error taking precedence over cleanup errors.
 
-## Lifecycle and fixture flow (`edev`)
+## Script installation and evaluation
 
-`edev mcp` exposes a fixed host tool list:
-`start`, `stop`, `restart`, `status`, `script_eval`, and `script_api`.
+The canonical declaration is `crates/eguidev_runtime/luau/eguidev.d.luau`. `script_api` and
+`edev docs` return its exact bytes. Every submitted source is parsed and checked in strict mode
+before runtime construction or app side effects.
 
-Launcher lifecycle:
+The trusted private library in `eguidev.luau` receives seven hidden native capability tables in a
+fixed order: query, action, wait, capture, fixture, diagnostic, and record. It freezes its local
+kernel, constructs the public `eguidev` namespace, and returns that namespace as the one declared
+source value. Tenant scripts cannot resolve the hidden registry names and have no filesystem,
+network, or module-import access.
 
-1. The launcher starts in `not_running`.
-2. `start` transitions launcher state to `starting` unless the app is already running.
-3. `restart` also transitions to `starting`, but first tears down any running app process.
-4. App process spawn, MCP handshake, and a minimal `script_eval` readiness probe complete.
-5. Successful startup transitions the launcher to `running`.
-6. Failed startup transitions the launcher to `startup_failed` and records startup output.
-7. `stop` leaves the launcher in `not_running`. Under the current locking model, a `stop`
-   request issued while startup is in flight is serialized behind that transition rather than
-   interrupting it.
+Parsing, checking, compilation, execution, and async host calls share one script deadline. A
+script failure becomes a structured `ScriptEvalOutcome`, not an MCP protocol failure. Reachable
+`ImageRef` values also become MCP image content blocks.
 
-Tool hosting:
+## References and snapshots
 
-- `script_eval` is proxied to the running app and is the only app-dependent host tool.
-- `script_api` proxies to the running app so app preludes are visible; while the app is stopped,
-  `edev` serves the checked-in definitions directly.
-- `status` reports the current lifecycle state, startup failure diagnostics, and app frame health
-  when a running app client can answer the app-side `health` tool. Health proxy failures are
-  reported inside the status payload instead of failing the lifecycle call.
-- The host tool list is static for the lifetime of the launcher session; `edev` does not send
-  `tools/list_changed` notifications.
+`eguidev.widget(id)` and `eguidev.viewport(id)` create immutable live references without reading
+state. A viewport-scoped query creates widget references that retain that scope. Reads resolve the
+reference against the latest coherent capture; `state()` returns `nil` for an absent target.
 
-Fixtures are applied by scripts via `fixture(name, params?)`, which validates typed params,
-waits for static and handler-returned anchors, and returns handler values. Scripts can also call
-`dump()` / `dump_text()` to capture the current widget tree across live viewports. The `edev dump`
-command launches the app, optionally applies a fixture with `--param` values, waits for a fresh
-capture when no fixture is applied, and then evaluates those same helpers, so command-line dumps
-and script dumps share one runtime implementation.
+Collections and returned records are frozen. Repeated construction of the same reference is
+identity-stable within one evaluation. Widget snapshots carry `(viewport_id, id)`, the canonical
+identity used by waits, dumps, diffs, observations, and errors.
 
-Scripts resolve cross-viewport widgets with `widget(id, options?)`, use `try_widget(...)` for
-non-waiting probes, and use the built-in prelude helpers (`expect`, `expect_absent`, geometry
-assertions, `expect_text_fits`, `expect_tree`, and `expect_painted`) for common checks. `capture()`
-snapshots widget state across viewports and diffs against the current frame by `(viewport_id, id)`,
-covering role, geometry, visibility, focus/selection, text/value, and structured `data`.
-Apps can register runtime-thread and UI-thread diagnostics through `DevMcp::diagnostic(...)` and
-`DevMcp::diagnostic_ui(...)`. Scripts read those providers with `diagnostic(name)` for one payload
-or `diagnostics()` for an all-provider snapshot whose provider errors are captured in an `errors`
-table. The Luau prelude supplies `wait_until(predicate, options?)` for diagnostic-based polling.
+## Conditions, fixtures, and actions
 
-Apps may register namespaced script preludes through `DevMcp::script_prelude(...)`; `script_api`
-includes those app declarations while the app is running and falls back to the checked-in built-in
-definitions while stopped.
+`WidgetCondition` and `ViewportCondition` are the shared readiness language. Widget waits accept a
+condition or a strict Luau predicate. Absence is `{ present = false }`; actionable readiness is
+`{ actionable = true }`. `Widget:expect(...)` extends the same condition with relations,
+hierarchy, text-fit, and paint checks.
 
-Egui identity diagnostics:
+Fixture registration stores precondition and ready `FixtureTargetSpec` values. Rust validates
+params and invokes the handler once, then returns values and any dynamic ready targets. The private
+Luau library owns orchestration:
 
-- The runtime reads completed `FullOutput` values. It captures egui `id_clash` text markers and
-  `rect_changed_id` rectangle markers. It ignores all other output shapes.
-- A process-wide journal keeps the newest 1,024 entries in completion order. Each entry contains
-  its viewport, Eguidev frame, warning kind, message, and an optional rectangle.
-- Each script evaluation starts at the current journal tail. Reads and clears dismiss entries only
-  for that evaluation. They do not remove entries or affect a concurrent evaluation.
-- `Viewport:egui_diagnostics()` waits for the latest completed output, returns new diagnostics for
-  that viewport, and dismisses the returned entries. `Viewport:clear_egui_diagnostics()` waits for
-  the same boundary and dismisses retained entries without returning them.
-- Before an evaluation returns, it waits for a completed diagnostic pass on each targeted viewport.
-  A timeout produces `diagnostic_barrier_timeout`. An earlier script error stays primary and
-  receives the barrier error in its details.
-- `ScriptEvalOutcome.egui_diagnostics` contains all undismissed entries from the evaluation range.
-  `dropped` counts undismissed entries that the bounded journal overwrote.
-- Collection follows egui debug options. A warning that egui disables or omits cannot appear in the
-  journal.
+1. wait for every precondition;
+2. invoke the raw native handler once;
+3. unless `wait = false`, observe one fresh frame;
+4. merge static and dynamic ready targets and wait for each condition;
+5. return values and frozen observations.
 
-Smoke authoring:
+High-level actions use the same private wait policy, re-resolve the live target immediately before
+queuing input, and auto-settle by default. Raw `Viewport:input(...)` validates and queues one event
+without a wait or settlement. This is the boundary for scripts that intentionally control the
+frame transition themselves.
 
-- `edev smoke --list [--json]` prints the selected script set without launching the app.
-- Smoke runs fail by default when a script leaves entries undismissed or reports dropped entries.
-  Set
-  `[smoke] fail_on_egui_diagnostics = false` to retain the diagnostics in verbose output and
-  failure bundles without changing script status.
-- `--only GLOB` filters discovered scripts by forward-slash display path. Repeating the flag
-  intersects filters. Explicit positional script paths remain exact selections and cannot be
-  combined with `--only`.
-- `--repeat N` and `--until-fail N` reuse one app instance across rounds and report per-round
-  timing. The suite timeout is a whole-invocation deadline; raise `--suite-timeout-secs` for long
-  repeated runs.
+## Frame and input pipeline
 
-Failure bundles:
+`FrameGuard` installs an egui input/output plugin for each context. At each pass:
 
-- `edev smoke --bundle` writes bundles under the configured `[smoke] bundle_dir`, defaulting to
-  `tmp/edev-bundles`; `--bundle-dir PATH` enables bundles and chooses the directory explicitly.
-- Each failed script gets a deterministic
-  `<safe-script-display-path>-<relative-path-hash>` directory that is overwritten on the next
-  run of the same script. Multi-round runs add `round-N` to the directory key and record the round
-  in `meta.json`.
-- Bundles include `meta.json`, `failure.txt`, `tree.json`, `tree.txt`, `diagnostics.json`, one
-  `viewport-*.jpg` per captured viewport, `app.stderr.log`, and `app.stdout.log`. Script metadata
-  and failure text include undismissed egui diagnostics.
-- `app.stdout.log` contains captured stdout only when stdout is not reserved for the stdio MCP
-  transport; current stdio launches write an explanatory note instead.
-- If post-failure collection fails, the bundle keeps the original failure files and records the
-  collection problem in `collection-error.txt`.
+1. the input hook drains queued actions for that viewport and appends egui events;
+2. egui processes the frame;
+3. the output hook records identity diagnostics;
+4. frame completion captures widget and viewport snapshots, applies viewport commands, wakes
+   waiters and screenshot requests, and requests another repaint while runtime keep-alive is on.
 
-For `eframe` apps, the required integration point is `FrameGuard` around rendered frames. The first
-`FrameGuard` call for each egui `Context` registers a plugin that injects queued input into every
-viewport pass. Apps do not need a separate raw-input hook. Runtime-thread fixture handlers
-registered with `DevMcp::on_fixture_runtime()` run through the attached runtime. UI-thread handlers
-registered with `DevMcp::on_fixture_ui()` are queued and drained before the root registry clears for
-the next frame. The instrumentation boundary continues to own frame capture and wait or screenshot
-wakeups.
+Settle requires input and viewport commands to drain, an action frame to be processed, a clean
+capture, a fresh frame, and the optional app-idle provider to agree. Timeout details identify the
+incomplete phases and whether the target viewport produced frames.
 
-Renderer note:
+## Egui diagnostics and failure bundles
 
-- `eframe::Renderer::Glow` is currently the recommended backend for automation.
-- Some `wgpu`-backed `eframe` integrations can stall idle-frame delivery under
-  automation waits, screenshots, or fixture transitions. Wait timeout details include target
-  viewport frame observations and last-frame age to distinguish state mismatches from repaint
-  stalls.
+The runtime journals `id_clash` and `rect_changed_id` warnings from completed viewport output.
+Each evaluation begins at the current journal tail. Viewport reads and clears dismiss only that
+evaluation's entries. Before returning, evaluation waits for diagnostic completion on every
+targeted viewport; an earlier script error remains primary if this barrier also fails.
 
-Failure points:
-- Build failure before app handshake.
-- Script runtime not ready during the startup readiness probe.
+Smoke runs fail on undismissed diagnostics by default. Failure bundles can include the structured
+outcome, tree dumps, diagnostics, viewport screenshots, and captured app output. All collection
+uses `script_eval`, so the CLI and MCP paths share one automation implementation.
 
-## Input pipeline (`eguidev`)
+## Platform presentation
 
-1. Tool calls enqueue `InputAction` and `ViewportCommand` events into `ActionQueue`.
-2. The automation egui plugin's `input_hook` drains queued actions for the pass's viewport and
-   appends egui events, running inside `Context::begin_pass` for every viewport.
-3. Frame processing consumes injected egui events.
-4. The plugin's `output_hook` captures egui identity diagnostics from the completed pass.
-5. `end_frame` captures widget/input snapshots, applies viewport commands, invokes the attached
-   runtime hooks for frame waiters, screenshot capture, and fixture wakeups, and requests the next
-   immediate repaint when runtime keep-alive is enabled.
-
-Keyboard delivery modes:
-- Ambient (`key`, `input_key`): routed through normal focus state.
-- Targeted (`key` with `target` option): resolve target, focus handshake, then delivery.
-
-## Wait loops (`eguidev`)
-
-### `wait_for_widget`
-
-- Polls widget resolution + condition matching.
-- Supports explicit poll interval and timeout.
-- Condition may be a map (strict, typed keys) or a Luau predicate function.
-
-### `wait_for_settle`
-
-Returns a `SettleReport` with `settled`, `elapsed_ms`, and per-phase status. All phases must be
-complete simultaneously:
-
-- **input_drained**: no pending input actions remain for the target viewport.
-- **commands_drained**: no pending viewport commands remain.
-- **action_frame_processed**: a frame has run after the latest drained input action.
-- **clean_capture**: a capture newer than the action drain has been observed.
-- **fresh_frame**: the wait observed a new frame or capture after it started.
-- **app_idle**: the optional app idle hook reports idle.
-
-Apps register idle hooks with `DevMcp::on_idle(...)` for runtime-thread state or
-`DevMcp::on_idle_ui(...)` for UI-thread state. UI idle runs at root frame end and the runtime
-settle loop reads the cached result. Settle timeout details include `phases`, so failures identify
-the exact phase that remained incomplete.
-
-### Auto-settle
-
-All high-level actions (`click`, `type_text`, `key`, `hover`, `drag`, `scroll`, `paste`, etc.)
-auto-settle after performing the action, ensuring the UI has fully processed queued work and
-repainted. Disable with `{ settle = false }`.
-
-Pointer actions fail fast with `invisible_interaction` when the target widget is hidden or fully
-clipped. Scripts should wait for visibility explicitly or call `scroll_into_view()` before
-interacting with content that may be outside the viewport.
-
-## Visual Assertions
-
-`Viewport:sample_pixels(...)` captures one viewport image and samples requested egui logical points
-from the exact `ColorImage` before screenshot JPEG encoding. `Widget:sample_pixels(...)` uses
-positions relative to the widget rect, and `Widget:sample_grid(nx, ny)` samples the visible clipped
-widget area from one capture. Scripts use these for fixed-color or painter-only assertions; the
-built-in `expect_painted(id, min_colors?)` helper asserts that a widget is not just a flat fill.
-Use `hex` for exact color equality; `rgba` channels are script-facing numbers and can be mixed with
-geometry in arithmetic threshold checks. Painter-only regions can be published with
-`eguidev::publish_rect_meta(ui, id, rect, meta)`, which transforms the rect through the current
-layer and records it as enabled and unfocused by default.
+On macOS, a connected Edev session owns temporary background or foreground presentation. The
+default background mode keeps covered windows rendering without changing ordinary direct app
+launches. Child-viewport screenshot fallback uses native window capture and requires Screen
+Recording permission. `eframe::Renderer::Glow` remains the recommended automation backend where
+idle `wgpu` frame delivery stalls.

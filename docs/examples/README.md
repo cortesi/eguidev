@@ -38,19 +38,14 @@ MCP config example: `docs/examples/mcp/eguidev_demo.json`.
 
 ## Script behavior notes
 
-- `Viewport:widget_list` omits clipped/hidden widgets unless `include_invisible` is `true`.
-- `Viewport:widget_list` returns `Widget` handles for the current frame. Optional filters are
-  `role` and `id_prefix`. Read live fields through `widget:state()`.
-- `Viewport:widget_get` returns `not_found` when no widget matches and `ambiguous` when selectors
-  conflict or match multiple widgets. Duplicate explicit ids are a harder error that block
-  further automation until instrumentation is fixed.
-- `drag` expects absolute positions in egui points; use `viewport:input_state().pixels_per_point`
-  to convert from pixels when needed.
-- `drag_relative` accepts normalized 0..1 coordinates within the widget rect.
-- `Viewport:set_inner_size` is best-effort; window managers may clamp or ignore it. Verify via
-  `viewport:wait_for()` or `viewport:state()` after a resize request.
-- `Viewport:wait_for()` is frame-driven; for resizes, prefer explicit predicates over
-  `ViewportState`, such as exact size checks or minimum-size guards.
+- `Viewport:widgets()` omits clipped or hidden widgets unless `include_invisible` is `true`.
+- Widget and viewport references are immutable and live. Read current fields through `state()`,
+  which returns `nil` while the target is absent.
+- `Widget:drag_to()` accepts a widget reference or absolute egui position.
+  `Widget:drag_relative()` accepts a normalized target and optional normalized `from` position.
+- `Viewport:resize()` is best-effort; window managers may clamp or ignore it. Verify the resulting
+  `ViewportState` with `Viewport:wait(...)`.
+- Raw `Viewport:input(...)` queues one event without waiting. High-level actions auto-settle.
 
 ## Smoke tests
 
@@ -73,8 +68,7 @@ Checked-in smoke coverage now has two layers:
 - `edev smoke --bundle` writes failure bundles under `tmp/edev-bundles`, or use
   `edev smoke --bundle-dir PATH` to choose the directory. Each failed script gets a deterministic
   directory with `meta.json`, `failure.txt`, full tree dumps, diagnostics, viewport screenshots,
-  app stderr, and an `app.stdout.log` file that contains captured stdout only when stdout is not
-  reserved for the MCP transport. Repeated runs include the round in the bundle directory and
+  app stderr, and captured app stdout. Repeated runs include the round in the bundle directory and
   `meta.json`.
 - `edev smoke smoketest/*.luau` or `edev smoke path/to/ad_hoc_probe.luau` runs explicit scripts in
   the order provided, so you can use normal shell expansion or quick one-off probes outside the
@@ -91,5 +85,5 @@ Record manual verification runs here when needed.
   `cargo run -p eguidev_demo --features devtools -- --dev-mcp` using the glow renderer. The process was manually
   interrupted because this environment does not support interactive GUI verification.
 - 2026-01-25: Used `script_eval` against the demo app to call
-  `secondary:set_inner_size()` (640x480 then 900x700). `secondary:wait_for()` matched and
+  `secondary:resize()` (640x480 then 900x700). `secondary:wait()` matched and
   `secondary:state()` reported updated inner and outer sizes.

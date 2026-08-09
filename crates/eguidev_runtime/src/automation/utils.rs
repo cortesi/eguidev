@@ -10,11 +10,11 @@ use tokio::time::{sleep, timeout};
 
 use crate::{
     actions::{ActionQueueStats, ActionTiming, InputAction},
+    automation::types::OverlayDebugOptionsInput,
     error::{ErrorCode, ToolError},
     overlay::{OverlayDebugOptions, parse_color},
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
-    tools::types::OverlayDebugOptionsInput,
     types::{
         Modifiers, Pos2, Rect, RoleState, Vec2, WidgetRef, WidgetRegistryEntry, WidgetRole,
         WidgetState, WidgetValue,
@@ -300,7 +300,7 @@ pub fn queue_drag(
 pub fn resolve_relative_pos(rect: Rect, relative: Vec2) -> Result<Pos2, ToolError> {
     if !(0.0..=1.0).contains(&relative.x) || !(0.0..=1.0).contains(&relative.y) {
         return Err(ToolError::new(
-            ErrorCode::InvalidRef,
+            ErrorCode::InvalidArgument,
             "Relative drag coordinates must be between 0 and 1",
         ));
     }
@@ -308,7 +308,7 @@ pub fn resolve_relative_pos(rect: Rect, relative: Vec2) -> Result<Pos2, ToolErro
     let height = rect.max.y - rect.min.y;
     if width <= 0.0 || height <= 0.0 {
         return Err(ToolError::new(
-            ErrorCode::InvalidRef,
+            ErrorCode::InvalidArgument,
             "Widget rect is empty",
         ));
     }
@@ -321,7 +321,7 @@ pub fn resolve_relative_pos(rect: Rect, relative: Vec2) -> Result<Pos2, ToolErro
 pub fn ensure_positive_vec2(value: Vec2, field: &str) -> Result<(), ToolError> {
     if !value.x.is_finite() || !value.y.is_finite() || value.x <= 0.0 || value.y <= 0.0 {
         return Err(ToolError::new(
-            ErrorCode::InvalidRef,
+            ErrorCode::InvalidArgument,
             format!("{field} must be greater than 0"),
         ));
     }
@@ -723,7 +723,7 @@ pub fn validate_widget_value(
     };
     if !matches_role {
         return Err(ToolError::new(
-            ErrorCode::InvalidRef,
+            ErrorCode::InvalidArgument,
             "Value type does not match widget role",
         ));
     }
@@ -830,15 +830,15 @@ pub fn apply_overlay_debug_options(
     }
     if let Some(color) = input.bounds_color {
         options.bounds_color = parse_color(&color)
-            .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Invalid bounds_color"))?;
+            .ok_or_else(|| ToolError::new(ErrorCode::InvalidArgument, "Invalid bounds_color"))?;
     }
     if let Some(color) = input.clip_color {
         options.clip_color = parse_color(&color)
-            .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Invalid clip_color"))?;
+            .ok_or_else(|| ToolError::new(ErrorCode::InvalidArgument, "Invalid clip_color"))?;
     }
     if let Some(color) = input.overlap_color {
         options.overlap_color = parse_color(&color)
-            .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Invalid overlap_color"))?;
+            .ok_or_else(|| ToolError::new(ErrorCode::InvalidArgument, "Invalid overlap_color"))?;
     }
     Ok(())
 }

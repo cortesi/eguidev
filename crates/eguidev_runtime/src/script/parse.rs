@@ -2,11 +2,10 @@
 
 use serde_json::{Map, Value};
 
-use super::{
-    super::{OverlayDebugModeName, PointerButtonName, ScrollAlign},
-    types::ScriptErrorInfo,
+use super::{super::OverlayDebugModeName, types::ScriptErrorInfo};
+use crate::types::{
+    Modifiers, PointerButton, Pos2, Rect, ScrollAlign, Vec2, WidgetRef, WidgetRole, WidgetValue,
 };
-use crate::types::{Modifiers, Pos2, Rect, Vec2, WidgetRef, WidgetRole, WidgetValue};
 
 pub(super) fn parse_f32(value: &Value) -> Result<f32, ScriptErrorInfo> {
     value
@@ -194,14 +193,14 @@ fn parse_modifiers_map(map: Option<&Map<String, Value>>) -> Result<Modifiers, Sc
     })
 }
 
-pub(super) fn parse_pointer_button(value: &Value) -> Result<PointerButtonName, ScriptErrorInfo> {
+pub(super) fn parse_pointer_button(value: &Value) -> Result<PointerButton, ScriptErrorInfo> {
     let value = value
         .as_str()
         .ok_or_else(|| type_error("button must be a string"))?;
     match value {
-        "primary" => Ok(PointerButtonName::Primary),
-        "secondary" => Ok(PointerButtonName::Secondary),
-        "middle" => Ok(PointerButtonName::Middle),
+        "primary" => Ok(PointerButton::Primary),
+        "secondary" => Ok(PointerButton::Secondary),
+        "middle" => Ok(PointerButton::Middle),
         _ => Err(type_error("button must be primary, secondary, or middle")),
     }
 }
@@ -238,16 +237,17 @@ pub(super) fn parse_widget_role(value: &Value) -> Result<WidgetRole, ScriptError
 pub(super) fn parse_widget_ref(value: &Value) -> Result<WidgetRef, ScriptErrorInfo> {
     if let Some(id) = value.as_str() {
         return Ok(WidgetRef {
-            id: Some(id.to_string()),
+            id: id.to_string(),
             viewport_id: None,
         });
     }
     let map = as_object(value, "expected WidgetRef")?;
-    let id = parse_optional_string(Some(map), "id")?;
+    let id = map
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| type_error("WidgetRef requires string id"))?
+        .to_string();
     let viewport_id = parse_optional_string(Some(map), "viewport_id")?;
-    if id.is_none() {
-        return Err(type_error("WidgetRef requires id"));
-    }
     Ok(WidgetRef { id, viewport_id })
 }
 

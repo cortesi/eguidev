@@ -11,9 +11,9 @@ use std::{
 use eframe::{App, egui};
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::ScrollBarVisibility};
 use eguidev::{
-    Anchor, ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall,
-    FixtureError, FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, ProgressBarOptions,
-    ScriptPrelude, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange, WidgetRole,
+    ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall, FixtureError,
+    FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec,
+    ProgressBarOptions, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange, WidgetRole,
     WidgetRoleMeta, WidgetValue,
 };
 #[cfg(feature = "devtools")]
@@ -39,20 +39,20 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
     let occluder = ViewportSel::name("occluder").expect("valid viewport name");
     vec![
         FixtureSpec::new("basic.default", "Reset to the initial demo state.")
-            .anchor_label("basic.status", "Waiting for input.")
-            .anchor_scroll_at("basic.scroll", egui::vec2(0.0, 0.0), 0.75),
+            .ready_label("basic.status", "Waiting for input.")
+            .ready_scroll_at("basic.scroll", egui::vec2(0.0, 0.0), 0.75),
         FixtureSpec::new(
             "basic.empty",
             "Clear inputs, disable toggle, and reset intensity.",
         )
-        .anchor_label("basic.status", "Fixture: empty")
-        .anchor_value("basic.enabled", eguidev::WidgetValue::Bool(false)),
+        .ready_label("basic.status", "Fixture: empty")
+        .ready_value("basic.enabled", eguidev::WidgetValue::Bool(false)),
         FixtureSpec::new(
             "basic.scrolled",
             "Jump the scroll area down to a later row.",
         )
-        .anchor_label("basic.status", "Fixture: scrolled")
-        .anchor_scroll("basic.scroll")
+        .ready_label("basic.status", "Fixture: scrolled")
+        .ready_scroll("basic.scroll")
         .param(
             FixtureParam::float("offset", "Vertical scroll offset in points.")
                 .default(300.0)
@@ -64,8 +64,8 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "basic.overlay_reset_probe",
             "Reset probe for overlay-local fixture input.",
         )
-        .anchor_label("basic.status", "Fixture: overlay reset probe")
-        .anchor_value(
+        .ready_label("basic.status", "Fixture: overlay reset probe")
+        .ready_value(
             "overlay.fixture_probe.input",
             eguidev::WidgetValue::Text(String::new()),
         ),
@@ -73,8 +73,8 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "viewports.default",
             "Reset the secondary viewport to its default state.",
         )
-        .anchor_label("basic.status", "Waiting for input.")
-        .anchor_scroll_at_in(
+        .ready_label("basic.status", "Waiting for input.")
+        .ready_scroll_at_in(
             "viewports.scroll",
             egui::vec2(0.0, 0.0),
             0.75,
@@ -84,8 +84,8 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "viewports.scrolled",
             "Jump the secondary viewport list down to a later row.",
         )
-        .anchor_label("basic.status", "Fixture: secondary viewport scrolled")
-        .anchor_scroll_in("viewports.scroll", secondary)
+        .ready_label("basic.status", "Fixture: secondary viewport scrolled")
+        .ready_scroll_in("viewports.scroll", secondary)
         .param(
             FixtureParam::float("offset", "Vertical scroll offset in points.")
                 .default(300.0)
@@ -97,22 +97,22 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "viewports.occluded",
             "Cover the root viewport with a dedicated always-on-top test viewport.",
         )
-        .anchor_label("basic.status", "Fixture: root viewport occluded")
-        .anchor_label_in("viewports.occluder.status", "Occluder active", occluder),
+        .ready_label("basic.status", "Fixture: root viewport occluded")
+        .ready_label_in("viewports.occluder.status", "Occluder active", occluder),
         FixtureSpec::new(
             "viewports.duplicate_names",
             "Deliberately register duplicate viewport names for fault testing.",
         )
-        .anchor_label("basic.status", "Fixture: duplicate viewport names"),
+        .ready_label("basic.status", "Fixture: duplicate viewport names"),
         FixtureSpec::new(
             "analysis.loaded",
             "Run the staged analysis pass to completion.",
         )
-        .anchor_label("basic.status", "Fixture: analysis loaded")
-        .anchor("status.summary")
+        .ready_label("basic.status", "Fixture: analysis loaded")
+        .ready("status.summary")
         // `/complete` alone would already hold at zero of zero, so the static
-        // anchor names the pass itself and the handler returns the count.
-        .anchor_data("status.summary", "/pass", "analysis")
+        // ready names the pass itself and the handler returns the count.
+        .ready_data("status.summary", "/pass", "analysis")
         .param(
             FixtureParam::int("games", "Games the staged pass analyses.")
                 .default(6)
@@ -123,8 +123,8 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
             "layout.gate",
             "Replace the root surface with a viewport-filling scroll area.",
         )
-        .anchor("gate.scroll")
-        .anchor_scroll("gate.scroll")
+        .ready("gate.scroll")
+        .ready_scroll("gate.scroll")
         .param(FixtureParam::float("offset", "Vertical scroll offset in points.").default(0.0))
         .param(
             FixtureParam::bool(
@@ -173,11 +173,6 @@ fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<
                 "focused": focused,
                 "secondary_visible": s.show_secondary,
             }))
-        })?
-        .script_prelude(ScriptPrelude {
-            namespace: "demo".to_string(),
-            source: include_str!("../luau/prelude.luau").to_string(),
-            declarations: include_str!("../luau/prelude.d.luau").to_string(),
         })?
         .on_idle_ui(|_ctx| true)?;
     #[cfg(feature = "devtools")]
@@ -528,13 +523,13 @@ impl DemoState {
                 self.basic_scroll_state
                     .jump_to(egui::vec2(0.0, offset as f32));
                 self.status = "Fixture: scrolled".to_string();
-                Ok(FixtureResponse::new()
-                    .value("offset", offset)
-                    .anchor(Anchor::scroll_at(
+                Ok(FixtureResponse::new().value("offset", offset).ready(
+                    FixtureTargetSpec::scroll_at(
                         "basic.scroll",
                         egui::vec2(0.0, offset as f32),
                         0.75,
-                    )))
+                    ),
+                ))
             }
             "basic.overlay_reset_probe" => {
                 self.status = "Fixture: overlay reset probe".to_string();
@@ -546,9 +541,13 @@ impl DemoState {
                 self.secondary_scroll_state
                     .jump_to(egui::vec2(0.0, offset as f32));
                 self.status = "Fixture: secondary viewport scrolled".to_string();
-                Ok(FixtureResponse::new().value("offset", offset).anchor(
-                    Anchor::scroll_at("viewports.scroll", egui::vec2(0.0, offset as f32), 32.0)
-                        .in_viewport(ViewportSel::name("secondary").expect("valid viewport name")),
+                Ok(FixtureResponse::new().value("offset", offset).ready(
+                    FixtureTargetSpec::scroll_at(
+                        "viewports.scroll",
+                        egui::vec2(0.0, offset as f32),
+                        32.0,
+                    )
+                    .in_viewport(ViewportSel::name("secondary").expect("valid viewport name")),
                 ))
             }
             "viewports.occluded" => {
@@ -568,9 +567,9 @@ impl DemoState {
                 self.analysis_total = games;
                 self.analysed = 0;
                 self.status = "Fixture: analysis loaded".to_string();
-                Ok(FixtureResponse::new()
-                    .value("games", games as i64)
-                    .anchor(Anchor::data("status.summary", "/analysed", games as i64)))
+                Ok(FixtureResponse::new().value("games", games as i64).ready(
+                    FixtureTargetSpec::data("status.summary", "/analysed", games as i64),
+                ))
             }
             "layout.gate" => {
                 let offset = call.params.float("offset");
@@ -954,7 +953,7 @@ impl DemoApp {
 
     /// Render the analysis status whose readiness only its data expresses.
     ///
-    /// The label never changes while the pass runs, so a label or value anchor
+    /// The label never changes while the pass runs, so a label or value ready
     /// cannot tell a half-loaded state from a finished one. Only the published
     /// data can.
     fn render_analysis_status(s: &DemoState, ui: &mut egui::Ui) {
@@ -1071,8 +1070,8 @@ impl DemoApp {
     }
 
     /// Publish two sibling rects that deliberately intersect on screen.
-    fn publish_gate_overlap(ui: &egui::Ui, anchor: egui::Rect) {
-        let first = egui::Rect::from_min_size(anchor.min, egui::vec2(40.0, 20.0));
+    fn publish_gate_overlap(ui: &egui::Ui, ready: egui::Rect) {
+        let first = egui::Rect::from_min_size(ready.min, egui::vec2(40.0, 20.0));
         let second = first.translate(egui::vec2(20.0, 0.0));
         for (id, rect, fill) in [
             ("gate.overlap.a", first, Color32::from_rgb(0xe5, 0x48, 0x4d)),
@@ -1101,9 +1100,9 @@ impl DemoApp {
     ///
     /// One sits past the end of the declared content extent; the other sits off
     /// the axis the scroll area does not scroll. Both must still report.
-    fn publish_gate_offenders(ui: &egui::Ui, anchor: egui::Rect) {
+    fn publish_gate_offenders(ui: &egui::Ui, ready: egui::Rect) {
         let beyond = egui::Rect::from_min_size(
-            anchor.min + egui::vec2(0.0, 4_000.0),
+            ready.min + egui::vec2(0.0, 4_000.0),
             egui::vec2(120.0, 20.0),
         );
         eguidev::publish_rect_meta(
@@ -1118,7 +1117,7 @@ impl DemoApp {
             },
         );
         let off_axis = egui::Rect::from_min_size(
-            anchor.min + egui::vec2(4_000.0, 0.0),
+            ready.min + egui::vec2(4_000.0, 0.0),
             egui::vec2(120.0, 20.0),
         );
         eguidev::publish_rect_meta(
@@ -1638,8 +1637,8 @@ mod tests {
             response.values.get("offset"),
             Some(&eguidev::WidgetValue::Float(180.0))
         );
-        assert_eq!(response.anchors.len(), 1);
-        assert_eq!(response.anchors[0].widget_id, "basic.scroll");
+        assert_eq!(response.ready.len(), 1);
+        assert_eq!(response.ready[0].widget_id, "basic.scroll");
     }
 
     #[test]

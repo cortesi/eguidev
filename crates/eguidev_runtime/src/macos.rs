@@ -13,13 +13,12 @@
 //! The process-wide window hook is installed when instrumentation attaches, but
 //! its visible-state override is enabled only for a connected MCP session.
 
+#[cfg(test)]
+use std::path::{Path, PathBuf};
 use std::{
     collections::{HashMap, HashSet},
-    env,
     ffi::{CStr, c_char},
-    mem,
-    path::{Path, PathBuf},
-    process, ptr,
+    mem, process, ptr,
     ptr::NonNull,
     sync::{
         Mutex, OnceLock,
@@ -30,7 +29,6 @@ use std::{
 use block2::RcBlock;
 use core_foundation::{
     base::{CFRange, CFType, TCFType},
-    bundle::CFBundle,
     dictionary::CFDictionary,
     number::CFNumber,
     string::{CFString, CFStringRef},
@@ -47,7 +45,7 @@ use core_graphics::{
     },
 };
 use dispatch2::DispatchQueue;
-use eguidev::internal::presentation::{Presentation, PresentationStatus};
+use eguidev::internal::presentation::Presentation;
 use foreign_types::ForeignTypeRef;
 use objc2::{
     MainThreadMarker, class, msg_send,
@@ -331,59 +329,69 @@ fn presentation_session() -> &'static Mutex<PresentationSession> {
     PRESENTATION_SESSION.get_or_init(|| Mutex::new(PresentationSession::default()))
 }
 
-/// Apply a session presentation and return whether a live window needs a frame.
-pub async fn configure_session(presentation: Presentation) -> Result<bool, String> {
+/// Apply one connection's presentation and return whether a live window needs a frame.
+pub async fn configure_session(
+    session_id: u64,
+    presentation: Presentation,
+) -> Result<bool, String> {
     install_occlusion_hook();
-    SPOOF_OCCLUSION.store(true, Ordering::Release);
-    let result = match run_on_main(move || {
+    run_on_main(move || {
         let observed_policy = activation_policy();
-        let transition = presentation_session()
-            .lock()
-            .expect("presentation session lock poisoned")
-            .configure(presentation, observed_policy, ACTIVATION_POLICY_ACCESSORY);
-        apply_transition(transition)?;
+        let (previous, transition) = {
+            let mut sessions = presentation_session()
+                .lock()
+                .expect("presentation session lock poisoned");
+            let previous = sessions.clone();
+            let transition = sessions.configure(
+                session_id,
+                presentation,
+                observed_policy,
+                ACTIVATION_POLICY_ACCESSORY,
+            );
+            (previous, transition)
+        };
+        if let Err(error) = apply_transition(transition) {
+            *presentation_session()
+                .lock()
+                .expect("presentation session lock poisoned") = previous;
+            return Err(error);
+        }
+        SPOOF_OCCLUSION.store(true, Ordering::Release);
         Ok::<_, String>(reevaluate_live_windows() > 0)
     })
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => Err(error),
-    };
-    if result.is_err() {
-        SPOOF_OCCLUSION.store(false, Ordering::Release);
-        *presentation_session()
-            .lock()
-            .expect("presentation session lock poisoned") = PresentationSession::default();
-    }
-    result
+    .await?
 }
 
-/// Restore the policy captured for the current session and disable spoofing.
-pub async fn disconnect_session() -> Result<(), String> {
-    let result = match run_on_main(|| {
-        let transition = presentation_session()
+/// Remove one connection's presentation and restore the newest remaining request.
+pub async fn disconnect_session(session_id: u64) -> Result<(), String> {
+    run_on_main(move || {
+        let observed_policy = activation_policy();
+        let (previous, transition) = {
+            let mut sessions = presentation_session()
+                .lock()
+                .expect("presentation session lock poisoned");
+            let previous = sessions.clone();
+            let transition =
+                sessions.disconnect(session_id, observed_policy, ACTIVATION_POLICY_ACCESSORY);
+            (previous, transition)
+        };
+        if let Some(transition) = transition
+            && let Err(error) = apply_transition(transition)
+        {
+            *presentation_session()
+                .lock()
+                .expect("presentation session lock poisoned") = previous;
+            return Err(error);
+        }
+        let active = presentation_session()
             .lock()
             .expect("presentation session lock poisoned")
-            .disconnect();
-        if let Some(transition) = transition {
-            apply_transition(transition)?;
-        }
-        SPOOF_OCCLUSION.store(false, Ordering::Release);
+            .is_active();
+        SPOOF_OCCLUSION.store(active, Ordering::Release);
         reevaluate_live_windows();
         Ok::<_, String>(())
     })
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => Err(error),
-    };
-    if result.is_err() {
-        SPOOF_OCCLUSION.store(false, Ordering::Release);
-        *presentation_session()
-            .lock()
-            .expect("presentation session lock poisoned") = PresentationSession::default();
-    }
-    result
+    .await?
 }
 
 /// Enable the launch-to-exit activation guard for a background launch.
@@ -641,26 +649,6 @@ pub struct PolicyConflict {
     observed_activation_policy: Option<String>,
 }
 
-/// Query macOS status without touching app-owned launch identity.
-pub async fn presentation_status() -> PresentationStatus {
-    let observed_activation_policy =
-        run_on_main(|| activation_policy().map(activation_policy_name))
-            .await
-            .ok()
-            .flatten();
-    let executable_path = env::current_exe().unwrap_or_default();
-    PresentationStatus {
-        requested_presentation: presentation_session()
-            .lock()
-            .expect("presentation session lock poisoned")
-            .requested(),
-        observed_activation_policy,
-        executable: Some(executable_path.display().to_string()),
-        bundle_root: bundle_root(&executable_path),
-        bundle_identifier: bundle_identifier(),
-    }
-}
-
 fn apply_transition(transition: PresentationTransition) -> Result<(), String> {
     if let Some(policy) = transition.target_activation_policy
         && !set_activation_policy(policy)
@@ -751,6 +739,7 @@ fn activation_policy_name(policy: i64) -> String {
     }
 }
 
+#[cfg(test)]
 fn bundle_root(executable: &Path) -> Option<String> {
     let mut root = PathBuf::new();
     for component in executable.components() {
@@ -760,16 +749,6 @@ fn bundle_root(executable: &Path) -> Option<String> {
         }
     }
     None
-}
-
-fn bundle_identifier() -> Option<String> {
-    let bundle = CFBundle::main_bundle();
-    let key = CFString::from_static_string("CFBundleIdentifier");
-    bundle
-        .info_dictionary()
-        .find(&key)
-        .and_then(|value| value.downcast::<CFString>())
-        .map(|value| value.to_string())
 }
 
 async fn run_on_main<T, F>(operation: F) -> Result<T, String>

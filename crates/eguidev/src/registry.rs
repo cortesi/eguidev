@@ -21,7 +21,6 @@ use crate::{
     fixtures::{FixtureExecution, FixtureManager},
     idle::IdleRegistry,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
-    script_prelude::ScriptPreludeRegistry,
     types::{FixtureCall, WidgetValue},
     viewports::{FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
@@ -56,7 +55,6 @@ pub struct Inner {
     pub fixtures: FixtureManager,
     pub diagnostics: DiagnosticRegistry,
     pub idle: IdleRegistry,
-    pub script_preludes: ScriptPreludeRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     automation_options: Mutex<AutomationOptions>,
 }
@@ -135,7 +133,6 @@ impl Inner {
             fixtures: FixtureManager::new(),
             diagnostics: DiagnosticRegistry::new(),
             idle: IdleRegistry::new(),
-            script_preludes: ScriptPreludeRegistry::new(),
             runtime_hooks: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
         }
@@ -381,7 +378,7 @@ impl Inner {
             });
         Some(
             ToolError::new(
-                ErrorCode::OverrideNotConsumed,
+                ErrorCode::InstrumentationFault,
                 format!(
                     "Widget value override for {id:?} in {viewport_label} was not consumed; \
                      call take_widget_value_override before rendering the custom widget"
@@ -609,7 +606,7 @@ mod tests {
         let error = inner
             .expired_widget_value_update_error(viewport_id, Some("custom.value"))
             .expect("unwired widget should fault after reset");
-        assert_eq!(error.code(), ErrorCode::OverrideNotConsumed);
+        assert_eq!(error.code(), ErrorCode::InstrumentationFault);
     }
 
     #[test]
@@ -630,7 +627,7 @@ mod tests {
         let error = inner
             .expired_widget_value_update_error(viewport_id, Some("custom.value"))
             .expect("unwired widget should fault after popup dismissal");
-        assert_eq!(error.code(), ErrorCode::OverrideNotConsumed);
+        assert_eq!(error.code(), ErrorCode::InstrumentationFault);
     }
 
     fn new_test_inner() -> Inner {

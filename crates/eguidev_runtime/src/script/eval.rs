@@ -12,6 +12,5 @@ pub async fn run_script_eval(
     source_name: String,
     args: ScriptArgs,
 ) -> ScriptEvalOutcome {
-    super::ruau_adapter::run_script_eval(inner, runtime, script, timeout_ms, source_name, args)
-        .await
+    super::kernel::run_script_eval(inner, runtime, script, timeout_ms, source_name, args).await
 }

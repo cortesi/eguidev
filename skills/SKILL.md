@@ -1,36 +1,23 @@
 ---
 name: eguidev
-description: MCP workflow for driving instrumented egui apps with Luau scripts.
+description: MCP workflow for driving instrumented egui apps with strict Luau scripts.
 ---
 
 # eguidev
 
-eguidev exposes an instrumented egui app through MCP and the `edev` CLI. Agents
-drive the app with complete Luau scripts; the MCP lifecycle tools manage a
-persistent app process, while CLI evaluations launch an app for one script.
+Eguidev drives an instrumented egui app through self-contained strict Luau scripts. This skill is
+workflow guidance. Always read `script_api` before writing a script; when only the CLI is
+available, `edev docs` returns the same canonical declaration bytes.
 
-This skill is workflow guidance, not an API reference.
+## MCP boundaries
 
-**First action:** call `script_api` before writing Luau. If the app's MCP tools
-are unavailable but the repository has an `.edev.toml`, run `edev docs`
-instead. Both return the canonical `eguidev.d.luau` reference for scripting
-types, functions, and conventions.
+The Edev launcher exposes four lifecycle tools: `start`, `stop`, `restart`, and `status`. A
+successful lifecycle result includes the direct app connection descriptor. Connect to its endpoint
+to use the app-owned `script_api` and `script_eval` tools. Do not expect the launcher to proxy app
+tools.
 
-
-## MCP Surface
-
-The MCP server exposes six tools:
-
-- `start`, `stop`, `restart`, `status` for lifecycle
-- `script_api` for the canonical Luau API
-- `script_eval` for all app inspection, interaction, waits, screenshots, and
-  verification
-
-Do not change global MCP configuration merely to unblock one repository task.
-Declare the server in the app repository instead. For Codex that is the
-repository's own `.codex/config.toml`, never the user-wide
-`~/.codex/config.toml`. Edit the project file directly, because `codex mcp add`
-writes user-wide configuration.
+Do not change user-wide MCP configuration for one repository. Put an Edev launcher declaration in
+the trusted project configuration:
 
 ```toml
 [mcp_servers.my-app-edev]
@@ -38,252 +25,137 @@ command = "edev"
 args = ["mcp"]
 ```
 
-`edev` finds `.edev.toml` by walking up from its working directory, stopping at
-the repository root. A config inside the app repository therefore needs no `cwd`
-of its own, whether it sits at the root or under `.codex/`.
+Edev locates `.edev.toml` by walking upward to the repository root. Set `cwd` only when the MCP
+configuration lives outside the app repository.
 
-Set `cwd` only when the config lives outside the app repository, such as an
-umbrella directory holding several app repositories. The upward walk never
-descends, so point `cwd` at the app repository root:
+The CLI manages the direct connection automatically:
 
-```toml
-[mcp_servers.my-app-edev]
-command = "edev"
-args = ["mcp"]
-cwd = "my-app"
-```
-
-Start Codex from the app repository, and restart it after adding the server.
-Project config is ignored until the repository is trusted. Add
-`startup_timeout_sec` when the command builds `edev` from source, as this
-repository's `.codex/config.toml` does.
-
-If the configured tools are unavailable, use `edev docs`, place self-contained
-probes under the app's `tmp/` directory, run them with `edev eval <path>`, and
-use `edev smoke` for persistent scenarios.
-
-The CLI answers the discovery questions faster than a throwaway script:
-
-- `edev docs` prints the canonical Luau reference.
-- `edev fixtures` lists fixture names, descriptions, params, tags, and anchors.
-  `edev fixtures --markdown` renders the same catalog for docs.
-- `edev fixture NAME --param k=v` applies one fixture.
-- `edev dump --fixture NAME` prints the widget tree for a baseline.
-- `edev eval PATH` runs one script and prints its structured outcome.
+- `edev docs` prints the canonical Luau declaration.
+- `edev fixtures` lists fixture names, conditions, params, and tags.
+- `edev fixture NAME --param key=value` applies one fixture.
+- `edev dump --fixture NAME` prints a baseline widget tree.
+- `edev eval PATH` evaluates one script.
+- `edev smoke` runs independent checked-in scenarios against one managed app.
 
 ## Instrumentation
 
-Widget ids are the canonical selectors. Explicit ids must be unique in a
-captured frame; duplicate ids are an instrumentation fault. Generated ids are
-opaque and should not be relied on across restarts.
+Widget ids are canonical selectors. Explicit ids must be unique within a captured frame. Generated
+ids are opaque and should not be relied on across restarts.
 
-Use Rust API docs for signatures and details. If `ruskel` is installed, prefer
-`ruskel eguidev` and `ruskel eguidev_runtime` to inspect the current public API;
-use `--search <term>` to find specific items.
+For Rust signatures, inspect the current `eguidev` and `eguidev_runtime` APIs. Prefer the existing
+instrumentation boundaries:
 
-When editing instrumentation, prefer established Rust APIs:
+- `DevUiExt::dev_*` for standard widgets;
+- `track_widget`, `track_widget_with_meta`, or `track_response` for custom widgets with a response;
+- `publish_rect_meta` for painter-only geometry;
+- `container` or `begin_container` for hierarchy;
+- `take_widget_value_override` before rendering a custom value-controlled widget.
 
-- standard widgets: `dev_*` helpers from `DevUiExt`
-- custom widgets that have an `egui::Response`: `track_widget(...)`,
-  `track_widget_with_meta(...)`, or `track_response(...)`
-- painter-drawn geometry, which has no response: `publish_rect_meta(...)`, and
-  `publish_rect_container(...)` when the rect is a parent for further rects
-- hierarchy: `container(...)`, or `begin_container(...)` when the container
-  widget itself is recorded after its contents
-- set `WidgetMeta::visible`; it defaults to `false` and an invisible widget is
-  hidden from the default lookups
-- consume queued `set_value(...)` updates with
-  `take_widget_value_override(...)` before rendering the widget
+## Complete scripts
 
-
-## Scripting
-
-Write strict Luau. `--!strict` is implicit for all `script_eval` scripts.
-Use `script_api` as the canonical scripting API. See `docs/luau.md` only for
-Luau syntax help.
-
-
-## Complete Scripts
-
-Each `script_eval` call must be a self-contained script that performs setup,
-action, and verification in one evaluation. Do not drive the app step-by-step
-across multiple `script_eval` calls.
-
-A well-structured script has four phases:
+Each `script_eval` source must perform setup, action, verification, and reporting in one
+evaluation. Eguidev contributes one global namespace, `eguidev`; do not use legacy globals.
 
 ```luau
--- Setup
-fixture("basic.with_items")
-local vp = root()
+eguidev.fixture("basic.with_items")
 
--- Act
-widget("item.0.delete"):click()
+local delete = eguidev.widget("item.0.delete")
+delete:click()
 
--- Verify
-local remaining = expect("items.count", { value_text_contains = "2" })
-
--- Report
+local remaining = eguidev.widget("items.count"):expect({ value_text_contains = "2" })
+assert(remaining ~= nil)
 return { remaining = remaining.value_text }
 ```
 
-Use `log()` for intermediate diagnostics and return a compact summary at the
-end.
+Use `eguidev.log(...)` for intermediate evidence and return a compact structured summary. The
+sandbox has no filesystem, network, or module-import access.
 
-By default, `click()` waits until input has drained and a clean post-action
-capture is available. Still use `wait_for_widget` or `wait_for` predicates for
-state that can update asynchronously or through app work queued after the click.
-For lists that filter, reorder, scroll, or virtualize rows, prefer a
-viewport-scoped `wait_for_widget` predicate on the expected post-action row.
-This keeps the assertion tied to the viewport and tolerates the old row handle
-disappearing while the new captured row set is installed.
+## References and state
 
+`eguidev.widget(id)` and `eguidev.viewport(id)` construct immutable live references without a
+lookup. Call `state()` for the latest snapshot and handle `nil` explicitly. A state carries its
+own `(viewport_id, id)` identity.
 
-## Lifecycle
+Use scoped discovery when the same widget id can occur in more than one viewport:
 
-- **NEVER** use `pkill`, `kill`, ctrl-c, or shell commands to manage the app.
-- Use `start` to ensure the app is running, `restart` for a fresh process.
-- Let Edev own every process it launches. Normal stop and launcher failure clean
-  up the complete managed process group; no manual process cleanup should be
-  required between runs.
-- Treat `.edev-instances/` in the app working directory as Edev-owned live
-  launcher and app state. Add it to the app repository's `.gitignore`; never
-  commit or edit its generated records.
-- Do not delete `.edev-instances/` while an Edev launcher or managed app is
-  active. Rely on Edev to remove owned records during normal shutdown and prune
-  stale records when the next launcher registers; registry deletion is not
-  process management.
-- Call `fixture()` at the start of scripts for a known in-app baseline.
-- `fixture()` waits for declared readiness anchors on fresh captures; still
-  wait/assert the specific widget or viewport state your script depends on.
-- Use `fixture_raw()` only for manual or debugging setup flows.
+```luau
+local secondary = eguidev.viewports({ name = "secondary" })[1]
+assert(secondary ~= nil)
+local rows = secondary:widgets({ id_prefix = "row." })
+```
 
+Prefer programmatic inspection:
 
-## Choosing A Wait
+- `w:state()`, `w:parent()`, and `w:children()` for one widget;
+- `eguidev.widgets(...)`, `vp:widgets(...)`, and `vp:widgets_at(...)` for discovery;
+- `eguidev.dump(...)` or `eguidev.dump_text(...)` for a tree;
+- `before:diff(...)` for before/after state;
+- `vp:layout_issues()` or `w:layout_issues()` for layout defects;
+- `w:text_measure()` for text layout;
+- pixel samples for exact visual checks;
+- screenshots only when the question is genuinely visual.
 
-The wrong wait is the main source of flake.
+Return `ImageRef` values when the MCP response should include image blocks.
 
-| The script is waiting for            | Use                              |
-| ------------------------------------ | -------------------------------- |
-| a widget to exist and be interactable | `w:wait_for_visible()`           |
-| a widget to reach a state             | `w:wait_for(predicate)`          |
-| a widget to disappear                 | `w:wait_for_absent()`            |
-| a scroll area to stabilize            | `w:wait_for_scroll_ready()`      |
-| a viewport-wide condition             | `vp:wait_for(predicate)`         |
-| queued input to be applied            | `vp:wait_for_settle()`           |
-| an app-wide condition                 | `wait_until(predicate)`          |
+## Conditions and waits
 
-`wait_for_visible` holds the same condition pointer input requires, so a widget
-that satisfies it can be clicked. `scroll_into_view()` already waits for that
-condition, so an interaction straight after it needs no manual wait.
+The wrong wait is the main source of flaky automation. Use the shared condition model:
 
-`wait_for_frames()` counts frames and proves nothing about content. Reach for it
-only when the script genuinely means "let some frames pass".
+| Need | Call |
+| --- | --- |
+| widget is interactable | `w:wait({ actionable = true })` |
+| widget reaches state | `w:wait({ ... })` or `w:wait(predicate)` |
+| widget disappears | `w:wait({ present = false })` |
+| scroll area stabilizes | `w:wait({ scroll_ready = true })` |
+| viewport reaches state | `vp:wait({ ... })` or `vp:wait(predicate)` |
+| queued high-level work settles | `vp:settle()` |
+| app-wide predicate becomes true | `eguidev.wait(predicate)` |
 
-Every wait takes `WaitOptions` (`timeout_ms`, `poll_interval_ms`, `viewport`)
-and every action takes `ActionOptions` (`settle`) or an action-specific
-extension of it, in the last argument position.
+Every wait accepts `{ timeout_ms, poll_interval_ms }`. Predicates receive optional state, so test
+for `nil`. Use `eguidev.wait_frames(...)` only when elapsed frames are themselves the requirement.
 
+`Widget:expect(...)` supports state conditions plus relations, hierarchy, text-fit, and painter
+checks. Prefer it over hand-coded geometry when the declaration provides the needed expectation.
 
-## Inspection
+## Actions and input
 
-Prefer programmatic inspection over screenshots:
+High-level widget and viewport actions wait for their target and auto-settle. Disable settlement
+only to inspect an intentional intermediate state. `scroll_into_view()` leaves the widget ready for
+the next interaction.
 
-- Globals resolve handles: `widget(id)`, `try_widget(id)`, `root()`,
-  `viewport(...)`. Everything else is a method on the handle you get back:
-  `vp:widget_list(...)`, `vp:widget_get(id)`, `w:state()`, `w:children()`,
-  `w:parent()`.
-- Use `widget(id)` for cross-viewport lookup. Use `viewport({ name = "..." })`,
-  `viewport({ title = "..." })`, or `viewport({ title_contains = "..." })`
-  when you need a viewport handle; keep names and titles unique because
-  ambiguous matches throw.
-- `widget_list` is a `Viewport` method: `vp:widget_list({ label = "..." })`,
-  `vp:widget_list({ label_contains = "..." })`, `vp:widget_list({ role = "button" })`,
-  or `vp:widget_list({ id_prefix = "settings" })` discovers widgets without
-  fetching state for every item.
-- `wait_for_widget` with predicates for state readiness -- widget existence
-  does not imply state readiness.
-- `expect(...)`, `expect_absent(...)`, geometry assertions, `expect_text_fits`,
-  `expect_tree`, and `expect_painted` for common verification.
-- `capture():diff()` to compare widget state before and after an action.
-- `vp:check_layout()` or `w:check_layout()` for layout problems. Structure
-  resolves against the whole viewport, so a widget-scoped check still
-  recognizes an enclosing scroll area, clip region, or container.
-- `w:text_measure()` for text sizing and truncation.
+`Viewport:input(...)` is different: it validates and queues exactly one raw input event without a
+wait or settle. Follow it with an explicit state wait or `vp:settle()` when needed.
 
-Use `vp:screenshot()` or `w:screenshot()` only when the question is genuinely visual: alignment,
-clipping, rendering quality, image content. Returned `ImageRef` values produce
-image blocks in the MCP response.
-On macOS, child viewport screenshots can fall back to native Quartz window capture after the
-egui screenshot event path times out; this requires Screen Recording permission and a unique
-recorded window title.
-Use `vp:sample_pixels(...)` or `w:sample_pixels(...)` for exact fixed-color
-assertions; it samples RGBA data
-before screenshot JPEG encoding. Prefer `hex` for exact color equality. `rgba`
-channels are Luau numbers, so use them for arithmetic thresholds only when that
-is clearer than an exact fixed-color check.
+## Fixtures
 
+Call `eguidev.fixture(...)` at the start of independent scenarios. Preconditions always run. By
+default the fixture then waits for one fresh frame and all declared ready conditions. Pass
+`{ wait = false }` only for intentional intermediate-state inspection; this skips ready waits, not
+preconditions.
 
-## Background Automation
+Inspect `eguidev.fixtures()` to discover names and typed params. A fixture result contains handler
+values and precondition/ready observations with live widget references and optional state.
 
-On macOS, a connected Edev session owns temporary automation presentation.
-Background is the default and keeps covered windows rendering by making AppKit
-report the window visible to winit/eframe. It also keeps the app out of the Dock
-and avoids taking focus. This is a local runtime shim, not an upstream eframe
-dependency.
+## Lifecycle and smoke tests
 
-- `ViewportState.occluded` is the egui/winit value after that shim.
-- `ViewportState.os_occluded` is the real platform occlusion state when observed.
-- `ViewportState.os_minimized` is the real platform minimized state when observed.
-- Set `[app].presentation = "foreground"` in `.edev.toml`, or use the command's
-  `--presentation foreground` override, for manual foreground automation.
-- `status` reports the requested presentation and, when available, the observed
-  activation policy, executable path, bundle root, and bundle identifier.
-- Runtime attachment without a connected client leaves ordinary app presentation
-  unchanged, and disconnect restores the policy that preceded the session.
+- Never use `pkill`, shell `kill`, or manual process cleanup for an Edev-managed app.
+- Use lifecycle `restart` after code changes and reconnect through the new descriptor.
+- Treat `.edev-instances/` as live Edev-owned state; never commit, edit, or delete it while a
+  launcher is active.
+- Keep smoke scripts independent and begin with a fixture.
+- Assert visible behavior, not app internals.
+- Use `edev smoke --list`, `--only`, `--repeat`, and `--until-fail` while authoring.
+- Enable failure bundles when durable screenshots, dumps, diagnostics, and app output are useful.
 
-Use `os_occluded` for strict occlusion assertions when it is present. Keep
-default smoke and script flows focused on whether frames, widgets, screenshots,
-and pixel samples continue to work while the app is covered.
+On macOS, the Edev session owns temporary background or foreground presentation. Launch the normal
+app executable and do not create per-run app wrappers. Child-viewport native screenshot fallback
+requires Screen Recording permission.
 
-Launch the app's ordinary executable. Do not create per-run `.app` wrappers or
-bundle identifiers for automation, and do not add app-owned per-frame activation
-assertions that fight an active background session. Edev owns managed-process
-lifecycle and should leave no Dock, LaunchServices, or process residue after a
-run.
+## Development loop
 
-
-## Smoketest Scripts
-
-Smoketest scripts follow the same shape as good `script_eval` scripts:
-
-- Call `fixture()` before interacting with the UI.
-- After `fixture()`, wait for state not covered by the fixture's anchors.
-- Assert visible app behavior, not internals.
-- Keep scripts independent -- no reliance on state from earlier tests.
-- Use assertions for pass/fail and `log()` for diagnostics.
-- Treat smoketests as regression tests and executable API documentation.
-- Use `edev smoke --list [--json]` while authoring. Repeat `--only GLOB` to
-  select more scripts; a script runs when it matches any pattern. Use
-  `--repeat N` or `--until-fail N` to hunt flaky settle or rendering behavior,
-  and `--bundle` / `--bundle-dir PATH` for failure bundles.
-
-
-## Iterative Development Workflow
-
-1. **Modify code** -- make changes to the app or its instrumentation.
-2. **Lint** -- `cargo xtask tidy` to catch issues before running.
-3. **Restart** -- call `restart` to pick up code changes.
-4. **Inspect** -- use `script_eval` to explore widget state, verify layout,
-   and exercise interactions. Start with `fixtures()` to discover baselines.
-5. **Verify** -- write a complete script that sets up, acts, and asserts.
-6. **Smoketest** -- run the suite to confirm nothing else broke.
-
-When debugging:
-- Use `w:state()` to inspect current role, value, geometry, and
-  enabled/visible/focused state. Every state carries its own `(viewport_id, id)`
-  pair, so a state a wait returns already names its widget.
-- Use `vp:dismiss_popups()` or a fresh `fixture()` when open menus or transient
-  focus might leak between actions.
-- Use `vp:show_debug_overlay("bounds")` to visualize widget rects.
-- Use `vp:check_layout()` to find clipping, overflow, and overlap issues.
-- Use `log()` liberally -- logs appear in the script result payload.
+1. Change the app or instrumentation.
+2. Run the repository's tidy gate.
+3. Restart through Edev and reconnect to the returned app endpoint.
+4. Inspect fixtures and live state.
+5. Run one complete script with setup, action, and assertions.
+6. Run the relevant smoke suite.

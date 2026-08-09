@@ -1,10 +1,12 @@
 -- Raw input must reach immediate viewports: click a row in the secondary viewport.
-fixture("viewports.default")
-local secondary = viewport({ title = "DevMCP secondary viewport" })
+eguidev.fixture("viewports.default")
+local secondary = eguidev.viewports({ title = "DevMCP secondary viewport" })[1]
 assert(secondary ~= nil, "secondary viewport present")
 local sv = secondary :: Viewport
-sv:wait_for_widget_visible("viewports.row.0")
-sv:widget_get("viewports.row.0"):click()
-root():wait_for_widget("basic.status", function(w)
-    return string.find(w.value_text, "Secondary row 0", 1, true) ~= nil
+local row = sv:widgets({ id_prefix = "viewports.row.0" })[1]
+assert(row ~= nil and row.id == "viewports.row.0", "secondary row should exist")
+row:wait({ actionable = true })
+row:click()
+eguidev.widget("basic.status"):wait( function(w)
+    return w ~= nil and string.find(w.value_text, "Secondary row 0", 1, true) ~= nil
 end)

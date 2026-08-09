@@ -101,6 +101,27 @@ pub async fn shutdown_spawned(mut process: SpawnedProcess, log_state: &LogState)
     }
 }
 
+/// Return whether a newly spawned app boundary exited before its MCP handshake.
+#[cfg(target_os = "macos")]
+pub fn spawned_process_exited(process: &SpawnedProcess) -> Result<bool, String> {
+    Ok(process
+        .supervisor_exit_task
+        .as_ref()
+        .is_some_and(JoinHandle::is_finished))
+}
+
+/// Return whether a newly spawned app boundary exited before its MCP handshake.
+#[cfg(not(target_os = "macos"))]
+pub fn spawned_process_exited(process: &mut SpawnedProcess) -> Result<bool, String> {
+    process
+        .child
+        .as_mut()
+        .map(Child::try_wait)
+        .transpose()
+        .map(|status| status.flatten().is_some())
+        .map_err(|error| format!("inspect app process during startup: {error}"))
+}
+
 /// Close the outer ownership endpoint, marking a deliberate shutdown first.
 pub fn close_ownership_writer(writer: &mut Option<OwnershipWriter>, log_state: &LogState) {
     #[cfg(target_os = "macos")]

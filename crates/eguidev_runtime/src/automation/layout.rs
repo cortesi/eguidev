@@ -2,13 +2,14 @@ use std::{collections::HashMap, iter};
 
 use egui::{Color32, TextStyle};
 
+use super::*;
 use crate::{
-    overlay::{rect_intersection, rect_size},
-    tools::{
+    automation::{
         ErrorCode, ToolError,
         results::{LayoutIssue, TextMeasure, TextMeasureLine},
         types::LayoutIssueKind,
     },
+    overlay::{rect_intersection, rect_size},
     types::{Pos2, Rect, RoleState, WidgetRegistryEntry, WidgetRole, WidgetValue},
 };
 
@@ -27,7 +28,7 @@ pub fn measure_text(
     widget: &WidgetRegistryEntry,
 ) -> Result<TextMeasure, ToolError> {
     let text = widget_text(widget)
-        .ok_or_else(|| ToolError::new(ErrorCode::InvalidRef, "Widget does not contain text"))?;
+        .ok_or_else(|| ToolError::new(ErrorCode::Unsupported, "Widget does not contain text"))?;
     let style = ctx.global_style();
     let font_id = TextStyle::Body.resolve(style.as_ref());
     let desired_galley =
@@ -380,6 +381,73 @@ pub fn rect_contains_rect(outer: Rect, inner: Rect) -> bool {
         && inner.min.y >= outer.min.y - RECT_EPSILON
         && inner.max.x <= outer.max.x + RECT_EPSILON
         && inner.max.y <= outer.max.y + RECT_EPSILON
+}
+
+impl DevMcpServer {
+    pub(super) async fn check_layout(
+        &self,
+        viewport_id: Option<String>,
+        root: Option<WidgetRef>,
+    ) -> ToolResult<Vec<LayoutIssue>> {
+        let viewport_id = self.resolve_scope_viewport(viewport_id, root.as_ref())?;
+        let registry = self.inner.widgets.widget_list(viewport_id);
+        let viewport_id_str = viewport_id_to_string(viewport_id);
+        // The scope selects what the result reports; structure always resolves
+        // against the complete viewport registry.
+        let scope = match root.as_ref() {
+            Some(root) => {
+                let root = resolve_widget(&self.inner, Some(viewport_id_str.as_str()), root)?;
+                collect_subtree(&registry, &root)
+            }
+            None => registry.clone(),
+        };
+
+        let analysis = LayoutAnalysis::new(&registry, viewport_rect(&self.inner, viewport_id));
+        let mut issues = analysis.zero_size(&scope);
+        issues.extend(analysis.clipping(&scope));
+        issues.extend(analysis.overflow(&scope));
+        issues.extend(analysis.overlaps(&scope));
+        issues.extend(analysis.offscreen(&scope));
+        if let Some(ctx) = self.inner.context_for(viewport_id) {
+            issues.extend(analysis.text_truncation(&ctx, &scope)?);
+        }
+        Ok(issues)
+    }
+
+    /// Measure text for a text-containing widget.
+    pub(super) async fn text_measure(&self, target: WidgetRef) -> ToolResult<TextMeasure> {
+        let (widget, viewport_id) = resolve_widget_and_viewport(&self.inner, None, &target)?;
+        let ctx = self.inner.context_for(viewport_id).ok_or_else(|| {
+            ToolError::new(
+                ErrorCode::InvalidArgument,
+                "Context not available for text measurement",
+            )
+        })?;
+        Ok(measure_text(&ctx, &widget)?)
+    }
+
+    pub(super) fn widget_at_point_result(
+        &self,
+        pos: Pos2,
+        all_layers: Option<bool>,
+        viewport_id: Option<&str>,
+    ) -> ToolResult<WidgetAtPointResult> {
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id.map(str::to_string))?;
+        let hits = widgets_at_point(&self.inner, viewport_id, pos, all_layers.unwrap_or(false));
+        Ok(WidgetAtPointResult { widgets: hits })
+    }
+
+    pub(super) fn resolve_scope_viewport(
+        &self,
+        viewport_id: Option<String>,
+        scope: Option<&WidgetRef>,
+    ) -> Result<egui::ViewportId, ToolError> {
+        if let Some(scope) = scope {
+            let widget = resolve_widget(&self.inner, viewport_id.as_deref(), scope)?;
+            return resolve_viewport_id(&self.inner, Some(widget.viewport_id));
+        }
+        resolve_viewport_id(&self.inner, viewport_id)
+    }
 }
 
 #[cfg(test)]

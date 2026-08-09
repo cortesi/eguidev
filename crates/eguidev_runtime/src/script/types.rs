@@ -175,7 +175,7 @@ pub struct ScriptImageInfo {
 /// Fixture applied during a script evaluation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FixtureApplication {
-    /// Fixture name passed to `fixture(...)` or `fixture_raw(...)`.
+    /// Fixture name passed to `eguidev.fixture(...)`.
     pub name: String,
     /// Validated fixture parameters, including defaults supplied by the fixture spec.
     #[serde(default)]

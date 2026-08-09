@@ -90,10 +90,6 @@ impl DiagnosticError {
 /// - `duplicate_idle_provider`: an idle provider is already registered.
 /// - `duplicate_diagnostic`: that diagnostic name is already registered.
 /// - `empty_diagnostic_name`: the diagnostic name was blank.
-/// - `duplicate_script_prelude_namespace`: that prelude namespace is taken.
-/// - `empty_script_prelude_namespace`: the prelude namespace was blank.
-/// - `invalid_script_prelude_namespace`: the namespace is not a Luau identifier.
-/// - `reserved_script_prelude_namespace`: the namespace is one eguidev owns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Error)]
 #[error("{message}")]
 pub struct DevMcpConfigError {
@@ -126,34 +122,6 @@ impl DevMcpConfigError {
         Self::new(
             "empty_diagnostic_name",
             "diagnostic provider name must not be empty",
-        )
-    }
-
-    pub(crate) fn empty_script_prelude_namespace() -> Self {
-        Self::new(
-            "empty_script_prelude_namespace",
-            "script prelude namespace must not be empty",
-        )
-    }
-
-    pub(crate) fn invalid_script_prelude_namespace(namespace: &str) -> Self {
-        Self::new(
-            "invalid_script_prelude_namespace",
-            format!("script prelude namespace must be a Luau identifier: {namespace}"),
-        )
-    }
-
-    pub(crate) fn reserved_script_prelude_namespace(namespace: &str) -> Self {
-        Self::new(
-            "reserved_script_prelude_namespace",
-            format!("script prelude namespace collides with built-in global: {namespace}"),
-        )
-    }
-
-    pub(crate) fn duplicate_script_prelude_namespace(namespace: &str) -> Self {
-        Self::new(
-            "duplicate_script_prelude_namespace",
-            format!("duplicate script prelude namespace: {namespace}"),
         )
     }
 }

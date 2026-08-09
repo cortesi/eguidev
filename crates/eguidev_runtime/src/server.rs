@@ -2,12 +2,15 @@
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{sync::Arc, thread};
+use std::{env, future::pending, sync::Arc, thread};
 
 use tmcp::Server;
 use tokio::runtime::Builder;
 
-use crate::{registry::Inner, runtime::Runtime, tools};
+use crate::{mcp::AppMcpServer, registry::Inner, runtime::Runtime};
+
+/// Optional loopback address used for a directly connectable app MCP server.
+pub const MCP_ADDR_ENV: &str = "EGUIDEV_MCP_ADDR";
 
 #[cfg(test)]
 static START_SERVER_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -28,10 +31,19 @@ pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>) {
             eprintln!("eguidev: failed to start tokio runtime");
             return;
         };
-        let server = Server::new(move || {
-            tools::DevMcpServer::with_runtime(Arc::clone(&inner), Arc::clone(&runtime_state))
-        });
-        if let Err(error) = runtime.block_on(server.serve_stdio()) {
+        let server =
+            Server::new(move || AppMcpServer::new(Arc::clone(&inner), Arc::clone(&runtime_state)));
+        let result = if let Ok(addr) = env::var(MCP_ADDR_ENV) {
+            runtime.block_on(async move {
+                let _server = server.serve_tcp(addr).await?;
+                pending::<()>().await;
+                #[allow(unreachable_code)]
+                Ok(())
+            })
+        } else {
+            runtime.block_on(server.serve_stdio())
+        };
+        if let Err(error) = result {
             eprintln!("eguidev: MCP server failed: {error}");
         }
     });

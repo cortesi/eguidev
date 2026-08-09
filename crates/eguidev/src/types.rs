@@ -271,12 +271,16 @@ impl From<Rect> for EguiRect {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct Modifiers {
     /// Ctrl key pressed.
+    #[serde(default)]
     pub ctrl: bool,
     /// Shift key pressed.
+    #[serde(default)]
     pub shift: bool,
     /// Alt key pressed.
+    #[serde(default)]
     pub alt: bool,
     /// Command key pressed.
+    #[serde(default)]
     pub command: bool,
 }
 
@@ -298,12 +302,12 @@ pub struct FixtureSpec {
     pub name: String,
     /// Fixture description.
     pub description: String,
-    /// Declarative readiness anchors that must be satisfied before fixture application.
+    /// Declarative conditions that must be satisfied before fixture application.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub preconditions: Vec<Anchor>,
-    /// Declarative readiness anchors for the fixture baseline.
+    pub preconditions: Vec<FixtureTargetSpec>,
+    /// Declarative ready conditions for the fixture baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub anchors: Vec<Anchor>,
+    pub ready: Vec<FixtureTargetSpec>,
     /// Typed scalar params accepted by this fixture.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<FixtureParam>,
@@ -312,54 +316,386 @@ pub struct FixtureSpec {
     pub tags: Vec<String>,
 }
 
-/// A single readiness anchor for a fixture baseline.
+/// One widget target and condition in a fixture readiness contract.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Anchor {
+pub struct FixtureTargetSpec {
     /// Widget id to resolve from the registry.
     pub widget_id: String,
     /// Optional viewport selector (`root`, semantic name, or `vp:...`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewport_id: Option<String>,
     /// Readiness condition to evaluate against the widget state.
-    pub check: AnchorCheck,
+    pub condition: WidgetCondition,
 }
 
-/// Declarative readiness checks for fixture anchors.
+/// A scroll position required by a [`WidgetCondition`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ScrollAtCondition {
+    /// Target logical scroll offset.
+    pub offset: Vec2,
+    /// Allowed absolute error per axis.
+    #[serde(default = "default_scroll_tolerance")]
+    pub tolerance: f32,
+}
+
+/// A JSON value required by a [`WidgetCondition`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DataCondition {
+    /// RFC 6901 pointer into the widget's `data` value. Empty selects all.
+    pub pointer: String,
+    /// Value the pointer must resolve to.
+    pub equals: serde_json::Value,
+}
+
+/// Shared declarative condition used by waits, assertions, actions, and fixtures.
+///
+/// Every populated field must match. An empty condition means `present = true`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetCondition {
+    /// Whether the widget must be present or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    /// Whether the widget must satisfy standard click actionability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actionable: Option<bool>,
+    /// Required visibility state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    /// Required enabled state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Required keyboard-focus state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
+    /// Required selection state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+    /// Required semantic widget role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<WidgetRole>,
+    /// Required exact label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Required label substring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_contains: Option<String>,
+    /// Required exact widget value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<WidgetValue>,
+    /// Required substring in the value's text projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_text_contains: Option<String>,
+    /// Whether scroll state must be initialized and stable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_ready: Option<bool>,
+    /// Required stable scroll position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_at: Option<ScrollAtCondition>,
+    /// Required value inside widget data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataCondition>,
+}
+
+/// Shared declarative condition for viewport waits and assertions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ViewportCondition {
+    /// Whether the viewport must be present or absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<bool>,
+    /// Required semantic viewport name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Required exact window title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Required window-title substring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_contains: Option<String>,
+    /// Required focus state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
+    /// Required minimized state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimized: Option<bool>,
+    /// Required occlusion state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occluded: Option<bool>,
+    /// Required maximized state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximized: Option<bool>,
+    /// Required fullscreen state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fullscreen: Option<bool>,
+    /// Minimum captured viewport frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_at_least: Option<u64>,
+}
+
+/// Timeout and polling controls shared by waits and high-level actions.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct WaitOptions {
+    /// Optional operation timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Optional interval between fresh-capture polls in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_interval_ms: Option<u64>,
+}
+
+/// Controls shared by high-level actions.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct ActionOptions {
+    /// Wait controls used before and after the action.
+    #[serde(flatten)]
+    pub wait: WaitOptions,
+    /// Whether to wait for deterministic settlement after queuing the action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle: Option<bool>,
+}
+
+/// Pointer button used by clicks and raw pointer events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum AnchorCheck {
-    /// Widget exists and is visible.
-    Visible,
-    /// Widget label matches exactly.
-    Label(String),
-    /// Widget value matches.
-    Value(WidgetValue),
-    /// Scroll area is initialized and stable across captures.
-    ScrollReady,
-    /// Scroll area is initialized, stable, and near the requested offset.
-    ScrollAt {
-        /// Target scroll offset.
-        offset: Vec2,
-        /// Allowed absolute error per axis.
-        tolerance: f32,
+pub enum PointerButton {
+    /// Primary pointer button.
+    Primary,
+    /// Secondary pointer button.
+    Secondary,
+    /// Middle pointer button.
+    Middle,
+}
+
+/// Options for a widget click.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct ClickOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Pointer button to click. Defaults to primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button: Option<PointerButton>,
+    /// Number of click press/release pairs. Defaults to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_count: Option<u32>,
+}
+
+/// Options for hovering within a widget.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct HoverOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Optional normalized position within the widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<Vec2>,
+    /// Optional hover duration before settlement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Options for typing text into a widget.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct TypeTextOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Clear the current value before typing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear: Option<bool>,
+    /// Send Enter after the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<bool>,
+}
+
+/// Options for a drag action.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DragOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Optional normalized starting position within the source widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Vec2>,
+}
+
+/// Coarse alignment used by scroll-to actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollAlign {
+    /// Align to the top.
+    Top,
+    /// Align to the center.
+    Center,
+    /// Align to the bottom.
+    Bottom,
+}
+
+/// Options for moving a scroll area.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ScrollToOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Optional exact scroll offset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<Vec2>,
+    /// Optional coarse alignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<ScrollAlign>,
+}
+
+/// Options for high-level keyboard input.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct KeyOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Number of repeated key presses. Defaults to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat_count: Option<u32>,
+    /// Optional widget that receives focus before delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<WidgetRef>,
+}
+
+/// One resize command applied atomically before settlement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ResizeOptions {
+    /// Shared action controls.
+    #[serde(flatten)]
+    pub action: ActionOptions,
+    /// Requested inner viewport size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_size: Option<Vec2>,
+    /// Requested minimum inner size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_size: Option<Vec2>,
+    /// Requested maximum inner size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<Vec2>,
+    /// Requested resize increments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub increments: Option<Vec2>,
+    /// Whether the viewport is user-resizable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resizable: Option<bool>,
+}
+
+/// Press or release action used by raw input events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RawInputAction {
+    /// Press the key or pointer button.
+    Press,
+    /// Release the key or pointer button.
+    Release,
+}
+
+/// One raw input event. Raw input queues exactly one event and does not settle.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RawInputEvent {
+    /// Move the pointer to an absolute egui position.
+    PointerMove {
+        /// Absolute egui position.
+        position: Pos2,
     },
-    /// Widget data matches at a JSON pointer.
-    ///
-    /// The widget set alone cannot express which data a fixture installed, so
-    /// two fixtures that publish the same widgets and differ only in their
-    /// domain data share every other check. Absent data and an unmatched path
-    /// leave the anchor unsatisfied rather than failed, so the wait continues
-    /// until the timeout.
-    ///
-    /// Point at a value that only becomes correct once the work is done. A
-    /// derived flag such as `loaded == 0 of 0` already holds before the work
-    /// starts, so anchor on the count the fixture installed instead.
-    Data {
-        /// RFC 6901 pointer into the widget's `data` value. Empty selects all.
-        pointer: String,
-        /// Value the pointer must resolve to.
-        equals: serde_json::Value,
+    /// Press or release one pointer button.
+    PointerButton {
+        /// Absolute egui position.
+        position: Pos2,
+        /// Pointer button.
+        button: PointerButton,
+        /// Press or release action.
+        action: RawInputAction,
+        /// Optional modifier state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Modifiers>,
     },
+    /// Press or release one key.
+    Key {
+        /// Egui key name.
+        key: String,
+        /// Press or release action.
+        action: RawInputAction,
+        /// Optional modifier state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Modifiers>,
+    },
+    /// Insert one raw text event.
+    Text {
+        /// Text payload.
+        text: String,
+    },
+    /// Insert one raw scroll event.
+    Scroll {
+        /// Scroll delta in egui points.
+        delta: Vec2,
+        /// Optional modifier state.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modifiers: Option<Modifiers>,
+    },
+}
+
+/// Widget relation used by geometry expectations.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RelationExpectation {
+    /// Related widget reference.
+    pub widget: WidgetRef,
+    /// Optional minimum gap in egui points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_gap: Option<f32>,
+}
+
+/// Lossless paint expectation for a widget.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct PaintExpectation {
+    /// Minimum number of distinct sampled colors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_colors: Option<usize>,
+}
+
+/// Widget condition plus hierarchy, geometry, text, and paint expectations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetExpectation {
+    /// Shared widget condition.
+    #[serde(flatten)]
+    pub condition: WidgetCondition,
+    /// Widget that must be to the right of this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_of: Option<RelationExpectation>,
+    /// Widget that must be below this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub above: Option<RelationExpectation>,
+    /// Widget whose rectangle must not overlap this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_overlap: Option<WidgetRef>,
+    /// Widget that must contain this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<WidgetRef>,
+    /// Widgets that must occur in this widget's descendant subtree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub descendants: Vec<WidgetRef>,
+    /// Whether measured text must fit without truncation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_fits: Option<bool>,
+    /// Optional lossless paint-sampling expectation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub painted: Option<PaintExpectation>,
+}
+
+const fn default_scroll_tolerance() -> f32 {
+    0.5
 }
 
 /// Whether a string is a well-formed RFC 6901 JSON pointer.
@@ -438,9 +774,9 @@ pub struct FixtureResponse {
     /// Handler-returned values exposed to scripts and CLI output.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, WidgetValue>,
-    /// Handler-returned dynamic anchors waited on together with the spec anchors.
+    /// Handler-returned dynamic ready waited on together with the spec ready.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub anchors: Vec<Anchor>,
+    pub ready: Vec<FixtureTargetSpec>,
 }
 
 /// Result returned by a fixture handler.
@@ -476,7 +812,7 @@ impl FixtureSpec {
             name: name.into(),
             description: description.into(),
             preconditions: Vec::new(),
-            anchors: Vec::new(),
+            ready: Vec::new(),
             params: Vec::new(),
             tags: Vec::new(),
         }
@@ -484,7 +820,7 @@ impl FixtureSpec {
 
     /// Add a visible-widget precondition checked before fixture application.
     pub fn precondition(self, widget_id: impl Into<String>) -> Self {
-        self.push_precondition(widget_id.into(), None, AnchorCheck::Visible)
+        self.push_precondition(widget_id.into(), None, WidgetCondition::visible())
     }
 
     /// Add a visible-widget precondition scoped to a viewport.
@@ -496,13 +832,13 @@ impl FixtureSpec {
         self.push_precondition(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::Visible,
+            WidgetCondition::visible(),
         )
     }
 
     /// Add an exact-value precondition checked before fixture application.
     pub fn precondition_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
-        self.push_precondition(widget_id.into(), None, AnchorCheck::Value(value))
+        self.push_precondition(widget_id.into(), None, WidgetCondition::value(value))
     }
 
     /// Add an exact-value precondition scoped to a viewport.
@@ -515,147 +851,135 @@ impl FixtureSpec {
         self.push_precondition(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::Value(value),
+            WidgetCondition::value(value),
         )
     }
 
-    /// Add a visible-widget readiness anchor.
-    pub fn anchor(self, widget_id: impl Into<String>) -> Self {
-        self.push_anchor(widget_id.into(), None, AnchorCheck::Visible)
+    /// Add a visible-widget ready condition.
+    pub fn ready(self, widget_id: impl Into<String>) -> Self {
+        self.push_ready(widget_id.into(), None, WidgetCondition::visible())
     }
 
-    /// Add a visible-widget readiness anchor scoped to a viewport.
-    pub fn anchor_in(self, widget_id: impl Into<String>, viewport: impl Into<ViewportSel>) -> Self {
-        self.push_anchor(
+    /// Add a visible-widget ready condition scoped to a viewport.
+    pub fn ready_in(self, widget_id: impl Into<String>, viewport: impl Into<ViewportSel>) -> Self {
+        self.push_ready(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::Visible,
+            WidgetCondition::visible(),
         )
     }
 
-    /// Add an exact-label readiness anchor.
-    pub fn anchor_label(self, widget_id: impl Into<String>, text: impl Into<String>) -> Self {
-        self.push_anchor(widget_id.into(), None, AnchorCheck::Label(text.into()))
+    /// Add an exact-label ready condition.
+    pub fn ready_label(self, widget_id: impl Into<String>, text: impl Into<String>) -> Self {
+        self.push_ready(widget_id.into(), None, WidgetCondition::label(text))
     }
 
-    /// Add an exact-label readiness anchor scoped to a viewport.
-    pub fn anchor_label_in(
+    /// Add an exact-label ready condition scoped to a viewport.
+    pub fn ready_label_in(
         self,
         widget_id: impl Into<String>,
         text: impl Into<String>,
         viewport: impl Into<ViewportSel>,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::Label(text.into()),
+            WidgetCondition::label(text),
         )
     }
 
-    /// Add an exact-value readiness anchor.
-    pub fn anchor_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
-        self.push_anchor(widget_id.into(), None, AnchorCheck::Value(value))
+    /// Add an exact-value ready condition.
+    pub fn ready_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
+        self.push_ready(widget_id.into(), None, WidgetCondition::value(value))
     }
 
-    /// Add an exact-value readiness anchor scoped to a viewport.
-    pub fn anchor_value_in(
+    /// Add an exact-value ready condition scoped to a viewport.
+    pub fn ready_value_in(
         self,
         widget_id: impl Into<String>,
         value: WidgetValue,
         viewport: impl Into<ViewportSel>,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::Value(value),
+            WidgetCondition::value(value),
         )
     }
 
-    /// Add a scroll-readiness anchor.
-    pub fn anchor_scroll(self, widget_id: impl Into<String>) -> Self {
-        self.push_anchor(widget_id.into(), None, AnchorCheck::ScrollReady)
+    /// Add a scroll-readiness condition.
+    pub fn ready_scroll(self, widget_id: impl Into<String>) -> Self {
+        self.push_ready(widget_id.into(), None, WidgetCondition::scroll_ready())
     }
 
-    /// Add a scroll-readiness anchor scoped to a viewport.
-    pub fn anchor_scroll_in(
+    /// Add a scroll-readiness condition scoped to a viewport.
+    pub fn ready_scroll_in(
         self,
         widget_id: impl Into<String>,
         viewport: impl Into<ViewportSel>,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::ScrollReady,
+            WidgetCondition::scroll_ready(),
         )
     }
 
-    /// Add a scroll-position readiness anchor.
-    pub fn anchor_scroll_at(
+    /// Add a scroll-position ready condition.
+    pub fn ready_scroll_at(
         self,
         widget_id: impl Into<String>,
         offset: impl Into<Vec2>,
         tolerance: f32,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             None,
-            AnchorCheck::ScrollAt {
-                offset: offset.into(),
-                tolerance,
-            },
+            WidgetCondition::scroll_at(offset, tolerance),
         )
     }
 
-    /// Add a scroll-position readiness anchor scoped to a viewport.
-    pub fn anchor_scroll_at_in(
+    /// Add a scroll-position ready condition scoped to a viewport.
+    pub fn ready_scroll_at_in(
         self,
         widget_id: impl Into<String>,
         offset: impl Into<Vec2>,
         tolerance: f32,
         viewport: impl Into<ViewportSel>,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::ScrollAt {
-                offset: offset.into(),
-                tolerance,
-            },
+            WidgetCondition::scroll_at(offset, tolerance),
         )
     }
 
-    /// Add a widget-data readiness anchor.
-    pub fn anchor_data(
+    /// Add a widget-data ready condition.
+    pub fn ready_data(
         self,
         widget_id: impl Into<String>,
         pointer: impl Into<String>,
         equals: impl Into<serde_json::Value>,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             None,
-            AnchorCheck::Data {
-                pointer: pointer.into(),
-                equals: equals.into(),
-            },
+            WidgetCondition::data(pointer, equals),
         )
     }
 
-    /// Add a widget-data readiness anchor scoped to a viewport.
-    pub fn anchor_data_in(
+    /// Add a widget-data ready condition scoped to a viewport.
+    pub fn ready_data_in(
         self,
         widget_id: impl Into<String>,
         pointer: impl Into<String>,
         equals: impl Into<serde_json::Value>,
         viewport: impl Into<ViewportSel>,
     ) -> Self {
-        self.push_anchor(
+        self.push_ready(
             widget_id.into(),
             Some(viewport.into().to_selector_string()),
-            AnchorCheck::Data {
-                pointer: pointer.into(),
-                equals: equals.into(),
-            },
+            WidgetCondition::data(pointer, equals),
         )
     }
 
@@ -671,8 +995,8 @@ impl FixtureSpec {
         self
     }
 
-    /// Validate fixture metadata and readiness anchors.
-    pub fn validate(&self, require_anchors: bool) -> Result<(), String> {
+    /// Validate fixture metadata and readiness conditions.
+    pub fn validate(&self, require_ready: bool) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("fixture name must not be empty".to_string());
         }
@@ -703,19 +1027,19 @@ impl FixtureSpec {
                 return Err(format!("fixture {} duplicate tag: {tag}", self.name));
             }
         }
-        for (index, anchor) in self.preconditions.iter().enumerate() {
-            anchor.validate().map_err(|error| {
+        for (index, ready) in self.preconditions.iter().enumerate() {
+            ready.validate().map_err(|error| {
                 format!("fixture {} precondition {}: {error}", self.name, index + 1)
             })?;
         }
-        for (index, anchor) in self.anchors.iter().enumerate() {
-            anchor
+        for (index, ready) in self.ready.iter().enumerate() {
+            ready
                 .validate()
-                .map_err(|error| format!("fixture {} anchor {}: {error}", self.name, index + 1))?;
+                .map_err(|error| format!("fixture {} ready {}: {error}", self.name, index + 1))?;
         }
-        if require_anchors && self.anchors.is_empty() {
+        if require_ready && self.ready.is_empty() {
             return Err(format!(
-                "fixture {} must declare at least one readiness anchor",
+                "fixture {} must declare at least one ready condition",
                 self.name
             ));
         }
@@ -775,21 +1099,21 @@ impl FixtureSpec {
         let preconditions = self
             .preconditions
             .iter()
-            .map(Anchor::describe)
+            .map(FixtureTargetSpec::describe)
             .collect::<Vec<_>>();
-        let anchors = self
-            .anchors
+        let ready = self
+            .ready
             .iter()
-            .map(Anchor::describe)
+            .map(FixtureTargetSpec::describe)
             .collect::<Vec<_>>();
-        match (preconditions.is_empty(), anchors.is_empty()) {
-            (true, true) => "No readiness anchors declared.".to_string(),
-            (true, false) => anchors.join("; "),
+        match (preconditions.is_empty(), ready.is_empty()) {
+            (true, true) => "No readiness conditions declared.".to_string(),
+            (true, false) => ready.join("; "),
             (false, true) => format!("preconditions: {}", preconditions.join("; ")),
             (false, false) => format!(
-                "preconditions: {}; anchors: {}",
+                "preconditions: {}; ready: {}",
                 preconditions.join("; "),
-                anchors.join("; ")
+                ready.join("; ")
             ),
         }
     }
@@ -798,26 +1122,26 @@ impl FixtureSpec {
         mut self,
         widget_id: String,
         viewport_id: Option<String>,
-        check: AnchorCheck,
+        condition: WidgetCondition,
     ) -> Self {
-        self.preconditions.push(Anchor {
+        self.preconditions.push(FixtureTargetSpec {
             widget_id,
             viewport_id,
-            check,
+            condition,
         });
         self
     }
 
-    fn push_anchor(
+    fn push_ready(
         mut self,
         widget_id: String,
         viewport_id: Option<String>,
-        check: AnchorCheck,
+        condition: WidgetCondition,
     ) -> Self {
-        self.anchors.push(Anchor {
+        self.ready.push(FixtureTargetSpec {
             widget_id,
             viewport_id,
-            check,
+            condition,
         });
         self
     }
@@ -1079,9 +1403,9 @@ impl FixtureResponse {
         self
     }
 
-    /// Add a handler-returned dynamic anchor.
-    pub fn anchor(mut self, anchor: Anchor) -> Self {
-        self.anchors.push(anchor);
+    /// Add a handler-returned dynamic ready.
+    pub fn ready(mut self, ready: FixtureTargetSpec) -> Self {
+        self.ready.push(ready);
         self
     }
 }
@@ -1123,91 +1447,209 @@ fn panic_message(panic: &(dyn Any + Send)) -> String {
     }
 }
 
-impl Anchor {
-    /// Create a visible-widget anchor.
+impl WidgetCondition {
+    /// Require the widget to exist.
+    pub fn present() -> Self {
+        Self {
+            present: Some(true),
+            ..Self::default()
+        }
+    }
+
+    /// Require the widget to exist and be visible.
+    pub fn visible() -> Self {
+        Self {
+            visible: Some(true),
+            ..Self::default()
+        }
+    }
+
+    /// Require an exact widget label.
+    pub fn label(label: impl Into<String>) -> Self {
+        Self {
+            label: Some(label.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Require an exact widget value.
+    pub fn value(value: WidgetValue) -> Self {
+        Self {
+            value: Some(value),
+            ..Self::default()
+        }
+    }
+
+    /// Require stable, initialized scroll metadata.
+    pub fn scroll_ready() -> Self {
+        Self {
+            scroll_ready: Some(true),
+            ..Self::default()
+        }
+    }
+
+    /// Require stable scroll metadata at the requested offset.
+    pub fn scroll_at(offset: impl Into<Vec2>, tolerance: f32) -> Self {
+        Self {
+            scroll_at: Some(ScrollAtCondition {
+                offset: offset.into(),
+                tolerance,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// Require a widget-data value at an RFC 6901 pointer.
+    pub fn data(pointer: impl Into<String>, equals: impl Into<serde_json::Value>) -> Self {
+        Self {
+            data: Some(DataCondition {
+                pointer: pointer.into(),
+                equals: equals.into(),
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// Validate combinations and nested condition values.
+    pub fn validate(&self) -> Result<(), String> {
+        let has_state_field = self.actionable.is_some()
+            || self.visible.is_some()
+            || self.enabled.is_some()
+            || self.focused.is_some()
+            || self.selected.is_some()
+            || self.role.is_some()
+            || self.label.is_some()
+            || self.label_contains.is_some()
+            || self.value.is_some()
+            || self.value_text_contains.is_some()
+            || self.scroll_ready.is_some()
+            || self.scroll_at.is_some()
+            || self.data.is_some();
+        if self.present == Some(false) && has_state_field {
+            return Err("present = false cannot be combined with a state condition".to_string());
+        }
+        if self.label.as_ref().is_some_and(String::is_empty) {
+            return Err("label must not be empty".to_string());
+        }
+        if self.label_contains.as_ref().is_some_and(String::is_empty) {
+            return Err("label_contains must not be empty".to_string());
+        }
+        if self
+            .value_text_contains
+            .as_ref()
+            .is_some_and(String::is_empty)
+        {
+            return Err("value_text_contains must not be empty".to_string());
+        }
+        if let Some(scroll_at) = self.scroll_at
+            && (!scroll_at.tolerance.is_finite() || scroll_at.tolerance <= 0.0)
+        {
+            return Err("scroll_at tolerance must be finite and greater than 0".to_string());
+        }
+        if let Some(data) = &self.data
+            && !is_valid_json_pointer(&data.pointer)
+        {
+            return Err(format!(
+                "data pointer {:?} is not an RFC 6901 JSON pointer",
+                data.pointer
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl ViewportCondition {
+    /// Validate combinations and string conditions.
+    pub fn validate(&self) -> Result<(), String> {
+        let has_state_field = self.name.is_some()
+            || self.title.is_some()
+            || self.title_contains.is_some()
+            || self.focused.is_some()
+            || self.minimized.is_some()
+            || self.occluded.is_some()
+            || self.maximized.is_some()
+            || self.fullscreen.is_some()
+            || self.frame_at_least.is_some();
+        if self.present == Some(false) && has_state_field {
+            return Err("present = false cannot be combined with a state condition".to_string());
+        }
+        if self.name.as_ref().is_some_and(String::is_empty) {
+            return Err("name must not be empty".to_string());
+        }
+        if self.title.as_ref().is_some_and(String::is_empty) {
+            return Err("title must not be empty".to_string());
+        }
+        if self.title_contains.as_ref().is_some_and(String::is_empty) {
+            return Err("title_contains must not be empty".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl FixtureTargetSpec {
+    /// Create a fixture target with an explicit shared condition.
+    pub fn new(widget_id: impl Into<String>, condition: WidgetCondition) -> Self {
+        Self {
+            widget_id: widget_id.into(),
+            viewport_id: None,
+            condition,
+        }
+    }
+
+    /// Create a visible-widget readiness target.
     pub fn visible(widget_id: impl Into<String>) -> Self {
-        Self {
-            widget_id: widget_id.into(),
-            viewport_id: None,
-            check: AnchorCheck::Visible,
-        }
+        Self::new(widget_id, WidgetCondition::visible())
     }
 
-    /// Create an exact-label anchor.
+    /// Create an exact-label ready.
     pub fn label(widget_id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            widget_id: widget_id.into(),
-            viewport_id: None,
-            check: AnchorCheck::Label(label.into()),
-        }
+        Self::new(widget_id, WidgetCondition::label(label))
     }
 
-    /// Create an exact-value anchor.
+    /// Create an exact-value ready.
     pub fn value(widget_id: impl Into<String>, value: impl Into<WidgetValue>) -> Self {
-        Self {
-            widget_id: widget_id.into(),
-            viewport_id: None,
-            check: AnchorCheck::Value(value.into()),
-        }
+        Self::new(widget_id, WidgetCondition::value(value.into()))
     }
 
-    /// Create a scroll-readiness anchor.
+    /// Create a scroll-readiness target.
     pub fn scroll_ready(widget_id: impl Into<String>) -> Self {
-        Self {
-            widget_id: widget_id.into(),
-            viewport_id: None,
-            check: AnchorCheck::ScrollReady,
-        }
+        Self::new(widget_id, WidgetCondition::scroll_ready())
     }
 
-    /// Create a scroll-position anchor.
+    /// Create a scroll-position ready.
     pub fn scroll_at(
         widget_id: impl Into<String>,
         offset: impl Into<Vec2>,
         tolerance: f32,
     ) -> Self {
-        Self {
-            widget_id: widget_id.into(),
-            viewport_id: None,
-            check: AnchorCheck::ScrollAt {
-                offset: offset.into(),
-                tolerance,
-            },
-        }
+        Self::new(widget_id, WidgetCondition::scroll_at(offset, tolerance))
     }
 
-    /// Create a widget-data anchor.
+    /// Create a widget-data ready.
     pub fn data(
         widget_id: impl Into<String>,
         pointer: impl Into<String>,
         equals: impl Into<serde_json::Value>,
     ) -> Self {
-        Self {
-            widget_id: widget_id.into(),
-            viewport_id: None,
-            check: AnchorCheck::Data {
-                pointer: pointer.into(),
-                equals: equals.into(),
-            },
-        }
+        Self::new(widget_id, WidgetCondition::data(pointer, equals))
     }
 
-    /// Scope this anchor to a viewport selector.
+    /// Scope this ready to a viewport selector.
     pub fn in_viewport(mut self, viewport: impl Into<ViewportSel>) -> Self {
         self.viewport_id = Some(viewport.into().to_selector_string());
         self
     }
 
-    /// Return a human-readable description of the anchor.
+    /// Return a human-readable description of the ready.
     pub fn describe(&self) -> String {
         let target = match &self.viewport_id {
             Some(viewport_id) => format!("{} in {}", self.widget_id, viewport_id),
             None => self.widget_id.clone(),
         };
-        format!("{target} {}", self.check)
+        format!("{target} {}", self.condition)
     }
 
-    /// Validate the anchor contents.
+    /// Validate the ready contents.
     pub fn validate(&self) -> Result<(), String> {
         if self.widget_id.trim().is_empty() {
             return Err("widget_id must not be empty".to_string());
@@ -1217,42 +1659,14 @@ impl Anchor {
         {
             return Err("viewport_id must not be empty when provided".to_string());
         }
-        match &self.check {
-            AnchorCheck::Label(text) if text.is_empty() => {
-                Err("label anchors must not be empty".to_string())
-            }
-            AnchorCheck::ScrollAt { tolerance, .. }
-                if !tolerance.is_finite() || *tolerance <= 0.0 =>
-            {
-                Err("scroll_at tolerance must be finite and greater than 0".to_string())
-            }
-            AnchorCheck::Data { pointer, .. } if !is_valid_json_pointer(pointer) => Err(format!(
-                "data pointer {pointer:?} is not an RFC 6901 JSON pointer"
-            )),
-            _ => Ok(()),
-        }
+        self.condition.validate()
     }
 }
 
-impl fmt::Display for AnchorCheck {
+impl fmt::Display for WidgetCondition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Visible => f.write_str("visible"),
-            Self::Label(text) => write!(f, "label == \"{text}\""),
-            Self::Value(value) => match value {
-                WidgetValue::Text(text) => write!(f, "value == \"{text}\""),
-                _ => write!(f, "value == {}", value.to_text()),
-            },
-            Self::ScrollReady => f.write_str("scroll_ready"),
-            Self::ScrollAt { offset, tolerance } => {
-                write!(
-                    f,
-                    "scroll_at ({:.1}, {:.1}) ± {:.2}",
-                    offset.x, offset.y, tolerance
-                )
-            }
-            Self::Data { pointer, equals } => write!(f, "data {pointer:?} == {equals}"),
-        }
+        let value = serde_json::to_string(self).map_err(|_| fmt::Error)?;
+        f.write_str(&value)
     }
 }
 
@@ -1280,8 +1694,7 @@ pub struct WidgetRef {
     /// If instrumentation provides an explicit id, eguidev uses it verbatim.
     /// Otherwise eguidev generates an opaque hex id that is best-effort stable
     /// within the current app session.
-    #[serde(default)]
-    pub id: Option<String>,
+    pub id: String,
     /// Optional viewport selector (`root` or `vp:...`).
     #[serde(default)]
     pub viewport_id: Option<String>,
@@ -1815,8 +2228,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Anchor, AnchorCheck, FixtureParam, FixtureSpec, RoleState, Vec2, ViewportSel, WidgetRange,
-        WidgetRole, WidgetRoleMeta, WidgetValue, validate_viewport_name,
+        FixtureParam, FixtureSpec, FixtureTargetSpec, Modifiers, RawInputAction, RawInputEvent,
+        RoleState, Vec2, ViewportCondition, ViewportSel, WidgetCondition, WidgetRange, WidgetRole,
+        WidgetRoleMeta, WidgetValue, validate_viewport_name,
     };
 
     #[test]
@@ -1913,14 +2327,14 @@ mod tests {
     fn data_anchor_validation_follows_rfc_6901() {
         let accepted = ["", "/analysed", "/a~0b", "/a~1b", "/nested/0/name"];
         for pointer in accepted {
-            Anchor::data("status.summary", pointer, 3)
+            FixtureTargetSpec::data("status.summary", pointer, 3)
                 .validate()
                 .unwrap_or_else(|error| panic!("pointer {pointer:?} rejected: {error}"));
         }
 
         let rejected = ["analysed", "/a~", "/a~2b"];
         for pointer in rejected {
-            let error = Anchor::data("status.summary", pointer, 3)
+            let error = FixtureTargetSpec::data("status.summary", pointer, 3)
                 .validate()
                 .expect_err("malformed pointer must be rejected");
             assert!(error.contains("RFC 6901"), "{error}");
@@ -1930,37 +2344,86 @@ mod tests {
     #[test]
     fn fixture_validation_reports_a_malformed_data_anchor_pointer() {
         let error = FixtureSpec::new("viewer.mixed", "Mixed games")
-            .anchor("status.summary")
-            .anchor_data("status.summary", "analysed", 3)
+            .ready("status.summary")
+            .ready_data("status.summary", "analysed", 3)
             .validate(true)
             .expect_err("malformed pointer must fail fixture validation");
-        assert!(error.contains("anchor 2"), "{error}");
+        assert!(error.contains("ready 2"), "{error}");
     }
 
     #[test]
-    fn anchor_checks_serialize_with_snake_case_tags() {
+    fn widget_conditions_serialize_as_the_shared_record_shape() {
         let cases = [
-            (AnchorCheck::Visible, serde_json::json!("visible")),
-            (AnchorCheck::ScrollReady, serde_json::json!("scroll_ready")),
             (
-                AnchorCheck::Label("Ready".to_string()),
+                WidgetCondition::visible(),
+                serde_json::json!({ "visible": true }),
+            ),
+            (
+                WidgetCondition::scroll_ready(),
+                serde_json::json!({ "scroll_ready": true }),
+            ),
+            (
+                WidgetCondition::label("Ready"),
                 serde_json::json!({ "label": "Ready" }),
             ),
             (
-                AnchorCheck::Data {
-                    pointer: "/analysed".to_string(),
-                    equals: serde_json::json!(3),
-                },
+                WidgetCondition::data("/analysed", 3),
                 serde_json::json!({ "data": { "pointer": "/analysed", "equals": 3 } }),
             ),
         ];
-        for (check, expected) in cases {
-            assert_eq!(serde_json::to_value(&check).expect("serialize"), expected);
+        for (condition, expected) in cases {
             assert_eq!(
-                serde_json::from_value::<AnchorCheck>(expected).expect("deserialize"),
-                check
+                serde_json::to_value(&condition).expect("serialize"),
+                expected
+            );
+            assert_eq!(
+                serde_json::from_value::<WidgetCondition>(expected).expect("deserialize"),
+                condition
             );
         }
+    }
+
+    #[test]
+    fn absent_conditions_reject_state_fields() {
+        let widget = WidgetCondition {
+            present: Some(false),
+            visible: Some(false),
+            ..WidgetCondition::default()
+        };
+        assert!(widget.validate().is_err());
+
+        let viewport = ViewportCondition {
+            present: Some(false),
+            title_contains: Some("demo".to_string()),
+            ..ViewportCondition::default()
+        };
+        assert!(viewport.validate().is_err());
+    }
+
+    #[test]
+    fn raw_input_uses_the_public_tagged_shape() {
+        let event = RawInputEvent::Key {
+            key: "escape".to_string(),
+            action: RawInputAction::Press,
+            modifiers: Some(Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(event).expect("serialize"),
+            serde_json::json!({
+                "type": "key",
+                "key": "escape",
+                "action": "press",
+                "modifiers": {
+                    "ctrl": false,
+                    "shift": true,
+                    "alt": false,
+                    "command": false,
+                },
+            })
+        );
     }
 
     #[test]

@@ -5,12 +5,6 @@ use crate::types::{Rect, Vec2, WidgetRegistryEntry};
 
 #[derive(Debug, Clone)]
 #[tool_result]
-pub struct WidgetGetResult {
-    pub widget: WidgetRegistryEntry,
-}
-
-#[derive(Debug, Clone)]
-#[tool_result]
 pub struct OverlayHighlightResult {
     pub rect: Rect,
 }

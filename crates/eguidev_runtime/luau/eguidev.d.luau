@@ -1,18 +1,17 @@
 --!strict
 
--- eguidev exposes an egui automation surface to Luau through the `script_eval`
--- MCP tool. Scripts run inside the instrumented app process, against the latest
--- captured frame, so one script can inspect widgets, queue input, wait for
--- state changes, apply fixtures, and capture screenshots without extra round
--- trips.
--- The script's final return value becomes JSON in the MCP result. Logs,
--- assertions, and returned images are recorded alongside it.
--- When the same script is run via `edev smoke`, the smoke runner ignores the
--- final return value and only uses thrown errors/assertions plus logs.
+-- `script_eval` runs strict Luau inside the instrumented app process. Each
+-- script is checked against this exact file before any submitted code runs.
+-- A script can inspect one coherent frame, queue input, wait for state changes,
+-- apply fixtures, and capture images without another MCP round trip.
+-- The final value becomes JSON in `ScriptEvalOutcome`. Image references that
+-- remain reachable from that value also produce MCP image content blocks.
+-- Logs, Eguidev assertions, fixture applications, timing, and egui diagnostics
+-- are present in the same outcome. A failure returns `success = false` with its
+-- source location and does not become an MCP protocol error.
 --
--- This file is the canonical scripting reference. `script_api` and `edev docs`
--- return these built-in definitions; `script_api` also includes app preludes
--- when the app registers them.
+-- This file is the complete scripting reference. `script_api` and `edev docs`
+-- return these bytes without a fence, header, prelude, or generated text.
 --
 -- Model expectations:
 -- - Write strict Luau. Inline `script_eval` scripts are strict even when the
@@ -23,8 +22,8 @@
 --   explicit ids block automation until instrumentation is fixed.
 -- - Generated ids are opaque tokens. They are best-effort stable within the
 --   current app session, but they are not expected to survive restart.
--- - Widget discovery returns handles. Read current frame data through
---   `widget:state()`.
+-- - `eguidev.widget(id)` and `eguidev.viewport(id)` create immutable live
+--   references without a lookup. Read current frame data through `state()`.
 -- - Prefer `fixture()`, waits, and assertions over ad-hoc retries.
 -- - High-level actions auto-settle unless you disable settling explicitly.
 -- - Return `ImageRef` values from `screenshot()` when you want image blocks in
@@ -78,14 +77,6 @@ export type ImageRef = {
 export type ScriptArgValue = string | number | boolean
 
 export type ScriptArgs = { [string]: ScriptArgValue }
-
-declare args: ScriptArgs
-
-export type WidgetFindOptions = {
-    viewport: string?,
-    timeout_ms: number?,
-    poll_interval_ms: number?,
-}
 
 export type WidgetRole =
     "button"
@@ -146,104 +137,45 @@ export type Range = {
     max: number,
 }
 
--- Called on each poll with the latest resolved widget state. The predicate is
--- only called when the widget is present; when the widget is missing, the
--- predicate is skipped and treated as not satisfied. Use
--- `wait_for_widget_absent` / `wait_for_absent` for disappearance waits.
-export type WidgetWaitPredicate = (widget: WidgetState) -> boolean
-
--- Called on each poll with the latest viewport snapshot.
-export type ViewportWaitPredicate = (viewport: ViewportState) -> boolean
-
--- Widgets are returned by `widget_get`, `widget_list`, and other discovery
--- functions. All interactions (click, type, drag, ...) are methods on Widget.
---
--- Every wait takes WaitOptions; every action takes ActionOptions or an
--- action-specific extension of it.
 export type Widget = {
     id: string,
-    viewport_id: string,
+    state: (self: Widget) -> WidgetState?,
+    wait: (
+        self: Widget,
+        condition: WidgetCondition | WidgetPredicate,
+        options: WaitOptions?
+    ) -> WidgetState?,
+    expect: (
+        self: Widget,
+        expectation: WidgetExpectation?,
+        options: WaitOptions?
+    ) -> WidgetState?,
 
-    --- Choosing a wait:
-    ---   widget must exist and be visible   -> widget:wait_for_visible()
-    ---   widget must reach a state          -> widget:wait_for(predicate)
-    ---   scroll area must be stable         -> widget:wait_for_scroll_ready()
-    ---   widget must disappear              -> widget:wait_for_absent()
-    ---   app-wide condition                 -> wait_until(predicate)
-    --- An animated scroll area needs a visibility wait, not a frame count.
-    --- wait_for_frames() counts frames and proves nothing about content.
-
-    --- Poll until this widget exists, is visible, and is not fully clipped.
-    --- This is the same condition pointer input requires, so a widget that
-    --- satisfies this wait can be clicked.
-    --- Returns the terminal widget snapshot on success.
-    wait_for_visible: (self: Widget, options: WaitOptions?) -> WidgetState,
-    --- Poll this widget until `predicate` returns true.
-    --- The predicate receives the latest widget snapshot. When the widget is
-    --- missing, the predicate is skipped (treated as false).
-    --- Returns the terminal widget snapshot on success.
-    --- Throws a timeout error if the predicate never matches.
-    wait_for: (self: Widget, predicate: WidgetWaitPredicate, options: WaitOptions?) -> WidgetState,
-    --- Wait until this widget's scroll_state is initialized and stable across captures.
-    --- Returns the terminal widget snapshot on success.
-    wait_for_scroll_ready: (self: Widget, options: WaitOptions?) -> WidgetState,
-    --- Poll until this widget is no longer present.
-    --- Throws a timeout error if the widget does not disappear in time.
-    wait_for_absent: (self: Widget, options: WaitOptions?) -> (),
-
-    viewport: (self: Widget) -> Viewport,
-    --- Click waits for input to drain and for a clean post-action capture unless
-    --- `settle = false` is passed.
-    click: (self: Widget, options: ActionOptions?) -> (),
-    hover: (self: Widget, options: HoverOptions?) -> (),
-    type_text: (self: Widget, text: string, options: TypeTextOptions?) -> (),
-    focus: (self: Widget, options: ActionOptions?) -> (),
-    --- Set the widget's value. Booleans for checkboxes/toggles, numbers for
-    --- sliders/drag values/combo boxes (zero-based index), strings for text
-    --- edits.
-    set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> (),
-    drag: (self: Widget, to: Pos, options: ActionOptions?) -> (),
-    --- Drag inside this widget. Both coordinates are positions normalized to
-    --- 0 through 1 within the widget rect, not deltas: `relative` is where the
-    --- drag ends and `from` is where it starts, defaulting to the centre.
-    --- `drag_relative({ x = 1, y = 0.5 })` therefore drags the centre to the
-    --- right edge.
-    drag_relative: (self: Widget, relative: Vec, from: Vec?, options: ActionOptions?) -> (),
-    drag_to: (self: Widget, to: Widget, options: ActionOptions?) -> (),
-    scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> (),
-    scroll_to: (self: Widget, options: ScrollToOptions?) -> (),
-    --- Scroll ancestor scroll areas just enough to reveal this widget, then
-    --- wait until the widget is interaction-ready, so the next click succeeds
-    --- without a manual wait. With `settle = false` the offsets are only
-    --- requested and the call returns at once.
-    --- No-op when the widget has no scroll-area ancestor and is already ready.
-    scroll_into_view: (self: Widget, options: ActionOptions?) -> (),
-    state: (self: Widget) -> WidgetState,
+    viewport: (self: Widget) -> Viewport?,
     parent: (self: Widget) -> Widget?,
     children: (self: Widget) -> { Widget },
+
+    click: (self: Widget, options: ClickOptions?) -> (),
+    hover: (self: Widget, options: HoverOptions?) -> (),
+    focus: (self: Widget, options: ActionOptions?) -> (),
+    type_text: (self: Widget, text: string, options: TypeTextOptions?) -> (),
+    set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> (),
+    drag_to: (self: Widget, target: Pos | Widget, options: DragOptions?) -> (),
+    drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> (),
+    scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> (),
+    scroll_to: (self: Widget, options: ScrollToOptions) -> (),
+    scroll_into_view: (self: Widget, options: ActionOptions?) -> (),
+
     text_measure: (self: Widget) -> TextMeasure,
-    -- Checks this widget and its descendants for layout problems. Structure
-    -- resolves against the whole viewport, so a scoped check still recognizes
-    -- an enclosing scroll area or clip region.
-    check_layout: (self: Widget) -> { LayoutIssue },
+    layout_issues: (self: Widget) -> { LayoutIssue },
     screenshot: (self: Widget) -> ImageRef,
-    --- Capture this widget's viewport once and sample positions relative to
-    --- the widget rect's minimum point.
     sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample },
-    --- Capture this widget's viewport once and sample an evenly spaced grid
-    --- over the widget's visible clipped rect.
     sample_grid: (self: Widget, nx: number, ny: number) -> { PixelSample },
-    --- Show a persistent stroke overlay around this widget's interact_rect.
-    --- The highlight remains visible until hide_highlight() is called. Calling
-    --- show_highlight again on the same widget replaces the previous highlight.
-    show_highlight: (self: Widget, color: string) -> HighlightResult,
-    --- Remove the highlight for this widget. No-op if the widget is not
-    --- currently highlighted.
-    hide_highlight: (self: Widget) -> (),
-    --- Show a debug overlay scoped to this widget's subtree.
-    show_debug_overlay: (self: Widget, mode: OverlayDebugMode?, options: OverlayDebugOptions?) -> (),
-    --- Hide the debug overlay for this widget's subtree.
-    hide_debug_overlay: (self: Widget) -> (),
+
+    show_highlight: (self: Widget, color: string, options: ActionOptions?) -> HighlightResult,
+    clear_highlight: (self: Widget, options: ActionOptions?) -> (),
+    show_debug_overlay: (self: Widget, options: DebugOverlayOptions?) -> (),
+    clear_debug_overlay: (self: Widget, options: ActionOptions?) -> (),
 }
 
 -- `(viewport_id, id)` is the one widget identity across handles, states,
@@ -251,6 +183,8 @@ export type Widget = {
 export type WidgetState = {
     id: string,
     viewport_id: string,
+    parent_id: string?,
+    child_ids: { string },
     rect: Rect,
     interact_rect: Rect,
     role: WidgetRole,
@@ -281,6 +215,7 @@ export type WidgetState = {
 }
 
 export type ViewportState = {
+    id: string,
     name: string?,
     title: string?,
     outer_pos: Pos?,
@@ -303,8 +238,8 @@ export type ViewportState = {
 }
 
 export type DumpOptions = {
-    viewport: string?,
-    root: string?,
+    viewport: Viewport?,
+    root: Widget?,
     include_invisible: boolean?,
     fields: ("core" | "full")?,
 }
@@ -383,180 +318,148 @@ export type PixelSample = {
     hex: string,
 }
 
--- Every wait takes WaitOptions; every action takes ActionOptions or an
--- action-specific extension of it.
 export type Viewport = {
     id: string,
-
-    --- Choosing a wait:
-    ---   widget must exist and be visible   -> vp:wait_for_widget_visible(id)
-    ---   widget must reach a state          -> vp:wait_for_widget(id, predicate)
-    ---   widget must disappear              -> vp:wait_for_widget_absent(id)
-    ---   viewport must reach a state        -> vp:wait_for(predicate)
-    ---   queued input must be applied       -> vp:wait_for_settle()
-
-    --- Poll until the widget with the given id exists, is visible, and is not
-    --- fully clipped. This is the same condition pointer input requires.
-    --- Returns the terminal widget snapshot on success.
-    wait_for_widget_visible: (self: Viewport, id: string, options: WaitOptions?) -> WidgetState,
-    wait_for_widget: (
+    state: (self: Viewport) -> ViewportState?,
+    wait: (
         self: Viewport,
-        id: string,
-        predicate: WidgetWaitPredicate,
+        condition: ViewportCondition | ViewportPredicate,
         options: WaitOptions?
-    ) -> WidgetState,
-    --- Poll until the widget with the given id is no longer present.
-    --- Throws a timeout error if the widget does not disappear in time.
-    wait_for_widget_absent: (self: Viewport, id: string, options: WaitOptions?) -> (),
-    --- Poll this viewport until `predicate` returns true.
-    --- The predicate receives the latest viewport snapshot on each poll.
-    --- Returns the terminal viewport snapshot that satisfied the predicate.
-    --- Throws a timeout error if the predicate never matches.
-    wait_for: (self: Viewport, predicate: ViewportWaitPredicate, options: WaitOptions?) -> ViewportState,
-    --- Wait until the viewport has processed pending actions and commands and
-    --- observed a fresh frame. Returns per-phase settle status.
-    --- Throws a timeout error if the viewport does not settle in time.
-    wait_for_settle: (self: Viewport, options: WaitOptions?) -> SettleReport,
-    --- Wait until this viewport has produced a fresh captured snapshot.
-    --- Throws a timeout error if no new capture arrives in time.
-    wait_for_capture: (self: Viewport, options: WaitOptions?) -> (),
-    --- Return new egui diagnostics for this viewport and dismiss only the
-    --- returned entries.
-    egui_diagnostics: (self: Viewport) -> EguiDiagnosticBatch,
-    --- Dismiss retained egui diagnostics for this viewport without returning
-    --- them.
-    clear_egui_diagnostics: (self: Viewport) -> (),
+    ) -> ViewportState?,
+    expect: (
+        self: Viewport,
+        condition: ViewportCondition?,
+        options: WaitOptions?
+    ) -> ViewportState?,
 
-    state: (self: Viewport) -> ViewportState,
-    widget_list: (self: Viewport, options: WidgetListOptions?) -> { Widget },
-    widget_get: (self: Viewport, id: string) -> Widget,
-    --- Returns the topmost widget at the given point. The widget's ancestors
-    --- also occupy the point but are beneath it in the z-order. With
-    --- `all_layers`, returns all overlapping widgets sorted topmost-first.
-    widget_at_point: (self: Viewport, pos: Pos, all_layers: boolean?) -> { Widget },
-    --- Close transient popups/menus and stop active text input for this viewport.
+    settle: (self: Viewport, options: WaitOptions?) -> SettleReport,
+    wait_capture: (self: Viewport, options: WaitOptions?) -> ViewportState,
+    widgets: (self: Viewport, filter: WidgetFilter?) -> { Widget },
+    widgets_at: (self: Viewport, position: Pos) -> { Widget },
+
     dismiss_popups: (self: Viewport, options: ActionOptions?) -> (),
-    --- Simulate a full key press-release cycle. The key argument is a combo
-    --- string: optional modifiers joined by "-", then the key name.
-    ---
-    --- Modifiers (case-insensitive): ctrl, shift, alt, cmd (alias: command).
-    --- Key names are case-insensitive for multi-character names (enter, ArrowUp,
-    --- ESCAPE all work). Single characters are case-sensitive (a ≠ A).
-    ---
-    --- Categories of key names:
-    ---   Navigation: up, down, left, right, home, end, pageup, pagedown
-    ---   Editing:    enter, tab, space, backspace, delete, insert, escape
-    ---   Letters:    a-z, A-Z (case-sensitive)
-    ---   Digits:     0-9, num0-num9
-    ---   Function:   f1-f35
-    ---   Punctuation: minus(-), plus(+), equals(=), comma(,), period(.),
-    ---               colon(:), semicolon(;), slash(/), backslash(\), pipe(|),
-    ---               quote('), backtick(`), openbracket([), closebracket(])
-    ---
-    --- Examples: "enter", "ctrl-a", "shift-tab", "ctrl-shift-z", "cmd-s"
     key: (self: Viewport, key: string, options: KeyOptions?) -> (),
-    --- Paste text into the focused widget via a clipboard paste event.
     paste: (self: Viewport, text: string, options: ActionOptions?) -> (),
-    --- Inject a raw pointer move event (positions in egui points).
-    raw_pointer_move: (self: Viewport, pos: Pos) -> (),
-    --- Inject a raw pointer button event. For normal clicking, use
-    --- Widget:click() instead.
-    raw_pointer_button: (
-        self: Viewport,
-        pos: Pos,
-        button: "primary" | "secondary" | "middle",
-        action: RawInputAction,
-        modifiers: Modifiers?
-    ) -> (),
-    --- Inject a single raw key event (press or release). No text event is
-    --- generated and no press/release pairing is done. For normal key
-    --- simulation, use Viewport:key() instead.
-    raw_key: (
-        self: Viewport,
-        key: string,
-        action: RawInputAction,
-        modifiers: Modifiers?
-    ) -> (),
-    --- Inject a raw text input event (as if from an IME).
-    raw_text: (self: Viewport, text: string) -> (),
-    --- Inject a raw scroll event. Delta is in egui points.
-    raw_scroll: (self: Viewport, delta: Vec, modifiers: Modifiers?) -> (),
-    --- Request OS-level window focus. Only use this for testing focus events
-    --- themselves; all other automation works without OS focus.
     focus: (self: Viewport, options: ActionOptions?) -> (),
-    set_inner_size: (self: Viewport, size: Vec) -> (),
-    set_resize_options: (self: Viewport, options: ResizeOptions) -> (),
+    resize: (self: Viewport, options: ResizeOptions) -> (),
+    input: (self: Viewport, event: RawInputEvent) -> (),
+
+    egui_diagnostics: (self: Viewport) -> EguiDiagnosticBatch,
+    clear_egui_diagnostics: (self: Viewport) -> (),
     screenshot: (self: Viewport) -> ImageRef,
-    --- Capture this viewport once and sample all requested logical positions.
-    --- Positions are converted with the viewport DPI and sampled from exact
-    --- RGBA data before any screenshot JPEG encoding. Out-of-bounds positions
-    --- throw an error naming the image bounds and requested physical pixel.
     sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample },
-    -- Checks the current viewport for layout problems.
-    check_layout: (self: Viewport) -> { LayoutIssue },
-    --- Show a persistent highlight stroke around the given rect. The highlight
-    --- remains visible until hide_highlight() is called. Calling show_highlight
-    --- again with the same rect replaces the previous highlight; different rects
-    --- coexist.
-    show_highlight: (self: Viewport, rect: Rect, color: string) -> HighlightResult,
-    --- Remove all highlights (both widget and rect-based).
-    hide_highlight: (self: Viewport) -> (),
-    -- Enable a persistent debug overlay that visualizes widget layout on this
-    -- viewport. Painted every frame until hide_debug_overlay() is called.
-    -- Always starts from default settings; pass all desired options each call.
-    show_debug_overlay: (
+    layout_issues: (self: Viewport) -> { LayoutIssue },
+
+    show_highlight: (
         self: Viewport,
-        mode: OverlayDebugMode?,
-        options: OverlayDebugOptions?
-    ) -> (),
-    hide_debug_overlay: (self: Viewport) -> (),
+        rect: Rect,
+        color: string,
+        options: ActionOptions?
+    ) -> HighlightResult,
+    clear_highlights: (self: Viewport, options: ActionOptions?) -> (),
+    show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> (),
+    clear_debug_overlay: (self: Viewport, options: ActionOptions?) -> (),
 }
 
 -- High-level actions auto-settle by default. Use `configure()` to change
 -- global timeout, poll interval, and settle behavior.
 export type ActionOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
     settle: boolean?,
 }
 
--- `widget_list` returns the full filtered set for the current frame snapshot.
--- `id_prefix` matches the canonical widget id, whether that id was explicit in
--- instrumentation or generated by eguidev.
-export type WidgetListOptions = {
-    include_invisible: boolean?,
+export type ClickOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    settle: boolean?,
+    button: "primary" | "secondary" | "middle"?,
+    click_count: number?,
+}
+
+export type WidgetFilter = {
     role: WidgetRole?,
     id_prefix: string?,
     label: string?,
     label_contains: string?,
+    visible: boolean?,
+    enabled: boolean?,
+    focused: boolean?,
+    selected: boolean?,
+}
+
+export type WidgetQuery = WidgetFilter & {
+    viewport: Viewport?,
+}
+
+export type ViewportFilter = {
+    name: string?,
+    title: string?,
+    title_contains: string?,
+    focused: boolean?,
 }
 
 export type HoverOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
     settle: boolean?,
     position: Vec?,
     duration_ms: number?,
 }
 
 export type TypeTextOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
     settle: boolean?,
     clear: boolean?,
     enter: boolean?,
 }
 
+export type DragOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    settle: boolean?,
+    from: Vec?,
+}
+
 -- scroll_to targets a scroll area widget. Use offset for explicit coordinates or align for
 -- a coarse jump within the scroll area.
 export type ScrollToOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
     settle: boolean?,
     offset: Vec?,
     align: "top" | "center" | "bottom"?,
 }
 
 export type KeyOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
     settle: boolean?,
     repeat_count: number?,
-    target: string?,
+    target: Widget?,
 }
 
---- "press" or "release" — used by raw input injection methods.
 export type RawInputAction = "press" | "release"
+export type PointerButton = "primary" | "secondary" | "middle"
+
+export type RawInputEvent =
+    { type: "pointer_move", position: Pos }
+    | {
+        type: "pointer_button",
+        position: Pos,
+        button: PointerButton,
+        action: RawInputAction,
+        modifiers: Modifiers?,
+    }
+    | {
+        type: "key",
+        key: string,
+        action: RawInputAction,
+        modifiers: Modifiers?,
+    }
+    | { type: "text", text: string }
+    | { type: "scroll", delta: Vec, modifiers: Modifiers? }
 
 -- Closed set of issue kinds returned by `check_layout()`.
 export type LayoutIssueKind =
@@ -588,7 +491,11 @@ export type OverlayDebugMode =
     | "containers"
 
 -- Unset fields use defaults. Colors are hex "#RRGGBB" or "#RRGGBBAA".
-export type OverlayDebugOptions = {
+export type DebugOverlayOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    settle: boolean?,
+    mode: OverlayDebugMode?,
     -- Defaults to true.
     show_labels: boolean?,
     -- Append pixel dimensions to labels. No effect when show_labels is false.
@@ -605,6 +512,10 @@ export type OverlayDebugOptions = {
 }
 
 export type ResizeOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    settle: boolean?,
+    inner_size: Vec?,
     min_size: Vec?,
     max_size: Vec?,
     increments: Vec?,
@@ -690,32 +601,94 @@ export type SettleReport = {
 export type Fixture = {
     name: string,
     description: string,
-    preconditions: { Anchor }?,
-    anchors: { Anchor },
-    params: { FixtureParam }?,
-    --- Freeform labels the app chose for searching and grouping. There is no
-    --- fixed vocabulary; read `description` for what a fixture actually does.
-    tags: { string }?,
+    preconditions: { FixtureTarget },
+    ready: { FixtureTarget },
+    params: { FixtureParam },
+    tags: { string },
 }
 
--- `data` selects a widget's app-domain `data` with an RFC 6901 pointer. An
--- empty pointer selects the whole value. Absent data and unmatched paths leave
--- the anchor unsatisfied, so the fixture wait continues until its timeout.
--- Point at a value that is only correct once the work is done. A derived flag
--- such as `loaded == 0 of 0` is already true before the work starts, so anchor
--- on the count the fixture installed instead.
-export type AnchorCheck =
-    "visible"
-    | "scroll_ready"
-    | { label: string }
-    | { value: WidgetValue }
-    | { scroll_at: { offset: Vec, tolerance: number } }
-    | { data: { pointer: string, equals: any } }
+export type DataCondition = {
+    pointer: string,
+    equals: any,
+}
 
-export type Anchor = {
-    widget_id: string,
-    viewport_id: string?,
-    check: AnchorCheck,
+export type ScrollAtCondition = {
+    offset: Vec,
+    tolerance: number?,
+}
+
+export type WidgetCondition = {
+    present: boolean?,
+    actionable: boolean?,
+    visible: boolean?,
+    enabled: boolean?,
+    focused: boolean?,
+    selected: boolean?,
+    role: WidgetRole?,
+    label: string?,
+    label_contains: string?,
+    value: WidgetValue?,
+    value_text_contains: string?,
+    scroll_ready: boolean?,
+    scroll_at: ScrollAtCondition?,
+    data: DataCondition?,
+}
+
+export type ViewportCondition = {
+    present: boolean?,
+    name: string?,
+    title: string?,
+    title_contains: string?,
+    focused: boolean?,
+    minimized: boolean?,
+    occluded: boolean?,
+    maximized: boolean?,
+    fullscreen: boolean?,
+    frame_at_least: number?,
+}
+
+export type WidgetPredicate = (state: WidgetState?) -> boolean
+export type ViewportPredicate = (state: ViewportState?) -> boolean
+
+export type RelationExpectation = {
+    widget: Widget,
+    min_gap: number?,
+}
+
+export type PaintExpectation = {
+    min_colors: number?,
+}
+
+export type WidgetExpectation = WidgetCondition & {
+    left_of: RelationExpectation?,
+    above: RelationExpectation?,
+    no_overlap: Widget?,
+    within: Widget?,
+    descendants: { Widget }?,
+    text_fits: boolean?,
+    painted: PaintExpectation?,
+}
+
+export type FixtureTarget = {
+    widget: Widget,
+    condition: WidgetCondition,
+}
+
+export type FixtureOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    wait: boolean?,
+}
+
+export type FixtureObservation = {
+    phase: "precondition" | "ready",
+    widget: Widget,
+    state: WidgetState?,
+}
+
+export type FixtureResult = {
+    values: FixtureValues,
+    observations: { FixtureObservation },
 }
 
 export type ScriptOptions = {
@@ -728,37 +701,32 @@ export type ScriptOptions = {
 export type WaitOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
-    viewport: string?,
 }
 
-export type ViewportLookupOptions = {
-    name: string?,
-    focused: boolean?,
-    title: string?,
-    title_contains: string?,
+export type ErrorCode =
+    "invalid_argument"
+    | "not_found"
+    | "not_actionable"
+    | "instrumentation_fault"
+    | "timeout"
+    | "unsupported"
+    | "fixture_failed"
+    | "diagnostic_failed"
+    | "expectation_failed"
+    | "internal"
+
+export type ErrorTarget = {
+    kind: "widget" | "viewport" | "fixture" | "diagnostic",
+    id: string,
 }
 
-export type ExpectedState = {
-    visible: boolean?,
-    focused: boolean?,
-    enabled: boolean?,
-    selected: boolean?,
-    role: WidgetRole?,
-    label: string?,
-    label_contains: string?,
-    value: WidgetValue?,
-    value_text_contains: string?,
-    --- Restricts lookup and asserts the resolved widget viewport id or semantic name.
-    viewport: string?,
+export type Error = {
+    code: ErrorCode,
+    message: string,
+    operation: string?,
+    target: ErrorTarget?,
+    details: any?,
 }
-
--- Logged values are recorded in the script result payload.
-declare function log(message: any): ()
-
---- Configure global script settings: timeout, poll interval, auto-settle, and
---- whether egui animations remain enabled while automation is attached.
---- Unset fields keep their current values.
-declare function configure(options: ScriptOptions): ()
 
 export type DiagnosticErrorInfo = {
     code: string,
@@ -771,72 +739,30 @@ export type DiagnosticsSnapshot = {
     errors: { [string]: DiagnosticErrorInfo },
 }
 
---- Run one named diagnostic provider and return its JSON payload.
---- Provider failures raise a structured script error.
-declare function diagnostic(name: string): any
---- Run all registered diagnostic providers without failing the collection.
-declare function diagnostics(): DiagnosticsSnapshot
+export type Eguidev = {
+    args: ScriptArgs,
+    root: Viewport,
 
---- Wait for at least `count` more frames to be observed.
---- Returns the ending frame count on success.
---- Throws a timeout error if the requested frames are not observed in time.
---- A frame count proves nothing about content. Prefer a widget or viewport
---- wait whenever the script is really waiting for a state.
---- Frame counting is app-wide, so only `timeout_ms` applies here.
-declare function wait_for_frames(count: number?, options: WaitOptions?): number
---- Wait until the root viewport has produced a fresh captured snapshot.
-declare function wait_for_capture(options: WaitOptions?): ()
---- Poll a predicate until it returns true. The predicate may call yielding helpers.
-declare function wait_until(predicate: () -> boolean, options: WaitOptions?): ()
-declare function root(): Viewport
---- Find a viewport by semantic name, focus state, or title. Exact `title` matches
---- win over `title_contains`.
---- Returns nil when no viewport matches.
---- Throws when multiple viewports match the selected title rule.
-declare function viewport(options: ViewportLookupOptions): Viewport?
-declare function viewports(): { Viewport }
---- Resolve a widget id across all live viewports, waiting for one unique match.
---- Use the `viewport` option when the same id is expected in more than one
---- viewport. Ambiguity is an instrumentation error, not an arbitrary choice.
-declare function widget(id: string, options: WidgetFindOptions?): Widget
---- Resolve a widget id across all live viewports without waiting.
---- Returns nil when absent and still throws on ambiguity.
-declare function try_widget(id: string, options: WidgetFindOptions?): Widget?
---- Snapshot the current widget registry across all viewports for later diffing.
-declare function capture(): Capture
+    log: (value: any) -> (),
+    configure: (options: ScriptOptions) -> (),
 
---- Return a canonical tree dump of captured widgets, grouped by viewport.
-declare function dump(options: DumpOptions?): TreeDump
---- Render the canonical widget tree dump as stable, human-readable text.
-declare function dump_text(options: DumpOptions?): string
+    wait: (predicate: () -> boolean, options: WaitOptions?) -> (),
+    wait_frames: (count: number?, options: WaitOptions?) -> number,
 
---- Apply a registered fixture and wait until its readiness anchors match fresh captures.
---- Widget and viewport handles resolve fresh across fixture boundaries, so rebinding `root()`
---- after each fixture is usually unnecessary.
---- Returns values supplied by the fixture handler.
-declare function fixture(name: string, params: FixtureParams?): FixtureValues
---- Apply a registered fixture without waiting for readiness. Use only for
---- manual setup or when the script intentionally checks intermediate state.
-declare function fixture_raw(name: string, params: FixtureParams?): ()
--- Fixtures are independent baseline setups and must be safe to invoke in any order.
-declare function fixtures(): { Fixture }
+    widget: (id: string) -> Widget,
+    widgets: (query: WidgetQuery?) -> { Widget },
+    viewport: (id: string) -> Viewport,
+    viewports: (filter: ViewportFilter?) -> { Viewport },
 
--- Assertions record pass/fail metadata in the result payload and throw on failure.
-declare function assert(condition: boolean, message: string?): ()
-declare function assert_widget_exists(id: string): ()
---- Wait until a widget exists and every requested state field matches.
---- Failure messages include the last observed widget state.
-declare function expect(id: string, expected: ExpectedState?): WidgetState
---- Wait until no widget with this id resolves across live viewports.
-declare function expect_absent(id: string): ()
---- Assert current geometry relationships after any preceding action has settled.
-declare function expect_left_of(a: string, b: string, min_gap: number?): ()
-declare function expect_above(a: string, b: string, min_gap: number?): ()
-declare function expect_no_overlap(a: string, b: string): ()
-declare function expect_within(inner: string, outer: string): ()
---- Assert that the widget's visible text is not clipped or ellipsized.
-declare function expect_text_fits(id: string): ()
---- Assert that every listed child resolves to a descendant of parent.
-declare function expect_tree(parent: string, children: { string }): ()
---- Assert that a visible widget samples as more than a flat fill.
-declare function expect_painted(id: string, min_colors: number?): ()
+    capture: () -> Capture,
+    dump: (options: DumpOptions?) -> TreeDump,
+    dump_text: (options: DumpOptions?) -> string,
+
+    fixture: (name: string, params: FixtureParams?, options: FixtureOptions?) -> FixtureResult,
+    fixtures: () -> { Fixture },
+
+    diagnostic: (name: string) -> any,
+    diagnostics: () -> DiagnosticsSnapshot,
+}
+
+declare eguidev: Eguidev

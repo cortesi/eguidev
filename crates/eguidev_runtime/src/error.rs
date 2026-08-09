@@ -1,41 +1,65 @@
+pub use base_error::ErrorCode;
 use eguidev::internal::error as base_error;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
-pub struct ToolError {
-    pub(crate) code: ErrorCode,
-    pub(crate) message: String,
-    pub(crate) details: Option<Value>,
-}
+pub struct ToolError(base_error::ToolError);
 
 impl ToolError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            details: None,
-        }
+        Self(base_error::ToolError::new(code, message))
     }
 
     pub fn with_details(mut self, details: Value) -> Self {
-        self.details = Some(details);
+        self.0 = self.0.with_details(details);
         self
     }
 
+    pub(crate) fn code(&self) -> ErrorCode {
+        self.0.code()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn message(&self) -> &str {
+        self.0.message()
+    }
+
+    pub(crate) fn details(&self) -> Option<&Value> {
+        self.0.details()
+    }
+
     pub(crate) fn into_tmcp(self) -> tmcp::ToolError {
-        let code = self.code.as_str();
-        let message = self.message;
+        let (code, message, operation, target, details, source) = self.0.into_parts();
+        let code = code.as_str();
         let mut structured = serde_json::json!({
             "error": {
                 "code": code,
                 "message": message,
             }
         });
-        if let Some(details) = self.details
+        if let Some(details) = details
             && let Some(error) = structured.get_mut("error")
             && let Some(map) = error.as_object_mut()
         {
             map.insert("details".to_string(), details);
+        }
+        if let Some(operation) = operation
+            && let Some(error) = structured.get_mut("error")
+            && let Some(map) = error.as_object_mut()
+        {
+            map.insert("operation".to_string(), operation.into());
+        }
+        if let Some(target) = target
+            && let Some(error) = structured.get_mut("error")
+            && let Some(map) = error.as_object_mut()
+        {
+            map.insert("target".to_string(), serde_json::json!(target));
+        }
+        if let Some(source) = source
+            && let Some(error) = structured.get_mut("error")
+            && let Some(map) = error.as_object_mut()
+        {
+            map.insert("source".to_string(), source.into());
         }
         tmcp::ToolError::new(code, message).with_structured(structured)
     }
@@ -43,80 +67,12 @@ impl ToolError {
 
 impl From<base_error::ToolError> for ToolError {
     fn from(error: base_error::ToolError) -> Self {
-        let (code, message, details) = error.into_parts();
-        Self {
-            code: code.into(),
-            message,
-            details,
-        }
+        Self(error)
     }
 }
 
 impl From<ToolError> for tmcp::ToolError {
     fn from(error: ToolError) -> Self {
         error.into_tmcp()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorCode {
-    NotFound,
-    Ambiguous,
-    InvalidRef,
-    TargetNotFocusable,
-    FocusNotAcquired,
-    TargetDetached,
-    DuplicateWidgetId,
-    ViewportNameFault,
-    InvisibleInteraction,
-    OverrideNotConsumed,
-    SampleOutOfBounds,
-    SampleNotVisible,
-    SampleAreaTooSmall,
-    Timeout,
-    Internal,
-}
-
-impl ErrorCode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::NotFound => "not_found",
-            Self::Ambiguous => "ambiguous",
-            Self::InvalidRef => "invalid_ref",
-            Self::TargetNotFocusable => "target_not_focusable",
-            Self::FocusNotAcquired => "focus_not_acquired",
-            Self::TargetDetached => "target_detached",
-            Self::DuplicateWidgetId => "duplicate_widget_id",
-            Self::ViewportNameFault => "viewport_name_fault",
-            Self::InvisibleInteraction => "invisible_interaction",
-            Self::OverrideNotConsumed => "override_not_consumed",
-            Self::SampleOutOfBounds => "sample_out_of_bounds",
-            Self::SampleNotVisible => "sample_not_visible",
-            Self::SampleAreaTooSmall => "sample_area_too_small",
-            Self::Timeout => "timeout",
-            Self::Internal => "internal",
-        }
-    }
-}
-
-impl From<base_error::ErrorCode> for ErrorCode {
-    fn from(code: base_error::ErrorCode) -> Self {
-        match code {
-            base_error::ErrorCode::NotFound => Self::NotFound,
-            base_error::ErrorCode::Ambiguous => Self::Ambiguous,
-            base_error::ErrorCode::InvalidRef => Self::InvalidRef,
-            base_error::ErrorCode::TargetNotFocusable => Self::TargetNotFocusable,
-            base_error::ErrorCode::FocusNotAcquired => Self::FocusNotAcquired,
-            base_error::ErrorCode::TargetDetached => Self::TargetDetached,
-            base_error::ErrorCode::DuplicateWidgetId => Self::DuplicateWidgetId,
-            base_error::ErrorCode::ViewportNameFault => Self::ViewportNameFault,
-            base_error::ErrorCode::InvisibleInteraction => Self::InvisibleInteraction,
-            base_error::ErrorCode::OverrideNotConsumed => Self::OverrideNotConsumed,
-            base_error::ErrorCode::SampleOutOfBounds => Self::SampleOutOfBounds,
-            base_error::ErrorCode::SampleNotVisible => Self::SampleNotVisible,
-            base_error::ErrorCode::SampleAreaTooSmall => Self::SampleAreaTooSmall,
-            base_error::ErrorCode::Timeout => Self::Timeout,
-            base_error::ErrorCode::Internal => Self::Internal,
-        }
     }
 }

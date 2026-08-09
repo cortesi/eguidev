@@ -335,7 +335,7 @@ impl ViewportState {
                 }
                 let lookup = lock(&self.viewport_lookup, "viewport lookup lock");
                 lookup.get(&value).copied().ok_or_else(|| {
-                    ToolError::new(ErrorCode::InvalidRef, "Unknown viewport").with_details(json!({
+                    ToolError::new(ErrorCode::NotFound, "Unknown viewport").with_details(json!({
                         "selectors": {
                             "viewport_id": value,
                         }
@@ -429,7 +429,7 @@ impl ViewportNameFault {
         let message = format!(
             "Viewport name instrumentation faults detected: {summary}{suffix}; fix instrumentation before continuing automation"
         );
-        ToolError::new(ErrorCode::ViewportNameFault, message).with_details(json!({
+        ToolError::new(ErrorCode::InstrumentationFault, message).with_details(json!({
             "reason": "viewport_name_faults",
             "invalid_names": self.invalid_names.into_iter().map(|entry| {
                 let viewport_id = viewport_id_to_string(entry.viewport_id);

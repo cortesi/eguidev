@@ -3,8 +3,6 @@
 use std::{any::Any, sync::Arc};
 
 use egui::{Context, FullOutput};
-#[cfg(target_os = "macos")]
-use eguidev::internal::presentation::PresentationStatus;
 use eguidev::internal::{
     devmcp::RuntimeHooks,
     presentation::Presentation,
@@ -14,15 +12,14 @@ use tokio::sync::Notify;
 
 #[cfg(target_os = "macos")]
 use crate::macos::{
-    configure_session, disconnect_session, platform_window_states, presentation_status,
-    reassert_background_policy,
+    configure_session, disconnect_session, platform_window_states, reassert_background_policy,
 };
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
+    automation::{DEFAULT_SCRIPT_EVAL_TIMEOUT_MS, script::run_script_eval},
     egui_diagnostics::EguiDiagnosticJournal,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
     server::start_server,
-    tools::{DEFAULT_SCRIPT_EVAL_TIMEOUT_MS, script::run_script_eval},
 };
 
 #[derive(Debug)]
@@ -150,32 +147,30 @@ impl Runtime {
 
     pub(crate) async fn configure_presentation(
         &self,
+        session_id: u64,
         presentation: Presentation,
     ) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
             let frame_complete = self.frame_notify.notified();
-            let needs_frame = configure_session(presentation).await?;
+            let needs_frame = configure_session(session_id, presentation).await?;
             if needs_frame {
                 frame_complete.await;
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = presentation;
+            let _ = (session_id, presentation);
         }
         Ok(())
     }
 
-    pub(crate) async fn disconnect_presentation(&self) -> Result<(), String> {
+    pub(crate) async fn disconnect_presentation(&self, session_id: u64) -> Result<(), String> {
         #[cfg(target_os = "macos")]
-        disconnect_session().await?;
+        disconnect_session(session_id).await?;
+        #[cfg(not(target_os = "macos"))]
+        let _ = session_id;
         Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) async fn presentation_status(&self) -> PresentationStatus {
-        presentation_status().await
     }
 
     fn capture_screenshot_events(&self, inner: &Inner, events: &[egui::Event]) {

@@ -1,26 +1,18 @@
-local require_occlusion = args.require_occlusion == true
-local force_occluder = args.force_occluder == true
+local require_occlusion = eguidev.args.require_occlusion == true
+local force_occluder = eguidev.args.force_occluder == true
 
 local function occluder_present(): boolean
-    for _, viewport in ipairs(viewports()) do
-        local ok = pcall(function()
-            viewport:widget_get("viewports.occluder.status")
-        end)
-        if ok then
-            return true
-        end
-    end
-    return false
+    return eguidev.widget("viewports.occluder.status"):state() ~= nil
 end
 
 local function wait_for_occluder(label: string): boolean
     local ok, error_or_state = pcall(function()
-        return root():wait_for(function(_state)
+        return eguidev.root:wait(function(_state)
             return occluder_present()
         end)
     end)
     if not ok then
-        log(label .. ": " .. tostring(error_or_state))
+        eguidev.log(label .. ": " .. tostring(error_or_state))
         return false
     end
     return true
@@ -35,21 +27,23 @@ end
 
 local function root_occlusion_matches(expected_occluded: boolean, label: string): boolean
     local ok, state_or_error = pcall(function()
-        return root():wait_for(function(state)
-            return effective_occluded(state) == expected_occluded
+        return eguidev.root:wait(function(state)
+            return state ~= nil and effective_occluded(state) == expected_occluded
         end)
     end)
     if not ok then
-        log(label .. ": " .. tostring(state_or_error))
+        eguidev.log(label .. ": " .. tostring(state_or_error))
         return false
     end
     local state = state_or_error :: ViewportState
     return effective_occluded(state)
 end
 
-fixture("basic.default")
+eguidev.fixture("basic.default")
 
-local normal = root():state()
+local normal = eguidev.root:state()
+
+assert(normal ~= nil)
 assert(normal.minimized ~= true, "root viewport should not start minimized")
 if force_occluder then
     assert(
@@ -63,26 +57,30 @@ if force_occluder then
     end
 else
     if effective_occluded(normal) then
-        log("root viewport started with occlusion already reported")
+        eguidev.log("root viewport started with occlusion already reported")
     end
 end
 
-fixture("viewports.occluded")
+eguidev.fixture("viewports.occluded")
 
 local cover_present = wait_for_occluder("occluder viewport did not appear")
 assert(cover_present, "occluder viewport should be present")
 
-local reported_occlusion = effective_occluded(root():state())
+local covered_state = eguidev.root:state()
+assert(covered_state ~= nil)
+local reported_occlusion = effective_occluded(covered_state)
 
 if require_occlusion then
     reported_occlusion = root_occlusion_matches(true, "root viewport did not report occluded")
     assert(reported_occlusion, "root viewport should report occluded when covered")
 elseif not reported_occlusion then
-    log("root viewport did not report occluded")
+    eguidev.log("root viewport did not report occluded")
 end
 
-fixture("basic.default")
-local reset_occluded = effective_occluded(root():state())
+eguidev.fixture("basic.default")
+local reset_state = eguidev.root:state()
+assert(reset_state ~= nil)
+local reset_occluded = effective_occluded(reset_state)
 if force_occluder then
     assert(
         wait_for_occluder("forced occluder disappeared after reset"),
@@ -93,8 +91,9 @@ if force_occluder then
         assert(reset_occluded, "root viewport should remain occluded while the occluder is forced")
     end
 else
-    if effective_occluded(root():state()) then
-        log("root viewport still reported occlusion after reset")
+    local final_state = eguidev.root:state()
+    if final_state ~= nil and effective_occluded(final_state) then
+        eguidev.log("root viewport still reported occlusion after reset")
     end
 end
 

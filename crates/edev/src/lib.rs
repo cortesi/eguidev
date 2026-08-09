@@ -6,7 +6,8 @@ use std::{
     fmt::Display,
     fs,
     future::{Future, pending},
-    io::{self as std_io, IsTerminal},
+    io as std_io,
+    net::{Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
     pin::Pin,
     process::ExitStatus,
@@ -31,12 +32,6 @@ use serde::{
     Deserialize, Serialize,
     de::{DeserializeOwned, Error as SerdeDeError},
 };
-use syntect::{
-    easy::HighlightLines,
-    highlighting::ThemeSet,
-    parsing::SyntaxSet,
-    util::{LinesWithEndings, as_24_bit_terminal_escaped},
-};
 use tmcp::{
     Arguments, Error as McpError, Server, ServerCtx, ServerHandler,
     schema::{
@@ -54,1721 +49,43 @@ use tokio::{
     time::sleep,
 };
 
+mod command;
 mod config;
+mod failure_bundle;
+mod fixture_projection;
 mod instance_registry;
 #[cfg(test)]
 mod observations;
 mod process_lifecycle;
 mod recording;
+mod session;
 
+pub use command::run;
+use command::{
+    call_script_eval_result, decode_tool_result, script_eval_error_message, start_app_client,
+};
 use config::{
     DumpConfig, EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, RecordConfig,
     SmokeConfig,
 };
+use failure_bundle::{
+    BundleContext, image_extension, pretty_json, safe_file_component, write_failure_bundle,
+};
+use fixture_projection::{FIXTURE_APPLY_SCRIPT, FIXTURE_LIST_SCRIPT, parse_fixture_list};
+use session::AppSession;
 
-/// Tool names forwarded from edev to the app MCP server.
-const PROXIED_TOOL_NAMES: &[&str] = &["script_eval", "script_api"];
 /// Timeout used for proxied request/response round-trips between edev and app MCP.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum app stdout/stderr bytes retained for diagnostics.
 const APP_LOG_TAIL_LIMIT: usize = 4 * 1024 * 1024;
 /// Extra log bytes retained before trimming back to the stable tail limit.
 const APP_LOG_TAIL_TRIM_SLACK: usize = 256 * 1024;
-/// Bundle note used when stdout is reserved for the MCP transport.
-const STDOUT_TRANSPORT_NOTE: &str = "stdout is consumed by the stdio MCP transport for this launch; no app stdout log is available.\n";
 /// Maximum attempts for restart when the app MCP transport closes mid-handshake.
 const RESTART_MAX_ATTEMPTS: usize = 3;
 /// Fresh-capture attempts used while waiting for the native window to enter ScreenCaptureKit.
 const RECORD_WINDOW_DISCOVERY_ATTEMPTS: usize = 3;
-
-/// Run the eguidev launcher on stdio.
-pub async fn run() -> Result<(), EdevError> {
-    let args = env::args_os().collect::<Vec<_>>();
-    if process_lifecycle::is_supervisor_invocation(&args) {
-        return process_lifecycle::run_hidden_supervisor(&args)
-            .await
-            .map_err(EdevError::AppStart);
-    }
-    match EdevCommand::from_env()? {
-        EdevCommand::Help(help) => {
-            print!("{help}");
-            Ok(())
-        }
-        EdevCommand::Docs => {
-            print!("{}", render_script_docs());
-            Ok(())
-        }
-        EdevCommand::Mcp(config) => run_mcp(config).await,
-        EdevCommand::Smoke(config) => run_smoke(config).await,
-        EdevCommand::Record(config) => run_record(config).await,
-        EdevCommand::Eval(config) => run_eval(config).await,
-        EdevCommand::Dump(config) => run_dump(config).await,
-        EdevCommand::Fixture(config) => run_fixture(config).await,
-    }
-}
-
-/// Run the long-lived `edev mcp` launcher server over stdio without starting the app eagerly.
-async fn run_mcp(config: McpConfig) -> Result<(), EdevError> {
-    let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let mut raw_state = State::new(config.launch, instance_registry);
-    raw_state.enable_idle_shutdown(config.idle_shutdown_after);
-    let state = Arc::new(AsyncMutex::new(raw_state));
-    let server_state = Arc::clone(&state);
-    let server = Server::new(move || EdevServer {
-        state: Arc::clone(&server_state),
-    });
-    let server_future = server.serve_stdio();
-    tokio::pin!(server_future);
-    let idle_future = wait_for_idle_shutdown(Arc::clone(&state), config.idle_shutdown_after);
-    tokio::pin!(idle_future);
-    let result = tokio::select! {
-        result = &mut server_future => result.map_err(EdevError::Mcp),
-        _ = shutdown_signal() => Ok(()),
-        _ = &mut idle_future => Ok(()),
-    };
-    {
-        let mut state_guard = state.lock().await;
-        if let Err(error) = state_guard.shutdown().await {
-            if result.is_ok() {
-                return Err(error);
-            }
-            eprintln!("edev: shutdown failed: {error}");
-        }
-    }
-    result
-}
-
-/// Run a smoke suite while recording the selected app window.
-async fn run_record(config: RecordConfig) -> Result<(), EdevError> {
-    recording::ensure_supported()?;
-    prepare_record_outfile(&config.outfile)?;
-
-    let session =
-        start_smoke_session(&config.smoke, "record command could not reach the app").await?;
-    let title = match config.window_title {
-        Some(title) if !title.trim().is_empty() => {
-            wait_for_capture_refresh(&session.client, config.smoke.suite.script_timeout).await?;
-            title
-        }
-        Some(_) | None => {
-            root_viewport_title(&session.client, config.smoke.suite.script_timeout).await?
-        }
-    };
-    let app_process_ids = recording::process_group_members(session.process_group_id())
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    let recording_request = recording::RecordingRequest {
-        outfile: config.outfile.clone(),
-        title,
-        app_process_ids,
-    };
-    let recorder = match start_recording_with_retries(
-        &session.client,
-        config.smoke.suite.script_timeout,
-        recording_request,
-    )
-    .await
-    {
-        Ok(recorder) => recorder,
-        Err(error) => {
-            if let Err(shutdown_error) = session.shutdown().await {
-                eprintln!("edev: shutdown failed after recording startup error: {shutdown_error}");
-            }
-            return Err(error);
-        }
-    };
-
-    let suite_config = config.smoke.clone();
-    let suite_client = Arc::clone(&session.client);
-    let suite_bundle_context = session.bundle_context(&suite_config);
-    let suite_task = tokio::spawn(async move {
-        run_smoke_suite(suite_client, &suite_config, suite_bundle_context).await
-    });
-    tokio::pin!(suite_task);
-    let suite_result = tokio::select! {
-        result = &mut suite_task => match result {
-            Ok(result) => result,
-            Err(error) => Err(EdevError::SmokeFailed(format!("smoke task failed: {error}"))),
-        },
-        _ = shutdown_signal() => {
-            suite_task.abort();
-            Err(EdevError::RecordFailed(
-                "recording interrupted by shutdown signal".to_string(),
-            ))
-        },
-    };
-    let recording_result = recorder.stop();
-    let shutdown_result = session.shutdown().await;
-    finish_record_run(
-        suite_result,
-        recording_result,
-        shutdown_result,
-        config.smoke.verbose_output,
-    )
-}
-
-/// Run the checked-in smoke suite once and exit non-zero on any smoke failure.
-async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
-    if config.list {
-        return print_smoke_list(&config);
-    }
-
-    let session = start_smoke_session(&config, "smoke runner could not reach the app").await?;
-    let bundle_context = session.bundle_context(&config);
-    let result = run_smoke_suite(Arc::clone(&session.client), &config, bundle_context).await;
-    let shutdown_result = session.shutdown().await;
-    finish_smoke_run(result, shutdown_result, config.verbose_output)
-}
-
-/// Finish a smoke command with the historical failure precedence.
-fn finish_smoke_run(
-    result: Result<SuiteResult, EdevError>,
-    shutdown_result: Result<(), EdevError>,
-    verbose_output: bool,
-) -> Result<(), EdevError> {
-    match (result, shutdown_result) {
-        (Ok(summary), Ok(())) => {
-            for line in summary.render_lines(verbose_output) {
-                println!("{line}");
-            }
-            if summary.success() {
-                Ok(())
-            } else {
-                Err(EdevError::SmokeFailed("smoke suite failed".to_string()))
-            }
-        }
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
-    }
-}
-
-/// Finish a record command while preserving smoke failures over recording errors.
-fn finish_record_run(
-    suite_result: Result<SuiteResult, EdevError>,
-    recording_result: Result<recording::RecordingSummary, EdevError>,
-    shutdown_result: Result<(), EdevError>,
-    verbose_output: bool,
-) -> Result<(), EdevError> {
-    match suite_result {
-        Err(error) => {
-            if let Err(recording_error) = recording_result {
-                eprintln!("edev: recording finalization failed: {recording_error}");
-            }
-            if let Err(shutdown_error) = shutdown_result {
-                eprintln!("edev: shutdown failed: {shutdown_error}");
-            }
-            Err(error)
-        }
-        Ok(summary) => {
-            for line in summary.render_lines(verbose_output) {
-                println!("{line}");
-            }
-            let recording_summary = match recording_result {
-                Ok(summary) => summary,
-                Err(error) => {
-                    if let Err(shutdown_error) = shutdown_result {
-                        eprintln!("edev: shutdown failed after recording error: {shutdown_error}");
-                    }
-                    return Err(error);
-                }
-            };
-            shutdown_result?;
-            let file_size = fs::metadata(&recording_summary.outfile)
-                .map(|metadata| metadata.len())
-                .unwrap_or(recording_summary.file_size)
-                .max(recording_summary.file_size);
-            eprintln!(
-                "edev: wrote recording {} ({} bytes)",
-                recording_summary.outfile.display(),
-                file_size
-            );
-            if summary.success() {
-                Ok(())
-            } else {
-                Err(EdevError::SmokeFailed("smoke suite failed".to_string()))
-            }
-        }
-    }
-}
-
-/// Active smoke runner session shared by `edev smoke` and `edev record`.
-struct SmokeSession {
-    /// App launch settings used for bundle metadata.
-    launch: LaunchConfig,
-    /// Mutable app lifecycle state.
-    state: State,
-    /// Connected app MCP client.
-    client: Arc<AsyncMutex<tmcp::Client<()>>>,
-}
-
-impl SmokeSession {
-    /// Build failure-bundle context while the app process is still alive.
-    fn bundle_context(&self, config: &SmokeConfig) -> Option<BundleContext> {
-        config.bundle_dir.as_ref().and_then(|dir| {
-            self.state.app.as_ref().map(|app| BundleContext {
-                dir: dir.clone(),
-                launch: self.launch.clone(),
-                stderr_buffer: Arc::clone(&app.stderr_buffer),
-                stdout_buffer: Arc::clone(&app.stdout_buffer),
-                collection_timeout_ms: config
-                    .suite
-                    .script_timeout
-                    .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-                    .unwrap_or(10_000),
-            })
-        })
-    }
-
-    /// Return the app process group id, if the launched process is still alive.
-    fn process_group_id(&self) -> Option<i32> {
-        self.state.app.as_ref().and_then(|app| app.process_group_id)
-    }
-
-    /// Shut down the app and unregister the launcher.
-    async fn shutdown(mut self) -> Result<(), EdevError> {
-        self.state.shutdown().await
-    }
-}
-
-/// Start an app-backed smoke session and connect to the app MCP server.
-async fn start_smoke_session(
-    config: &SmokeConfig,
-    unavailable_message: &str,
-) -> Result<SmokeSession, EdevError> {
-    let launch = required_smoke_launch(config)?;
-    let instance_registry = InstanceRegistry::register(&launch)?;
-    let mut state = State::new(launch.clone(), instance_registry);
-    let client = start_proxy_target(&mut state, unavailable_message).await?;
-    Ok(SmokeSession {
-        launch,
-        state,
-        client,
-    })
-}
-
-/// Return the launch config required for app-backed smoke execution.
-fn required_smoke_launch(config: &SmokeConfig) -> Result<LaunchConfig, EdevError> {
-    config.launch.clone().ok_or_else(|| {
-        EdevError::InvalidArgs(
-            "no app command configured; add app.command to .edev.toml or pass one after --"
-                .to_string(),
-        )
-    })
-}
-
-/// Start native recording, waiting on fresh captures if the window server lags startup.
-async fn start_recording_with_retries(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    timeout: Option<Duration>,
-    request: recording::RecordingRequest,
-) -> Result<recording::NativeRecording, EdevError> {
-    let mut last_error = None;
-    for attempt in 0..RECORD_WINDOW_DISCOVERY_ATTEMPTS {
-        if attempt > 0 {
-            wait_for_capture_refresh(client, timeout).await?;
-        }
-        match recording::start(&request) {
-            Ok(recording) => return Ok(recording),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        EdevError::RecordFailed("recording could not find a native window".to_string())
-    }))
-}
-
-/// Internal script used to synchronize native window probing with a fresh app capture.
-const WAIT_FOR_CAPTURE_SCRIPT: &str = r#"
-wait_for_capture()
-return true
-"#;
-
-/// Wait for the app to publish a fresh capture through the existing script API.
-async fn wait_for_capture_refresh(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    timeout: Option<Duration>,
-) -> Result<(), EdevError> {
-    let timeout_ms = timeout.map(|duration| duration.as_millis() as u64);
-    let outcome = call_script_eval(client, WAIT_FOR_CAPTURE_SCRIPT, timeout_ms)
-        .await
-        .map_err(EdevError::RecordFailed)?;
-    if outcome.success {
-        Ok(())
-    } else {
-        Err(EdevError::RecordFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "failed to wait for a fresh capture before recording",
-        )))
-    }
-}
-
-/// Internal script used to get the root viewport title for native window matching.
-const ROOT_VIEWPORT_TITLE_SCRIPT: &str = r#"
-wait_for_capture()
-return root():state().title
-"#;
-
-/// Read the root viewport title through the existing script API.
-async fn root_viewport_title(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    timeout: Option<Duration>,
-) -> Result<String, EdevError> {
-    let timeout_ms = timeout.map(|duration| duration.as_millis() as u64);
-    let outcome = call_script_eval(client, ROOT_VIEWPORT_TITLE_SCRIPT, timeout_ms)
-        .await
-        .map_err(EdevError::RecordFailed)?;
-    if !outcome.success {
-        return Err(EdevError::RecordFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "failed to read root viewport title",
-        )));
-    }
-    let title = outcome
-        .value
-        .as_ref()
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .ok_or_else(|| {
-            EdevError::RecordFailed(
-                "root viewport has no title; pass --window-title <TITLE>".to_string(),
-            )
-        })?;
-    Ok(title.to_string())
-}
-
-/// Prepare the recording output path before starting the app.
-fn prepare_record_outfile(path: &Path) -> Result<(), EdevError> {
-    if path.is_dir() {
-        return Err(EdevError::RecordFailed(format!(
-            "recording output is a directory: {}",
-            path.display()
-        )));
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
-/// Print discovered smoke scripts in text or JSON list format.
-fn print_smoke_list(config: &SmokeConfig) -> Result<(), EdevError> {
-    let scripts = discover_suite_scripts(&config.suite)?;
-    if config.list_json {
-        let output = serde_json::to_string_pretty(&scripts).map_err(|error| {
-            EdevError::SmokeFailed(format!("failed to render list JSON: {error}"))
-        })?;
-        println!("{output}");
-        return Ok(());
-    }
-    for script in scripts {
-        println!("{}\t{}", script.path, script.size);
-    }
-    Ok(())
-}
-
-/// Run one Luau script through `script_eval`, print JSON, and write returned images.
-async fn run_eval(config: EvalConfig) -> Result<(), EdevError> {
-    let source = fs::read_to_string(&config.script)?;
-    let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let mut state = State::new(config.launch.clone(), instance_registry);
-    let client = start_proxy_target(&mut state, "eval command could not reach the app").await?;
-
-    let result = run_eval_script(client, &config, source).await;
-    let shutdown_result = state.shutdown().await;
-    match (result, shutdown_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) | (Err(_), Err(error)) => Err(error),
-    }
-}
-
-/// Launch the app, optionally apply a fixture, print a dump, and exit.
-async fn run_dump(config: DumpConfig) -> Result<(), EdevError> {
-    let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let mut state = State::new(config.launch.clone(), instance_registry);
-    let client = start_proxy_target(&mut state, "dump command could not reach the app").await?;
-    let result = run_dump_script(client, &config).await;
-    let shutdown_result = state.shutdown().await;
-    match (result, shutdown_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) | (Err(_), Err(error)) => Err(error),
-    }
-}
-
-/// Execute the generated dump script and emit only the requested dump payload.
-async fn run_dump_script(
-    client: Arc<AsyncMutex<tmcp::Client<()>>>,
-    config: &DumpConfig,
-) -> Result<(), EdevError> {
-    let result = call_script_eval_result(
-        &client,
-        ScriptEvalRequest {
-            script: dump_script(config),
-            timeout_ms: config.timeout.map(|duration| duration.as_millis() as u64),
-            options: Some(ScriptEvalOptions {
-                source_name: Some("@edev_dump.luau".to_string()),
-                args: Default::default(),
-            }),
-        },
-    )
-    .await
-    .map_err(EdevError::EvalFailed)?;
-    let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
-    if !outcome.success {
-        return Err(EdevError::EvalFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "dump script failed",
-        )));
-    }
-    let value = outcome
-        .value
-        .ok_or_else(|| EdevError::EvalFailed("dump script returned no value".to_string()))?;
-    let output = dump_output(config, &value)?;
-    emit_dump_output(config, &output)?;
-    Ok(())
-}
-
-/// Build the internal Luau script used by `edev dump`.
-fn dump_script(config: &DumpConfig) -> String {
-    let mut lines = Vec::new();
-    if let Some(fixture) = &config.fixture {
-        let fixture = luau_string(fixture);
-        if let Some(params) = luau_fixture_params(&config.params) {
-            lines.push(format!("fixture({fixture}, {params})"));
-        } else {
-            lines.push(format!("fixture({fixture})"));
-        }
-    } else if config.wait_for_capture {
-        lines.push("wait_for_capture()".to_string());
-    }
-    lines.push(format!("return {}", dump_call(config)));
-    lines.join("\n")
-}
-
-/// Build the final dump helper call for the generated Luau script.
-fn dump_call(config: &DumpConfig) -> String {
-    let function = if config.json { "dump" } else { "dump_text" };
-    let Some(viewport) = &config.viewport else {
-        return format!("{function}()");
-    };
-    format!("{function}({{ viewport = {} }})", luau_string(viewport))
-}
-
-/// Convert the script return value into the exact CLI payload.
-fn dump_output(config: &DumpConfig, value: &serde_json::Value) -> Result<String, EdevError> {
-    if config.json {
-        return serde_json::to_string_pretty(value).map_err(|error| {
-            EdevError::EvalFailed(format!("failed to encode dump JSON: {error}"))
-        });
-    }
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| EdevError::EvalFailed("dump_text returned a non-string value".to_string()))
-}
-
-/// Write dump output to the configured destination.
-fn emit_dump_output(config: &DumpConfig, output: &str) -> Result<(), EdevError> {
-    if let Some(path) = &config.out {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(path, output)?;
-    } else {
-        println!("{output}");
-    }
-    Ok(())
-}
-
-/// Quote a Rust string as a Luau string literal.
-fn luau_string(value: &str) -> String {
-    serde_json::to_string(value).expect("string serialization cannot fail")
-}
-
-/// Render typed fixture params as a Luau table literal.
-fn luau_fixture_params(params: &BTreeMap<String, ScriptArgValue>) -> Option<String> {
-    if params.is_empty() {
-        return None;
-    }
-    let entries = params
-        .iter()
-        .map(|(key, value)| format!("[{}] = {}", luau_string(key), luau_scalar(value)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(format!("{{ {entries} }}"))
-}
-
-/// Render one typed scalar as a Luau literal.
-fn luau_scalar(value: &ScriptArgValue) -> String {
-    match value {
-        ScriptArgValue::String(value) => luau_string(value),
-        ScriptArgValue::Int(value) => value.to_string(),
-        ScriptArgValue::Float(value) => value.to_string(),
-        ScriptArgValue::Bool(value) => value.to_string(),
-    }
-}
-
-/// Execute one script against a launched app and emit the eval result.
-async fn run_eval_script(
-    client: Arc<AsyncMutex<tmcp::Client<()>>>,
-    config: &EvalConfig,
-    source: String,
-) -> Result<(), EdevError> {
-    let result = call_script_eval_result(
-        &client,
-        ScriptEvalRequest {
-            script: source,
-            timeout_ms: config.timeout.map(|duration| duration.as_millis() as u64),
-            options: Some(ScriptEvalOptions {
-                source_name: Some(config.script.display().to_string()),
-                args: config.args.clone(),
-            }),
-        },
-    )
-    .await
-    .map_err(EdevError::EvalFailed)?;
-    let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
-    let image_files = write_eval_images(config, &result, &outcome)?;
-    let output = eval_output_value(&outcome, &image_files)?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&output)
-            .map_err(|error| EdevError::EvalFailed(format!("failed to encode JSON: {error}")))?
-    );
-    if outcome.success {
-        Ok(())
-    } else {
-        Err(EdevError::EvalFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "script evaluation failed",
-        )))
-    }
-}
-
-/// Start the app, list or apply a fixture, then either exit or wait for ctrl-c.
-async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
-    let instance_registry = InstanceRegistry::register(&config.launch)?;
-    let mut state = State::new(config.launch.clone(), instance_registry);
-    let client = start_proxy_target(&mut state, "fixture command could not reach the app").await?;
-
-    // Query registered fixtures.
-    let fixtures =
-        match eval_fixture_script(&client, "return fixtures()", "failed to query fixtures")
-            .await
-            .and_then(parse_fixture_list)
-        {
-            Ok(fixtures) => fixtures,
-            Err(error) => {
-                state.shutdown().await?;
-                return Err(error);
-            }
-        };
-
-    if fixtures.is_empty() {
-        if config.json || config.markdown {
-            print_fixture_list(&config, &fixtures)?;
-        } else {
-            println!("No fixtures registered.");
-        }
-        state.shutdown().await?;
-        return Ok(());
-    }
-
-    let Some(name) = config.name else {
-        // List-only mode.
-        print_fixture_list(&config, &fixtures)?;
-        state.shutdown().await?;
-        return Ok(());
-    };
-
-    // Validate the fixture name exists.
-    let Some(fixture) = fixtures.iter().find(|f| f.name == name) else {
-        eprintln!("error: unknown fixture \"{name}\"\n");
-        print_fixture_table(&fixtures);
-        state.shutdown().await?;
-        return Err(EdevError::FixtureFailed(format!("unknown fixture: {name}")));
-    };
-
-    let report = match call_fixture_tool(&client, &name, &config.params, !config.no_wait).await {
-        Ok(report) => report,
-        Err(error) => {
-            state.shutdown().await?;
-            return Err(error);
-        }
-    };
-    print_fixture_apply_report(fixture, &report);
-    if config.no_wait {
-        println!("anchors: not waited (--no-wait)");
-    }
-
-    if config.dump {
-        match eval_fixture_script(&client, "return dump_text()", "post-fixture dump failed").await {
-            Ok(outcome) => print_fixture_dump(outcome)?,
-            Err(error) => {
-                state.shutdown().await?;
-                return Err(error);
-            }
-        }
-    }
-
-    eprintln!("Fixture \"{name}\" applied. Press ctrl-c to stop.");
-    shutdown_signal().await;
-    state.shutdown().await?;
-    Ok(())
-}
-
-/// Apply one fixture through the target app's typed MCP fixture tool.
-async fn call_fixture_tool(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    name: &str,
-    params: &BTreeMap<String, ScriptArgValue>,
-    wait_for_anchors: bool,
-) -> Result<FixtureApplyReport, EdevError> {
-    let request = FixtureToolRequest {
-        name,
-        params: fixture_param_values(params),
-        timeout_ms: None,
-    };
-    let tool_name = if wait_for_anchors {
-        "fixture"
-    } else {
-        "fixture_apply"
-    };
-    let arguments = Arguments::from_struct(request).map_err(|error| {
-        EdevError::FixtureFailed(format!("failed to encode fixture request: {error}"))
-    })?;
-    let result = client
-        .lock()
-        .await
-        .call_tool(tool_name.to_string(), arguments)
-        .await
-        .map_err(|error| EdevError::FixtureFailed(error.to_string()))?;
-    if result.is_error() {
-        return Err(EdevError::FixtureFailed(tool_result_error_message(
-            &result,
-            "fixture application failed",
-        )));
-    }
-    parse_structured_tool_result(&result, tool_name).map_err(|error| {
-        EdevError::FixtureFailed(format!("failed to decode fixture result: {error}"))
-    })
-}
-
-/// Convert CLI scalar args into typed fixture values.
-fn fixture_param_values(
-    params: &BTreeMap<String, ScriptArgValue>,
-) -> BTreeMap<String, WidgetValue> {
-    params
-        .iter()
-        .map(|(key, value)| (key.clone(), script_arg_to_widget_value(value)))
-        .collect()
-}
-
-/// Convert one parsed CLI scalar into the fixture value wire type.
-fn script_arg_to_widget_value(value: &ScriptArgValue) -> WidgetValue {
-    match value {
-        ScriptArgValue::String(value) => WidgetValue::Text(value.clone()),
-        ScriptArgValue::Int(value) => WidgetValue::Int(*value),
-        ScriptArgValue::Float(value) => WidgetValue::Float(*value),
-        ScriptArgValue::Bool(value) => WidgetValue::Bool(*value),
-    }
-}
-
-/// Extract a useful message from an errored tool result.
-fn tool_result_error_message(result: &CallToolResult, fallback_message: &str) -> String {
-    result
-        .text()
-        .map(str::to_string)
-        .or_else(|| {
-            result
-                .structured_content
-                .as_ref()
-                .and_then(extract_error_message)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| fallback_message.to_string())
-}
-
-/// Decode a structured MCP tool result, accepting text JSON as a fallback.
-fn parse_structured_tool_result<T: DeserializeOwned>(
-    result: &CallToolResult,
-    tool_name: &str,
-) -> Result<T, String> {
-    decode_tool_result(result, tool_name, &format!("{tool_name} response"))
-}
-
-/// Decodes structured content or the first JSON text block with stable domain errors.
-fn decode_tool_result<T: DeserializeOwned>(
-    result: &CallToolResult,
-    tool_name: &str,
-    decoded_name: &str,
-) -> Result<T, String> {
-    result
-        .extract_as(ToolResultMode::StructuredOrFirstJsonText)
-        .map_err(|error| match error {
-            ToolResultDecodeError::Extract(ToolResultExtractError::MissingTextContent) => {
-                format!("{tool_name} response was missing JSON content")
-            }
-            ToolResultDecodeError::Extract(ToolResultExtractError::InvalidJsonText { message }) => {
-                format!("failed to parse {tool_name} response: {message}")
-            }
-            ToolResultDecodeError::Deserialize { message } => {
-                format!("failed to decode {decoded_name}: {message}")
-            }
-            other => format!("failed to parse {tool_name} response: {other}"),
-        })
-}
-
-/// Print the textual dump returned by `dump_text()`.
-fn print_fixture_dump(outcome: ScriptEvalOutcome) -> Result<(), EdevError> {
-    let value = outcome
-        .value
-        .ok_or_else(|| EdevError::FixtureFailed("dump_text() returned no value".to_string()))?;
-    let text = value.as_str().ok_or_else(|| {
-        EdevError::FixtureFailed("dump_text() returned a non-string value".to_string())
-    })?;
-    println!();
-    println!("{text}");
-    Ok(())
-}
-
-/// Print the typed fixture application report.
-fn print_fixture_apply_report(fixture: &FixtureSpec, report: &FixtureApplyReport) {
-    println!("Fixture: {}", fixture.name);
-    if !fixture.description.is_empty() {
-        println!("{}", fixture.description);
-    }
-    if !report.params.is_empty() {
-        println!("params:");
-        for (name, value) in &report.params {
-            println!("  {name}: {}", format_widget_value(value));
-        }
-    }
-    if !report.values.is_empty() {
-        println!("values:");
-        for (name, value) in &report.values {
-            println!("  {name}: {}", format_widget_value(value));
-        }
-    }
-    if !report.anchors.is_empty() {
-        println!("anchors:");
-        for anchor in &report.anchors {
-            println!("  {}", format_anchor_report(anchor));
-        }
-    }
-}
-
-/// Format one readiness anchor returned by the fixture tool.
-fn format_anchor_report(anchor: &FixtureAnchorReport) -> String {
-    let state = if anchor.satisfied { "ok" } else { "pending" };
-    let target = match &anchor.viewport_id {
-        Some(viewport_id) => format!("{} in {}", anchor.widget_id, viewport_id),
-        None => anchor.widget_id.clone(),
-    };
-    format!("[{state}] {target} {} - {}", anchor.check, anchor.detail)
-}
-
-/// Print fixture metadata in the requested list format.
-fn print_fixture_list(config: &FixtureConfig, fixtures: &[FixtureSpec]) -> Result<(), EdevError> {
-    if config.json {
-        println!("{}", pretty_json(&fixtures)?);
-    } else if config.markdown {
-        print_fixture_markdown(fixtures);
-    } else {
-        print_fixture_table(fixtures);
-    }
-    Ok(())
-}
-
-/// Print fixture metadata as a Markdown table.
-fn print_fixture_markdown(fixtures: &[FixtureSpec]) {
-    println!("| Fixture | Description | Params | Tags | Anchors |");
-    println!("| --- | --- | --- | --- | --- |");
-    for fixture in fixtures {
-        println!(
-            "| {} | {} | {} | {} | {} |",
-            markdown_cell(&fixture.name),
-            markdown_cell(&fixture.description),
-            markdown_cell(&fixture_params_summary(&fixture.params)),
-            markdown_cell(&fixture.tags.join(", ")),
-            fixture.anchors.len()
-        );
-    }
-}
-
-/// Escape a Markdown table cell.
-fn markdown_cell(value: &str) -> String {
-    value.replace('|', "\\|")
-}
-
-/// Request sent to the app-side `fixture` MCP tool.
-#[derive(Debug, Serialize)]
-struct FixtureToolRequest<'a> {
-    /// Fixture name to apply.
-    name: &'a str,
-    /// Validated user-supplied fixture params.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    params: BTreeMap<String, WidgetValue>,
-    /// Optional app-side wait timeout override.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timeout_ms: Option<u64>,
-}
-
-/// Structured response from the app-side `fixture` MCP tool.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FixtureApplyReport {
-    /// Validated params used by the fixture handler.
-    #[serde(default)]
-    params: BTreeMap<String, WidgetValue>,
-    /// Values returned by the fixture handler.
-    #[serde(default)]
-    values: BTreeMap<String, WidgetValue>,
-    /// Final readiness state for static and dynamic anchors.
-    #[serde(default)]
-    anchors: Vec<FixtureAnchorReport>,
-}
-
-/// Readiness state for one anchor after applying a fixture.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FixtureAnchorReport {
-    /// Target widget id.
-    widget_id: String,
-    /// Optional target viewport id.
-    #[serde(default)]
-    viewport_id: Option<String>,
-    /// Anchor check kind.
-    check: String,
-    /// Whether the check was satisfied.
-    satisfied: bool,
-    /// Human-readable state detail.
-    detail: String,
-    /// Raw state snapshot, when available.
-    #[serde(default)]
-    current_state: Option<serde_json::Value>,
-}
-
-/// Summarize all declared fixture params for table output.
-fn fixture_params_summary(params: &[FixtureParam]) -> String {
-    if params.is_empty() {
-        return String::new();
-    }
-    params
-        .iter()
-        .map(fixture_param_summary)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Summarize one declared fixture param for table output.
-fn fixture_param_summary(param: &FixtureParam) -> String {
-    let mut parts = vec![format!("{}: {}", param.name, param_kind_name(param.kind))];
-    if let Some(default) = &param.default {
-        parts.push(format!("default {}", format_widget_value(default)));
-    }
-    if !param.choices.is_empty() {
-        parts.push(format!(
-            "choices {}",
-            param
-                .choices
-                .iter()
-                .map(format_widget_value)
-                .collect::<Vec<_>>()
-                .join("/")
-        ));
-    }
-    if param.min.is_some() || param.max.is_some() {
-        parts.push(format!(
-            "range {}..{}",
-            param
-                .min
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-inf".to_string()),
-            param
-                .max
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "inf".to_string())
-        ));
-    }
-    parts.join(" ")
-}
-
-/// Return the CLI display name for a fixture param kind.
-fn param_kind_name(kind: ParamKind) -> &'static str {
-    match kind {
-        ParamKind::Bool => "bool",
-        ParamKind::Int => "int",
-        ParamKind::Float => "float",
-        ParamKind::Text => "text",
-    }
-}
-
-/// Format a fixture value for human-readable CLI output.
-fn format_widget_value(value: &WidgetValue) -> String {
-    match value {
-        WidgetValue::Text(value) => format!("{value:?}"),
-        WidgetValue::Bool(_) | WidgetValue::Float(_) | WidgetValue::Int(_) => value.to_text(),
-    }
-}
-
-/// Start the app and resolve the proxied client, shutting down on startup failures.
-async fn start_proxy_target(
-    state: &mut State,
-    unavailable_message: &str,
-) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, EdevError> {
-    match state.restart().await? {
-        LifecycleStartStatus::Running => {}
-        LifecycleStartStatus::StartupFailed(output) => {
-            state.shutdown().await?;
-            return Err(EdevError::AppStart(output));
-        }
-    }
-
-    match state.proxy_target() {
-        Ok(client) => Ok(client),
-        Err(error) => {
-            let message = error.text().unwrap_or(unavailable_message).to_string();
-            state.shutdown().await?;
-            Err(EdevError::AppStart(message))
-        }
-    }
-}
-
-/// Call `script_eval` on the connected app and parse the outcome.
-async fn call_script_eval(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    script: &str,
-    timeout_ms: Option<u64>,
-) -> Result<ScriptEvalOutcome, String> {
-    let result = call_script_eval_result(
-        client,
-        ScriptEvalRequest {
-            script: script.to_string(),
-            timeout_ms: timeout_ms.or(Some(10_000)),
-            options: None,
-        },
-    )
-    .await?;
-    parse_script_eval_outcome(&result)
-}
-
-/// Call the app-side `script_eval` tool and preserve all returned content blocks.
-async fn call_script_eval_result(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    request: ScriptEvalRequest,
-) -> Result<CallToolResult, String> {
-    let request = script_eval_request_value(request);
-    let client = client.lock().await;
-    client
-        .call_tool("script_eval".to_string(), request)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-/// Decode image content blocks from the eval result into deterministic files.
-fn write_eval_images(
-    config: &EvalConfig,
-    result: &CallToolResult,
-    outcome: &ScriptEvalOutcome,
-) -> Result<BTreeMap<String, PathBuf>, EdevError> {
-    let Some(images) = outcome.images.as_ref() else {
-        return Ok(BTreeMap::new());
-    };
-    fs::create_dir_all(&config.out_dir)?;
-    let mut files = BTreeMap::new();
-    let stem = config
-        .script
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("script");
-    for image in images {
-        let block = result.content.get(image.content_index).ok_or_else(|| {
-            EdevError::EvalFailed(format!(
-                "image {} referenced missing content block {}",
-                image.id, image.content_index
-            ))
-        })?;
-        let ContentBlock::Image(content) = block else {
-            return Err(EdevError::EvalFailed(format!(
-                "image {} referenced non-image content block {}",
-                image.id, image.content_index
-            )));
-        };
-        let path = config.out_dir.join(format!(
-            "{}-{}.{}",
-            safe_file_component(stem),
-            safe_file_component(&image.id),
-            image_extension(&content.mime_type)
-        ));
-        let bytes = content.data_bytes().map_err(|error| {
-            EdevError::EvalFailed(format!("failed to decode image {}: {error}", image.id))
-        })?;
-        fs::write(&path, bytes)?;
-        files.insert(image.id.clone(), path);
-    }
-    Ok(files)
-}
-
-/// Add image file paths to the printed eval JSON.
-fn eval_output_value(
-    outcome: &ScriptEvalOutcome,
-    image_files: &BTreeMap<String, PathBuf>,
-) -> Result<serde_json::Value, EdevError> {
-    let mut value = serde_json::to_value(outcome).map_err(|error| {
-        EdevError::EvalFailed(format!("failed to serialize eval outcome: {error}"))
-    })?;
-    let Some(images) = value
-        .get_mut("images")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return Ok(value);
-    };
-    for image in images {
-        let Some(id) = image.get("id").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let Some(path) = image_files.get(id) else {
-            continue;
-        };
-        if let Some(image) = image.as_object_mut() {
-            image.insert(
-                "file".to_string(),
-                serde_json::Value::String(path.display().to_string()),
-            );
-        }
-    }
-    Ok(value)
-}
-
-/// Information needed to write a failure bundle while the app is still running.
-#[derive(Clone)]
-struct BundleContext {
-    /// Root directory for all failure bundles in this smoke run.
-    dir: PathBuf,
-    /// App launch settings to record in `meta.json`.
-    launch: LaunchConfig,
-    /// Tail-capped app stderr captured since launch.
-    stderr_buffer: Arc<Mutex<Vec<u8>>>,
-    /// Tail-capped app stdout captured since launch when available.
-    stdout_buffer: Arc<Mutex<Vec<u8>>>,
-    /// Timeout for bundle collection script evaluation.
-    collection_timeout_ms: u64,
-}
-
-/// Payload returned by the internal bundle snapshot collection script.
-#[derive(Debug, Deserialize)]
-struct BundleSnapshotCollection {
-    /// Full structured tree dump.
-    tree: serde_json::Value,
-    /// Full text tree dump.
-    text: String,
-    /// Viewport screenshots captured by the collection script.
-    #[serde(deserialize_with = "deserialize_bundle_shots")]
-    shots: Vec<BundleShot>,
-    /// Non-fatal screenshot collection errors.
-    #[serde(default)]
-    #[serde(deserialize_with = "deserialize_bundle_errors")]
-    errors: Vec<BundleCollectionError>,
-}
-
-/// One viewport screenshot entry from the collection script.
-#[derive(Debug, Deserialize)]
-struct BundleShot {
-    /// Canonical viewport id such as `root` or `vp:<hex>`.
-    viewport_id: Option<String>,
-    /// Semantic viewport name when one was registered.
-    name: Option<String>,
-    /// Image reference returned by `Viewport:screenshot()`.
-    image: BundleImageRef,
-}
-
-/// Image reference returned by the Luau script runtime.
-#[derive(Debug, Deserialize)]
-struct BundleImageRef {
-    /// Runtime image id used to find the corresponding MCP image block.
-    id: String,
-}
-
-/// Non-fatal bundle collection error returned by an internal script.
-#[derive(Debug, Deserialize, Serialize)]
-struct BundleCollectionError {
-    /// Collection phase that failed.
-    kind: String,
-    /// Viewport id involved in the failure when available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    viewport_id: Option<String>,
-    /// Semantic viewport name involved in the failure when available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    /// Human-readable error message.
-    message: String,
-}
-
-/// Internal Luau script used to collect frame artifacts after a smoke failure.
-const BUNDLE_COLLECTION_SCRIPT: &str = r#"
-wait_for_capture()
-local shots = {}
-local errors = {}
-for _, viewport in ipairs(viewports()) do
-    local state = viewport:state()
-    local ok, image = pcall(function()
-        return viewport:screenshot()
-    end)
-    if ok then
-        table.insert(shots, {
-            viewport_id = viewport.id,
-            name = state.name,
-            image = image,
-        })
-    else
-        table.insert(errors, {
-            kind = "screenshot",
-            viewport_id = viewport.id,
-            name = state.name,
-            message = tostring(image),
-        })
-    end
-end
-return {
-    tree = dump({ fields = "full" }),
-    text = dump_text({ fields = "full" }),
-    shots = shots,
-    errors = errors,
-}
-"#;
-
-/// Internal Luau script used to collect diagnostics after frame artifacts are written.
-const BUNDLE_DIAGNOSTICS_SCRIPT: &str = r#"
-return diagnostics()
-"#;
-
-/// Deserialize Luau's ambiguous empty table as an empty screenshot list.
-fn deserialize_bundle_shots<'de, D>(deserializer: D) -> Result<Vec<BundleShot>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserialize_luau_array(deserializer, "screenshot")
-}
-
-/// Deserialize Luau's ambiguous empty table as an empty collection error list.
-fn deserialize_bundle_errors<'de, D>(
-    deserializer: D,
-) -> Result<Vec<BundleCollectionError>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    deserialize_luau_array(deserializer, "collection error")
-}
-
-/// Deserialize a Luau array while accepting an empty table encoded as `{}`.
-fn deserialize_luau_array<'de, D, T>(deserializer: D, label: &str) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    match value {
-        serde_json::Value::Array(values) => values
-            .into_iter()
-            .map(serde_json::from_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(SerdeDeError::custom),
-        serde_json::Value::Object(map) if map.is_empty() => Ok(Vec::new()),
-        other => Err(SerdeDeError::custom(format!(
-            "expected {label} array, got {other}"
-        ))),
-    }
-}
-
-/// Convert arbitrary script/image names into portable path components.
-fn safe_file_component(value: &str) -> String {
-    let safe = value
-        .chars()
-        .map(|ch| match ch {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' => ch,
-            _ => '-',
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string();
-    if safe.is_empty() {
-        "image".to_string()
-    } else {
-        safe
-    }
-}
-
-/// Choose a file extension for an MCP image content MIME type.
-fn image_extension(mime_type: &str) -> &'static str {
-    match mime_type {
-        "image/jpeg" => "jpg",
-        "image/png" => "png",
-        "image/webp" => "webp",
-        _ => "bin",
-    }
-}
-
-/// Write one deterministic failure bundle for a failed smoke script.
-async fn write_failure_bundle(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    context: &BundleContext,
-    script_path: &str,
-    round: Option<u32>,
-    args: &ScriptArgs,
-    outcome: &ScriptEvalOutcome,
-) -> Result<(), EdevError> {
-    let bundle_key = match round {
-        Some(round) => format!("{script_path}-round-{round}"),
-        None => script_path.to_string(),
-    };
-    let bundle_dir = context.dir.join(format!(
-        "{}-{}",
-        safe_file_component(&bundle_key),
-        stable_hash8(&bundle_key)
-    ));
-    replace_dir(&bundle_dir)?;
-    fs::write(
-        bundle_dir.join("meta.json"),
-        bundle_meta(context, script_path, round, args, outcome)?,
-    )?;
-    fs::write(bundle_dir.join("failure.txt"), failure_text(outcome)?)?;
-    fs::write(
-        bundle_dir.join("app.stderr.log"),
-        snapshot_output(&context.stderr_buffer),
-    )?;
-    fs::write(
-        bundle_dir.join("app.stdout.log"),
-        stdout_bundle_text(&context.stdout_buffer),
-    )?;
-
-    let collection_result = match call_script_eval_result(
-        client,
-        ScriptEvalRequest {
-            script: BUNDLE_COLLECTION_SCRIPT.to_string(),
-            timeout_ms: Some(context.collection_timeout_ms),
-            options: Some(ScriptEvalOptions {
-                source_name: Some(format!("<bundle:{script_path}>")),
-                args: ScriptArgs::default(),
-            }),
-        },
-    )
-    .await
-    {
-        Ok(result) => Some(result),
-        Err(message) => {
-            fs::write(
-                bundle_dir.join("collection-error.txt"),
-                format!("bundle collection failed: {message}\n"),
-            )?;
-            None
-        }
-    };
-
-    let collection = match collection_result.as_ref() {
-        Some(result) => match parse_script_eval_outcome(result) {
-            Ok(collection_outcome) if collection_outcome.success => {
-                match collection_outcome.value {
-                    Some(value) => {
-                        match serde_json::from_value::<BundleSnapshotCollection>(value) {
-                            Ok(collection) => Some(collection),
-                            Err(error) => {
-                                append_collection_error(
-                                    &bundle_dir,
-                                    format!("invalid bundle payload: {error}\n"),
-                                )?;
-                                None
-                            }
-                        }
-                    }
-                    None => {
-                        append_collection_error(
-                            &bundle_dir,
-                            "bundle collection script returned no value\n",
-                        )?;
-                        None
-                    }
-                }
-            }
-            Ok(collection_outcome) => {
-                append_collection_error(
-                    &bundle_dir,
-                    format!(
-                        "bundle collection script failed: {}\n",
-                        script_eval_error_message(collection_outcome.error.as_ref(), "failed")
-                    ),
-                )?;
-                None
-            }
-            Err(error) => {
-                append_collection_error(
-                    &bundle_dir,
-                    format!("failed to decode bundle collection result: {error}\n"),
-                )?;
-                None
-            }
-        },
-        None => None,
-    };
-
-    if let (Some(result), Some(collection)) = (collection_result.as_ref(), collection.as_ref()) {
-        fs::write(bundle_dir.join("tree.json"), pretty_json(&collection.tree)?)?;
-        fs::write(bundle_dir.join("tree.txt"), &collection.text)?;
-        if !collection.errors.is_empty() {
-            append_collection_error(
-                &bundle_dir,
-                format!(
-                    "bundle snapshot collection errors:\n{}",
-                    pretty_json(&collection.errors)?
-                ),
-            )?;
-        }
-        if let Err(error) = write_bundle_images(&bundle_dir, result, collection) {
-            append_collection_error(
-                &bundle_dir,
-                format!("bundle image extraction failed: {error}\n"),
-            )?;
-        }
-    } else {
-        fs::write(bundle_dir.join("tree.json"), "{}\n")?;
-        fs::write(bundle_dir.join("tree.txt"), "bundle collection failed\n")?;
-    }
-    fs::write(
-        bundle_dir.join("diagnostics.json"),
-        pretty_json(&collect_bundle_diagnostics(client, context, script_path).await?)?,
-    )?;
-    Ok(())
-}
-
-/// Collect diagnostics for a bundle without coupling them to tree/screenshot capture.
-async fn collect_bundle_diagnostics(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    context: &BundleContext,
-    script_path: &str,
-) -> Result<serde_json::Value, EdevError> {
-    let fallback = serde_json::json!({
-        "values": {},
-        "errors": {
-            "_collection": {
-                "code": "collection_failed",
-                "message": "bundle diagnostics collection failed",
-            },
-        },
-    });
-    let result = match call_script_eval_result(
-        client,
-        ScriptEvalRequest {
-            script: BUNDLE_DIAGNOSTICS_SCRIPT.to_string(),
-            timeout_ms: Some(context.collection_timeout_ms),
-            options: Some(ScriptEvalOptions {
-                source_name: Some(format!("<bundle-diagnostics:{script_path}>")),
-                args: ScriptArgs::default(),
-            }),
-        },
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(message) => {
-            return Ok(serde_json::json!({
-                "values": {},
-                "errors": {
-                    "_collection": {
-                        "code": "collection_failed",
-                        "message": format!("bundle diagnostics failed: {message}"),
-                    },
-                },
-            }));
-        }
-    };
-    let outcome = match parse_script_eval_outcome(&result) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            return Ok(serde_json::json!({
-                "values": {},
-                "errors": {
-                    "_collection": {
-                        "code": "collection_failed",
-                        "message": format!("failed to decode bundle diagnostics: {error}"),
-                    },
-                },
-            }));
-        }
-    };
-    if !outcome.success {
-        return Ok(serde_json::json!({
-            "values": {},
-            "errors": {
-                "_collection": {
-                    "code": "collection_failed",
-                    "message": script_eval_error_message(outcome.error.as_ref(), "bundle diagnostics failed"),
-                },
-            },
-        }));
-    }
-    Ok(outcome.value.unwrap_or(fallback))
-}
-
-/// Append one collection warning to `collection-error.txt`.
-fn append_collection_error(bundle_dir: &Path, message: impl AsRef<str>) -> Result<(), EdevError> {
-    use std::io::Write;
-
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(bundle_dir.join("collection-error.txt"))?;
-    file.write_all(message.as_ref().as_bytes())?;
-    Ok(())
-}
-
-/// Replace a deterministic bundle directory with an empty directory.
-fn replace_dir(path: &Path) -> Result<(), EdevError> {
-    if path.is_dir() {
-        fs::remove_dir_all(path)?;
-    } else if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::create_dir_all(path)?;
-    Ok(())
-}
-
-/// Build `meta.json` for a failure bundle.
-fn bundle_meta(
-    context: &BundleContext,
-    script_path: &str,
-    round: Option<u32>,
-    args: &ScriptArgs,
-    outcome: &ScriptEvalOutcome,
-) -> Result<String, EdevError> {
-    let script = match round {
-        Some(round) => serde_json::json!({
-            "path": script_path,
-            "round": round,
-            "args": args,
-        }),
-        None => serde_json::json!({
-            "path": script_path,
-            "args": args,
-        }),
-    };
-    let value = serde_json::json!({
-        "script": script,
-        "fixtures": &outcome.fixtures,
-        "app": {
-            "command": &context.launch.command,
-            "cwd": context.launch.cwd.display().to_string(),
-        },
-        "eguidev_version": env!("CARGO_PKG_VERSION"),
-        "failure": {
-            "message": script_eval_error_message(outcome.error.as_ref(), "script failed"),
-            "details": outcome.error.as_ref().and_then(|error| error.details.clone()),
-            "error": &outcome.error,
-            "egui_diagnostics": &outcome.egui_diagnostics,
-        },
-    });
-    pretty_json(&value)
-}
-
-/// Render the human-readable failure summary for `failure.txt`.
-fn failure_text(outcome: &ScriptEvalOutcome) -> Result<String, EdevError> {
-    let mut text = String::new();
-    text.push_str(&format!(
-        "failure: {}\n",
-        script_eval_error_message(outcome.error.as_ref(), "script failed")
-    ));
-    if let Some(error) = &outcome.error {
-        if let Some(code) = &error.code {
-            text.push_str(&format!("code: {code}\n"));
-        }
-        if let Some(location) = &error.location {
-            text.push_str(&format!(
-                "location: {}:{}\n",
-                location.line,
-                location.column.unwrap_or(1)
-            ));
-        }
-        if let Some(details) = &error.details {
-            text.push_str("\ndetails:\n");
-            text.push_str(&pretty_json(details)?);
-        }
-    }
-    if !outcome.logs.is_empty() {
-        text.push_str("\nlogs:\n");
-        for log in &outcome.logs {
-            text.push_str("- ");
-            text.push_str(log);
-            text.push('\n');
-        }
-    }
-    if !outcome.assertions.is_empty() {
-        text.push_str("\nassertions:\n");
-        text.push_str(&pretty_json(&outcome.assertions)?);
-    }
-    if !outcome.fixtures.is_empty() {
-        text.push_str("\nfixtures:\n");
-        text.push_str(&pretty_json(&outcome.fixtures)?);
-    }
-    if !outcome.egui_diagnostics.is_empty() {
-        text.push_str("\negui diagnostics:\n");
-        text.push_str(&pretty_json(&outcome.egui_diagnostics)?);
-    }
-    Ok(text)
-}
-
-/// Write viewport screenshot image blocks referenced by the collection payload.
-fn write_bundle_images(
-    bundle_dir: &Path,
-    result: &CallToolResult,
-    collection: &BundleSnapshotCollection,
-) -> Result<(), EdevError> {
-    for shot in &collection.shots {
-        let image = collection_image_content(result, &shot.image.id)?;
-        let name = shot
-            .name
-            .as_deref()
-            .filter(|name| !name.is_empty())
-            .or(shot.viewport_id.as_deref())
-            .unwrap_or(&shot.image.id);
-        let path = bundle_dir.join(format!(
-            "viewport-{}.{}",
-            safe_file_component(name),
-            image_extension(&image.mime_type)
-        ));
-        let bytes = image.data_bytes().map_err(|error| {
-            EdevError::EvalFailed(format!("failed to decode image {}: {error}", shot.image.id))
-        })?;
-        fs::write(path, bytes)?;
-    }
-    Ok(())
-}
-
-/// Return the MCP image content block for a collected image id.
-fn collection_image_content<'a>(
-    result: &'a CallToolResult,
-    image_id: &str,
-) -> Result<&'a ImageContent, EdevError> {
-    let outcome = parse_script_eval_outcome(result).map_err(EdevError::EvalFailed)?;
-    let image = outcome
-        .images
-        .as_ref()
-        .and_then(|images| images.iter().find(|image| image.id == image_id))
-        .ok_or_else(|| EdevError::EvalFailed(format!("missing bundle image {image_id}")))?;
-    let block = result.content.get(image.content_index).ok_or_else(|| {
-        EdevError::EvalFailed(format!(
-            "image {} referenced missing content block {}",
-            image.id, image.content_index
-        ))
-    })?;
-    let ContentBlock::Image(content) = block else {
-        return Err(EdevError::EvalFailed(format!(
-            "image {} referenced non-image content block {}",
-            image.id, image.content_index
-        )));
-    };
-    Ok(content)
-}
-
-/// Serialize bundle JSON with a trailing newline for stable files.
-fn pretty_json(value: &impl Serialize) -> Result<String, EdevError> {
-    let mut text = serde_json::to_string_pretty(value).map_err(|error| {
-        EdevError::EvalFailed(format!("failed to serialize bundle JSON: {error}"))
-    })?;
-    text.push('\n');
-    Ok(text)
-}
-
-/// Stable eight-hex hash for deterministic bundle directory names.
-fn stable_hash8(value: &str) -> String {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{:08x}", hash as u32)
-}
-
-/// Run a fixture-related script and convert script failures into fixture errors.
-async fn eval_fixture_script(
-    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
-    script: &str,
-    fallback_message: &str,
-) -> Result<ScriptEvalOutcome, EdevError> {
-    match call_script_eval(client, script, None).await {
-        Ok(outcome) if outcome.success => Ok(outcome),
-        Ok(outcome) => Err(EdevError::FixtureFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            fallback_message,
-        ))),
-        Err(message) => Err(EdevError::FixtureFailed(message)),
-    }
-}
-
-/// Decode the `fixtures()` result into the checked-in fixture metadata shape.
-fn parse_fixture_list(outcome: ScriptEvalOutcome) -> Result<Vec<FixtureSpec>, EdevError> {
-    serde_json::from_value(
-        outcome
-            .value
-            .ok_or_else(|| EdevError::FixtureFailed("fixtures() returned no value".to_string()))?,
-    )
-    .map_err(|error| EdevError::FixtureFailed(format!("failed to decode fixtures list: {error}")))
-}
-
-/// Prefer the runtime's script error text and fall back to a caller-provided message.
-fn script_eval_error_message(error: Option<&ScriptErrorInfo>, fallback_message: &str) -> String {
-    error
-        .map(|error| error.message.as_str())
-        .unwrap_or(fallback_message)
-        .to_string()
-}
-
-/// Print a formatted fixture table to stdout.
-fn print_fixture_table(fixtures: &[FixtureSpec]) {
-    let max_name = fixtures
-        .iter()
-        .map(|f| f.name.len())
-        .max()
-        .unwrap_or(0)
-        .max(4);
-    for f in fixtures {
-        let mut details = Vec::new();
-        if !f.params.is_empty() {
-            details.push(format!(
-                "{} param{}",
-                f.params.len(),
-                if f.params.len() == 1 { "" } else { "s" }
-            ));
-        }
-        if !f.tags.is_empty() {
-            details.push(format!("tags: {}", f.tags.join(", ")));
-        }
-        if !f.anchors.is_empty() {
-            details.push(format!(
-                "{} anchor{}",
-                f.anchors.len(),
-                if f.anchors.len() == 1 { "" } else { "s" }
-            ));
-        }
-        let details = if details.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", details.join("; "))
-        };
-        if f.description.is_empty() {
-            println!("  {}{}", f.name, details);
-        } else {
-            println!(
-                "  {:width$}  {}{}",
-                f.name,
-                f.description,
-                details,
-                width = max_name
-            );
-        }
-    }
-}
+/// Checked-in projection used by the dump command.
+const DUMP_SCRIPT: &str = include_str!("../luau/dump.luau");
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the edev launcher.
@@ -1800,40 +117,6 @@ pub enum EdevError {
     /// Instance registry error.
     #[error("instance registry error: {0}")]
     InstanceRegistry(String),
-}
-
-/// Render the checked-in Luau API definitions, highlighting them for terminal output when possible.
-fn render_script_docs() -> String {
-    let definitions = script_definitions();
-    if !std_io::stdout().is_terminal() || env::var_os("NO_COLOR").is_some() {
-        return definitions.to_string();
-    }
-    highlight_script_definitions(definitions).unwrap_or_else(|| definitions.to_string())
-}
-
-/// Apply terminal syntax highlighting to checked-in Luau definitions when the output is a TTY.
-fn highlight_script_definitions(definitions: &str) -> Option<String> {
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let syntax = syntax_set
-        .find_syntax_by_extension("luau")
-        .or_else(|| syntax_set.find_syntax_by_extension("lua"))?;
-    let theme_set = ThemeSet::load_defaults();
-    let theme = [
-        "base16-eighties.dark",
-        "Solarized (dark)",
-        "base16-ocean.dark",
-        "Monokai Extended",
-    ]
-    .into_iter()
-    .find_map(|name| theme_set.themes.get(name))
-    .or_else(|| theme_set.themes.values().next())?;
-    let mut highlighter = HighlightLines::new(syntax, theme);
-    let mut rendered = String::new();
-    for line in LinesWithEndings::from(definitions) {
-        let ranges = highlighter.highlight_line(line, &syntax_set).ok()?;
-        rendered.push_str(&as_24_bit_terminal_escaped(&ranges, false));
-    }
-    Some(rendered)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1978,12 +261,12 @@ impl State {
         }
     }
 
-    /// Resolve the current proxied app client, or return a lifecycle-specific tool error.
-    fn proxy_target(&self) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, CallToolResult> {
+    /// Resolve the current direct app client, or return a lifecycle-specific tool error.
+    fn app_client(&self) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, CallToolResult> {
         match &self.status {
             AppStatus::Running => {
                 let Some(app) = &self.app else {
-                    self.log_edev("proxy call failed: app not running");
+                    self.log_edev("app client unavailable: app not running");
                     return Err(tool_error(
                         ErrorKind::AppNotRunning,
                         "App process not running. Call start.",
@@ -1992,7 +275,7 @@ impl State {
                 Ok(Arc::clone(&app.client))
             }
             AppStatus::Starting => {
-                self.log_edev("proxy call failed: app starting");
+                self.log_edev("app client unavailable: app starting");
                 Err(tool_error(
                     ErrorKind::AppStarting,
                     "App is starting. Try again shortly.",
@@ -2004,23 +287,13 @@ impl State {
                 &serde_json::json!({ "startup_output": output }),
             )),
             AppStatus::NotRunning => {
-                self.log_edev("proxy call failed: app not running");
+                self.log_edev("app client unavailable: app not running");
                 Err(tool_error(
                     ErrorKind::AppNotRunning,
                     "App is not running. Call start.",
                 ))
             }
         }
-    }
-
-    /// Proxy a tool call to the app if the app is running.
-    #[cfg(test)]
-    async fn proxy_call(&self, name: &str, arguments: Option<Arguments>) -> CallToolResult {
-        let client = match self.proxy_target() {
-            Ok(client) => client,
-            Err(error) => return error,
-        };
-        call_proxy_tool(client, self.log_state.clone(), name.to_string(), arguments).await
     }
 
     /// Start the app process using a caller-provided spawn routine.
@@ -2092,14 +365,7 @@ impl State {
 
     /// Build the static host-side tool list.
     fn tools_list(&self) -> Vec<Tool> {
-        vec![
-            start_tool(),
-            stop_tool(),
-            restart_tool(),
-            status_tool(),
-            script_eval_tool(),
-            script_api_tool(),
-        ]
+        vec![start_tool(), stop_tool(), restart_tool(), status_tool()]
     }
 
     /// Build a structured status snapshot of the managed app lifecycle.
@@ -2131,12 +397,14 @@ impl State {
             process_group_id,
             supervisor_pid,
             launch_id,
+            connection: self
+                .app
+                .as_ref()
+                .and_then(AppProcess::connection_descriptor),
             registry_entry_path,
             startup_output,
             mcp_client_attached: self.mcp_client_attached,
             idle_shutdown: self.idle_shutdown_report(),
-            app_health: None,
-            app_health_error: None,
             #[cfg(target_os = "macos")]
             presentation: PresentationStatus::requested(self.config.presentation),
         }
@@ -2183,8 +451,12 @@ struct AppProcess {
     app_record: Option<AppRecord>,
     /// Per-launch ownership writer held only by this outer AppProcess.
     ownership_writer: Option<process_lifecycle::OwnershipWriter>,
-    /// Connected MCP client speaking to the app over stdio.
+    /// Connected MCP client speaking to the app over its direct TCP endpoint.
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
+    /// Direct loopback MCP endpoint shared with external callers.
+    mcp_endpoint: String,
+    /// Background task streaming stdout.
+    stdout_task: Option<JoinHandle<()>>,
     /// Background task streaming stderr.
     stderr_task: Option<JoinHandle<()>>,
     /// Captured stderr output, primarily for startup errors.
@@ -2209,6 +481,9 @@ impl AppProcess {
         if let Some(task) = self.stderr_task.take() {
             task.abort();
         }
+        if let Some(task) = self.stdout_task.take() {
+            task.abort();
+        }
     }
 
     /// Terminate the app process and tear down stderr streaming.
@@ -2226,7 +501,28 @@ impl AppProcess {
         if let Some(task) = self.stderr_task.take() {
             let _wait_result = task.await;
         }
+        if let Some(task) = self.stdout_task.take() {
+            let _wait_result = task.await;
+        }
         let _drain_result = drain_stderr(&self.stderr_buffer).await;
+    }
+
+    /// Describe the exact app endpoint that direct MCP clients can connect to.
+    fn connection_descriptor(&self) -> Option<AppConnectionDescriptor> {
+        let launch_id = self
+            .app_record
+            .as_ref()
+            .map(|record| record.launch_id.clone())
+            .or_else(|| {
+                self.app_launch
+                    .as_ref()
+                    .map(|launch| launch.launch_id.clone())
+            })?;
+        Some(AppConnectionDescriptor {
+            launch_id,
+            transport: "tcp",
+            endpoint: self.mcp_endpoint.clone(),
+        })
     }
 }
 
@@ -2333,12 +629,20 @@ fn client_capabilities(presentation: Presentation) -> ClientCapabilities {
     )
 }
 
-/// Spawn the app via `cargo run` and connect an MCP client over stdio.
+/// Spawn the app and connect an MCP client to its direct loopback endpoint.
 async fn spawn_app(
     config: &LaunchConfig,
     log_state: LogState,
 ) -> Result<AppProcess, AppStartError> {
-    let mut process = process_lifecycle::spawn(config, log_state.clone())
+    let mcp_endpoint = allocate_mcp_endpoint().map_err(|error| {
+        AppStartError::Other(format!("allocate direct app MCP endpoint: {error}"))
+    })?;
+    let mut direct_config = config.clone();
+    direct_config.env.insert(
+        eguidev_runtime::MCP_ADDR_ENV.to_string(),
+        mcp_endpoint.clone(),
+    );
+    let mut process = process_lifecycle::spawn(&direct_config, log_state.clone())
         .await
         .map_err(AppStartError::Other)?;
     let stdout = match process.stdout.take() {
@@ -2371,6 +675,25 @@ async fn spawn_app(
 
     let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
     let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+    drop(stdin);
+    let stdout_buffer_clone = Arc::clone(&stdout_buffer);
+    let stdout_log_state = log_state.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let bytes = match reader.read_line(&mut line).await {
+                Ok(bytes) => bytes,
+                Err(_) => break,
+            };
+            if bytes == 0 {
+                break;
+            }
+            append_tail_capped(&stdout_buffer_clone, line.as_bytes());
+            stdout_log_state.record_line(&line);
+        }
+    });
     let stderr_buffer_clone = Arc::clone(&stderr_buffer);
     let stderr_log_state = log_state.clone();
     let stderr_task = tokio::spawn(async move {
@@ -2391,33 +714,21 @@ async fn spawn_app(
         }
     });
 
-    let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
-        .with_capabilities(client_capabilities(config.presentation))
-        .with_request_timeout(APP_REQUEST_TIMEOUT);
-    if let Err(error) = client.connect_stream_raw(stdout, stdin).await {
-        drop(client);
-        return Err(fail_startup_handshake(
-            process,
-            stderr_task,
-            &stderr_buffer,
-            "connect",
-            &error,
-            &log_state,
-        )
-        .await);
-    }
-    if let Err(error) = client.init().await {
-        drop(client);
-        return Err(fail_startup_handshake(
-            process,
-            stderr_task,
-            &stderr_buffer,
-            "init",
-            &error,
-            &log_state,
-        )
-        .await);
-    }
+    let client = match connect_app_client(&mcp_endpoint, config.presentation, &mut process).await {
+        Ok(client) => client,
+        Err(error) => {
+            return Err(fail_startup_handshake(
+                process,
+                stderr_task,
+                stdout_task,
+                &stderr_buffer,
+                "connect",
+                &error,
+                &log_state,
+            )
+            .await);
+        }
+    };
     log_state.record_line("edev: app MCP connected");
 
     let app_record = match process.app_launch.as_ref() {
@@ -2428,6 +739,7 @@ async fn spawn_app(
                 return Err(fail_startup_handshake(
                     process,
                     stderr_task,
+                    stdout_task,
                     &stderr_buffer,
                     "record",
                     &McpError::InternalError("supervisor app record is missing".to_string()),
@@ -2440,6 +752,7 @@ async fn spawn_app(
                 return Err(fail_startup_handshake(
                     process,
                     stderr_task,
+                    stdout_task,
                     &stderr_buffer,
                     "record",
                     &McpError::InternalError(format!(
@@ -2471,6 +784,8 @@ async fn spawn_app(
         app_record,
         ownership_writer,
         client: Arc::new(AsyncMutex::new(client)),
+        mcp_endpoint,
+        stdout_task: Some(stdout_task),
         stderr_task: Some(stderr_task),
         stderr_buffer,
         stdout_buffer,
@@ -2482,6 +797,7 @@ async fn spawn_app(
 async fn fail_startup_handshake(
     process: process_lifecycle::SpawnedProcess,
     stderr_task: JoinHandle<()>,
+    stdout_task: JoinHandle<()>,
     stderr_buffer: &Arc<Mutex<Vec<u8>>>,
     stage: &str,
     error: &McpError,
@@ -2490,8 +806,46 @@ async fn fail_startup_handshake(
     log_state.record_line(&format!("edev: app {stage} failed: {error}"));
     process_lifecycle::shutdown_spawned(process, log_state).await;
     let _stderr_result = stderr_task.await;
+    let _stdout_result = stdout_task.await;
     let output = drain_stderr(stderr_buffer).await;
     AppStartError::StartupFailed(format_startup_output(error, &output))
+}
+
+/// Reserve an unused loopback address for the next app server.
+fn allocate_mcp_endpoint() -> std_io::Result<String> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    Ok(listener.local_addr()?.to_string())
+}
+
+/// Connect to a newly launched app, tolerating the short server startup window.
+// Non-macOS startup probes need mutable access for `Child::try_wait`; macOS
+// probes the supervisor task through the same cross-platform call boundary.
+#[cfg_attr(target_os = "macos", allow(clippy::needless_pass_by_ref_mut))]
+async fn connect_app_client(
+    endpoint: &str,
+    presentation: Presentation,
+    process: &mut process_lifecycle::SpawnedProcess,
+) -> Result<tmcp::Client<()>, McpError> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
+            .with_capabilities(client_capabilities(presentation))
+            .with_request_timeout(APP_REQUEST_TIMEOUT);
+        match client.connect_tcp(endpoint.to_string()).await {
+            Ok(_) => return Ok(client),
+            Err(error) => {
+                if process_lifecycle::spawned_process_exited(process)
+                    .map_err(McpError::InternalError)?
+                {
+                    return Err(error);
+                }
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        }
+    }
 }
 
 /// Combine the handshake error with any captured stderr for diagnostics.
@@ -2583,14 +937,9 @@ fn snapshot_output(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
     )
 }
 
-/// Return bundle stdout text, explaining the normal stdio-MCP empty case.
+/// Return buffered app stdout for failure bundles.
 fn stdout_bundle_text(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
-    let output = snapshot_output(buffer);
-    if output.is_empty() {
-        STDOUT_TRANSPORT_NOTE.to_string()
-    } else {
-        output
-    }
+    snapshot_output(buffer)
 }
 
 /// Append bytes to a tail-capped process-output buffer.
@@ -2609,11 +958,6 @@ fn append_tail_capped(buffer: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
 struct EdevServer {
     /// Shared runtime state for proxying and host-side lifecycle control.
     state: Arc<AsyncMutex<State>>,
-}
-
-/// Check whether a tool name should be proxied to the app.
-fn is_proxied_tool(name: &str) -> bool {
-    PROXIED_TOOL_NAMES.iter().copied().any(|tool| tool == name)
 }
 
 #[async_trait]
@@ -2649,7 +993,7 @@ impl ServerHandler for EdevServer {
         &self,
         _context: &ServerCtx,
         name: String,
-        arguments: Option<Arguments>,
+        _arguments: Option<Arguments>,
         _task: Option<TaskMetadata>,
     ) -> tmcp::Result<CallToolResponse> {
         let state = Arc::clone(&self.state);
@@ -2657,7 +1001,7 @@ impl ServerHandler for EdevServer {
             let mut state_guard = state.lock().await;
             state_guard.mark_activity();
         }
-        if !is_host_tool(&name) && !is_proxied_tool(&name) {
+        if !is_host_tool(&name) {
             return Err(McpError::ToolNotFound(name));
         }
         let result = match name.as_str() {
@@ -2665,10 +1009,22 @@ impl ServerHandler for EdevServer {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.start().await {
-                    Ok(StartStatus::Started) => lifecycle_success("started", start.elapsed()),
-                    Ok(StartStatus::AlreadyRunning) => {
-                        lifecycle_success("already_running", start.elapsed())
-                    }
+                    Ok(StartStatus::Started) => lifecycle_success(
+                        "started",
+                        start.elapsed(),
+                        state
+                            .app
+                            .as_ref()
+                            .and_then(AppProcess::connection_descriptor),
+                    ),
+                    Ok(StartStatus::AlreadyRunning) => lifecycle_success(
+                        "already_running",
+                        start.elapsed(),
+                        state
+                            .app
+                            .as_ref()
+                            .and_then(AppProcess::connection_descriptor),
+                    ),
                     Ok(StartStatus::AppStarting) => tool_error(
                         ErrorKind::AppStarting,
                         "App is starting. Try again shortly.",
@@ -2694,9 +1050,9 @@ impl ServerHandler for EdevServer {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.stop_app().await {
-                    Ok(StopStatus::Stopped) => lifecycle_success("stopped", start.elapsed()),
+                    Ok(StopStatus::Stopped) => lifecycle_success("stopped", start.elapsed(), None),
                     Ok(StopStatus::AlreadyStopped) => {
-                        lifecycle_success("already_stopped", start.elapsed())
+                        lifecycle_success("already_stopped", start.elapsed(), None)
                     }
                     Err(error) => lifecycle_failed(
                         ErrorKind::StopFailed,
@@ -2709,9 +1065,14 @@ impl ServerHandler for EdevServer {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.restart().await {
-                    Ok(LifecycleStartStatus::Running) => {
-                        lifecycle_success("completed", start.elapsed())
-                    }
+                    Ok(LifecycleStartStatus::Running) => lifecycle_success(
+                        "completed",
+                        start.elapsed(),
+                        state
+                            .app
+                            .as_ref()
+                            .and_then(AppProcess::connection_descriptor),
+                    ),
                     Ok(LifecycleStartStatus::StartupFailed(output)) => lifecycle_startup_failed(
                         "App startup failed. Fix the issue and call restart again.",
                         &output,
@@ -2725,103 +1086,14 @@ impl ServerHandler for EdevServer {
                 }
             }
             "status" => {
-                let (report, app_client, log_state) = {
-                    let state = state.lock().await;
-                    let app_client = if matches!(state.status, AppStatus::Running) {
-                        state.app.as_ref().map(|app| Arc::clone(&app.client))
-                    } else {
-                        None
-                    };
-                    (state.status_report(), app_client, state.log_state.clone())
-                };
-                let report = if let Some(client) = app_client {
-                    report.with_app_health(call_app_health(client, log_state).await)
-                } else {
-                    report
-                };
+                let report = state.lock().await.status_report();
                 CallToolResult::new()
                     .with_structured_content(serde_json::to_value(report).expect("status report"))
             }
-            "script_api" => {
-                let (app_client, log_state) = {
-                    let state = state.lock().await;
-                    let app_client = if matches!(state.status, AppStatus::Running) {
-                        state.app.as_ref().map(|app| Arc::clone(&app.client))
-                    } else {
-                        None
-                    };
-                    (app_client, state.log_state.clone())
-                };
-                if let Some(client) = app_client {
-                    call_proxy_tool(client, log_state, "script_api".to_string(), arguments).await
-                } else {
-                    CallToolResult::new().with_text_content(script_definitions())
-                }
-            }
-            _ => {
-                let (client, log_state) = {
-                    let state = state.lock().await;
-                    match state.proxy_target() {
-                        Ok(client) => (client, state.log_state.clone()),
-                        Err(error) => return Ok(error.into()),
-                    }
-                };
-                call_proxy_tool(client, log_state, name, arguments).await
-            }
+            _ => return Err(McpError::ToolNotFound(name)),
         };
         Ok(result.into())
     }
-}
-
-/// Proxy a tool call through the connected app client.
-async fn call_proxy_tool(
-    client: Arc<AsyncMutex<tmcp::Client<()>>>,
-    log_state: LogState,
-    name: String,
-    arguments: Option<Arguments>,
-) -> CallToolResult {
-    let client = client.lock().await;
-    match client.call_tool(name, arguments.unwrap_or_default()).await {
-        Ok(result) => normalize_tool_result(result),
-        Err(error) => {
-            log_state.record_line(&format!("edev: proxy call failed: {error}"));
-            tool_error(ErrorKind::ProxyFailed, error.to_string())
-        }
-    }
-}
-
-/// Query the running app's health tool and normalize the response payload.
-async fn call_app_health(
-    client: Arc<AsyncMutex<tmcp::Client<()>>>,
-    log_state: LogState,
-) -> Result<serde_json::Value, String> {
-    let result = {
-        let client = client.lock().await;
-        client
-            .call_tool("health".to_string(), Arguments::default())
-            .await
-            .map_err(|error| {
-                log_state.record_line(&format!("edev: app health proxy failed: {error}"));
-                error.to_string()
-            })?
-    };
-    let result = normalize_tool_result(result);
-    if result.is_error() {
-        let message = result
-            .text()
-            .map(str::to_string)
-            .or_else(|| result.structured_content.as_ref().map(ToString::to_string))
-            .unwrap_or_else(|| "app health proxy failed".to_string());
-        log_state.record_line(&format!("edev: app health proxy failed: {message}"));
-        return Err(message);
-    }
-    if let Some(content) = result.structured_content {
-        return Ok(content);
-    }
-    let Some(text) = result.text() else {
-        return Err("app health response was empty".to_string());
-    };
-    serde_json::from_str(text).map_err(|error| format!("failed to parse app health: {error}"))
 }
 
 /// Execute the resolved smoke suite by calling `script_eval` for each discovered script.
@@ -2920,7 +1192,7 @@ async fn probe_script_eval_ready(client: &Arc<AsyncMutex<tmcp::Client<()>>>) -> 
 
 /// Return true when a tool is handled directly by the launcher.
 fn is_host_tool(name: &str) -> bool {
-    matches!(name, "start" | "stop" | "restart" | "status" | "script_api")
+    matches!(name, "start" | "stop" | "restart" | "status")
 }
 
 /// Tool definition for starting the app process.
@@ -2947,28 +1219,12 @@ fn status_tool() -> Tool {
         .with_description("Report the current launcher and app lifecycle state.")
 }
 
-/// Tool definition for proxying `script_eval` through the launcher.
-fn script_eval_tool() -> Tool {
-    Tool::new(
-        "script_eval",
-        ToolSchema::from_json_schema::<ScriptEvalRequest>(),
-    )
-    .with_description(
-        "Evaluate a Luau script with DevMCP helpers. Scripts are assumed to be strict.",
-    )
-}
-
-/// Tool definition for exposing the checked-in Luau API definitions.
-fn script_api_tool() -> Tool {
-    Tool::new("script_api", ToolSchema::default())
-        .with_description("Return the checked-in Luau definitions for the full scripting API.")
-}
-
 #[allow(clippy::missing_docs_in_private_items)]
 #[derive(Debug, Clone, Serialize)]
 struct LifecycleReport {
     status: &'static str,
     elapsed_ms: u64,
+    connection: Option<AppConnectionDescriptor>,
 }
 
 #[allow(clippy::missing_docs_in_private_items)]
@@ -2979,14 +1235,21 @@ struct StatusReport {
     process_group_id: Option<i32>,
     supervisor_pid: Option<u32>,
     launch_id: Option<String>,
+    connection: Option<AppConnectionDescriptor>,
     registry_entry_path: Option<PathBuf>,
     startup_output: Option<String>,
     mcp_client_attached: bool,
     idle_shutdown: IdleShutdownReport,
-    app_health: Option<serde_json::Value>,
-    app_health_error: Option<String>,
     #[cfg(target_os = "macos")]
     presentation: PresentationStatus,
+}
+
+#[allow(clippy::missing_docs_in_private_items)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AppConnectionDescriptor {
+    launch_id: String,
+    transport: &'static str,
+    endpoint: String,
 }
 
 #[allow(clippy::missing_docs_in_private_items)]
@@ -2997,36 +1260,18 @@ struct IdleShutdownReport {
     remaining_secs: Option<u64>,
 }
 
-impl StatusReport {
-    /// Attach app health data or a health proxy error to the status report.
-    fn with_app_health(mut self, health: Result<serde_json::Value, String>) -> Self {
-        match health {
-            Ok(health) => {
-                #[cfg(target_os = "macos")]
-                if let Some(value) = health.get("macos_presentation").cloned() {
-                    match serde_json::from_value(value) {
-                        Ok(presentation) => self.presentation = presentation,
-                        Err(error) => {
-                            self.app_health_error =
-                                Some(format!("malformed macos_presentation diagnostic: {error}"));
-                        }
-                    }
-                }
-                self.app_health = Some(health);
-            }
-            Err(error) => self.app_health_error = Some(error),
-        }
-        self
-    }
-}
-
 /// Build a successful lifecycle tool result.
-fn lifecycle_success(status: &'static str, elapsed: Duration) -> CallToolResult {
+fn lifecycle_success(
+    status: &'static str,
+    elapsed: Duration,
+    connection: Option<AppConnectionDescriptor>,
+) -> CallToolResult {
     CallToolResult::new().with_structured_content(serde_json::json!({
         "ok": true,
         "report": LifecycleReport {
             status,
             elapsed_ms: elapsed.as_millis() as u64,
+            connection,
         },
     }))
 }
@@ -3045,6 +1290,7 @@ fn lifecycle_startup_failed(
             "report": LifecycleReport {
                 status: "startup_failed",
                 elapsed_ms: elapsed.as_millis() as u64,
+                connection: None,
             },
         }),
     )
@@ -3059,6 +1305,7 @@ fn lifecycle_failed(kind: ErrorKind, message: String, elapsed: Duration) -> Call
             "report": LifecycleReport {
                 status: "failed",
                 elapsed_ms: elapsed.as_millis() as u64,
+                connection: None,
             },
         }),
     )
@@ -3081,8 +1328,6 @@ enum ErrorKind {
     RestartFailed,
     /// Startup failed before the app became ready.
     StartupFailed,
-    /// Proxy call to the app failed.
-    ProxyFailed,
 }
 
 /// Build a structured tool error result.
@@ -3121,35 +1366,6 @@ fn build_tool_error(
         .with_structured_content(serde_json::json!({ "error": error }))
 }
 
-/// Ensure tool error results include readable text content.
-fn normalize_tool_result(result: CallToolResult) -> CallToolResult {
-    if !matches!(result.is_error, Some(true)) || !result.content.is_empty() {
-        return result;
-    }
-    let message = result
-        .structured_content
-        .as_ref()
-        .and_then(extract_error_message)
-        .map(str::to_string);
-    match message {
-        Some(message) => result.with_text_content(message),
-        None => result,
-    }
-}
-
-/// Extract an error message from a structured tool error payload.
-fn extract_error_message(structured: &serde_json::Value) -> Option<&str> {
-    structured
-        .get("error")
-        .and_then(|error| error.get("message"))
-        .and_then(|message| message.as_str())
-        .or_else(|| {
-            structured
-                .get("message")
-                .and_then(|message| message.as_str())
-        })
-}
-
 impl ErrorKind {
     /// Stable string identifier for error serialization.
     fn as_str(self) -> &'static str {
@@ -3161,7 +1377,6 @@ impl ErrorKind {
             Self::StopFailed => "stop_failed",
             Self::RestartFailed => "restart_failed",
             Self::StartupFailed => "startup_failed",
-            Self::ProxyFailed => "proxy_failed",
         }
     }
 }
@@ -3236,6 +1451,13 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+    use crate::{
+        command::{dump_script_args, eval_output_value, run_eval_script},
+        failure_bundle::{
+            BUNDLE_COLLECTION_SCRIPT, BUNDLE_DIAGNOSTICS_SCRIPT, bundle_meta, failure_text,
+            replace_dir, stable_hash8,
+        },
+    };
 
     fn make_state(tempdir: &TempDir) -> State {
         let config = test_config(tempdir.path().to_path_buf());
@@ -3307,7 +1529,7 @@ mod tests {
             fixture: None,
             params: BTreeMap::new(),
             viewport: None,
-            wait_for_capture: true,
+            wait_for_initial_capture: true,
             json: false,
             out: None,
             timeout: None,
@@ -3315,33 +1537,39 @@ mod tests {
     }
 
     #[test]
-    fn dump_script_waits_for_capture_without_fixture() {
+    fn dump_projection_args_wait_for_initial_capture_without_fixture() {
         let tempdir = test_tempdir();
         let mut config = dump_config(&tempdir);
         config.viewport = Some("secondary".to_string());
 
+        let args = dump_script_args(&config);
+        assert_eq!(args["__dump_wait_capture"], ScriptArgValue::Bool(true));
+        assert_eq!(args["__dump_json"], ScriptArgValue::Bool(false));
         assert_eq!(
-            dump_script(&config),
-            "wait_for_capture()\nreturn dump_text({ viewport = \"secondary\" })"
+            args["__dump_viewport"],
+            ScriptArgValue::String("secondary".to_string())
         );
     }
 
     #[test]
-    fn dump_script_uses_fixture_without_extra_capture_wait() {
+    fn dump_projection_args_use_fixture_without_extra_capture_wait() {
         let tempdir = test_tempdir();
         let mut config = dump_config(&tempdir);
         config.fixture = Some("basic.default".to_string());
-        config.wait_for_capture = false;
+        config.wait_for_initial_capture = false;
         config.json = true;
 
+        let args = dump_script_args(&config);
         assert_eq!(
-            dump_script(&config),
-            "fixture(\"basic.default\")\nreturn dump()"
+            args["__fixture_name"],
+            ScriptArgValue::String("basic.default".to_string())
         );
+        assert_eq!(args["__dump_wait_capture"], ScriptArgValue::Bool(false));
+        assert_eq!(args["__dump_json"], ScriptArgValue::Bool(true));
     }
 
     #[test]
-    fn dump_script_passes_fixture_params() {
+    fn dump_projection_args_pass_fixture_params() {
         let tempdir = test_tempdir();
         let mut config = dump_config(&tempdir);
         config.fixture = Some("basic.scrolled".to_string());
@@ -3355,12 +1583,12 @@ mod tests {
         config
             .params
             .insert("offset".to_string(), ScriptArgValue::Int(180));
-        config.wait_for_capture = false;
+        config.wait_for_initial_capture = false;
 
-        assert_eq!(
-            dump_script(&config),
-            "fixture(\"basic.scrolled\", { [\"enabled\"] = true, [\"label\"] = \"A|B\", [\"offset\"] = 180 })\nreturn dump_text()"
-        );
+        let args = dump_script_args(&config);
+        assert_eq!(args["enabled"], ScriptArgValue::Bool(true));
+        assert_eq!(args["label"], ScriptArgValue::String("A|B".to_string()));
+        assert_eq!(args["offset"], ScriptArgValue::Int(180));
     }
 
     #[test]
@@ -3500,9 +1728,9 @@ mod tests {
     }
 
     #[test]
-    fn stdout_bundle_text_explains_stdio_transport_when_empty() {
+    fn stdout_bundle_text_preserves_captured_output() {
         let empty = Arc::new(Mutex::new(Vec::new()));
-        assert_eq!(stdout_bundle_text(&empty), STDOUT_TRANSPORT_NOTE);
+        assert_eq!(stdout_bundle_text(&empty), "");
 
         let captured = Arc::new(Mutex::new(b"captured stdout\n".to_vec()));
         assert_eq!(stdout_bundle_text(&captured), "captured stdout\n");
@@ -3795,23 +2023,11 @@ mod tests {
                 Ok(CallToolResult::new()
                     .with_text_content("live app script api")
                     .into())
-            } else if name == "health" {
-                Ok(CallToolResult::new()
-                    .with_structured_content(serde_json::json!({
-                        "frame_count": 4,
-                        "fixture_epoch": 2,
-                        "known_viewports": ["root"],
-                        "stalled": false,
-                        "viewports": []
-                    }))
-                    .into())
             } else {
                 Err(McpError::ToolNotFound(name))
             }
         }
     }
-
-    struct HealthFailingServer;
 
     struct RecordingEvalServer {
         requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
@@ -3819,43 +2035,6 @@ mod tests {
 
     struct BundleSmokeServer {
         requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
-    }
-
-    #[async_trait]
-    impl ServerHandler for HealthFailingServer {
-        async fn initialize(
-            &self,
-            _context: &ServerCtx,
-            _protocol_version: ProtocolVersion,
-            _capabilities: ClientCapabilities,
-            _client_info: Implementation,
-        ) -> tmcp::Result<InitializeResult> {
-            Ok(InitializeResult::new("mock"))
-        }
-
-        async fn list_tools(
-            &self,
-            _context: &ServerCtx,
-            _cursor: Option<Cursor>,
-        ) -> tmcp::Result<ListToolsResult> {
-            Ok(ListToolsResult::new())
-        }
-
-        async fn call_tool(
-            &self,
-            _context: &ServerCtx,
-            name: String,
-            _arguments: Option<Arguments>,
-            _task: Option<TaskMetadata>,
-        ) -> tmcp::Result<CallToolResponse> {
-            if name == "script_eval" {
-                Ok(successful_script_eval_result().into())
-            } else if name == "health" {
-                Err(McpError::InternalError("health boom".to_string()))
-            } else {
-                Err(McpError::ToolNotFound(name))
-            }
-        }
     }
 
     #[async_trait]
@@ -4115,6 +2294,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
+            mcp_endpoint: "127.0.0.1:1".to_string(),
+            stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4151,42 +2332,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
-            stderr_task: None,
-            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
-            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
-            log_state: LogState::new(false),
-        };
-
-        (app, handle)
-    }
-
-    async fn make_health_failing_app() -> (AppProcess, ServerHandle) {
-        let ((server_reader, server_writer), (client_reader, client_writer)) = {
-            let (sr, sw, cr, cw) = make_duplex_pair();
-            ((sr, sw), (cr, cw))
-        };
-
-        let server = Server::new(|| HealthFailingServer);
-        let handle = ServerHandle::from_stream(server, server_reader, server_writer)
-            .await
-            .expect("server handle");
-
-        let mut client = Client::new("test", "0.1.0");
-        client
-            .connect_stream_raw(client_reader, client_writer)
-            .await
-            .expect("connect");
-        client.init().await.expect("init");
-
-        let app = AppProcess {
-            child: None,
-            process_group_id: None,
-            supervisor_pid: None,
-            supervisor_exit_task: None,
-            app_launch: None,
-            app_record: None,
-            ownership_writer: None,
-            client: Arc::new(AsyncMutex::new(client)),
+            mcp_endpoint: "127.0.0.1:1".to_string(),
+            stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4227,6 +2374,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
+            mcp_endpoint: "127.0.0.1:1".to_string(),
+            stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4267,6 +2416,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
+            mcp_endpoint: "127.0.0.1:1".to_string(),
+            stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -4274,29 +2425,6 @@ mod tests {
         };
 
         (app, handle)
-    }
-
-    #[tokio::test]
-    async fn proxy_forwards_tool_calls() {
-        let (app, _handle) = make_mock_app().await;
-        let tempdir = test_tempdir();
-
-        let mut state = make_state(&tempdir);
-        state.status = AppStatus::Running;
-        state.app = Some(app);
-
-        let result = state
-            .proxy_call(
-                "script_eval",
-                Some(script_eval_request_value(ScriptEvalRequest {
-                    script: "return true".to_string(),
-                    timeout_ms: Some(1_000),
-                    options: None,
-                })),
-            )
-            .await;
-        let outcome = parse_script_eval_outcome(&result).expect("script eval outcome");
-        assert!(outcome.success);
     }
 
     #[tokio::test]
@@ -4431,20 +2559,9 @@ mod tests {
                 "stop".to_string(),
                 "restart".to_string(),
                 "status".to_string(),
-                "script_eval".to_string(),
-                "script_api".to_string(),
             ]
         );
         assert_eq!(stopped_names, running_names);
-    }
-
-    #[test]
-    fn proxied_tool_names_include_live_script_surfaces() {
-        assert!(is_proxied_tool("script_eval"));
-        assert!(is_proxied_tool("script_api"));
-        assert!(!is_proxied_tool("start"));
-        assert!(!is_proxied_tool("restart"));
-        assert!(!is_proxied_tool("widget_list"));
     }
 
     #[test]
@@ -4455,24 +2572,15 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tool_result_adds_text_for_structured_errors() {
-        let result = CallToolResult::error("INTERNAL", "Something broke");
-        assert!(result.content.is_empty());
-        let normalized = normalize_tool_result(result);
-        assert!(!normalized.content.is_empty());
-        match &normalized.content[0] {
-            ContentBlock::Text(text) => assert_eq!(text.text, "Something broke"),
-            other => panic!("expected text content, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn parse_fixture_list_decodes_registered_fixtures() {
         let fixtures = parse_fixture_list(successful_outcome(&serde_json::json!([
             {
                 "name": "basic.default",
                 "description": "baseline",
-                "anchors": [{ "widget_id": "basic.status", "check": "visible" }],
+                "ready": [{
+                    "widget_id": "basic.status",
+                    "condition": { "visible": true }
+                }],
                 "params": [{
                     "name": "offset",
                     "kind": "float",
@@ -4489,7 +2597,7 @@ mod tests {
         assert_eq!(fixtures.len(), 1);
         assert_eq!(fixtures[0].name, "basic.default");
         assert_eq!(fixtures[0].description, "baseline");
-        assert_eq!(fixtures[0].anchors.len(), 1);
+        assert_eq!(fixtures[0].ready.len(), 1);
         assert_eq!(fixtures[0].params[0].name, "offset");
         assert_eq!(fixtures[0].tags, vec!["scroll"]);
     }
@@ -4577,7 +2685,6 @@ mod tests {
         let mut state = make_state(&tempdir);
         assert_eq!(state.status_report().state, "not_running");
         assert_eq!(state.status_report().idle_shutdown.state, "disabled");
-        assert!(state.status_report().app_health.is_none());
 
         state.status = AppStatus::Starting;
         assert_eq!(state.status_report().state, "starting");
@@ -4605,56 +2712,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn status_report_merges_macos_presentation_diagnostics() {
-        let tempdir = test_tempdir();
-        let report = make_state(&tempdir)
-            .status_report()
-            .with_app_health(Ok(serde_json::json!({
-                "macos_presentation": {
-                    "requested_presentation": "foreground",
-                    "observed_activation_policy": "regular",
-                    "executable": "target/example",
-                    "bundle_root": "target/example.app",
-                    "bundle_identifier": "example.app"
-                }
-            })));
-
-        assert_eq!(
-            report.presentation.requested_presentation,
-            Presentation::Foreground
-        );
-        assert_eq!(
-            report.presentation.observed_activation_policy.as_deref(),
-            Some("regular")
-        );
-        assert_eq!(
-            report.presentation.bundle_identifier.as_deref(),
-            Some("example.app")
-        );
-        let malformed =
-            make_state(&tempdir)
-                .status_report()
-                .with_app_health(Ok(serde_json::json!({
-                    "macos_presentation": {
-                        "requested_presentation": 42
-                    }
-                })));
-
-        assert!(malformed.app_health.is_some());
-        assert!(
-            malformed
-                .app_health_error
-                .as_deref()
-                .is_some_and(|error| error.starts_with("malformed macos_presentation diagnostic:"))
-        );
-        assert_eq!(
-            malformed.presentation.requested_presentation,
-            Presentation::Background
-        );
-    }
-
     #[test]
     fn status_report_covers_mcp_idle_state() {
         let tempdir = test_tempdir();
@@ -4676,146 +2733,6 @@ mod tests {
         );
         assert_eq!(report.idle_shutdown.configured_secs, Some(30));
         assert_eq!(report.idle_shutdown.remaining_secs, None);
-    }
-
-    #[tokio::test]
-    async fn status_omits_app_health_when_lifecycle_only() {
-        let tempdir = test_tempdir();
-        let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
-        let server = EdevServer { state };
-        let ctx = TestServerContext::new();
-
-        let result = server
-            .call_tool(ctx.ctx(), "status".to_string(), None, None)
-            .await
-            .expect("status")
-            .into_result()
-            .expect("immediate result");
-        let payload = result.structured_content.expect("structured content");
-        assert_eq!(payload["state"], "not_running");
-        assert!(payload["app_health"].is_null());
-        assert!(payload["app_health_error"].is_null());
-    }
-
-    #[tokio::test]
-    async fn status_merges_running_app_health() {
-        let (app, _handle) = make_mock_app().await;
-        let tempdir = test_tempdir();
-        let mut raw_state = make_state(&tempdir);
-        raw_state.status = AppStatus::Running;
-        raw_state.app = Some(app);
-        let state = Arc::new(AsyncMutex::new(raw_state));
-        let server = EdevServer { state };
-        let ctx = TestServerContext::new();
-
-        let result = server
-            .call_tool(ctx.ctx(), "status".to_string(), None, None)
-            .await
-            .expect("status")
-            .into_result()
-            .expect("immediate result");
-        let payload = result.structured_content.expect("structured content");
-        assert_eq!(payload["state"], "running");
-        assert_eq!(payload["app_health"]["frame_count"], 4);
-        assert_eq!(payload["app_health"]["known_viewports"][0], "root");
-        assert!(payload["app_health_error"].is_null());
-    }
-
-    #[tokio::test]
-    async fn status_tolerates_running_app_health_proxy_failure() {
-        let (app, _handle) = make_health_failing_app().await;
-        let tempdir = test_tempdir();
-        let mut raw_state = make_state(&tempdir);
-        raw_state.status = AppStatus::Running;
-        raw_state.app = Some(app);
-        let state = Arc::new(AsyncMutex::new(raw_state));
-        let server = EdevServer { state };
-        let ctx = TestServerContext::new();
-
-        let result = server
-            .call_tool(ctx.ctx(), "status".to_string(), None, None)
-            .await
-            .expect("status")
-            .into_result()
-            .expect("immediate result");
-        let payload = result.structured_content.expect("structured content");
-        assert_eq!(payload["state"], "running");
-        assert!(payload["app_health"].is_null());
-        assert!(
-            payload["app_health_error"]
-                .as_str()
-                .expect("health error")
-                .contains("health boom")
-        );
-    }
-
-    #[tokio::test]
-    async fn script_api_is_available_while_stopped() {
-        let tempdir = test_tempdir();
-        let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
-        let server = EdevServer { state };
-        let ctx = TestServerContext::new();
-
-        let result = server
-            .call_tool(ctx.ctx(), "script_api".to_string(), None, None)
-            .await
-            .expect("script_api")
-            .into_result()
-            .expect("immediate result");
-        assert_eq!(result.text().expect("text"), script_definitions());
-    }
-
-    #[tokio::test]
-    async fn script_api_proxies_to_running_app() {
-        let (app, _handle) = make_mock_app().await;
-        let tempdir = test_tempdir();
-        let mut raw_state = make_state(&tempdir);
-        raw_state.status = AppStatus::Running;
-        raw_state.app = Some(app);
-        let state = Arc::new(AsyncMutex::new(raw_state));
-        let server = EdevServer { state };
-        let ctx = TestServerContext::new();
-
-        let result = server
-            .call_tool(ctx.ctx(), "script_api".to_string(), None, None)
-            .await
-            .expect("script_api")
-            .into_result()
-            .expect("immediate result");
-        assert_eq!(result.text().expect("text"), "live app script api");
-    }
-
-    #[tokio::test]
-    async fn script_eval_returns_call_start_when_app_is_stopped() {
-        let tempdir = test_tempdir();
-        let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
-        let server = EdevServer { state };
-        let ctx = TestServerContext::new();
-
-        let result = server
-            .call_tool(
-                ctx.ctx(),
-                "script_eval".to_string(),
-                Some(script_eval_request_value(ScriptEvalRequest {
-                    script: "return true".to_string(),
-                    timeout_ms: Some(1_000),
-                    options: None,
-                })),
-                None,
-            )
-            .await
-            .expect("script_eval")
-            .into_result()
-            .expect("immediate result");
-        let payload = result
-            .structured_content
-            .clone()
-            .expect("structured content");
-        assert_eq!(payload["error"]["kind"], "app_not_running");
-        assert_eq!(
-            result.text().expect("text"),
-            "App is not running. Call start."
-        );
     }
 
     #[tokio::test]

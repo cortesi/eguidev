@@ -204,26 +204,19 @@ impl WidgetRegistry {
         let tool_viewport = viewport_id;
         let registry = lock(&self.registry_snapshot, "registry snapshot lock");
 
-        if target.id.is_none() {
-            return Err(
-                ToolError::new(ErrorCode::InvalidRef, "WidgetRef must include id")
-                    .with_details(selector_details(target, tool_viewport, None)),
-            );
-        }
-
         let (matches, resolved_viewport) =
             match resolve_viewport_selector(viewports, tool_viewport, target) {
                 Ok((viewport_id, resolved_viewport)) => {
                     let widgets = registry.get(&viewport_id).cloned().unwrap_or_default();
                     let matches = widgets
                         .iter()
-                        .filter(|entry| entry.id == target.id.as_deref().unwrap_or_default())
+                        .filter(|entry| entry.id == target.id)
                         .cloned()
                         .collect::<Vec<_>>();
                     (matches, resolved_viewport)
                 }
                 Err(error)
-                    if error.code == ErrorCode::InvalidRef && target.viewport_id.is_some() =>
+                    if error.code == ErrorCode::InvalidArgument && target.viewport_id.is_some() =>
                 {
                     let resolved_viewport = target
                         .viewport_id
@@ -233,8 +226,7 @@ impl WidgetRegistry {
                         .values()
                         .flatten()
                         .filter(|entry| {
-                            entry.viewport_id == resolved_viewport
-                                && entry.id == target.id.as_deref().unwrap_or_default()
+                            entry.viewport_id == resolved_viewport && entry.id == target.id
                         })
                         .cloned()
                         .collect::<Vec<_>>();
@@ -279,17 +271,10 @@ impl WidgetRegistry {
         }
         let registry = lock(&self.registry_snapshot, "registry snapshot lock");
 
-        if target.id.is_none() {
-            return Err(
-                ToolError::new(ErrorCode::InvalidRef, "WidgetRef must include id")
-                    .with_details(selector_details(target, None, None)),
-            );
-        }
-
         let matches = registry
             .values()
             .flatten()
-            .filter(|entry| entry.id == target.id.as_deref().unwrap_or_default())
+            .filter(|entry| entry.id == target.id)
             .cloned()
             .collect::<Vec<_>>();
 
@@ -484,7 +469,7 @@ fn resolve_viewport_selector(
             if tool_id != target_id {
                 let details = selector_details(target, tool_viewport, None);
                 return Err(ToolError::new(
-                    ErrorCode::Ambiguous,
+                    ErrorCode::NotFound,
                     format!(
                         "Conflicting viewport selectors (tool={tool_viewport:?}, target={:?})",
                         target.viewport_id.as_deref()
@@ -510,7 +495,7 @@ fn selector_details(
 ) -> serde_json::Value {
     json!({
         "selectors": {
-            "id": target.id.as_deref(),
+            "id": target.id,
             "viewport_id": target.viewport_id.as_deref(),
             "tool_viewport_id": tool_viewport,
             "resolved_viewport_id": resolved_viewport,
@@ -530,9 +515,9 @@ fn ambiguous_error(
     let details = selector_details(target, tool_viewport, Some(resolved_viewport));
     let message = format!(
         "{message} (id={:?}, viewport={resolved_viewport})",
-        target.id.as_deref()
+        target.id
     );
-    ToolError::new(ErrorCode::Ambiguous, message).with_details(json!({
+    ToolError::new(ErrorCode::NotFound, message).with_details(json!({
         "reason": reason,
         "selectors": selectors_value(&details),
         "candidates": summaries,
@@ -550,7 +535,7 @@ fn not_found_error(
 ) -> ToolError {
     let message = format!(
         "{message} (id={:?}, viewport={resolved_viewport})",
-        target.id.as_deref()
+        target.id
     );
     let details = selector_details(target, tool_viewport, Some(resolved_viewport));
     ToolError::new(ErrorCode::NotFound, message).with_details(json!({
@@ -640,7 +625,7 @@ impl DuplicateExplicitIdFault {
                 })
             })
             .collect::<Vec<_>>();
-        ToolError::new(ErrorCode::DuplicateWidgetId, message).with_details(json!({
+        ToolError::new(ErrorCode::InstrumentationFault, message).with_details(json!({
             "reason": "duplicate_explicit_widget_ids",
             "duplicate_ids": duplicate_ids,
         }))
@@ -653,12 +638,7 @@ fn missing_widget_search(
     registry: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
     viewports: &ViewportState,
 ) -> serde_json::Value {
-    let Some(target_id) = target.id.as_deref() else {
-        return json!({
-            "viewports": [],
-            "suggestions": [],
-        });
-    };
+    let target_id = target.id.as_str();
     let restrict_to =
         (resolved_viewport != "root" && resolved_viewport != "all").then_some(resolved_viewport);
     let mut all_candidates: Vec<(CandidateScore, String)> = Vec::new();

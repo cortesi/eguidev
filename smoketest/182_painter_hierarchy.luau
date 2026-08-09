@@ -1,10 +1,10 @@
 -- publish_rect_container makes painter-drawn rects nest, so containment reads as
 -- structure instead of as one overlap per child.
-fixture("basic.default")
+eguidev.fixture("basic.default")
 
-local vp = root()
-local canvas = vp:widget_get("board.canvas")
-local squares = vp:widget_list({ id_prefix = "board.square." })
+local vp = eguidev.root
+local canvas = eguidev.widget("board.canvas")
+local squares = vp:widgets({ id_prefix = "board.square." })
 assert(#squares == 9, "the demo board should publish nine squares, got " .. tostring(#squares))
 
 local ids: { string } = {}
@@ -17,13 +17,15 @@ for _, square in ipairs(squares) do
     )
     table.insert(ids, square.id)
 end
-expect_tree("board.canvas", ids)
+local descendants = {}
+for _, id in ids do table.insert(descendants, eguidev.widget(id)) end
+canvas:expect({ descendants = descendants })
 
 -- Every square sits inside the canvas, and none of that reports as an overlap.
 for _, id in ipairs(ids) do
-    expect_within(id, "board.canvas")
+    eguidev.widget(id):expect({ within = canvas })
 end
-local issues = canvas:check_layout()
+local issues = canvas:layout_issues()
 assert(#issues == 0, "the painter hierarchy should report no layout issues")
 
 -- children() sees the published squares from the canvas handle.

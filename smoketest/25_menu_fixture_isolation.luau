@@ -1,14 +1,14 @@
-fixture("basic.default")
-local vp = root()
+eguidev.fixture("basic.default")
+local vp = eguidev.root
 
-vp:widget_get("basic.menu.actions"):click()
-assert_widget_exists("basic.menu.actions.mark_ready")
+eguidev.widget("basic.menu.actions"):click()
+eguidev.widget("basic.menu.actions.mark_ready"):expect({ present = true })
 
-fixture("basic.default")
-vp:wait_for_widget_absent("basic.menu.actions.mark_ready")
-vp:wait_for_widget_absent("basic.menu.actions.reset_status")
+eguidev.fixture("basic.default")
+eguidev.widget("basic.menu.actions.mark_ready"):wait({ present = false })
+eguidev.widget("basic.menu.actions.reset_status"):wait({ present = false })
 
-vp:widget_get("basic.menu.actions"):click()
-assert_widget_exists("basic.menu.actions.mark_ready")
+eguidev.widget("basic.menu.actions"):click()
+eguidev.widget("basic.menu.actions.mark_ready"):expect({ present = true })
 
-return vp:widget_get("basic.menu.actions.mark_ready"):state()
+return eguidev.widget("basic.menu.actions.mark_ready"):state()

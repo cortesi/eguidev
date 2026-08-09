@@ -1,6 +1,7 @@
-fixture("basic.default")
-local vp = root()
-local target = vp:widget_get("basic.visual.sample_target"):state()
+eguidev.fixture("basic.default")
+local vp = eguidev.root
+local target = eguidev.widget("basic.visual.sample_target"):state()
+assert(target ~= nil)
 assert(target.data ~= nil, "sample target should expose structured widget data")
 assert(target.data.kind == "sample_target", "sample target data should expose kind")
 assert(target.data.color == "#2f80ed", "sample target data should expose color")
@@ -13,7 +14,7 @@ local samples = vp:sample_pixels({ center })
 assert(samples[1].hex == "#2f80edff", "sample target color should be exact")
 local channel_math = samples[1].rgba[1] + ((target.rect.max.x - target.rect.min.x) / 2)
 assert(channel_math > samples[1].rgba[1], "sampled rgba values should support arithmetic")
-local target_widget = widget("basic.visual.sample_target")
+local target_widget = eguidev.widget("basic.visual.sample_target")
 local relative_center = {
     x = (target.rect.max.x - target.rect.min.x) / 2,
     y = (target.rect.max.y - target.rect.min.y) / 2,
@@ -21,15 +22,17 @@ local relative_center = {
 local widget_samples = target_widget:sample_pixels({ relative_center })
 assert(widget_samples[1].hex == "#2f80edff", "widget-relative sample color should be exact")
 
-vp:widget_get("basic.menu.actions"):click()
-assert_widget_exists("basic.menu.actions.mark_ready")
+eguidev.widget("basic.menu.actions"):click()
+eguidev.widget("basic.menu.actions.mark_ready"):expect({ present = true })
 local immediate = vp:sample_pixels({ center })
-vp:wait_for_settle()
+vp:settle()
 local settled = vp:sample_pixels({ center })
 assert(immediate[1].hex == "#2f80edff", "immediate sample should be stable")
 assert(settled[1].hex == "#2f80edff", "settled sample should be stable")
 
-local gutter = vp:widget_get("demo.gutter.error_marker"):state()
+local gutter = eguidev.widget("demo.gutter.error_marker"):state()
+
+assert(gutter ~= nil)
 local gutter_center = {
     x = (gutter.rect.min.x + gutter.rect.max.x) / 2,
     y = (gutter.rect.min.y + gutter.rect.max.y) / 2,
@@ -49,14 +52,14 @@ local function color_count(samples)
     return count
 end
 
-local painted_samples = widget("basic.visual.painted_canvas"):sample_grid(4, 4)
+local painted_samples = eguidev.widget("basic.visual.painted_canvas"):sample_grid(4, 4)
 local painted_colors = color_count(painted_samples)
 assert(painted_colors >= 3, "painted canvas should expose multiple sampled colors")
-expect_painted("basic.visual.painted_canvas", 3)
+eguidev.widget("basic.visual.painted_canvas"):expect({ painted = { min_colors = 3 } })
 
-configure({ timeout_ms = 50, poll_interval_ms = 1 })
+eguidev.configure({ timeout_ms = 50, poll_interval_ms = 1 })
 local flat_ok = pcall(function()
-    expect_painted("basic.visual.flat_canvas", 2)
+    eguidev.widget("basic.visual.flat_canvas"):expect({ painted = { min_colors = 2 } })
 end)
 assert(not flat_ok, "flat canvas should fail expect_painted")
 
