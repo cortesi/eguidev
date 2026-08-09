@@ -140,12 +140,12 @@
 //! Registering a second handler, of either kind, is a configuration error.
 //! A handler reaches app state by closing over it, usually an
 //! `Arc<Mutex<AppState>>` shared with the app's render code.
-//! Each fixture must be independently invokable from any prior state and must
-//! leave the app in a baseline that can be described with ready conditions.
-//! Use typed fixture params for controlled variants, preconditions for state
-//! that must already be true before the handler runs, and handler-returned
-//! values or ready for dynamic fixture outcomes. Scripts call
-//! `eguidev.fixture("name", params?)` to apply the named baseline, wait for a
+//! A fixture without preconditions is an independently invokable baseline. A
+//! fixture with preconditions is a transition that callers invoke only after
+//! establishing its declared entry state. Both kinds leave the app in a state
+//! described by ready conditions. Use typed fixture params for controlled
+//! variants and handler-returned values or ready for dynamic fixture outcomes.
+//! Scripts call `eguidev.fixture("name", params?)` to apply the named fixture, wait for a
 //! fresh capture, verify static and returned ready conditions, and receive the
 //! returned values. Widget and viewport references resolve fresh across fixture
 //! boundaries. Pass `{ wait = false }` only when a script intentionally needs

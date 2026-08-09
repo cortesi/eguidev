@@ -50,8 +50,9 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   to avoid cross-run leakage.
 - The same cleanup closes egui popups/menus and stops active text input on captured
   contexts. Scripts can call `Viewport:dismiss_popups()` for the same viewport-scoped path.
-- Fixtures are baseline-reset by contract: each fixture must be independently invokable, isolated
-  from prior app state, and safe to apply in any order.
+- Fixtures without preconditions are baseline-reset by contract: they are independently invokable,
+  isolated from prior app state, and safe to apply in any order. Fixtures with preconditions are
+  transitions and require the caller to establish their declared entry state first.
 
 7. Runtime-owned repaint and visual determinism
 - `DevMcp::finish_frame` owns runtime keep-alive when hooks are attached and `keep_alive`

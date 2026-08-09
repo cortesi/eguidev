@@ -995,6 +995,11 @@ impl FixtureSpec {
         self
     }
 
+    /// Return whether this fixture is a transition with entry requirements.
+    pub fn is_transition(&self) -> bool {
+        !self.preconditions.is_empty()
+    }
+
     /// Validate fixture metadata and readiness conditions.
     pub fn validate(&self, require_ready: bool) -> Result<(), String> {
         if self.name.trim().is_empty() {
@@ -2349,6 +2354,17 @@ mod tests {
             .validate(true)
             .expect_err("malformed pointer must fail fixture validation");
         assert!(error.contains("ready 2"), "{error}");
+    }
+
+    #[test]
+    fn fixture_transition_is_derived_from_preconditions() {
+        let baseline = FixtureSpec::new("baseline", "Independent baseline").ready("status");
+        let transition = FixtureSpec::new("transition", "State transition")
+            .precondition("entry")
+            .ready("status");
+
+        assert!(!baseline.is_transition());
+        assert!(transition.is_transition());
     }
 
     #[test]

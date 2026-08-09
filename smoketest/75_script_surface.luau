@@ -34,11 +34,8 @@ assert(
 )
 
 eguidev.fixture("viewports.default")
-local secondary = eguidev.viewports({ name = "secondary" })[1]
-assert(secondary ~= nil, "secondary viewport should exist")
-local secondary_vp = secondary :: Viewport
-local secondary_scroll = secondary_vp:widgets({ id_prefix = "viewports.scroll" })[1]
-assert(secondary_scroll ~= nil and secondary_scroll.id == "viewports.scroll")
+local secondary_vp = eguidev.wait_viewport({ name = "secondary" })
+local secondary_scroll = secondary_vp:widget("viewports.scroll")
 local secondary_scroll_state = secondary_scroll:state()
 assert(secondary_scroll_state ~= nil)
 assert(
@@ -46,8 +43,7 @@ assert(
     "the scoped widget should carry the secondary viewport identity"
 )
 secondary_scroll:expect({ visible = true })
-local secondary_row = secondary_vp:widgets({ id_prefix = "viewports.row.0" })[1]
-assert(secondary_row ~= nil and secondary_row.id == "viewports.row.0")
+local secondary_row = secondary_vp:widget("viewports.row.0")
 secondary_row:expect({ visible = true })
 
 return {

@@ -3,6 +3,7 @@ cwd = "."
 command = [
   "cargo",
   "run",
+  "--locked",
   "--quiet",
   "-p",
   "eguidev_demo",

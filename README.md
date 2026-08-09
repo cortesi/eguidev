@@ -68,7 +68,7 @@ full launch command:
 
 ```toml
 [app]
-command = ["cargo", "run", "-p", "myapp", "--features", "devtools"]
+command = ["cargo", "run", "--locked", "-p", "myapp", "--features", "devtools"]
 # presentation = "background" # default; use "foreground" for manual sessions
 ```
 
@@ -121,9 +121,10 @@ The same scripting surface powers developer-facing tooling:
   Without a fixture, it waits for a fresh capture before dumping.
 - `edev fixtures` / `edev fixture <name>` list registered fixtures, pass typed
   params with `--param key=value`, optionally skip anchor waits with
-  `--no-wait`, and launch the app in a known baseline state for manual testing.
+  `--no-wait`, and launch the app in a declared baseline or transition state for manual testing.
 - Scripts use the single `eguidev` namespace, immutable widget and viewport
-  references, shared conditions, `Widget:expect(...)`, and capture diffs.
+  references, exact `wait_viewport` / `Viewport:widget` selectors, shared
+  conditions, `Widget:expect(...)`, and capture diffs.
 - Each script result includes undismissed egui `id_clash` and
   `rect_changed_id` warnings. `edev smoke` fails on these warnings by default,
   so transient identity errors cannot pass unnoticed. Set

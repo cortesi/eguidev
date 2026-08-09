@@ -126,6 +126,7 @@ fn tidy() -> Result<(), Box<dyn Error>> {
         "cargo",
         &[
             "clippy",
+            "--locked",
             "-q",
             "--fix",
             "--all",
@@ -135,23 +136,28 @@ fn tidy() -> Result<(), Box<dyn Error>> {
             "--tests",
             "--examples",
         ],
-        "cargo clippy",
+        "cargo clippy --locked",
     )?;
     Ok(())
 }
 
 /// Run the test suite via nextest.
 fn test() -> Result<(), Box<dyn Error>> {
-    run_command("cargo", &["nextest", "run", "--all"], "cargo nextest")?;
     run_command(
         "cargo",
-        &["test", "-q", "-p", "eguidev_runtime", "--tests"],
-        "cargo test -p eguidev_runtime --tests",
+        &["nextest", "run", "--locked", "--all"],
+        "cargo nextest --locked",
+    )?;
+    run_command(
+        "cargo",
+        &["test", "--locked", "-q", "-p", "eguidev_runtime", "--tests"],
+        "cargo test --locked -p eguidev_runtime --tests",
     )?;
     run_command(
         "cargo",
         &[
             "test",
+            "--locked",
             "-q",
             "-p",
             "eguidev_demo",
@@ -159,19 +165,20 @@ fn test() -> Result<(), Box<dyn Error>> {
             "devtools",
             "--tests",
         ],
-        "cargo test -p eguidev_demo --features devtools --tests",
+        "cargo test --locked -p eguidev_demo --features devtools --tests",
     )?;
     run_command(
         "cargo",
         &[
             "check",
+            "--locked",
             "-q",
             "-p",
             "eguidev",
             "--target",
             "wasm32-unknown-unknown",
         ],
-        "cargo check -p eguidev --target wasm32-unknown-unknown",
+        "cargo check --locked -p eguidev --target wasm32-unknown-unknown",
     )?;
     check_luau_definitions()?;
     check_default_eguidev_dependency_surface()?;
@@ -227,7 +234,9 @@ fn smoke_with_app_command(
     let workspace_root = workspace_root()?;
     let mut demo_command = Command::new("cargo");
     demo_command.current_dir(&workspace_root);
-    demo_command.args(["run", "-q", "-p", "edev", "--bin", "edev", "--", "smoke"]);
+    demo_command.args([
+        "run", "--locked", "-q", "-p", "edev", "--bin", "edev", "--", "smoke",
+    ]);
     if args.list {
         demo_command.arg("--list");
     }
@@ -265,7 +274,7 @@ fn smoke_with_app_command(
     }
     run_prepared_command_with_timeout(
         demo_command,
-        "cargo run -p edev --bin edev -- smoke",
+        "cargo run --locked -p edev --bin edev -- smoke",
         Some(Duration::from_secs(15 * 60)),
     )
 }
@@ -380,7 +389,9 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
         .with_request_timeout(Duration::from_secs(120));
     let mut command = TokioCommand::new("cargo");
     command.current_dir(&workspace_root);
-    command.args(["run", "-q", "-p", "edev", "--bin", "edev", "--", "mcp"]);
+    command.args([
+        "run", "--locked", "-q", "-p", "edev", "--bin", "edev", "--", "mcp",
+    ]);
     if verbose {
         command.arg("--verbose");
     }
@@ -570,10 +581,10 @@ fn run_prepared_command_with_timeout(
 /// Ensure the default `eguidev` build stays free of native runtime crates.
 fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
     let output = Command::new("cargo")
-        .args(["tree", "-e", "normal", "-p", "eguidev"])
+        .args(["tree", "--locked", "-e", "normal", "-p", "eguidev"])
         .output()?;
     if !output.status.success() {
-        return Err("cargo tree -e normal -p eguidev failed".into());
+        return Err("cargo tree --locked -e normal -p eguidev failed".into());
     }
 
     let stdout = String::from_utf8(output.stdout)?;

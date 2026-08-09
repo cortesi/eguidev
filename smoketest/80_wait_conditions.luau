@@ -81,8 +81,7 @@ assert(saw_app_idle, "demo should expose app_idle settle phase")
 
 -- unconsumed custom widget overrides fail with a typed, actionable error
 eguidev.fixture("viewports.default")
-local secondary = eguidev.viewports({ name = "secondary" })[1]
-assert(secondary ~= nil, "secondary viewport should exist")
+local secondary = eguidev.wait_viewport({ name = "secondary" })
 local override_ok, override_err = pcall(function()
     eguidev.widget("viewports.unwired.value"):set_value(5)
 end)

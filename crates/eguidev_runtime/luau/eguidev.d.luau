@@ -141,46 +141,46 @@ export type Range = {
 -- retain that viewport scope internally. Widget equality and all later state,
 -- relationship, wait, action, and observation calls preserve `(viewport_id,
 -- id)` identity across fresh captures.
-export type Widget = {
-    id: string,
-    state: (self: Widget) -> WidgetState?,
-    wait: (
+declare class Widget
+    read id: string
+    read state: (self: Widget) -> WidgetState?
+    read wait: (
         self: Widget,
         condition: WidgetCondition | WidgetPredicate,
         options: WaitOptions?
-    ) -> WidgetState?,
-    expect: (
+    ) -> WidgetState?
+    read expect: (
         self: Widget,
         expectation: WidgetExpectation?,
         options: WaitOptions?
-    ) -> WidgetState?,
+    ) -> WidgetState?
 
-    viewport: (self: Widget) -> Viewport?,
-    parent: (self: Widget) -> Widget?,
-    children: (self: Widget) -> { Widget },
+    read viewport: (self: Widget) -> Viewport?
+    read parent: (self: Widget) -> Widget?
+    read children: (self: Widget) -> { Widget }
 
-    click: (self: Widget, options: ClickOptions?) -> (),
-    hover: (self: Widget, options: HoverOptions?) -> (),
-    focus: (self: Widget, options: ActionOptions?) -> (),
-    type_text: (self: Widget, text: string, options: TypeTextOptions?) -> (),
-    set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> (),
-    drag_to: (self: Widget, target: Pos | Widget, options: DragOptions?) -> (),
-    drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> (),
-    scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> (),
-    scroll_to: (self: Widget, options: ScrollToOptions) -> (),
-    scroll_into_view: (self: Widget, options: ActionOptions?) -> (),
+    read click: (self: Widget, options: ClickOptions?) -> ()
+    read hover: (self: Widget, options: HoverOptions?) -> ()
+    read focus: (self: Widget, options: ActionOptions?) -> ()
+    read type_text: (self: Widget, text: string, options: TypeTextOptions?) -> ()
+    read set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> ()
+    read drag_to: (self: Widget, target: Pos | Widget, options: DragOptions?) -> ()
+    read drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> ()
+    read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
+    read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
+    read scroll_into_view: (self: Widget, options: ActionOptions?) -> ()
 
-    text_measure: (self: Widget) -> TextMeasure,
-    layout_issues: (self: Widget) -> { LayoutIssue },
-    screenshot: (self: Widget) -> ImageRef,
-    sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample },
-    sample_grid: (self: Widget, nx: number, ny: number) -> { PixelSample },
+    read text_measure: (self: Widget) -> TextMeasure
+    read layout_issues: (self: Widget) -> { LayoutIssue }
+    read screenshot: (self: Widget) -> ImageRef
+    read sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample }
+    read sample_grid: (self: Widget, nx: number, ny: number) -> { PixelSample }
 
-    show_highlight: (self: Widget, color: string, options: ActionOptions?) -> HighlightResult,
-    clear_highlight: (self: Widget, options: ActionOptions?) -> (),
-    show_debug_overlay: (self: Widget, options: DebugOverlayOptions?) -> (),
-    clear_debug_overlay: (self: Widget, options: ActionOptions?) -> (),
-}
+    read show_highlight: (self: Widget, color: string, options: ActionOptions?) -> HighlightResult
+    read clear_highlight: (self: Widget, options: ActionOptions?) -> ()
+    read show_debug_overlay: (self: Widget, options: DebugOverlayOptions?) -> ()
+    read clear_debug_overlay: (self: Widget, options: ActionOptions?) -> ()
+end
 
 -- `(viewport_id, id)` is the one widget identity across handles, states,
 -- dumps, deltas, waits, and error details, so a state alone names its widget.
@@ -322,48 +322,49 @@ export type PixelSample = {
     hex: string,
 }
 
-export type Viewport = {
-    id: string,
-    state: (self: Viewport) -> ViewportState?,
-    wait: (
+declare class Viewport
+    read id: string
+    read state: (self: Viewport) -> ViewportState?
+    read wait: (
         self: Viewport,
         condition: ViewportCondition | ViewportPredicate,
         options: WaitOptions?
-    ) -> ViewportState?,
-    expect: (
+    ) -> ViewportState?
+    read expect: (
         self: Viewport,
         condition: ViewportCondition?,
         options: WaitOptions?
-    ) -> ViewportState?,
+    ) -> ViewportState?
 
-    settle: (self: Viewport, options: WaitOptions?) -> SettleReport,
-    wait_capture: (self: Viewport, options: WaitOptions?) -> ViewportState,
-    widgets: (self: Viewport, filter: WidgetFilter?) -> { Widget },
-    widgets_at: (self: Viewport, position: Pos) -> { Widget },
+    read settle: (self: Viewport, options: WaitOptions?) -> SettleReport
+    read wait_capture: (self: Viewport, options: WaitOptions?) -> ViewportState
+    read widget: (self: Viewport, id: string) -> Widget
+    read widgets: (self: Viewport, filter: WidgetFilter?) -> { Widget }
+    read widgets_at: (self: Viewport, position: Pos) -> { Widget }
 
-    dismiss_popups: (self: Viewport, options: ActionOptions?) -> (),
-    key: (self: Viewport, key: string, options: KeyOptions?) -> (),
-    paste: (self: Viewport, text: string, options: ActionOptions?) -> (),
-    focus: (self: Viewport, options: ActionOptions?) -> (),
-    resize: (self: Viewport, options: ResizeOptions) -> (),
-    input: (self: Viewport, event: RawInputEvent) -> (),
+    read dismiss_popups: (self: Viewport, options: ActionOptions?) -> ()
+    read key: (self: Viewport, key: string, options: KeyOptions?) -> ()
+    read paste: (self: Viewport, text: string, options: ActionOptions?) -> ()
+    read focus: (self: Viewport, options: ActionOptions?) -> ()
+    read resize: (self: Viewport, options: ResizeOptions) -> ()
+    read input: (self: Viewport, event: RawInputEvent) -> ()
 
-    egui_diagnostics: (self: Viewport) -> EguiDiagnosticBatch,
-    clear_egui_diagnostics: (self: Viewport) -> (),
-    screenshot: (self: Viewport) -> ImageRef,
-    sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample },
-    layout_issues: (self: Viewport) -> { LayoutIssue },
+    read egui_diagnostics: (self: Viewport) -> EguiDiagnosticBatch
+    read clear_egui_diagnostics: (self: Viewport) -> ()
+    read screenshot: (self: Viewport) -> ImageRef
+    read sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample }
+    read layout_issues: (self: Viewport) -> { LayoutIssue }
 
-    show_highlight: (
+    read show_highlight: (
         self: Viewport,
         rect: Rect,
         color: string,
         options: ActionOptions?
-    ) -> HighlightResult,
-    clear_highlights: (self: Viewport, options: ActionOptions?) -> (),
-    show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> (),
-    clear_debug_overlay: (self: Viewport, options: ActionOptions?) -> (),
-}
+    ) -> HighlightResult
+    read clear_highlights: (self: Viewport, options: ActionOptions?) -> ()
+    read show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> ()
+    read clear_debug_overlay: (self: Viewport, options: ActionOptions?) -> ()
+end
 
 -- High-level actions auto-settle by default. Use `configure()` to change
 -- global timeout, poll interval, and settle behavior.
@@ -757,6 +758,7 @@ export type Eguidev = {
     widgets: (query: WidgetQuery?) -> { Widget },
     viewport: (id: string) -> Viewport,
     viewports: (filter: ViewportFilter?) -> { Viewport },
+    wait_viewport: (filter: ViewportFilter, options: WaitOptions?) -> Viewport,
 
     capture: () -> Capture,
     dump: (options: DumpOptions?) -> TreeDump,

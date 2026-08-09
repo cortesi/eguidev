@@ -55,6 +55,15 @@ end
 References returned by viewport discovery keep their viewport scope. State snapshots carry both
 `viewport_id` and `id`, which form canonical widget identity.
 
+Use `eguidev.wait_viewport(filter)` when one semantic viewport must exist. It waits for one match
+and reports absent or ambiguous filters. Use `viewport:widget(id)` to construct an exact handle that
+keeps that viewport scope.
+
+```luau
+local permissions = eguidev.wait_viewport({ name = "permissions" })
+permissions:widget("permissions.open_settings"):click()
+```
+
 ## Conditions, waits, and assertions
 
 Use a typed condition for ordinary state waits and a predicate for app-specific logic. The same
@@ -111,8 +120,10 @@ vp:settle()
 
 ## Fixtures
 
-Fixtures establish a known baseline. Preconditions always run. Unless `wait = false`, Eguidev
-then waits for one fresh frame and every static or handler-returned ready target.
+Fixtures without preconditions establish an independently invokable baseline. Fixtures with
+preconditions are transitions whose entry state the caller must establish first. Preconditions
+always run. Unless `wait = false`, Eguidev then waits for one fresh frame and every static or
+handler-returned ready target.
 
 ```luau
 local result = eguidev.fixture("basic.default", { count = 3 })

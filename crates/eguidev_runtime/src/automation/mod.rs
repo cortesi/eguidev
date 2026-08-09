@@ -1588,7 +1588,7 @@ return {
             .script_eval(
                 format!(
                     r#"local viewport = eguidev.viewport("{secondary_id}")
-local found = viewport:widgets({{ id_prefix = "panel" }})[1]
+local found = viewport:widget("panel")
 local condition: WidgetCondition = {{ visible = true }}
 local state = found:wait(condition)
 assert(state ~= nil)
@@ -1949,7 +1949,7 @@ return {
 
         let result = server
             .script_eval(
-                r#"local named = eguidev.viewports({ name = "secondary" })[1]
+                r#"local named = eguidev.wait_viewport({ name = "secondary" })
 local focused = eguidev.viewports({ focused = true })[1]
 local state = named ~= nil and named:state() or nil
 return {
@@ -2015,7 +2015,7 @@ return {
     }
 
     #[tokio::test]
-    async fn script_eval_viewport_errors_on_duplicate_names() {
+    async fn script_eval_wait_viewport_reports_ambiguous_and_absent_filters() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
         let ctx = egui::Context::default();
@@ -2044,19 +2044,35 @@ return {
             },
         );
         discard_output(ctx.run_ui(raw_input, |_| {}));
-        inner
-            .viewports
-            .name_viewport(first, "duplicate".to_string());
-        inner
-            .viewports
-            .name_viewport(second, "duplicate".to_string());
         inner.capture_context(egui::ViewportId::ROOT, &ctx);
         inner.viewports.update_viewports(&ctx);
         record_test_snapshot(&inner, egui::ViewportId::ROOT);
 
         let result = server
             .script_eval(
-                r#"return #eguidev.viewports({ name = "duplicate" })"#.to_string(),
+                r#"local ambiguousOk, ambiguousError = pcall(function()
+    return eguidev.wait_viewport(
+        { title_contains = "Duplicate" },
+        { timeout_ms = 20, poll_interval_ms = 1 }
+    )
+end)
+local absentOk, absentError = pcall(function()
+    return eguidev.wait_viewport(
+        { name = "missing" },
+        { timeout_ms = 20, poll_interval_ms = 1 }
+    )
+end)
+local ambiguous: any = ambiguousError
+local absent: any = absentError
+return {
+    ambiguous_ok = ambiguousOk,
+    ambiguous_code = ambiguous.code,
+    ambiguous_details = ambiguous.details,
+    absent_ok = absentOk,
+    absent_code = absent.code,
+    absent_details = absent.details,
+}"#
+                .to_string(),
                 None,
                 None,
             )
@@ -2064,8 +2080,26 @@ return {
             .expect("script eval");
         let json = parse_script_eval_json(&result);
 
-        assert_eq!(json["success"], true);
-        assert_eq!(json["value"], 2);
+        assert_eq!(json["success"], true, "{json:?}");
+        assert_eq!(json["value"]["ambiguous_ok"], false, "{json:?}");
+        assert_eq!(json["value"]["ambiguous_code"], "not_found", "{json:?}");
+        assert_eq!(
+            json["value"]["ambiguous_details"]["reason"], "ambiguous",
+            "{json:?}"
+        );
+        assert_eq!(
+            json["value"]["ambiguous_details"]["candidates"]
+                .as_array()
+                .map(Vec::len),
+            Some(2),
+            "{json:?}"
+        );
+        assert_eq!(json["value"]["absent_ok"], false, "{json:?}");
+        assert_eq!(json["value"]["absent_code"], "not_found", "{json:?}");
+        assert_eq!(
+            json["value"]["absent_details"]["reason"], "absent",
+            "{json:?}"
+        );
     }
 
     #[tokio::test]
@@ -3060,7 +3094,16 @@ return eguidev.widget("status"):wait({ visible = true })"#
             .expect("script eval");
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], false, "{json:?}");
-        assert_eq!(json["error"]["type"], "timeout");
+        assert_eq!(json["error"]["type"], "eguidev", "{json:?}");
+        assert_eq!(json["error"]["code"], "fixture_failed", "{json:?}");
+        assert_eq!(
+            json["error"]["details"]["details"]["reason"], "precondition_unmet",
+            "{json:?}"
+        );
+        assert_eq!(
+            json["error"]["details"]["details"]["widget"], "ready",
+            "{json:?}"
+        );
         assert!(!handler_called.load(AtomicOrdering::Relaxed));
     }
 

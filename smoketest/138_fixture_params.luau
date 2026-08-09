@@ -67,9 +67,7 @@ assert(not above_range_ok, "above-range fixture params should be rejected")
 
 local secondary_result = eguidev.fixture("viewports.scrolled", { offset = 160 })
 assert(secondary_result.values.offset == 160)
-local secondary = eguidev.viewports({ name = "secondary" })[1]
-assert(secondary ~= nil, "secondary viewport should exist")
-local secondary_vp = secondary :: Viewport
+local secondary_vp = eguidev.wait_viewport({ name = "secondary" })
 eguidev.widget("viewports.scroll"):wait( function(widget)
     if widget == nil then return false end
     local scroll = widget.scroll_state

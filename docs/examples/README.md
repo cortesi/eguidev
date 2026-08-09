@@ -5,7 +5,7 @@ matching `mcp.json` configurations under `docs/examples/mcp/`.
 
 ## Prerequisites
 
-- Build or install the `edev` launcher (`cargo build -p edev` or
+- Build or install the `edev` launcher (`cargo build --locked -p edev` or
   `cargo install --path crates/edev`).
 - The demo's dev-capable build uses the app-local `devtools` feature, which
   enables the optional `eguidev_runtime` dependency and calls
@@ -25,13 +25,13 @@ One demo now covers both surfaces:
 Run directly:
 
 ```sh
-cargo run -p eguidev_demo --features devtools -- --dev-mcp
+cargo run --locked -p eguidev_demo --features devtools -- --dev-mcp
 ```
 
 Run through `edev`:
 
 ```sh
-cargo run -p edev -- mcp
+cargo run --locked -p edev -- mcp
 ```
 
 MCP config example: `docs/examples/mcp/eguidev_demo.json`.
@@ -41,6 +41,8 @@ MCP config example: `docs/examples/mcp/eguidev_demo.json`.
 - `Viewport:widgets()` omits clipped or hidden widgets unless `include_invisible` is `true`.
 - Widget and viewport references are immutable and live. Read current fields through `state()`,
   which returns `nil` while the target is absent.
+- Use `wait_viewport()` for one semantic viewport and `Viewport:widget()` for an exact scoped
+  widget handle.
 - `Widget:drag_to()` accepts a widget reference or absolute egui position.
   `Widget:drag_relative()` accepts a normalized target and optional normalized `from` position.
 - `Viewport:resize()` is best-effort; window managers may clamp or ignore it. Verify the resulting
@@ -82,7 +84,7 @@ stack, so this is not a headless smoke path.
 Record manual verification runs here when needed.
 
 - 2026-01-23: Launched the demo app via
-  `cargo run -p eguidev_demo --features devtools -- --dev-mcp` using the glow renderer. The process was manually
+  `cargo run --locked -p eguidev_demo --features devtools -- --dev-mcp` using the glow renderer. The process was manually
   interrupted because this environment does not support interactive GUI verification.
 - 2026-01-25: Used `script_eval` against the demo app to call
   `secondary:resize()` (640x480 then 900x700). `secondary:wait()` matched and

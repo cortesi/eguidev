@@ -318,11 +318,10 @@ local function widget(id: string, viewportId: string?): Widget
     local cacheKey = (viewportId or "") .. "\0" .. id
     local cached = widgetCache[cacheKey]
     if cached ~= nil then return cached end
-    local reference: Widget = setmetatable({
+    local reference: Widget = table.freeze(setmetatable({
         id = id,
         __viewport_id = viewportId,
-    }, widgetMethods) :: any
-    table.freeze(reference)
+    }, widgetMethods)) :: any
     widgetCache[cacheKey] = reference
     return reference
 end
@@ -330,8 +329,7 @@ end
 local function viewport(id: string): Viewport
     local cached = viewportCache[id]
     if cached ~= nil then return cached end
-    local reference: Viewport = setmetatable({ id = id }, viewportMethods) :: any
-    table.freeze(reference)
+    local reference: Viewport = table.freeze(setmetatable({ id = id }, viewportMethods)) :: any
     viewportCache[id] = reference
     return reference
 end
@@ -745,6 +743,10 @@ function viewportMethods.widgets(self: Viewport, filter: WidgetFilter?): { Widge
     return filterWidgetReferences(filter, self.id)
 end
 
+function viewportMethods.widget(self: Viewport, id: string): Widget
+    return widget(id, self.id)
+end
+
 function viewportMethods.widgets_at(self: Viewport, position: Pos): { Widget }
     local result: any = {}
     for _, raw in kernel.query.viewport_widget_at_point(self, position, true) do
@@ -857,6 +859,41 @@ local function viewports(filter: ViewportFilter?): { Viewport }
     return kernel.record.array(result) :: { Viewport }
 end
 
+local function waitViewport(filter: ViewportFilter, options: WaitOptions?): Viewport
+    local matches = viewports(filter)
+    local ok, cause = pcall(function()
+        if #matches == 1 then return end
+        waitLoop(function(): boolean
+            matches = viewports(filter)
+            return #matches == 1
+        end, options, nil)
+    end)
+    if ok then return matches[1] end
+
+    local rawCause: any = cause
+    if type(rawCause) ~= "table" or rawCause.code ~= "timeout" then
+        error(cause, 0)
+    end
+    local candidates: any = {}
+    for _, candidate in matches do table.insert(candidates, candidate.id) end
+    local ambiguous = #matches > 1
+    local identifier = filter.name or filter.title or filter.title_contains or "filter"
+    return fail(
+        "not_found",
+        if ambiguous
+            then "Viewport filter remained ambiguous until its deadline"
+            else "No viewport matched the filter before its deadline",
+        "wait_viewport",
+        { kind = "viewport", id = identifier },
+        {
+            reason = if ambiguous then "ambiguous" else "absent",
+            candidates = candidates,
+            expected = filter,
+            cause = cause,
+        }
+    )
+end
+
 local function widgets(queryOptions: WidgetQuery?): { Widget }
     local selectedViewport = if queryOptions ~= nil then queryOptions.viewport else nil
     local viewportId = if selectedViewport ~= nil
@@ -902,6 +939,34 @@ local function fixtures(): { Fixture }
     return kernel.record.array(result) :: { Fixture }
 end
 
+local function waitFixturePrecondition(
+    fixtureName: string,
+    target: FixtureTarget,
+    options: FixtureOptions?
+)
+    local ok, cause = pcall(function()
+        target.widget:wait(target.condition, options)
+    end)
+    if ok then return end
+    local rawCause: any = cause
+    if type(rawCause) ~= "table" or rawCause.code ~= "timeout" then
+        error(cause, 0)
+    end
+    fail(
+        "fixture_failed",
+        `Fixture({fixtureName}) precondition was not satisfied`,
+        "fixture",
+        { kind = "fixture", id = fixtureName },
+        {
+            reason = "precondition_unmet",
+            widget = target.widget.id,
+            condition = target.condition,
+            cause = cause,
+            hint = "this fixture is a transition; establish its preconditions first",
+        }
+    )
+end
+
 local function fixture(name: string, params: FixtureParams?, options: FixtureOptions?): FixtureResult
     local selected: Fixture? = nil
     for _, candidate in fixtures() do
@@ -912,7 +977,7 @@ local function fixture(name: string, params: FixtureParams?, options: FixtureOpt
     end
     if selected ~= nil then
         for _, target in selected.preconditions do
-            target.widget:wait(target.condition, options)
+            waitFixturePrecondition(name, target, options)
         end
     end
     local shouldWait = options == nil or options.wait ~= false
@@ -959,6 +1024,7 @@ local public: Eguidev = {
     widgets = widgets,
     viewport = viewport,
     viewports = viewports,
+    wait_viewport = waitViewport,
     capture = capture,
     dump = function(options: DumpOptions?): TreeDump
         return freezeOwned(kernel.query.dump(dumpOptions(options))) :: TreeDump

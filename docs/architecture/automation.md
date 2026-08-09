@@ -39,8 +39,10 @@ script failure becomes a structured `ScriptEvalOutcome`, not an MCP protocol fai
 ## References and snapshots
 
 `eguidev.widget(id)` and `eguidev.viewport(id)` create immutable live references without reading
-state. A viewport-scoped query creates widget references that retain that scope. Reads resolve the
-reference against the latest coherent capture; `state()` returns `nil` for an absent target.
+state. `eguidev.wait_viewport(filter)` waits for one semantic match and rejects absent or ambiguous
+results. `Viewport:widget(id)` creates an exact reference that retains that viewport scope. Reads
+resolve references against the latest coherent capture; `state()` returns `nil` for an absent
+target.
 
 Collections and returned records are frozen. Repeated construction of the same reference is
 identity-stable within one evaluation. Widget snapshots carry `(viewport_id, id)`, the canonical
@@ -53,9 +55,11 @@ condition or a strict Luau predicate. Absence is `{ present = false }`; actionab
 `{ actionable = true }`. `Widget:expect(...)` extends the same condition with relations,
 hierarchy, text-fit, and paint checks.
 
-Fixture registration stores precondition and ready `FixtureTargetSpec` values. Rust validates
-params and invokes the handler once, then returns values and any dynamic ready targets. The private
-Luau library owns orchestration:
+Fixture registration stores precondition and ready `FixtureTargetSpec` values. A fixture without
+preconditions is a baseline that is safe to invoke independently. A fixture with preconditions is
+a transition whose caller must first establish the declared entry state. Rust validates params and
+invokes the handler once, then returns values and any dynamic ready targets. The private Luau
+library owns orchestration:
 
 1. wait for every precondition;
 2. invoke the raw native handler once;

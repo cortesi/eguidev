@@ -670,15 +670,16 @@ fn print_fixture_list(config: &FixtureConfig, fixtures: &[FixtureSpec]) -> Resul
 
 /// Print fixture metadata as a Markdown table.
 fn print_fixture_markdown(fixtures: &[FixtureSpec]) {
-    println!("| Fixture | Description | Params | Tags | Ready |");
-    println!("| --- | --- | --- | --- | --- |");
+    println!("| Fixture | Description | Params | Tags | Pre | Ready |");
+    println!("| --- | --- | --- | --- | --- | --- |");
     for fixture in fixtures {
         println!(
-            "| {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} |",
             markdown_cell(&fixture.name),
             markdown_cell(&fixture.description),
             markdown_cell(&fixture_params_summary(&fixture.params)),
             markdown_cell(&fixture.tags.join(", ")),
+            fixture.preconditions.len(),
             fixture.ready.len()
         );
     }
@@ -927,6 +928,9 @@ fn print_fixture_table(fixtures: &[FixtureSpec]) {
         }
         if !f.tags.is_empty() {
             details.push(format!("tags: {}", f.tags.join(", ")));
+        }
+        if f.is_transition() {
+            details.push(format!("{} pre", f.preconditions.len()));
         }
         if !f.ready.is_empty() {
             details.push(format!(

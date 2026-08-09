@@ -1,8 +1,6 @@
 eguidev.fixture("viewports.default")
 
-local secondary = eguidev.viewports({ title = "DevMCP secondary viewport" })[1]
-assert(secondary ~= nil, "secondary viewport should be present")
-local secondary_vp = secondary :: Viewport
+local secondary_vp = eguidev.wait_viewport({ title = "DevMCP secondary viewport" })
 
 secondary_vp:focus()
 

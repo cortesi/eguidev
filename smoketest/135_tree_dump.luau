@@ -72,8 +72,7 @@ assert(string.find(text, "app.tabs", 1, true) == nil,
     "subtree text dump should exclude widgets outside the requested root")
 
 eguidev.fixture("viewports.default")
-local secondary = eguidev.viewports({ name = "secondary" })[1]
-assert(secondary ~= nil)
+local secondary = eguidev.wait_viewport({ name = "secondary" })
 local secondary_options: DumpOptions = { viewport = secondary }
 local secondary_tree = eguidev.dump(secondary_options) :: any
 assert(#secondary_tree.viewports == 1, "semantic viewport selector should restrict dump")

@@ -65,8 +65,8 @@ artifact directory by default.
 Record a macOS demo movie while running the smoke suite:
 
 ```sh
-cargo run -p edev -- record tmp/spacecurve-smoke.mov -- cargo run --features devtools -- --dev-mcp
-cargo run -p edev -- record tmp/spacecurve-smoke.mov --only '*layout*'
+cargo run --locked -p edev -- record tmp/spacecurve-smoke.mov -- cargo run --locked --features devtools -- --dev-mcp
+cargo run --locked -p edev -- record tmp/spacecurve-smoke.mov --only '*layout*'
 ```
 
 `edev record OUTFILE ...` is the native macOS recording boundary. It records one selected app
@@ -123,7 +123,7 @@ egui event path directly.
 Run one diagnostic script and keep its return value/images with:
 
 ```sh
-cargo run -p edev -- eval tmp/probe.luau --out-dir tmp/probe-output --arg name=Sky
+cargo run --locked -p edev -- eval tmp/probe.luau --out-dir tmp/probe-output --arg name=Sky
 ```
 
 `edev eval` launches a one-shot app process from the configured `[app]` command, uses the

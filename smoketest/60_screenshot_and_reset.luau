@@ -17,8 +17,7 @@ assert(widget_image.type == "image_ref")
 local viewport_image = vp:screenshot()
 assert(viewport_image.type == "image_ref")
 
-local secondary = eguidev.viewports({ title = "DevMCP secondary viewport" })[1]
-assert(secondary ~= nil, "secondary viewport should exist")
+local secondary = eguidev.wait_viewport({ title = "DevMCP secondary viewport" })
 
 local secondary_image = secondary:screenshot()
 assert(secondary_image.type == "image_ref")

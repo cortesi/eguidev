@@ -14,7 +14,7 @@
 # flags or --dev-mcp for you -- the command must be complete. You can also
 # pass a command after `--` on any subcommand, which replaces this value.
 command = [
-  "cargo", "run",
+  "cargo", "run", "--locked",
   "-p", "myapp",
   "--features", "devtools",
   "--bin", "myapp",

@@ -107,6 +107,33 @@ mod tests {
     }
 
     #[test]
+    fn frozen_handle_types_compose_in_typed_helpers() {
+        check_source(
+            "probe.luau",
+            r#"
+local function viewport_for(name: string): Viewport
+    if name == "root" then
+        return eguidev.root
+    end
+    return eguidev.wait_viewport({ name = name })
+end
+
+local function scoped_widget(viewport_name: string, id: string): Widget
+    local viewport = viewport_for(viewport_name)
+    return viewport:widget(id)
+end
+
+return scoped_widget("root", "probe")
+"#,
+        )
+        .expect("frozen handles should retain their public types");
+
+        let error = check_source("probe.luau", "eguidev.root.id = 'replacement'")
+            .expect_err("frozen handle fields must be read-only");
+        assert!(error.message.contains("read-only"), "{}", error.message);
+    }
+
+    #[test]
     fn module_import_is_not_in_the_script_environment() {
         let error = check_source("probe.luau", "return require('private')")
             .expect_err("require must be absent");

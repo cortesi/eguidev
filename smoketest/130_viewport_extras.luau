@@ -5,9 +5,7 @@ local root_vp = eguidev.root
 -- List viewports and find secondary
 local vp_list = eguidev.viewports()
 assert(#vp_list >= 2, "should have root and secondary viewports")
-local secondary = eguidev.viewports({ name = "secondary" })[1]
-assert(secondary ~= nil, "secondary viewport should be present")
-local secondary_vp = secondary :: Viewport
+local secondary_vp = eguidev.wait_viewport({ name = "secondary" })
 local secondary_info = secondary_vp:state()
 assert(secondary_info ~= nil)
 assert(secondary_info.name == "secondary", "secondary viewport should expose its semantic name")
@@ -58,8 +56,9 @@ local status = eguidev.widget("basic.status"):wait({ label = "Fixture: secondary
 assert(status ~= nil)
 
 eguidev.fixture("viewports.duplicate_names")
-eguidev.wait_frames(1)
-assert(#eguidev.viewports({ name = "secondary" }) >= 2, "duplicate fixture should expose both viewports")
+eguidev.wait(function()
+    return #eguidev.viewports({ name = "secondary" }) >= 2
+end)
 eguidev.fixture("basic.default", nil, { wait = false })
 eguidev.wait_frames(3)
 assert(#eguidev.viewports({ name = "secondary" }) <= 1, "duplicate viewport should clear after reset")

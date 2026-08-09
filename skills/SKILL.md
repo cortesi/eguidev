@@ -79,8 +79,7 @@ own `(viewport_id, id)` identity.
 Use scoped discovery when the same widget id can occur in more than one viewport:
 
 ```luau
-local secondary = eguidev.viewports({ name = "secondary" })[1]
-assert(secondary ~= nil)
+local secondary = eguidev.wait_viewport({ name = "secondary" })
 local rows = secondary:widgets({ id_prefix = "row." })
 ```
 
@@ -128,10 +127,11 @@ wait or settle. Follow it with an explicit state wait or `vp:settle()` when need
 
 ## Fixtures
 
-Call `eguidev.fixture(...)` at the start of independent scenarios. Preconditions always run. By
-default the fixture then waits for one fresh frame and all declared ready conditions. Pass
-`{ wait = false }` only for intentional intermediate-state inspection; this skips ready waits, not
-preconditions.
+Call a fixture without preconditions at the start of an independent scenario; it is a baseline.
+A fixture with preconditions is a transition, so establish its declared entry state first.
+Preconditions always run. By default the fixture then waits for one fresh frame and all declared
+ready conditions. Pass `{ wait = false }` only for intentional intermediate-state inspection; this
+skips ready waits, not preconditions.
 
 Inspect `eguidev.fixtures()` to discover names and typed params. A fixture result contains handler
 values and precondition/ready observations with live widget references and optional state.
@@ -144,6 +144,8 @@ values and precondition/ready observations with live widget references and optio
   launcher is active.
 - Keep smoke scripts independent and begin with a fixture.
 - Assert visible behavior, not app internals.
+- For Cargo-backed apps, include `--locked` in the launch command so smoke runs fail on dependency
+  drift instead of rewriting the tracked lockfile.
 - Use `edev smoke --list`, `--only`, `--repeat`, and `--until-fail` while authoring.
 - Enable failure bundles when durable screenshots, dumps, diagnostics, and app output are useful.
 
