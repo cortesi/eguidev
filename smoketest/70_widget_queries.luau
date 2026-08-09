@@ -1,12 +1,12 @@
 eguidev.fixture("basic.default")
 local vp = eguidev.root
 
--- widget_list with include_invisible shows at least as many as visible-only
+-- widgets() with include_invisible shows at least as many as visible-only
 local all_widgets = vp:widgets({ include_invisible = true }) :: any
 local visible_only = vp:widgets() :: any
 assert(#all_widgets >= #visible_only, "include_invisible should show at least as many")
 
--- widget_list filtered by role
+-- widgets() filtered by role
 local buttons = vp:widgets({ role = "button" }) :: any
 assert(#buttons >= 1, "should find at least one button")
 for _, w in ipairs(buttons) do
@@ -14,7 +14,7 @@ for _, w in ipairs(buttons) do
     assert(state ~= nil and state.role == "button")
 end
 
--- widget_list with id_prefix (ensure scroll rows exist first)
+-- widgets() with id_prefix (ensure scroll rows exist first)
 eguidev.widget("basic.scroll.row.0"):expect( { visible = true })
 local scroll_rows = vp:widgets({ id_prefix = "basic.scroll.row.", include_invisible = true }) :: any
 assert(#scroll_rows >= 1, "should find scroll rows")

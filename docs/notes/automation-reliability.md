@@ -57,7 +57,7 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - `DevMcp::finish_frame` owns runtime keep-alive when hooks are attached and `keep_alive`
   is enabled.
 - Automation options default to disabling egui animations while the runtime is attached;
-  scripts can override this with `configure({ animations = true })`.
+  scripts can override this with `eguidev.configure({ animations = true })`.
 - `Viewport:sample_pixels(...)` and widget-relative `Widget:sample_pixels(...)` sample exact
   `ColorImage` RGBA data before JPEG encoding. `Widget:sample_grid(nx, ny)` samples a clipped
   visible widget area from one capture, and the `painted` expectation catches flat painter-only
