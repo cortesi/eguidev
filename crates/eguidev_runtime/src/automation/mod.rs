@@ -1371,6 +1371,7 @@ mod tests {
                 r#"local first = eguidev.widget("missing")
 local second = eguidev.widget("missing")
 local widgets = eguidev.widgets()
+local namespace = eguidev :: any
 return {
     namespace_frozen = table.isfrozen(eguidev),
     args_frozen = table.isfrozen(eguidev.args),
@@ -1378,6 +1379,13 @@ return {
     collection_frozen = table.isfrozen(widgets),
     stable_identity = first == second,
     missing_state = first:state() == nil,
+    hidden_capabilities_absent = namespace.query == nil
+        and namespace.action == nil
+        and namespace.wait_kernel == nil
+        and namespace.capture_kernel == nil
+        and namespace.fixture_kernel == nil
+        and namespace.diagnostic_kernel == nil
+        and namespace.record == nil,
 }"#
                 .to_string(),
                 None,
@@ -1396,6 +1404,7 @@ return {
                 "collection_frozen": true,
                 "stable_identity": true,
                 "missing_state": true,
+                "hidden_capabilities_absent": true,
             })
         );
     }
