@@ -92,7 +92,7 @@ interaction, waits, and verification inside Luau scripts.
 
 - Test with many widgets (add 100+ items) - does `widgets()` stay usable and
   deterministic?
-- Test `include_invisible=true` in `widgets()` - are clipped widgets
+- Test `visible=false` in `widgets()` - are clipped widgets
   included?
 - Test focus management with `focus()` - can you programmatically focus
   widgets?

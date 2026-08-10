@@ -26,6 +26,8 @@
 --   references without a lookup. Read current frame data through `state()`.
 -- - Prefer `fixture()`, waits, and assertions over ad-hoc retries.
 -- - High-level actions auto-settle unless you disable settling explicitly.
+-- - Highlights and debug overlays update immediately. They do not wait or
+--   settle.
 -- - Return `ImageRef` values from `screenshot()` when you want image blocks in
 --   the MCP response.
 -- - The sandbox has no filesystem access, no network access, and no module
@@ -59,6 +61,7 @@ export type EguiDiagnostic = {
 
 export type EguiDiagnosticBatch = {
     entries: { EguiDiagnostic },
+    --- Undismissed journal entries that were overwritten before this read.
     dropped: number,
 }
 
@@ -144,11 +147,15 @@ export type Range = {
 declare class Widget
     read id: string
     read state: (self: Widget) -> WidgetState?
+    --- Checks the current state first, then polls fresh captures. A predicate
+    --- receives `nil` while the widget is absent.
     read wait: (
         self: Widget,
         condition: WidgetCondition | WidgetPredicate,
         options: WaitOptions?
     ) -> WidgetState?
+    --- Waits for a match and records one assertion. A failed match throws
+    --- `expectation_failed` after it records the failed assertion.
     read expect: (
         self: Widget,
         expectation: WidgetExpectation?,
@@ -164,7 +171,10 @@ declare class Widget
     read focus: (self: Widget, options: ActionOptions?) -> ()
     read type_text: (self: Widget, text: string, options: TypeTextOptions?) -> ()
     read set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> ()
+    --- A position uses viewport-local logical points. A widget target must be
+    --- in the same viewport.
     read drag_to: (self: Widget, target: Pos | Widget, options: DragOptions?) -> ()
+    --- The target is normalized within the widget, from 0 to 1 on each axis.
     read drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> ()
     read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
@@ -172,14 +182,19 @@ declare class Widget
 
     read text_measure: (self: Widget) -> TextMeasure
     read layout_issues: (self: Widget) -> { LayoutIssue }
+    --- Waits for a fresh screenshot and crops it to the widget.
     read screenshot: (self: Widget) -> ImageRef
+    --- Waits for one fresh screenshot. Positions are logical offsets from the
+    --- widget rectangle's minimum point.
     read sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample }
+    --- Samples an evenly spaced grid over the widget's visible rectangle.
     read sample_grid: (self: Widget, nx: number, ny: number) -> { PixelSample }
 
-    read show_highlight: (self: Widget, color: string, options: ActionOptions?) -> HighlightResult
-    read clear_highlight: (self: Widget, options: ActionOptions?) -> ()
+    --- Visual aids persist until cleared. These methods do not wait or settle.
+    read show_highlight: (self: Widget, color: string) -> HighlightResult
+    read clear_highlight: (self: Widget) -> ()
     read show_debug_overlay: (self: Widget, options: DebugOverlayOptions?) -> ()
-    read clear_debug_overlay: (self: Widget, options: ActionOptions?) -> ()
+    read clear_debug_overlay: (self: Widget) -> ()
 end
 
 -- `(viewport_id, id)` is the one widget identity across handles, states,
@@ -244,7 +259,10 @@ export type ViewportState = {
 export type DumpOptions = {
     viewport: Viewport?,
     root: Widget?,
+    --- Defaults to true because dumps are a debugging view.
     include_invisible: boolean?,
+    --- Defaults to "core". "full" adds interaction, layout, scroll, range,
+    --- and layer fields.
     fields: ("core" | "full")?,
 }
 
@@ -285,7 +303,9 @@ export type TreeDump = {
 }
 
 export type DiffOptions = {
+    --- Movement below this logical-point distance is ignored. Defaults to 0.5.
     move_epsilon: number?,
+    --- Defaults to false.
     include_invisible: boolean?,
     id_prefix: string?,
 }
@@ -305,16 +325,18 @@ export type TreeDiff = {
     viewports_removed: { string },
 }
 
+--- An immutable, immediate registry snapshot. `diff()` compares this baseline
+--- with registry state at the time of the call.
 export type Capture = {
     frame: number,
     diff: (self: Capture, options: DiffOptions?) -> TreeDiff,
 }
 
 --- Exact pixel sampled from a fresh viewport capture.
---- `position` is the requested egui logical point. `physical` is the sampled
---- pixel coordinate after multiplying by the viewport's pixels-per-point and
---- flooring. `rgba` values are Luau numbers and safe for arithmetic; `hex` is
---- the preferred exact fixed-color assertion.
+--- `position` preserves the method's coordinate space: viewport-local or
+--- widget-relative logical points. `physical` is the viewport pixel after
+--- scaling and flooring. `rgba` values support arithmetic; `hex` is preferred
+--- for exact fixed-color assertions.
 export type PixelSample = {
     position: Pos,
     physical: { number },
@@ -325,11 +347,15 @@ export type PixelSample = {
 declare class Viewport
     read id: string
     read state: (self: Viewport) -> ViewportState?
+    --- Checks the current state first, then polls fresh captures. A predicate
+    --- receives `nil` while the viewport is absent.
     read wait: (
         self: Viewport,
         condition: ViewportCondition | ViewportPredicate,
         options: WaitOptions?
     ) -> ViewportState?
+    --- Waits for a match and records one assertion. A failed match throws
+    --- `expectation_failed` after it records the failed assertion.
     read expect: (
         self: Viewport,
         condition: ViewportCondition?,
@@ -337,37 +363,50 @@ declare class Viewport
     ) -> ViewportState?
 
     read settle: (self: Viewport, options: WaitOptions?) -> SettleReport
+    --- Waits for a fresh viewport capture and throws `not_found` if the
+    --- viewport is then absent.
     read wait_capture: (self: Viewport, options: WaitOptions?) -> ViewportState
     read widget: (self: Viewport, id: string) -> Widget
     read widgets: (self: Viewport, filter: WidgetFilter?) -> { Widget }
+    --- Uses viewport-local logical points and returns topmost widgets first.
     read widgets_at: (self: Viewport, position: Pos) -> { Widget }
 
     read dismiss_popups: (self: Viewport, options: ActionOptions?) -> ()
     read key: (self: Viewport, key: string, options: KeyOptions?) -> ()
     read paste: (self: Viewport, text: string, options: ActionOptions?) -> ()
     read focus: (self: Viewport, options: ActionOptions?) -> ()
+    --- Requests the constraints as one atomic operation. The window manager
+    --- can clamp or ignore them, so inspect the resulting state.
     read resize: (self: Viewport, options: ResizeOptions) -> ()
+    --- Queues exactly one raw event. It does not wait or settle.
     read input: (self: Viewport, event: RawInputEvent) -> ()
 
+    --- Waits for completed evaluation-scoped entries, returns them in journal
+    --- order, and dismisses them for this evaluation.
     read egui_diagnostics: (self: Viewport) -> EguiDiagnosticBatch
+    --- Dismisses evaluation-scoped entries without returning them.
     read clear_egui_diagnostics: (self: Viewport) -> ()
+    --- Waits for a fresh screenshot of the viewport.
     read screenshot: (self: Viewport) -> ImageRef
+    --- Waits for one fresh screenshot. Positions are viewport-local logical
+    --- points.
     read sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample }
     read layout_issues: (self: Viewport) -> { LayoutIssue }
 
     read show_highlight: (
         self: Viewport,
         rect: Rect,
-        color: string,
-        options: ActionOptions?
+        color: string
     ) -> HighlightResult
-    read clear_highlights: (self: Viewport, options: ActionOptions?) -> ()
+    read clear_highlights: (self: Viewport) -> ()
     read show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> ()
-    read clear_debug_overlay: (self: Viewport, options: ActionOptions?) -> ()
+    read clear_debug_overlay: (self: Viewport) -> ()
 end
 
--- High-level actions auto-settle by default. Use `configure()` to change
--- global timeout, poll interval, and settle behavior.
+--- High-level input actions settle after they queue input. Widget actions first
+--- wait for their required widget state. Calls inherit the current evaluation
+--- defaults: 5000 ms timeout, 16 ms polling, and settling enabled. A call
+--- cannot extend the configured timeout or the script deadline.
 export type ActionOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
@@ -378,10 +417,14 @@ export type ClickOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
     settle: boolean?,
+    --- Defaults to "primary".
     button: "primary" | "secondary" | "middle"?,
+    --- Defaults to 1 and accepts values from 1 through 3.
     click_count: number?,
 }
 
+--- Populated fields use AND. An empty filter includes visible and invisible
+--- widgets. Discovery returns handles in widget ID order.
 export type WidgetFilter = {
     role: WidgetRole?,
     id_prefix: string?,
@@ -408,7 +451,9 @@ export type HoverOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
     settle: boolean?,
+    --- Normalized within the widget from 0 to 1. Defaults to the center.
     position: Vec?,
+    --- Defaults to zero.
     duration_ms: number?,
 }
 
@@ -424,11 +469,12 @@ export type DragOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
     settle: boolean?,
+    --- Normalized within the source widget from 0 to 1. Defaults to the center.
     from: Vec?,
 }
 
--- scroll_to targets a scroll area widget. Use offset for explicit coordinates or align for
--- a coarse jump within the scroll area.
+--- Targets a scroll area. `offset` takes precedence over `align`; at least one
+--- must be present. Offsets use logical points and are clamped to the content.
 export type ScrollToOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
@@ -448,6 +494,8 @@ export type KeyOptions = {
 export type RawInputAction = "press" | "release"
 export type PointerButton = "primary" | "secondary" | "middle"
 
+--- Raw pointer positions use viewport-local logical points. Scroll deltas use
+--- logical points.
 export type RawInputEvent =
     { type: "pointer_move", position: Pos }
     | {
@@ -466,7 +514,7 @@ export type RawInputEvent =
     | { type: "text", text: string }
     | { type: "scroll", delta: Vec, modifiers: Modifiers? }
 
--- Closed set of issue kinds returned by `check_layout()`.
+-- Closed set of issue kinds returned by `layout_issues()`.
 export type LayoutIssueKind =
     "overlap"
     | "clipping"
@@ -497,9 +545,6 @@ export type OverlayDebugMode =
 
 -- Unset fields use defaults. Colors are hex "#RRGGBB" or "#RRGGBBAA".
 export type DebugOverlayOptions = {
-    timeout_ms: number?,
-    poll_interval_ms: number?,
-    settle: boolean?,
     mode: OverlayDebugMode?,
     -- Defaults to true.
     show_labels: boolean?,
@@ -533,7 +578,7 @@ export type HighlightResult = {
     rect: Rect,
 }
 
--- A single semantic layout problem reported by `check_layout()`.
+-- A single semantic layout problem reported by `layout_issues()`.
 export type LayoutIssue = {
     kind: LayoutIssueKind,
     widgets: { string },
@@ -573,9 +618,13 @@ export type FixtureParam = {
     name: string,
     kind: FixtureParamKind,
     description: string,
+    --- Its absence makes the parameter required.
     default: WidgetValue?,
+    --- Restricts the parameter to these exact values.
     choices: { WidgetValue }?,
+    --- Inclusive numeric lower bound.
     min: number?,
+    --- Inclusive numeric upper bound.
     max: number?,
 }
 
@@ -613,17 +662,23 @@ export type Fixture = {
 }
 
 export type DataCondition = {
+    --- RFC 6901 JSON Pointer. An empty pointer selects all widget data.
     pointer: string,
     equals: any,
 }
 
 export type ScrollAtCondition = {
     offset: Vec,
+    --- Maximum difference on each axis. Defaults to 0.5 logical points.
     tolerance: number?,
 }
 
+--- Populated fields use AND. An empty condition means `present = true`.
+--- `present = false` cannot appear with a state field.
 export type WidgetCondition = {
     present: boolean?,
+    --- Requires presence, visibility, enabled state, and a positive visible
+    --- fraction.
     actionable: boolean?,
     visible: boolean?,
     enabled: boolean?,
@@ -634,11 +689,14 @@ export type WidgetCondition = {
     label_contains: string?,
     value: WidgetValue?,
     value_text_contains: string?,
+    --- Requires scroll state that is unchanged across two fresh captures.
     scroll_ready: boolean?,
     scroll_at: ScrollAtCondition?,
     data: DataCondition?,
 }
 
+--- Populated fields use AND. An empty condition means `present = true`.
+--- `present = false` cannot appear with a state field.
 export type ViewportCondition = {
     present: boolean?,
     name: string?,
@@ -657,13 +715,17 @@ export type ViewportPredicate = (state: ViewportState?) -> boolean
 
 export type RelationExpectation = {
     widget: Widget,
+    --- Required distance between rectangles. Defaults to zero.
     min_gap: number?,
 }
 
 export type PaintExpectation = {
+    --- Distinct colors required in a 24 by 24 visible-area sample. Defaults to 2.
     min_colors: number?,
 }
 
+--- Relation checks use widget rectangles. `descendants` requires every target
+--- anywhere in the recursive subtree. `text_fits` requires no ellipsis.
 export type WidgetExpectation = WidgetCondition & {
     left_of: RelationExpectation?,
     above: RelationExpectation?,
@@ -682,6 +744,8 @@ export type FixtureTarget = {
 export type FixtureOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
+    --- False skips the fresh frame and all readiness waits. Preconditions and
+    --- the fixture handler still run.
     wait: boolean?,
 }
 
@@ -696,6 +760,8 @@ export type FixtureResult = {
     observations: { FixtureObservation },
 }
 
+--- Changes defaults only for the current evaluation. Initial defaults are
+--- 5000 ms, 16 ms, settling enabled, and animations disabled.
 export type ScriptOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
@@ -703,6 +769,8 @@ export type ScriptOptions = {
     animations: boolean?,
 }
 
+--- A wait inherits current evaluation defaults. Its timeout cannot extend the
+--- configured timeout or the script deadline.
 export type WaitOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
@@ -725,6 +793,8 @@ export type ErrorTarget = {
     id: string,
 }
 
+--- A public failure throws this frozen table. `pcall` can catch it. An
+--- unhandled value becomes `success = false` in the script outcome.
 export type Error = {
     code: ErrorCode,
     message: string,
@@ -751,23 +821,33 @@ export type Eguidev = {
     log: (value: any) -> (),
     configure: (options: ScriptOptions) -> (),
 
+    --- Checks immediately, then polls fresh captures.
     wait: (predicate: () -> boolean, options: WaitOptions?) -> (),
+    --- Waits for one new app-wide frame by default.
     wait_frames: (count: number?, options: WaitOptions?) -> number,
 
     widget: (id: string) -> Widget,
     widgets: (query: WidgetQuery?) -> { Widget },
     viewport: (id: string) -> Viewport,
     viewports: (filter: ViewportFilter?) -> { Viewport },
+    --- Waits until exactly one viewport matches. Absence and ambiguity produce
+    --- distinct `not_found` details at the deadline.
     wait_viewport: (filter: ViewportFilter, options: WaitOptions?) -> Viewport,
 
+    --- Takes an immediate immutable registry snapshot.
     capture: () -> Capture,
     dump: (options: DumpOptions?) -> TreeDump,
     dump_text: (options: DumpOptions?) -> string,
 
+    --- Waits for static preconditions, applies the handler once, waits one new
+    --- frame, then waits for static and handler-provided readiness targets.
     fixture: (name: string, params: FixtureParams?, options: FixtureOptions?) -> FixtureResult,
     fixtures: () -> { Fixture },
 
+    --- Reads one application-defined provider and throws `diagnostic_failed`
+    --- if that provider fails.
     diagnostic: (name: string) -> any,
+    --- Reads all application-defined providers and records failures by name.
     diagnostics: () -> DiagnosticsSnapshot,
 }
 

@@ -52,7 +52,7 @@ assert(
 
 -- Rows scrolled out of the viewport are intentional, not defects.
 local rows_outside = 0
-for _, row in ipairs(vp:widgets({ id_prefix = "gate.row.", include_invisible = true })) do
+for _, row in ipairs(vp:widgets({ id_prefix = "gate.row." })) do
     local row_state = row:state()
     assert(row_state ~= nil)
     local rect = row_state.rect

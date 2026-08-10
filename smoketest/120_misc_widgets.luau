@@ -57,7 +57,7 @@ vp:settle()
 
 -- Collapsing section: verify advanced section toggle
 eguidev.widget("basic.advanced"):set_value(false)
--- Advanced widgets should not be visible when collapsed (use include_invisible to check)
+-- Discovery can find invisible advanced widgets while the section is collapsed.
 eguidev.widget("basic.advanced"):set_value(true)
 eguidev.widget("basic.advanced.action"):expect({ present = true })
 eguidev.widget("basic.advanced.summary"):expect({ present = true })

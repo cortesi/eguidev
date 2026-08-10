@@ -38,7 +38,8 @@ MCP config example: `docs/examples/mcp/eguidev_demo.json`.
 
 ## Script behavior notes
 
-- `Viewport:widgets()` omits clipped or hidden widgets unless `include_invisible` is `true`.
+- `Viewport:widgets()` includes visible and invisible widgets. Use `visible = true` or
+  `visible = false` to select one group.
 - Widget and viewport references are immutable and live. Read current fields through `state()`,
   which returns `nil` while the target is absent.
 - Use `wait_viewport()` for one semantic viewport and `Viewport:widget()` for an exact scoped

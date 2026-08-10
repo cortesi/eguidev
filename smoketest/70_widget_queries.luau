@@ -1,10 +1,17 @@
 eguidev.fixture("basic.default")
 local vp = eguidev.root
 
--- widgets() with include_invisible shows at least as many as visible-only
-local all_widgets = vp:widgets({ include_invisible = true }) :: any
-local visible_only = vp:widgets() :: any
-assert(#all_widgets >= #visible_only, "include_invisible should show at least as many")
+-- widgets() includes all visibility states unless the caller selects one.
+local all_widgets = vp:widgets() :: any
+local visible_only = vp:widgets({ visible = true }) :: any
+local invisible_only = vp:widgets({ visible = false }) :: any
+assert(
+    #all_widgets == #visible_only + #invisible_only,
+    "unfiltered discovery should include both visibility states"
+)
+for index = 2, #all_widgets do
+    assert(all_widgets[index - 1].id < all_widgets[index].id, "widgets should use ID order")
+end
 
 -- widgets() filtered by role
 local buttons = vp:widgets({ role = "button" }) :: any
@@ -16,7 +23,7 @@ end
 
 -- widgets() with id_prefix (ensure scroll rows exist first)
 eguidev.widget("basic.scroll.row.0"):expect( { visible = true })
-local scroll_rows = vp:widgets({ id_prefix = "basic.scroll.row.", include_invisible = true }) :: any
+local scroll_rows = vp:widgets({ id_prefix = "basic.scroll.row." }) :: any
 assert(#scroll_rows >= 1, "should find scroll rows")
 for _, w in ipairs(scroll_rows) do
     assert(string.find(w.id, "basic.scroll.row.", 1, true) == 1, "id should have prefix")
@@ -94,6 +101,7 @@ eguidev.log({ key = "value", number = 42 })
 return {
     all_count = #all_widgets,
     visible_count = #visible_only,
+    invisible_count = #invisible_only,
     button_count = #buttons,
     children_count = #children,
 }

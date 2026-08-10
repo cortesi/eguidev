@@ -621,25 +621,21 @@ function widgetMethods.sample_grid(self: Widget, nx: number, ny: number): { Pixe
         :: { PixelSample }
 end
 
-function widgetMethods.show_highlight(
-    self: Widget,
-    color: string,
-    options: ActionOptions?
-): HighlightResult
+function widgetMethods.show_highlight(self: Widget, color: string): HighlightResult
     return freezeOwned(kernel.action.widget_show_highlight(scopedWidgetTarget(self), color))
         :: HighlightResult
 end
 
-function widgetMethods.clear_highlight(self: Widget, options: ActionOptions?)
+function widgetMethods.clear_highlight(self: Widget)
     kernel.action.widget_clear_highlight(scopedWidgetTarget(self))
 end
 
 function widgetMethods.show_debug_overlay(self: Widget, options: DebugOverlayOptions?)
-    local resolved = actionOptions(options)
-    kernel.action.widget_show_debug_overlay(scopedWidgetTarget(self), resolved.mode, resolved)
+    local mode = if options ~= nil then options.mode else nil
+    kernel.action.widget_show_debug_overlay(scopedWidgetTarget(self), mode, options)
 end
 
-function widgetMethods.clear_debug_overlay(self: Widget, options: ActionOptions?)
+function widgetMethods.clear_debug_overlay(self: Widget)
     kernel.action.widget_clear_debug_overlay(scopedWidgetTarget(self))
 end
 
@@ -799,26 +795,21 @@ function viewportMethods.sample_pixels(self: Viewport, positions: { Pos }): { Pi
     return freezeOwned(kernel.capture.viewport_sample_pixels(self, positions)) :: { PixelSample }
 end
 
-function viewportMethods.show_highlight(
-    self: Viewport,
-    rect: Rect,
-    color: string,
-    options: ActionOptions?
-): HighlightResult
+function viewportMethods.show_highlight(self: Viewport, rect: Rect, color: string): HighlightResult
     return freezeOwned(kernel.action.viewport_show_highlight(self, rect, color))
         :: HighlightResult
 end
 
-function viewportMethods.clear_highlights(self: Viewport, options: ActionOptions?)
+function viewportMethods.clear_highlights(self: Viewport)
     kernel.action.viewport_clear_highlights(self)
 end
 
 function viewportMethods.show_debug_overlay(self: Viewport, options: DebugOverlayOptions?)
-    local resolved = actionOptions(options)
-    kernel.action.viewport_show_debug_overlay(self, resolved.mode, resolved)
+    local mode = if options ~= nil then options.mode else nil
+    kernel.action.viewport_show_debug_overlay(self, mode, options)
 end
 
-function viewportMethods.clear_debug_overlay(self: Viewport, options: ActionOptions?)
+function viewportMethods.clear_debug_overlay(self: Viewport)
     kernel.action.viewport_clear_debug_overlay(self)
 end
 

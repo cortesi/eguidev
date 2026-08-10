@@ -19,7 +19,7 @@ in the cleanup plan.
   `DevMcp` model.
 - Keep runtime attachment explicit and localized to one bootstrap boundary.
 - Tool semantics updated: `widget_get` now errors on missing widgets, and `widget_list`
-  respects visibility unless `include_invisible` is set.
+  includes all visibility states unless the `visible` filter is set.
 - Duplicate explicit widget ids now block automation until instrumentation is fixed.
 - Widget registry entries now include optional `value` data for stateful widgets to aid
   verification without screenshots.
