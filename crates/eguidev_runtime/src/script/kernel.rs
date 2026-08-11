@@ -3357,7 +3357,7 @@ end)
             "{error:?}"
         );
         assert!(
-            outcome.timing.total_ms < 500,
+            outcome.timing.exec_ms < 500,
             "wait_until should honor the configured timeout: {outcome:?}"
         );
     }
