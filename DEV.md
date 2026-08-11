@@ -164,6 +164,11 @@ identifier. These identity fields are diagnostics, not launch requirements.
 
 Edev owns managed-process lifetime as well as presentation. On macOS, losing the owning
 launcher terminates the complete app process group without a later cleanup command.
+For normal shutdown, Edev calls the app's private `app_close` tool. The app queues
+`ViewportCommand::Close` for the root viewport and returns before process exit. Edev keeps the
+ownership channel open and waits for the supervisor exit event. `[app].shutdown_grace_secs`
+sets the escalation deadline and defaults to 30 seconds. `stop` and `status` report the last
+`graceful` or `forced` result. One-shot commands fail if teardown is forced.
 Applications should therefore launch their ordinary executable, keep a stable installed
 bundle when they have one, and avoid automation-only or per-run `.app` identities. App
 code must not repeatedly force foreground activation while a background session is

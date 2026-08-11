@@ -46,7 +46,7 @@ use tokio::{
     runtime::Handle,
     sync::Mutex as AsyncMutex,
     task::{JoinHandle, block_in_place},
-    time::sleep,
+    time::{sleep, timeout},
 };
 
 mod command;
@@ -119,6 +119,9 @@ pub enum EdevError {
     /// Instance registry error.
     #[error("instance registry error: {0}")]
     InstanceRegistry(String),
+    /// Managed app teardown required forced process cleanup.
+    #[error("app shutdown was forced: {0}")]
+    ForcedShutdown(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -163,6 +166,8 @@ struct State {
     idle_shutdown_after: Option<Duration>,
     /// Whether the stdio MCP client completed initialization.
     mcp_client_attached: bool,
+    /// Most recent completed app shutdown, retained until the next launch.
+    last_shutdown: Option<ShutdownResult>,
     /// Logger for launcher lifecycle messages.
     log_state: LogState,
 }
@@ -183,6 +188,7 @@ impl State {
             last_activity: Instant::now(),
             idle_shutdown_after: None,
             mcp_client_attached: false,
+            last_shutdown: None,
             log_state,
         }
     }
@@ -212,13 +218,14 @@ impl State {
     /// Stop the managed app process and reset launcher state without unregistering the launcher.
     async fn stop_app(&mut self) -> Result<StopStatus, EdevError> {
         if let Some(app) = self.app.take() {
-            app.shutdown().await;
+            let shutdown = app.shutdown().await;
+            self.last_shutdown = Some(shutdown.clone());
             self.status = AppStatus::NotRunning;
-            return Ok(StopStatus::Stopped);
+            return Ok(StopStatus::Stopped(Some(shutdown)));
         }
         if matches!(self.status, AppStatus::StartupFailed { .. }) {
             self.status = AppStatus::NotRunning;
-            return Ok(StopStatus::Stopped);
+            return Ok(StopStatus::Stopped(None));
         }
         self.status = AppStatus::NotRunning;
         Ok(StopStatus::AlreadyStopped)
@@ -226,9 +233,9 @@ impl State {
 
     /// Stop the app process and unregister the launcher.
     async fn shutdown(&mut self) -> Result<(), EdevError> {
-        let _stopped = self.stop_app().await?;
+        let stopped = self.stop_app().await?;
         self.instance_registry.unregister()?;
-        Ok(())
+        stopped.ensure_graceful()
     }
 
     /// Start the app process unless it is already running.
@@ -332,13 +339,16 @@ impl State {
     {
         self.status = AppStatus::Starting;
         if replace_existing && let Some(app) = self.app.take() {
-            app.shutdown().await;
+            let shutdown = app.shutdown().await;
+            self.last_shutdown = Some(shutdown);
         }
+        self.last_shutdown = None;
         self.log_edev(format!("{} requested", action.as_str()));
         match spawn(&self.config, self.log_state.clone()).await {
             Ok(app) => {
                 if let Err(output) = probe_script_eval_ready(&app.client).await {
-                    app.shutdown().await;
+                    let shutdown = app.shutdown().await;
+                    self.last_shutdown = Some(shutdown);
                     self.status = AppStatus::StartupFailed {
                         output: output.clone(),
                     };
@@ -407,6 +417,7 @@ impl State {
             startup_output,
             mcp_client_attached: self.mcp_client_attached,
             idle_shutdown: self.idle_shutdown_report(),
+            last_shutdown: self.last_shutdown.clone(),
             #[cfg(target_os = "macos")]
             presentation: PresentationStatus::requested(self.config.presentation),
         }
@@ -467,6 +478,8 @@ struct AppProcess {
     stdout_buffer: Arc<Mutex<Vec<u8>>>,
     /// Logger for process lifecycle messages.
     log_state: LogState,
+    /// Deadline for normal app closure before forced cleanup.
+    shutdown_grace: Duration,
 }
 
 impl AppProcess {
@@ -488,17 +501,18 @@ impl AppProcess {
         }
     }
 
-    /// Terminate the app process and tear down stderr streaming.
-    async fn shutdown(mut self) {
-        let process_group_id = self.process_group_id.take();
-        let _supervisor_pid = self.supervisor_pid.take();
-        process_lifecycle::close_ownership_writer(&mut self.ownership_writer, &self.log_state);
-        if let Some(task) = self.supervisor_exit_task.take() {
-            let _wait_result = task.await;
-        }
-        if let Some(mut child) = self.child.take() {
-            process_lifecycle::terminate_process_group(process_group_id, &self.log_state);
-            let _wait_result = child.wait().await;
+    /// Request normal app closure and escalate only when the request or exit fails.
+    async fn shutdown(mut self) -> ShutdownResult {
+        let close_result = request_app_close(&self.client).await;
+        let shutdown_grace = self.shutdown_grace;
+        let result = resolve_shutdown(close_result, self.wait_for_exit(), shutdown_grace).await;
+        if result.is_forced() {
+            self.start_termination();
+            let _wait_result = self.wait_for_exit().await;
+        } else {
+            self.process_group_id.take();
+            self.supervisor_pid.take();
+            self.ownership_writer.take();
         }
         if let Some(task) = self.stderr_task.take() {
             let _wait_result = task.await;
@@ -507,6 +521,34 @@ impl AppProcess {
             let _wait_result = task.await;
         }
         let _drain_result = drain_stderr(&self.stderr_buffer).await;
+        result
+    }
+
+    /// Await the existing supervisor or direct-child exit event.
+    async fn wait_for_exit(&mut self) -> Result<(), String> {
+        if let Some(task) = self.supervisor_exit_task.as_mut() {
+            let status = task
+                .await
+                .map_err(|error| format!("supervisor exit task failed: {error}"))?
+                .map_err(|error| format!("supervisor exit failed: {error}"))?;
+            self.supervisor_exit_task.take();
+            if status.success() {
+                return Ok(());
+            }
+            return Err(format!("supervisor exited with {status}"));
+        }
+        if let Some(child) = self.child.as_mut() {
+            let status = child
+                .wait()
+                .await
+                .map_err(|error| format!("app exit wait failed: {error}"))?;
+            self.child.take();
+            if status.success() {
+                return Ok(());
+            }
+            return Err(format!("app exited with {status}"));
+        }
+        Ok(())
     }
 
     /// Describe the exact app endpoint that direct MCP clients can connect to.
@@ -525,6 +567,51 @@ impl AppProcess {
             transport: "tcp",
             endpoint: self.mcp_endpoint.clone(),
         })
+    }
+}
+
+/// Ask the connected app to queue normal root-viewport closure.
+async fn request_app_close(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+) -> Result<(), ShutdownCause> {
+    let result = {
+        let client = client.lock().await;
+        client
+            .call_tool("app_close".to_string(), serde_json::json!({}))
+            .await
+            .map_err(|error| ShutdownCause::AppMcpUnavailable(error.to_string()))?
+    };
+    if result.is_error() {
+        return Err(ShutdownCause::AppCloseFailed(
+            result
+                .text()
+                .unwrap_or("app_close returned an error")
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Classify one close request and event-driven exit observation.
+async fn resolve_shutdown<F>(
+    close_result: Result<(), ShutdownCause>,
+    exit: F,
+    grace: Duration,
+) -> ShutdownResult
+where
+    F: Future<Output = Result<(), String>>,
+{
+    if let Err(cause) = close_result {
+        return ShutdownResult::Forced { cause };
+    }
+    match timeout(grace, exit).await {
+        Ok(Ok(())) => ShutdownResult::Graceful,
+        Ok(Err(error)) => ShutdownResult::Forced {
+            cause: ShutdownCause::ExitFailed(error),
+        },
+        Err(_) => ShutdownResult::Forced {
+            cause: ShutdownCause::DeadlineExpired,
+        },
     }
 }
 
@@ -599,9 +686,65 @@ enum StartStatus {
 /// Outcome of a stop attempt.
 enum StopStatus {
     /// A running app was stopped or a failed startup state was cleared.
-    Stopped,
+    Stopped(Option<ShutdownResult>),
     /// No app was running.
     AlreadyStopped,
+}
+
+impl StopStatus {
+    /// Convert forced cleanup into the failure contract for one-shot commands.
+    fn ensure_graceful(self) -> Result<(), EdevError> {
+        match self {
+            Self::Stopped(Some(result)) => result.ensure_graceful(),
+            Self::Stopped(None) | Self::AlreadyStopped => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+/// Result of one managed app shutdown.
+enum ShutdownResult {
+    /// The app accepted the close request and exited before the deadline.
+    Graceful,
+    /// Edev used forced process cleanup.
+    Forced {
+        /// Cause that required escalation.
+        cause: ShutdownCause,
+    },
+}
+
+impl ShutdownResult {
+    /// Return whether process cleanup required escalation.
+    fn is_forced(&self) -> bool {
+        matches!(self, Self::Forced { .. })
+    }
+
+    /// Convert this result into the one-shot command contract.
+    fn ensure_graceful(self) -> Result<(), EdevError> {
+        match self {
+            Self::Graceful => Ok(()),
+            Self::Forced { cause } => Err(EdevError::ForcedShutdown(cause.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, thiserror::Error)]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
+/// Cause of forced managed app cleanup.
+enum ShutdownCause {
+    /// The app MCP transport could not accept the close request.
+    #[error("app MCP unavailable: {0}")]
+    AppMcpUnavailable(String),
+    /// The app rejected the close request.
+    #[error("app close request failed: {0}")]
+    AppCloseFailed(String),
+    /// The app did not exit before the configured deadline.
+    #[error("app did not exit before the shutdown deadline")]
+    DeadlineExpired,
+    /// The supervisor or direct child exit event failed.
+    #[error("app exit observation failed: {0}")]
+    ExitFailed(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -792,6 +935,7 @@ async fn spawn_app(
         stderr_buffer,
         stdout_buffer,
         log_state,
+        shutdown_grace: config.shutdown_grace,
     })
 }
 
@@ -1052,9 +1196,11 @@ impl ServerHandler for EdevServer {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.stop_app().await {
-                    Ok(StopStatus::Stopped) => lifecycle_success("stopped", start.elapsed(), None),
+                    Ok(StopStatus::Stopped(shutdown)) => {
+                        lifecycle_stop_success("stopped", start.elapsed(), shutdown)
+                    }
                     Ok(StopStatus::AlreadyStopped) => {
-                        lifecycle_success("already_stopped", start.elapsed(), None)
+                        lifecycle_stop_success("already_stopped", start.elapsed(), None)
                     }
                     Err(error) => lifecycle_failed(
                         ErrorKind::StopFailed,
@@ -1227,6 +1373,7 @@ struct LifecycleReport {
     status: &'static str,
     elapsed_ms: u64,
     connection: Option<AppConnectionDescriptor>,
+    shutdown: Option<ShutdownResult>,
 }
 
 #[allow(clippy::missing_docs_in_private_items)]
@@ -1242,6 +1389,7 @@ struct StatusReport {
     startup_output: Option<String>,
     mcp_client_attached: bool,
     idle_shutdown: IdleShutdownReport,
+    last_shutdown: Option<ShutdownResult>,
     #[cfg(target_os = "macos")]
     presentation: PresentationStatus,
 }
@@ -1274,6 +1422,24 @@ fn lifecycle_success(
             status,
             elapsed_ms: elapsed.as_millis() as u64,
             connection,
+            shutdown: None,
+        },
+    }))
+}
+
+/// Build a successful stop result with its teardown outcome.
+fn lifecycle_stop_success(
+    status: &'static str,
+    elapsed: Duration,
+    shutdown: Option<ShutdownResult>,
+) -> CallToolResult {
+    CallToolResult::new().with_structured_content(serde_json::json!({
+        "ok": true,
+        "report": LifecycleReport {
+            status,
+            elapsed_ms: elapsed.as_millis() as u64,
+            connection: None,
+            shutdown,
         },
     }))
 }
@@ -1293,6 +1459,7 @@ fn lifecycle_startup_failed(
                 status: "startup_failed",
                 elapsed_ms: elapsed.as_millis() as u64,
                 connection: None,
+                shutdown: None,
             },
         }),
     )
@@ -1308,6 +1475,7 @@ fn lifecycle_failed(kind: ErrorKind, message: String, elapsed: Duration) -> Call
                 status: "failed",
                 elapsed_ms: elapsed.as_millis() as u64,
                 connection: None,
+                shutdown: None,
             },
         }),
     )
@@ -1430,6 +1598,7 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
         ],
         env: Default::default(),
         presentation: Presentation::Background,
+        shutdown_grace: Duration::from_secs(30),
         verbose: false,
     }
 }
@@ -1481,6 +1650,12 @@ mod tests {
                 }
             }))
             .expect("script eval json")
+    }
+
+    fn successful_app_close_result() -> CallToolResult {
+        CallToolResult::new().with_structured_content(serde_json::json!({
+            "queued": true,
+        }))
     }
 
     fn successful_outcome(value: &serde_json::Value) -> ScriptEvalOutcome {
@@ -2019,7 +2194,9 @@ mod tests {
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
         ) -> tmcp::Result<CallToolResponse> {
-            if name == "script_eval" {
+            if name == "app_close" {
+                Ok(successful_app_close_result().into())
+            } else if name == "script_eval" {
                 Ok(successful_script_eval_result().into())
             } else if name == "script_api" {
                 Ok(CallToolResult::new()
@@ -2066,6 +2243,9 @@ mod tests {
             arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
         ) -> tmcp::Result<CallToolResponse> {
+            if name == "app_close" {
+                return Ok(successful_app_close_result().into());
+            }
             if name != "script_eval" {
                 return Err(McpError::ToolNotFound(name));
             }
@@ -2124,6 +2304,9 @@ mod tests {
             arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
         ) -> tmcp::Result<CallToolResponse> {
+            if name == "app_close" {
+                return Ok(successful_app_close_result().into());
+            }
             if name != "script_eval" {
                 return Err(McpError::ToolNotFound(name));
             }
@@ -2261,7 +2444,9 @@ mod tests {
             _arguments: Option<Arguments>,
             _task: Option<TaskMetadata>,
         ) -> tmcp::Result<CallToolResponse> {
-            if name == "script_eval" {
+            if name == "app_close" {
+                Ok(successful_app_close_result().into())
+            } else if name == "script_eval" {
                 Err(McpError::InternalError("boom".to_string()))
             } else {
                 Err(McpError::ToolNotFound(name))
@@ -2302,6 +2487,7 @@ mod tests {
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
+            shutdown_grace: Duration::from_secs(30),
         };
 
         (app, handle)
@@ -2340,6 +2526,7 @@ mod tests {
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
+            shutdown_grace: Duration::from_secs(30),
         };
 
         (app, handle)
@@ -2382,6 +2569,7 @@ mod tests {
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
+            shutdown_grace: Duration::from_secs(30),
         };
 
         (app, handle)
@@ -2424,6 +2612,7 @@ mod tests {
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
             stdout_buffer: Arc::new(Mutex::new(Vec::new())),
             log_state: LogState::new(false),
+            shutdown_grace: Duration::from_secs(30),
         };
 
         (app, handle)
@@ -2676,9 +2865,69 @@ mod tests {
         let stopped = state.stop_app().await.expect("stop");
         let already_stopped = state.stop_app().await.expect("stop");
 
-        assert!(matches!(stopped, StopStatus::Stopped));
+        assert!(matches!(stopped, StopStatus::Stopped(_)));
         assert!(matches!(already_stopped, StopStatus::AlreadyStopped));
         assert!(matches!(state.status, AppStatus::NotRunning));
+        assert_eq!(state.last_shutdown, Some(ShutdownResult::Graceful));
+    }
+
+    #[tokio::test]
+    async fn shutdown_resolution_reports_normal_exit() {
+        let result = resolve_shutdown(Ok(()), async { Ok(()) }, Duration::from_secs(1)).await;
+        assert_eq!(result, ShutdownResult::Graceful);
+    }
+
+    #[tokio::test]
+    async fn shutdown_resolution_reports_missing_mcp() {
+        let result = resolve_shutdown(
+            Err(ShutdownCause::AppMcpUnavailable("closed".to_string())),
+            async { Ok(()) },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            result,
+            ShutdownResult::Forced {
+                cause: ShutdownCause::AppMcpUnavailable("closed".to_string()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_resolution_reports_close_failure() {
+        let result = resolve_shutdown(
+            Err(ShutdownCause::AppCloseFailed("rejected".to_string())),
+            async { Ok(()) },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            result,
+            ShutdownResult::Forced {
+                cause: ShutdownCause::AppCloseFailed("rejected".to_string()),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_resolution_reports_deadline_expiry() {
+        let result =
+            resolve_shutdown(Ok(()), pending::<Result<(), String>>(), Duration::ZERO).await;
+        assert_eq!(
+            result,
+            ShutdownResult::Forced {
+                cause: ShutdownCause::DeadlineExpired,
+            }
+        );
+    }
+
+    #[test]
+    fn forced_shutdown_fails_one_shot_contract() {
+        let result = ShutdownResult::Forced {
+            cause: ShutdownCause::DeadlineExpired,
+        }
+        .ensure_graceful();
+        assert!(matches!(result, Err(EdevError::ForcedShutdown(_))));
     }
 
     #[test]

@@ -236,6 +236,28 @@ mod tests {
         );
     }
 
+    fn write_app_config_with_close_mode(
+        path: &Path,
+        cwd: &Path,
+        close_mode: &str,
+        shutdown_grace_secs: u64,
+    ) {
+        let cwd = serde_json::to_string(&cwd.to_string_lossy().to_string()).expect("cwd JSON");
+        let command = serde_json::to_string(&[
+            env!("CARGO_BIN_EXE_edev_test_app"),
+            "--close-mode",
+            close_mode,
+        ])
+        .expect("command JSON");
+        fs::write(
+            path,
+            format!(
+                "[app]\ncwd = {cwd}\ncommand = {command}\nshutdown_grace_secs = {shutdown_grace_secs}\n"
+            ),
+        )
+        .expect("write config");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn early_app_exit_closes_transport_and_removes_exact_record() -> Result<(), Box<dyn Error>>
     {
@@ -395,12 +417,18 @@ mod tests {
 
         let stop = client.call_tool("stop", json!({})).await?;
         assert!(!stop.is_error(), "normal stop should succeed: {stop:?}");
+        let shutdown = stop
+            .structured_content
+            .as_ref()
+            .ok_or("stop did not include structured content")?;
+        assert_eq!(shutdown["report"]["shutdown"]["mode"], "graceful");
         let stopped = client.call_tool("status", json!({})).await?;
         let stopped = stopped
             .structured_content
             .ok_or("stopped status did not include structured content")?;
         assert_eq!(stopped["state"], "not_running");
         assert_eq!(stopped["app_present"], false);
+        assert_eq!(stopped["last_shutdown"]["mode"], "graceful");
         assert!(live_process_group_members(app_process_group_id).is_empty());
         assert!(!process_alive(supervisor_pid));
         assert!(
@@ -417,6 +445,82 @@ mod tests {
         assert!(
             !launcher_record_path.exists(),
             "outer unregister should remove the launcher record"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejected_close_reports_forced_stop_and_retains_status() -> Result<(), Box<dyn Error>> {
+        let tempdir = test_tempdir();
+        let config_path = tempdir.path().join("rejected-close.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), "fail", 30);
+
+        let mut client = Client::new("forced-stop-test", env!("CARGO_PKG_VERSION"))
+            .with_request_timeout(Duration::from_secs(10));
+        let spawned = client
+            .connect_process(launcher_command(&config_path, tempdir.path()))
+            .await?;
+        let mut process = spawned.process;
+        let start = client.call_tool("start", json!({})).await?;
+        assert!(!start.is_error(), "start should succeed: {start:?}");
+
+        let stop = client.call_tool("stop", json!({})).await?;
+        assert!(
+            !stop.is_error(),
+            "forced stop should remain reportable: {stop:?}"
+        );
+        let stop = stop
+            .structured_content
+            .ok_or("stop did not include structured content")?;
+        assert_eq!(stop["report"]["shutdown"]["mode"], "forced");
+        assert_eq!(
+            stop["report"]["shutdown"]["cause"]["kind"],
+            "app_close_failed"
+        );
+
+        let status = client
+            .call_tool("status", json!({}))
+            .await?
+            .structured_content
+            .ok_or("status did not include structured content")?;
+        assert_eq!(status["last_shutdown"]["mode"], "forced");
+        assert_eq!(status["last_shutdown"]["cause"]["kind"], "app_close_failed");
+
+        drop(client);
+        timeout(Duration::from_secs(10), process.wait()).await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forced_one_shot_teardown_returns_failure_status() -> Result<(), Box<dyn Error>> {
+        let tempdir = test_tempdir();
+        let config_path = tempdir.path().join("ignored-close.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), "ignore", 0);
+        let script_path = tempdir.path().join("eval.luau");
+        fs::write(&script_path, "return true\n")?;
+
+        let output = Command::new(env!("CARGO_BIN_EXE_edev"))
+            .current_dir(tempdir.path())
+            .args([
+                "--config",
+                config_path.to_str().ok_or("config path is not UTF-8")?,
+                "eval",
+                script_path.to_str().ok_or("script path is not UTF-8")?,
+            ])
+            .output()
+            .await?;
+        assert!(!output.status.success(), "forced eval teardown must fail");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("app shutdown was forced"),
+            "unexpected stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            fs::read_dir(tempdir.path().join(".edev-instances"))?
+                .filter_map(Result::ok)
+                .next()
+                .is_none(),
+            "forced eval teardown left lifecycle records"
         );
         Ok(())
     }

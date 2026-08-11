@@ -30,6 +30,7 @@ const DEFAULT_BUNDLE_DIR: &str = "tmp/edev-bundles";
 const DEFAULT_SUITE_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_SCRIPT_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_IDLE_SHUTDOWN_AFTER_SECS: u64 = 20 * 60;
+const DEFAULT_SHUTDOWN_GRACE_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliPresentation {
@@ -57,6 +58,8 @@ pub struct LaunchConfig {
     pub(crate) env: BTreeMap<String, String>,
     /// Presentation policy requested from the embedded app MCP server.
     pub(crate) presentation: presentation::Presentation,
+    /// Deadline for normal app closure before forced process cleanup.
+    pub(crate) shutdown_grace: Duration,
     /// Whether launcher lifecycle logs are enabled.
     pub(crate) verbose: bool,
 }
@@ -748,6 +751,7 @@ struct FileAppConfig {
     cwd: Option<PathBuf>,
     command: Option<Vec<String>>,
     presentation: Option<presentation::Presentation>,
+    shutdown_grace_secs: Option<u64>,
     #[serde(default)]
     env: BTreeMap<String, String>,
 }
@@ -1043,11 +1047,17 @@ fn resolve_launch_config(
         .presentation
         .or_else(|| file_app.and_then(|app| app.presentation))
         .unwrap_or(presentation::Presentation::Background);
+    let shutdown_grace = Duration::from_secs(
+        file_app
+            .and_then(|app| app.shutdown_grace_secs)
+            .unwrap_or(DEFAULT_SHUTDOWN_GRACE_SECS),
+    );
     Ok(LaunchConfig {
         cwd,
         command,
         env: file_app.map(|app| app.env.clone()).unwrap_or_default(),
         presentation,
+        shutdown_grace,
         verbose: cli
             .verbose
             .or_else(|| file_mcp.and_then(|mcp| mcp.verbose))
@@ -1254,6 +1264,26 @@ mod tests {
             config.launch.presentation,
             presentation::Presentation::Background
         );
+        assert_eq!(config.launch.shutdown_grace, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn file_shutdown_grace_overrides_the_default() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        fs::write(
+            repo_root.join(DEFAULT_CONFIG_FILE),
+            "[app]\ncommand = [\"cargo\", \"run\"]\nshutdown_grace_secs = 7\n",
+        )
+        .expect("write config");
+
+        let command =
+            EdevCommand::parse_args_in_dir(&os_args(&["mcp"]), &repo_root).expect("parse command");
+        let EdevCommand::Mcp(config) = command else {
+            panic!("expected mcp command");
+        };
+        assert_eq!(config.launch.shutdown_grace, Duration::from_secs(7));
     }
 
     #[test]

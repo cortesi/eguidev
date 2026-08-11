@@ -1179,7 +1179,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_contains_only_the_script_boundary() {
+    async fn tools_list_contains_only_the_app_boundary() {
         use tmcp::{ServerHandler, schema::Cursor, testutils::TestServerContext};
 
         let inner = Arc::new(Inner::new());
@@ -1193,7 +1193,7 @@ mod tests {
             .tools;
         let mut names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
         names.sort();
-        assert_eq!(names, vec!["script_api", "script_eval"]);
+        assert_eq!(names, vec!["app_close", "script_api", "script_eval"]);
     }
 
     #[test]

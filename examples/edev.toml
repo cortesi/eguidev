@@ -10,16 +10,12 @@
 
 [app]
 
-# Full argv to start the app with DevMCP enabled. edev does not add cargo
-# flags or --dev-mcp for you -- the command must be complete. You can also
-# pass a command after `--` on any subcommand, which replaces this value.
+# Full argv to start the app. Edev supplies the private automation endpoint.
+# You can pass a command after `--` on any subcommand to replace this value.
 command = [
   "cargo", "run", "--locked",
   "-p", "myapp",
-  "--features", "devtools",
   "--bin", "myapp",
-  "--",
-  "--dev-mcp",
 ]
 
 # macOS presentation while an automation client is connected. Background keeps
@@ -27,6 +23,10 @@ command = [
 # foreground preserves the app's ordinary presentation for manual sessions.
 # Attachment without a connected client does not change presentation.
 # presentation = "background"
+
+# Deadline for normal app closure before Edev reports forced cleanup and kills
+# the managed process group.
+# shutdown_grace_secs = 30
 
 # Working directory for the app process. Relative paths resolve from the
 # directory containing this file.

@@ -7,14 +7,11 @@ command = [
   "--quiet",
   "-p",
   "eguidev_demo",
-  "--features",
-  "devtools",
   "--bin",
   "eguidev_demo",
-  "--",
-  "--dev-mcp",
 ]
 env = {}
+shutdown_grace_secs = 30
 
 [smoke]
 suite_dir = "./smoketest"

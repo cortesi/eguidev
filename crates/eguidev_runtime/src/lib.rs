@@ -17,6 +17,8 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
+use std::{env, ffi::OsStr};
+
 #[cfg(target_arch = "wasm32")]
 compile_error!("eguidev_runtime is native-only and is not supported on wasm32 targets");
 
@@ -73,6 +75,16 @@ pub(crate) mod viewports {
 pub(crate) use automation::script;
 pub use eguidev::{DevMcp, Rect, ScrollAreaMeta};
 
+/// Return whether this process was launched for Eguidev automation.
+pub fn automation_launch() -> bool {
+    automation_launch_from(env::var_os(MCP_ADDR_ENV).as_deref())
+}
+
+/// Resolve automation activation from an explicit endpoint input.
+fn automation_launch_from(endpoint: Option<&OsStr>) -> bool {
+    endpoint.is_some()
+}
+
 /// Keep a background-launched app from taking focus for its whole run.
 ///
 /// On macOS this enables the activation guard: while the automation
@@ -81,6 +93,9 @@ pub use eguidev::{DevMcp, Rect, ScrollAreaMeta};
 /// the previously frontmost application. Call before the app's event loop
 /// starts. On other platforms this is a no-op.
 pub fn enable_background_launch_guard() {
+    if !automation_launch() {
+        return;
+    }
     #[cfg(target_os = "macos")]
     macos::enable_background_launch_guard();
 }
@@ -100,6 +115,20 @@ pub use crate::{
     runtime::{attach, eval_script},
     script_docs::script_definitions,
 };
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+
+    use super::automation_launch_from;
+
+    #[test]
+    fn automation_activation_uses_endpoint_presence() {
+        assert!(!automation_launch_from(None));
+        assert!(automation_launch_from(Some(OsStr::new(""))));
+        assert!(automation_launch_from(Some(OsStr::new("127.0.0.1:9000"))));
+    }
+}
 
 #[cfg(test)]
 pub(crate) mod widget_registry {

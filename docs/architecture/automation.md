@@ -97,6 +97,18 @@ Smoke runs fail on undismissed diagnostics by default. Failure bundles can inclu
 outcome, tree dumps, diagnostics, viewport screenshots, and captured app output. All collection
 uses `script_eval`, so the CLI and MCP paths share one automation implementation.
 
+## Managed shutdown
+
+The app server exposes a private `app_close` tool. It queues root-viewport closure through the
+same UI-thread action queue as other viewport commands and requests a repaint. The tool confirms
+only that it queued the command.
+
+Edev keeps the launcher ownership channel open while it waits for the existing supervisor or
+child-exit event. `[app].shutdown_grace_secs` sets an asynchronous escalation deadline and
+defaults to 30 seconds. Edev kills the managed process group only when the app connection is
+unavailable, the close request fails, or the deadline expires. Launcher `stop` and `status`
+identify graceful and forced results. One-shot commands fail when teardown is forced.
+
 ## Platform presentation
 
 On macOS, a connected Edev session owns temporary background or foreground presentation. The

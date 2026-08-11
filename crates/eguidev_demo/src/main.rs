@@ -16,7 +16,6 @@ use eguidev::{
     ProgressBarOptions, ScrollAreaState, TextEditOptions, ViewportSel, WidgetRange, WidgetRole,
     WidgetRoleMeta, WidgetValue,
 };
-#[cfg(feature = "devtools")]
 use eguidev_runtime::attach as attach_runtime;
 use serde_json::json;
 
@@ -137,8 +136,8 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
     ]
 }
 
-/// Build the demo's DevMCP handle, optionally attaching the embedded runtime.
-fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<DevMcp> {
+/// Build the demo's DevMCP handle and attach the automation-only runtime.
+fn build_devmcp(state: &Arc<Mutex<DemoState>>) -> MainResult<DevMcp> {
     let fixture_state = Arc::clone(state);
     let runtime_diagnostic_state = Arc::clone(state);
     let ui_diagnostic_state = Arc::clone(state);
@@ -175,29 +174,13 @@ fn build_devmcp(config: AppConfig, state: &Arc<Mutex<DemoState>>) -> MainResult<
             }))
         })?
         .on_idle_ui(|_ctx| true)?;
-    #[cfg(feature = "devtools")]
-    {
-        if config.enable_mcp {
-            return Ok(attach_runtime(devmcp));
-        }
-        Ok(devmcp)
-    }
-    #[cfg(not(feature = "devtools"))]
-    {
-        if config.enable_mcp {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "--dev-mcp requires building the demo with --features devtools",
-            )
-            .into());
-        }
-        Ok(devmcp)
-    }
+    Ok(attach_runtime(devmcp))
 }
 
 /// Launch the demo app.
 fn main() -> MainResult<()> {
     let config = AppConfig::from_env()?;
+    eguidev_runtime::enable_background_launch_guard();
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
         viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 900.0]),
@@ -217,8 +200,6 @@ fn main() -> MainResult<()> {
 #[derive(Debug, Clone, Copy)]
 /// Parsed configuration for the demo app.
 struct AppConfig {
-    /// Whether DevMCP is enabled for this run.
-    enable_mcp: bool,
     /// Whether the root viewport should stay covered by the smoke-test occluder.
     force_occluder: bool,
 }
@@ -226,15 +207,10 @@ struct AppConfig {
 impl AppConfig {
     /// Load configuration from process args.
     fn from_env() -> MainResult<Self> {
-        let mut enable_mcp = false;
         let mut force_occluder = false;
         let args = env::args_os().skip(1);
 
         for arg in args {
-            if arg == "--dev-mcp" {
-                enable_mcp = true;
-                continue;
-            }
             if arg == "--force-occluder" {
                 force_occluder = true;
                 continue;
@@ -246,10 +222,7 @@ impl AppConfig {
             .into());
         }
 
-        Ok(Self {
-            enable_mcp,
-            force_occluder,
-        })
+        Ok(Self { force_occluder })
     }
 }
 
@@ -592,7 +565,7 @@ impl DemoApp {
     /// Build a new demo app from the parsed configuration.
     fn new(config: AppConfig, ctx: &egui::Context) -> MainResult<Self> {
         let state = Arc::new(Mutex::new(DemoState::new(config.force_occluder)));
-        let devmcp = build_devmcp(config, &state)?;
+        let devmcp = build_devmcp(&state)?;
         let preview_texture = ctx.load_texture(
             "eguidev_demo.preview",
             ColorImage::filled([16, 16], Color32::from_rgb(64, 156, 255)),

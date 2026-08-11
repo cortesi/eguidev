@@ -95,4 +95,39 @@ impl AppMcpServer {
     async fn script_api(&self) -> ToolResult<CallToolResult> {
         Ok(CallToolResult::new().with_text_content(script_definitions()))
     }
+
+    #[tool]
+    /// Request normal closure of the app's root viewport.
+    async fn app_close(&self) -> ToolResult<CallToolResult> {
+        queue_app_close(&self.inner);
+        Ok(
+            CallToolResult::new().with_structured_content(serde_json::json!({
+                "queued": true,
+            })),
+        )
+    }
+}
+
+/// Queue root-viewport closure through the ordinary UI-thread command path.
+fn queue_app_close(inner: &Inner) {
+    inner.queue_command(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_app_close;
+    use crate::registry::Inner;
+
+    #[test]
+    fn app_close_queues_root_viewport_close() {
+        let inner = Inner::new();
+        queue_app_close(&inner);
+        assert!(matches!(
+            inner
+                .actions
+                .drain_commands(egui::ViewportId::ROOT)
+                .as_slice(),
+            [egui::ViewportCommand::Close]
+        ));
+    }
 }

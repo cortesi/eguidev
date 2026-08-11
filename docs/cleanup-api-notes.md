@@ -9,8 +9,8 @@ in the cleanup plan.
   functions (`track_widget`, `track_widget_with_meta`, `track_response`,
   `publish_rect_meta`, `publish_rect_container`, `container`,
   `begin_container`), `DevUiExt`, fixture types, and widget metadata/types.
-- `eguidev` with `devtools`: adds `runtime::attach()`, the embedded MCP
-  server, script evaluation/types, screenshots, and smoke helpers.
+- `eguidev_runtime`: adds automation-only runtime attachment, the embedded MCP
+  server, script evaluation types, screenshots, and smoke helpers.
 - `edev`: `run()` and `EdevError` remain the only public items.
 
 ## Intentions under cleanup
@@ -18,6 +18,7 @@ in the cleanup plan.
 - Keep helper functions and `DevUiExt` consistent with the inert-by-default
   `DevMcp` model.
 - Keep runtime attachment explicit and localized to one bootstrap boundary.
+  Endpoint presence decides activation without an app feature or CLI flag.
 - Tool semantics updated: `widget_get` now errors on missing widgets, and `widget_list`
   includes all visibility states unless the `visible` filter is set.
 - Duplicate explicit widget ids now block automation until instrumentation is fixed.

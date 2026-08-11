@@ -1255,6 +1255,7 @@ mod tests {
             command: vec!["/usr/bin/true".to_string()],
             env: Default::default(),
             presentation: Presentation::Background,
+            shutdown_grace: Duration::from_secs(30),
             verbose: false,
         }
     }

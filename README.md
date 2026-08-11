@@ -47,20 +47,20 @@ eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
 });
 ```
 
-**2. Attach the runtime.** Put `eguidev_runtime` behind an app feature and
-enable it in one bootstrap location:
+**2. Attach the runtime.** Add `eguidev_runtime` and attach it in one bootstrap
+location:
 
 ```toml
-[features]
-devtools = ["dep:eguidev_runtime"]
+[dependencies]
+eguidev_runtime = "0.1"
 ```
 
 ```rust
 let devmcp = eguidev_runtime::attach(devmcp);
 ```
 
-The `DevMcp` handle is inert until the runtime is attached, so widget code
-stays unconditional and `wasm32` builds are unaffected.
+`attach` returns the inert handle unless Edev supplied `EGUIDEV_MCP_ADDR`.
+Normal direct launches do not start a server or change app presentation.
 
 **3. Tell `edev` how to launch your app.** Install the CLI with
 `cargo install edev`, then drop a `.edev.toml` next to your project with the
@@ -68,8 +68,9 @@ full launch command:
 
 ```toml
 [app]
-command = ["cargo", "run", "--locked", "-p", "myapp", "--features", "devtools"]
+command = ["cargo", "run", "--locked", "-p", "myapp"]
 # presentation = "background" # default; use "foreground" for manual sessions
+# shutdown_grace_secs = 30
 ```
 
 See [`examples/edev.toml`](./examples/edev.toml) for a commented reference of
@@ -79,9 +80,9 @@ On macOS, presentation belongs to the connected Edev session. The default
 `background` mode keeps covered windows rendering without adding a Dock item or
 stealing focus; `foreground` preserves ordinary foreground presentation for
 manual automation. Attaching `eguidev_runtime` alone does not change activation
-policy or occlusion behavior, so the same executable remains suitable for a
-normal direct launch. Edev also owns managed-process cleanup, including when the
-launcher exits unexpectedly; applications should not create per-run `.app`
+policy or occlusion behavior. Edev requests normal root-window closure and
+waits for process exit. It reports forced cleanup if the close request fails or
+the shutdown deadline expires. Applications should not create per-run `.app`
 bundles or identities for automation.
 
 **4. Connect your agent.** Register `edev mcp` as an MCP server -- for
@@ -93,7 +94,9 @@ claude mcp add eguidev -- edev mcp
 
 The launcher gives the agent `start`, `stop`, `restart`, and `status`. A
 successful lifecycle result contains the direct app MCP endpoint, where the app
-exposes `script_api` and `script_eval`. The repo also ships an agent skill at
+exposes `script_api` and `script_eval`. `stop` reports `graceful` or `forced`
+shutdown data. `status` retains that result until the next launch. The repo also ships an agent
+skill at
 [`skills/SKILL.md`](./skills/SKILL.md) that teaches agents the workflow.
 
 ## Beyond the MCP server

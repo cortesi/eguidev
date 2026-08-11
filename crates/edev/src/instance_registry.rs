@@ -443,7 +443,7 @@ fn terminate_process_group(_process_group_id: Option<i32>) {}
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, process};
+    use std::{fs, process, time::Duration};
 
     use eguidev::internal::presentation::Presentation;
     use tempfile::TempDir;
@@ -468,6 +468,7 @@ mod tests {
             ],
             env: Default::default(),
             presentation: Presentation::Background,
+            shutdown_grace: Duration::from_secs(30),
             verbose: false,
         }
     }

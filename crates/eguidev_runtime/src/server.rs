@@ -33,15 +33,17 @@ pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>) {
         };
         let server =
             Server::new(move || AppMcpServer::new(Arc::clone(&inner), Arc::clone(&runtime_state)));
-        let result = if let Ok(addr) = env::var(MCP_ADDR_ENV) {
-            runtime.block_on(async move {
+        let result: tmcp::Result<()> = match env::var(MCP_ADDR_ENV) {
+            Ok(addr) => runtime.block_on(async move {
                 let _server = server.serve_tcp(addr).await?;
                 pending::<()>().await;
                 #[allow(unreachable_code)]
                 Ok(())
-            })
-        } else {
-            runtime.block_on(server.serve_stdio())
+            }),
+            Err(error) => {
+                eprintln!("eguidev: invalid {MCP_ADDR_ENV}: {error}");
+                return;
+            }
         };
         if let Err(error) = result {
             eprintln!("eguidev: MCP server failed: {error}");

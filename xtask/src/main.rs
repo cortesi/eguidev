@@ -155,17 +155,8 @@ fn test() -> Result<(), Box<dyn Error>> {
     )?;
     run_command(
         "cargo",
-        &[
-            "test",
-            "--locked",
-            "-q",
-            "-p",
-            "eguidev_demo",
-            "--features",
-            "devtools",
-            "--tests",
-        ],
-        "cargo test --locked -p eguidev_demo --features devtools --tests",
+        &["test", "--locked", "-q", "-p", "eguidev_demo", "--tests"],
+        "cargo test --locked -p eguidev_demo --tests",
     )?;
     run_command(
         "cargo",
@@ -289,19 +280,16 @@ fn smoke_occlusion(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
 }
 
 /// Command used by occlusion smoke to launch the demo with a persistent cover viewport.
-fn occlusion_demo_command() -> [&'static str; 12] {
+fn occlusion_demo_command() -> [&'static str; 9] {
     [
         "cargo",
         "run",
         "--quiet",
         "-p",
         "eguidev_demo",
-        "--features",
-        "devtools",
         "--bin",
         "eguidev_demo",
         "--",
-        "--dev-mcp",
         "--force-occluder",
     ]
 }
