@@ -2794,6 +2794,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_fixture_list_defaults_omitted_empty_collections() {
+        let fixtures = parse_fixture_list(successful_outcome(&serde_json::json!([
+            {
+                "name": "basic.empty",
+                "description": "empty collections"
+            }
+        ])))
+        .expect("fixtures");
+
+        assert_eq!(fixtures.len(), 1);
+        assert!(fixtures[0].preconditions.is_empty());
+        assert!(fixtures[0].ready.is_empty());
+        assert!(fixtures[0].params.is_empty());
+        assert!(fixtures[0].tags.is_empty());
+    }
+
+    #[test]
     fn parse_fixture_list_rejects_missing_payload() {
         let outcome = successful_outcome(&serde_json::Value::Null);
 
