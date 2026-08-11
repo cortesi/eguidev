@@ -2422,6 +2422,9 @@ dependencies = [
 [[package]]
 name = "ruau-declaration"
 version = "0.1.0"
+dependencies = [
+ "ruau-syntax",
+]
 
 [[package]]
 name = "ruau-executor"
