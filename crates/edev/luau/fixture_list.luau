@@ -1,6 +1,9 @@
 --!strict
 
 local function projectTargets(targets: { FixtureTarget }): { any }
+    if #targets == 0 then
+        return targets
+    end
     local result = {}
     for _, target in targets do
         table.insert(result, {
