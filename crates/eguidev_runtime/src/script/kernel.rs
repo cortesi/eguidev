@@ -16,7 +16,10 @@ use ruau::{
         MultiValue, NativeModule, OwnedValue, RuntimeCapabilities, RuntimeError, RuntimeErrorKind,
         Scope, ScopedValue, ScriptErrorField, SourceLocation, StashedClosure, StashedValue,
         TracebackFrame, ValueSnapshot, Vm, async_host_fn,
-        serde::{from_scoped_value, json_to_scoped_value, marshaled_to_json, scoped_value_to_json},
+        serde::{
+            JsonDecodeOptions, from_scoped_value, json_to_scoped_value,
+            json_to_scoped_value_with_options, marshaled_to_json, scoped_value_to_json,
+        },
     },
 };
 use serde_json::Value;
@@ -227,78 +230,14 @@ async fn run_script_eval_local(
 }
 
 fn script_args_to_luau_json(args: &ScriptArgs) -> Value {
-    let mut value = script_args_to_json(args);
-    promote_integer_numbers_to_luau_numbers(&mut value);
-    value
+    script_args_to_json(args)
 }
 
 fn typed_json_to_luau_scoped_value<'s>(
     scope: &Scope<'s>,
     value: &Value,
 ) -> Result<ScopedValue<'s>, RuntimeError> {
-    let mut value = value.clone();
-    strip_object_null_fields(&mut value);
-    promote_integer_numbers_to_luau_numbers(&mut value);
-    json_to_scoped_value(scope, &value)
-}
-
-// Typed host returns strip optional null object fields before lossless JSON
-// conversion, preserving array identity without exposing JSON null sentinels
-// for optional record fields. Script args skip the stripping step so explicit
-// nulls remain distinguishable from missing fields.
-fn typed_json_array_to_luau_scoped_value<'s>(
-    scope: &Scope<'s>,
-    value: &Value,
-) -> Result<ScopedValue<'s>, RuntimeError> {
-    typed_json_to_luau_scoped_value(scope, value)
-}
-
-fn lossless_json_to_luau_scoped_value<'s>(
-    scope: &Scope<'s>,
-    value: &Value,
-) -> Result<ScopedValue<'s>, RuntimeError> {
-    let mut value = value.clone();
-    promote_integer_numbers_to_luau_numbers(&mut value);
-    json_to_scoped_value(scope, &value)
-}
-
-fn promote_integer_numbers_to_luau_numbers(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for value in map.values_mut() {
-                promote_integer_numbers_to_luau_numbers(value);
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                promote_integer_numbers_to_luau_numbers(value);
-            }
-        }
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                *number = serde_json::Number::from_f64(value as f64)
-                    .expect("typed JSON integers convert to finite Luau numbers");
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::String(_) => {}
-    }
-}
-
-fn strip_object_null_fields(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.retain(|_, value| !value.is_null());
-            for value in map.values_mut() {
-                strip_object_null_fields(value);
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                strip_object_null_fields(value);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
+    json_to_scoped_value_with_options(scope, value, JsonDecodeOptions::typed())
 }
 
 fn load(
@@ -322,7 +261,6 @@ fn values_to_script_value(
     let json_values = values
         .iter()
         .map(marshaled_script_value_to_json)
-        .map(|value| value.map(normalize_integral_numbers))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| type_error(format!("failed to convert Ruau result to JSON: {error}")))?;
     let Some(value) = script_return_value_from_json_values(json_values) else {
@@ -367,7 +305,7 @@ fn marshaled_sparse_array_to_json(value: &ValueSnapshot) -> Option<Result<Value,
             .into_iter()
             .map(|value| {
                 value.map_or(Ok(Value::Null), |value| {
-                    marshaled_script_value_to_json(value).map(normalize_integral_numbers)
+                    marshaled_script_value_to_json(value)
                 })
             })
             .collect::<Result<Vec<_>, _>>()
@@ -393,32 +331,6 @@ fn marshaled_positive_array_index(value: &ValueSnapshot) -> Option<usize> {
         | ValueSnapshot::Table(_)
         | ValueSnapshot::LightUserdata { .. }
         | ValueSnapshot::Opaque(_) => None,
-    }
-}
-
-fn normalize_integral_numbers(value: Value) -> Value {
-    match value {
-        Value::Array(values) => {
-            Value::Array(values.into_iter().map(normalize_integral_numbers).collect())
-        }
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(key, value)| (key, normalize_integral_numbers(value)))
-                .collect(),
-        ),
-        Value::Number(number) => number
-            .as_f64()
-            .filter(|value| {
-                number.as_i64().is_none()
-                    && value.fract() == 0.0
-                    && *value >= i64::MIN as f64
-                    && *value <= i64::MAX as f64
-            })
-            .map_or_else(
-                || Value::Number(number.clone()),
-                |value| Value::Number((value as i64).into()),
-            ),
-        Value::Null | Value::Bool(_) | Value::String(_) => value,
     }
 }
 
@@ -991,7 +903,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1029,7 +941,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1051,7 +963,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        typed_scalar_host_return(value)
+                        typed_json_host_return(&ctx, value).await
                     }
                 },
             ),
@@ -1074,7 +986,7 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        typed_scalar_host_return(value)
+                        typed_json_host_return(&ctx, value).await
                     }
                 },
             ),
@@ -1091,7 +1003,7 @@ impl EguidevModule {
                         .viewport_input(pos, &args.value, args.receiver.id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1107,7 +1019,7 @@ impl EguidevModule {
                         .viewport_resize(pos, &args.value, args.receiver.id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1192,7 +1104,7 @@ impl EguidevModule {
                         .clear_highlights(pos)
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1214,7 +1126,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1230,7 +1142,7 @@ impl EguidevModule {
                         .clear_debug_overlay(pos)
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1260,7 +1172,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1281,7 +1193,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1303,7 +1215,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1324,7 +1236,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1346,7 +1258,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1368,7 +1280,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1390,7 +1302,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1412,7 +1324,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1434,7 +1346,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1455,7 +1367,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1476,7 +1388,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1604,7 +1516,7 @@ impl EguidevModule {
                         .clear_widget_highlight(pos, &receiver.value, receiver.viewport_id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1626,7 +1538,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1642,7 +1554,7 @@ impl EguidevModule {
                         .clear_debug_overlay(pos)
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1694,7 +1606,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1752,7 +1664,7 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_scalar_host_return(value)
+                    typed_json_host_return(&ctx, value).await
                 }
             }),
         );
@@ -1786,9 +1698,7 @@ struct JsonArg(Value);
 
 impl<'s> FromLua<'s> for JsonArg {
     fn from_lua(value: ScopedValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
-        scoped_value_to_json(scope, value)
-            .map(normalize_integral_numbers)
-            .map(Self)
+        scoped_value_to_json(scope, value).map(Self)
     }
 }
 
@@ -1827,7 +1737,6 @@ impl<'s> FromLuaMulti<'s> for OptionalJsonArg {
         match values.len() {
             0 => Ok(Self(None)),
             1 => scoped_value_to_json(scope, values.remove(0))
-                .map(normalize_integral_numbers)
                 .map(Some)
                 .map(Self),
             got => Err(RuntimeError::runtime(format!(
@@ -2755,9 +2664,7 @@ fn frozen_array_host<'s>(
     let ScopedValue::Table(source) = value else {
         return Err(RuntimeError::runtime("array expected a table"));
     };
-    let ScopedValue::Table(result) =
-        typed_json_array_to_luau_scoped_value(scope, &Value::Array(Vec::new()))?
-    else {
+    let ScopedValue::Table(result) = json_to_scoped_value(scope, &Value::Array(Vec::new()))? else {
         return Err(RuntimeError::runtime("failed to create array"));
     };
     for index in 1..=source.len(scope)? {
@@ -2774,7 +2681,7 @@ fn args_host<'s>(
     args: &MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
     no_args("__eguidev_args", args)?;
-    let value = lossless_json_to_luau_scoped_value(scope, script_args)?;
+    let value = json_to_scoped_value(scope, script_args)?;
     let ScopedValue::Table(table) = value else {
         return Err(RuntimeError::runtime(
             "script args did not convert to a table",
@@ -2813,9 +2720,7 @@ fn optional_json_arg<'s>(
     let mut values = args.into_vec();
     match values.len() {
         0 => Ok(None),
-        1 => scoped_value_to_json(scope, values.remove(0))
-            .map(normalize_integral_numbers)
-            .map(Some),
+        1 => scoped_value_to_json(scope, values.remove(0)).map(Some),
         got => Err(RuntimeError::runtime(format!(
             "{name} expected at most one argument, got {got}"
         ))),
@@ -2834,11 +2739,10 @@ fn capture_self_and_options<'s>(
             values.len()
         )));
     }
-    let capture = scoped_value_to_json(scope, values.remove(0)).map(normalize_integral_numbers)?;
+    let capture = scoped_value_to_json(scope, values.remove(0))?;
     let options = values
         .pop()
         .map(|value| scoped_value_to_json(scope, value))
-        .map(|value| value.map(normalize_integral_numbers))
         .transpose()?
         .filter(|value| !value.is_null());
     Ok((capture, options))
@@ -2862,7 +2766,6 @@ fn viewport_self_and_options<'s>(
     let options = values
         .pop()
         .map(|value| scoped_value_to_json(scope, value))
-        .map(|value| value.map(normalize_integral_numbers))
         .transpose()?
         .filter(|value| !value.is_null());
     Ok((viewport_id, options))
@@ -2895,7 +2798,7 @@ fn viewport_self_point_and_options<'s>(
         )));
     }
     let viewport_id = viewport_id_from_self(scope, name, values.remove(0))?;
-    let point = scoped_value_to_json(scope, values.remove(0)).map(normalize_integral_numbers)?;
+    let point = scoped_value_to_json(scope, values.remove(0))?;
     let options = widget_at_point_options(scope, values.pop())?;
     Ok((viewport_id, point, options))
 }
@@ -2947,9 +2850,7 @@ fn widget_at_point_options<'s>(
             map.insert("all_layers".to_string(), Value::Bool(all_layers));
             Ok(Some(Value::Object(map)))
         }
-        Some(value) => scoped_value_to_json(scope, value)
-            .map(normalize_integral_numbers)
-            .map(Some),
+        Some(value) => scoped_value_to_json(scope, value).map(Some),
     }
 }
 
@@ -2967,20 +2868,15 @@ fn single_typed_json_return<'s>(
     scope: &Scope<'s>,
     value: &Value,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    let value = match value {
-        Value::Array(_) => typed_json_array_to_luau_scoped_value(scope, value)?,
-        _ => typed_json_to_luau_scoped_value(scope, value)?,
-    };
-    Ok(MultiValue::from_values(vec![value]))
+    Ok(MultiValue::from_values(vec![
+        typed_json_to_luau_scoped_value(scope, value)?,
+    ]))
 }
 
 fn optional_typed_json_return<'s>(
     scope: &Scope<'s>,
     value: &Value,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    if value.is_null() {
-        return Ok(MultiValue::from_values(vec![ScopedValue::Nil]));
-    }
     single_typed_json_return(scope, value)
 }
 
@@ -2988,31 +2884,8 @@ async fn typed_json_host_return(
     ctx: &AsyncHostContext,
     value: Value,
 ) -> Result<HostReturn, RuntimeError> {
-    match value {
-        Value::Array(_) => {
-            let value = ctx
-                .scope(move |scope| {
-                    let scoped = typed_json_array_to_luau_scoped_value(scope, &value)?;
-                    Ok(scope.stash_value(scoped)?.into_owned_value())
-                })
-                .await?;
-            Ok(HostReturn {
-                values: vec![value],
-            })
-        }
-        Value::Object(_) => {
-            let value = ctx
-                .scope(move |scope| {
-                    let scoped = typed_json_to_luau_scoped_value(scope, &value)?;
-                    Ok(scope.stash_value(scoped)?.into_owned_value())
-                })
-                .await?;
-            Ok(HostReturn {
-                values: vec![value],
-            })
-        }
-        value => typed_scalar_host_return(value),
-    }
+    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+        .await
 }
 
 fn optional_luau_number_to_json(value: Option<f64>) -> Result<Value, RuntimeError> {
@@ -3024,32 +2897,6 @@ fn optional_luau_number_to_json(value: Option<f64>) -> Result<Value, RuntimeErro
             .map(Value::Number)
             .ok_or_else(|| RuntimeError::runtime("number argument must be finite"))
     })
-}
-
-fn typed_scalar_host_return(value: Value) -> Result<HostReturn, RuntimeError> {
-    let value = match value {
-        Value::Null => OwnedValue::Nil,
-        Value::Bool(value) => OwnedValue::Boolean(value),
-        Value::Number(number) => json_number_to_luau_owned_value(&number)?,
-        Value::String(value) => OwnedValue::Bytes(value.into_bytes()),
-        Value::Array(_) | Value::Object(_) => {
-            return Err(RuntimeError::runtime(
-                "host function returned a non-scalar JSON value",
-            ));
-        }
-    };
-    Ok(HostReturn {
-        values: vec![value],
-    })
-}
-
-fn json_number_to_luau_owned_value(
-    number: &serde_json::Number,
-) -> Result<OwnedValue, RuntimeError> {
-    number
-        .as_f64()
-        .map(OwnedValue::Number)
-        .ok_or_else(|| RuntimeError::runtime("number return must be finite"))
 }
 
 fn script_position_from_caller(scope: &Scope<'_>) -> ScriptPosition {
@@ -3093,10 +2940,13 @@ mod tests {
         },
     };
 
+    use ruau::vm::{
+        Ambient, Function, Limits, RuntimeCapabilities, Vm, serde::json_to_scoped_value,
+    };
     use serde_json::json;
     use tokio::runtime::Builder as TokioRuntimeBuilder;
 
-    use super::{EguidevModule, promote_integer_numbers_to_luau_numbers, run_script_eval_blocking};
+    use super::{EguidevModule, run_script_eval_blocking};
     use crate::{
         DevMcp,
         automation::script::types::{ScriptArgValue, ScriptArgs},
@@ -3834,24 +3684,38 @@ return eguidev.args.count"#
 
     #[test]
     fn nested_sample_arrays_are_promoted_for_luau_arithmetic() {
-        let mut value = json!({
-            "samples": [
-                {
-                    "position": { "x": 12.5, "y": 8.0 },
-                    "physical": [25, 16],
-                    "rgba": [47, 128, 237, 255],
-                    "hex": "#2f80edff",
-                }
-            ]
-        });
-
-        promote_integer_numbers_to_luau_numbers(&mut value);
-
-        let sample = &value["samples"][0];
-        assert_eq!(sample["rgba"][0].as_f64(), Some(47.0));
-        assert_eq!(sample["rgba"][0].as_i64(), None);
-        assert_eq!(sample["rgba"][0], json!(47.0));
-        assert_eq!(sample["physical"][0].as_f64(), Some(25.0));
+        let mut vm = Vm::builder()
+            .ambient(Ambient::deterministic(0))
+            .limits(Limits::unlimited())
+            .runtime_capabilities(RuntimeCapabilities::default().enable_runtime_compilation())
+            .trusted_host()
+            .build()
+            .expect("sample vm builds");
+        vm.step(|scope| {
+            let encoded = json_to_scoped_value(
+                scope,
+                &json!({
+                    "samples": [{
+                        "physical": [25, 16],
+                        "rgba": [47, 128, 237, 255],
+                    }]
+                }),
+            )?;
+            let probe = scope.load_chunk(
+                br#"
+                return function(d)
+                    local sample = d.samples[1]
+                    return sample.rgba[1] + 1 == 48 and sample.physical[1] * 2 == 50
+                end
+                "#,
+                b"=sample-arrays",
+            )?;
+            let probe: Function<'_> = scope.call(probe, ())?;
+            let ok: bool = scope.call(probe, (encoded,))?;
+            assert!(ok);
+            Ok(())
+        })
+        .expect("sample arrays add and multiply as numbers");
     }
 
     fn make_entry(id: &str, native_id: u64, role: WidgetRole) -> WidgetRegistryEntry {

@@ -166,7 +166,7 @@ mod tests {
         let number = script_return_value_from_marshaled(&[ValueSnapshot::Number(1.0)])
             .expect("number value");
         assert_eq!(number.as_f64(), Some(1.0));
-        assert_eq!(number.as_i64(), None);
+        assert_eq!(number.as_i64(), Some(1));
 
         let array = ValueSnapshot::Table(vec![
             MarshaledPair {
