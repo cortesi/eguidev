@@ -233,13 +233,6 @@ fn script_args_to_luau_json(args: &ScriptArgs) -> Value {
     script_args_to_json(args)
 }
 
-fn typed_json_to_luau_scoped_value<'s>(
-    scope: &Scope<'s>,
-    value: &Value,
-) -> Result<ScopedValue<'s>, RuntimeError> {
-    json_to_scoped_value_with_options(scope, value, JsonDecodeOptions::typed())
-}
-
 fn load(
     vm: &mut Vm,
     runtime_capabilities: &RuntimeCapabilities,
@@ -728,7 +721,8 @@ impl EguidevModule {
                         .fixture_apply(pos, args.name, args.params)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -750,7 +744,8 @@ impl EguidevModule {
                         .diagnostic(pos, name)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -763,7 +758,8 @@ impl EguidevModule {
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime.diagnostics(pos).await.map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -791,7 +787,8 @@ impl EguidevModule {
                         .viewports_list(pos, None)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -825,7 +822,8 @@ impl EguidevModule {
                         .egui_diagnostics(pos, viewport.id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -882,7 +880,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -903,7 +902,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -920,7 +920,8 @@ impl EguidevModule {
                         .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -941,7 +942,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -963,7 +965,8 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        typed_json_host_return(&ctx, value).await
+                        ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                            .await
                     }
                 },
             ),
@@ -986,7 +989,8 @@ impl EguidevModule {
                             )
                             .await
                             .map_err(host_script_error)?;
-                        typed_json_host_return(&ctx, value).await
+                        ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                            .await
                     }
                 },
             ),
@@ -1003,7 +1007,8 @@ impl EguidevModule {
                         .viewport_input(pos, &args.value, args.receiver.id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1019,7 +1024,8 @@ impl EguidevModule {
                         .viewport_resize(pos, &args.value, args.receiver.id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1036,7 +1042,8 @@ impl EguidevModule {
                         .screenshot(pos, Some(&target))
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1052,7 +1059,8 @@ impl EguidevModule {
                         .sample_pixels(pos, &args.value, Some(args.receiver.id))
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1068,7 +1076,8 @@ impl EguidevModule {
                         .check_layout(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1087,7 +1096,8 @@ impl EguidevModule {
                             .show_highlight_rect(pos, Some(args.receiver.id), rect, args.text)
                             .await
                             .map_err(host_script_error)?;
-                        typed_json_host_return(&ctx, value).await
+                        ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                            .await
                     }
                 },
             ),
@@ -1104,7 +1114,8 @@ impl EguidevModule {
                         .clear_highlights(pos)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1126,7 +1137,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1142,7 +1154,8 @@ impl EguidevModule {
                         .clear_debug_overlay(pos)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1172,7 +1185,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1193,7 +1207,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1215,7 +1230,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1236,7 +1252,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1258,7 +1275,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1280,7 +1298,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1302,7 +1321,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1324,7 +1344,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1346,7 +1367,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1367,7 +1389,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1388,7 +1411,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1404,7 +1428,8 @@ impl EguidevModule {
                         .text_measure(pos, &receiver.value)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1420,7 +1445,8 @@ impl EguidevModule {
                         .check_layout_widget(pos, &receiver.value, receiver.viewport_id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1436,7 +1462,8 @@ impl EguidevModule {
                         .screenshot(pos, Some(&receiver.value))
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1457,7 +1484,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1479,7 +1507,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1500,7 +1529,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1516,7 +1546,8 @@ impl EguidevModule {
                         .clear_widget_highlight(pos, &receiver.value, receiver.viewport_id)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1538,7 +1569,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1554,7 +1586,8 @@ impl EguidevModule {
                         .clear_debug_overlay(pos)
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1585,7 +1618,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1606,7 +1640,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -1664,7 +1699,8 @@ impl EguidevModule {
                         )
                         .await
                         .map_err(host_script_error)?;
-                    typed_json_host_return(&ctx, value).await
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
                 }
             }),
         );
@@ -2389,7 +2425,7 @@ async fn stash_predicate_value(
     value: Value,
 ) -> Result<StashedValue, RuntimeError> {
     ctx.scope(move |scope| {
-        let value = typed_json_to_luau_scoped_value(scope, &value)?;
+        let value = json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?;
         scope.stash_value(value)
     })
     .await
@@ -2448,7 +2484,8 @@ fn fixtures_host<'s>(
     no_args("fixtures", args)?;
     let pos = script_position_from_caller(scope);
     let value = runtime.fixtures(pos).map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn dump_host<'s>(
@@ -2464,7 +2501,8 @@ fn dump_host<'s>(
         Some(_) => return Err(RuntimeError::runtime("dump expected an options table")),
     };
     let value = runtime.dump(pos, options).map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn dump_text_host<'s>(
@@ -2480,7 +2518,8 @@ fn dump_text_host<'s>(
         Some(_) => return Err(RuntimeError::runtime("dump_text expected an options table")),
     };
     let value = runtime.dump_text(pos, options).map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn viewport_widget_list_host<'s>(
@@ -2494,7 +2533,8 @@ fn viewport_widget_list_host<'s>(
     let value = runtime
         .widget_list(pos, options.as_ref().and_then(Value::as_object))
         .map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn viewport_state_host<'s>(
@@ -2507,7 +2547,8 @@ fn viewport_state_host<'s>(
     let value = runtime
         .viewport_state(pos, viewport_id)
         .map_err(host_script_error)?;
-    optional_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn viewport_widget_at_point_host<'s>(
@@ -2522,7 +2563,8 @@ fn viewport_widget_at_point_host<'s>(
     let value = runtime
         .widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object))
         .map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn widget_viewport_host<'s>(
@@ -2536,7 +2578,8 @@ fn widget_viewport_host<'s>(
     let value = runtime
         .viewport_handle(pos, viewport_id)
         .map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn widget_state_host<'s>(
@@ -2549,7 +2592,8 @@ fn widget_state_host<'s>(
     let value = runtime
         .widget_state(pos, &target)
         .map_err(host_script_error)?;
-    optional_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn widget_parent_host<'s>(
@@ -2562,7 +2606,8 @@ fn widget_parent_host<'s>(
     let value = runtime
         .widget_parent(pos, &target)
         .map_err(host_script_error)?;
-    optional_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn widget_children_host<'s>(
@@ -2575,7 +2620,8 @@ fn widget_children_host<'s>(
     let value = runtime
         .widget_children(pos, &target)
         .map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn assert_host<'s>(
@@ -2624,7 +2670,8 @@ fn capture_host<'s>(
     no_args("capture", args)?;
     let pos = script_position_from_caller(scope);
     let value = runtime.capture(pos).map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn capture_diff_host<'s>(
@@ -2637,7 +2684,8 @@ fn capture_diff_host<'s>(
     let value = runtime
         .capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object))
         .map_err(host_script_error)?;
-    single_typed_json_return(scope, &value)
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 fn log_host<'s>(
@@ -2862,30 +2910,6 @@ fn inject_viewport_id(viewport_id: String, options: &mut Option<Value>) {
         map.entry("viewport_id")
             .or_insert(Value::String(viewport_id));
     }
-}
-
-fn single_typed_json_return<'s>(
-    scope: &Scope<'s>,
-    value: &Value,
-) -> Result<MultiValue<'s>, RuntimeError> {
-    Ok(MultiValue::from_values(vec![
-        typed_json_to_luau_scoped_value(scope, value)?,
-    ]))
-}
-
-fn optional_typed_json_return<'s>(
-    scope: &Scope<'s>,
-    value: &Value,
-) -> Result<MultiValue<'s>, RuntimeError> {
-    single_typed_json_return(scope, value)
-}
-
-async fn typed_json_host_return(
-    ctx: &AsyncHostContext,
-    value: Value,
-) -> Result<HostReturn, RuntimeError> {
-    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-        .await
 }
 
 fn optional_luau_number_to_json(value: Option<f64>) -> Result<Value, RuntimeError> {
