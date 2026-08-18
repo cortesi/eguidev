@@ -936,6 +936,9 @@ mod tests {
     fn real_id_clash_output() -> egui::FullOutput {
         let ctx = egui::Context::default();
         ctx.options_mut(|options| options.warn_on_id_clash = true);
+        // egui only carries rectangle-identity warnings in debug builds, so
+        // this isolation is both unavailable and unnecessary in release.
+        #[cfg(debug_assertions)]
         ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let id = egui::Id::new("smoke duplicate");

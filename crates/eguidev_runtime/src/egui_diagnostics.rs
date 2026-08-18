@@ -281,6 +281,9 @@ mod tests {
     fn id_clash_output() -> FullOutput {
         let ctx = egui::Context::default();
         ctx.options_mut(|options| options.warn_on_id_clash = true);
+        // egui only carries rectangle-identity warnings in debug builds, so
+        // this isolation is both unavailable and unnecessary in release.
+        #[cfg(debug_assertions)]
         ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let id = egui::Id::new("duplicate");
@@ -299,6 +302,9 @@ mod tests {
         output
     }
 
+    /// Rectangle-identity warnings exist only in debug builds of egui, so this
+    /// output cannot be produced at all in a release build.
+    #[cfg(debug_assertions)]
     fn rect_changed_output() -> FullOutput {
         let ctx = egui::Context::default();
         ctx.options_mut(|options| options.warn_on_id_clash = false);
@@ -334,6 +340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     fn collects_real_rect_changed_marker() {
         let diagnostics = collect_output_diagnostics("vp:2", 11, &rect_changed_output());
         let diagnostic = diagnostics
