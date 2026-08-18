@@ -88,7 +88,7 @@ const FRAME_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 enum ScreenshotWaitOutcome {
     Ready,
-    TryNativeFallback,
+    NativeCapture(ScreenshotState),
 }
 
 pub(super) fn resolve_screenshot_viewport(
@@ -261,7 +261,20 @@ async fn await_screenshot(
                 .map(|snapshot| snapshot.frame_count)
                 .unwrap_or(0);
             if should_try_native_screenshot_fallback(viewport_id, current_frame, start_frame) {
-                break ScreenshotWaitOutcome::TryNativeFallback;
+                // A native capture can disagree with the recorded viewport while
+                // a resize settles, so keep retrying against fresh frames until
+                // the screenshot deadline instead of failing the first attempt.
+                match native_screenshot_fallback(inner, viewport_id, kind) {
+                    Ok(state) => break ScreenshotWaitOutcome::NativeCapture(state),
+                    Err(error) => runtime.log_screenshot(
+                        inner,
+                        format!(
+                            "native fallback retry request_id={request_id} viewport={} error={error}",
+                            viewport_id_to_string(viewport_id),
+                        ),
+                    ),
+                }
+                inner.request_repaint_of(viewport_id);
             }
             if current_frame > last_command_frame {
                 inner.queue_command(
@@ -286,53 +299,16 @@ async fn await_screenshot(
 
     match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
         Ok(Ok(ScreenshotWaitOutcome::Ready)) => {}
-        Ok(Ok(ScreenshotWaitOutcome::TryNativeFallback)) => {
+        Ok(Ok(ScreenshotWaitOutcome::NativeCapture(state))) => {
             runtime.take_screenshot(request_id);
-            let end_frame = inner.frame_count();
             runtime.log_screenshot(
                 inner,
                 format!(
-                    "native fallback after fresh child frame request_id={request_id} viewport={} \
-                     start_frame={start_frame} end_frame={end_frame}",
+                    "native fallback succeeded request_id={request_id} viewport={}",
                     viewport_id_to_string(viewport_id),
                 ),
             );
-            return native_screenshot_fallback(inner, viewport_id, kind)
-                .inspect(|_| {
-                    runtime.log_screenshot(
-                        inner,
-                        format!(
-                            "native fallback succeeded request_id={request_id} viewport={}",
-                            viewport_id_to_string(viewport_id),
-                        ),
-                    );
-                })
-                .map_err(|fallback_error| {
-                    runtime.log_screenshot(
-                        inner,
-                        format!(
-                            "native fallback failed request_id={request_id} viewport={} error={}",
-                            viewport_id_to_string(viewport_id),
-                            fallback_error,
-                        ),
-                    );
-                    ToolError::new(
-                        ErrorCode::Internal,
-                        screenshot_timeout_message(viewport_id, &fallback_error),
-                    )
-                    .with_details(screenshot_timeout_details(
-                        &ScreenshotTimeoutContext {
-                            inner,
-                            runtime,
-                            request_id,
-                            viewport_id,
-                            kind,
-                            start_frame,
-                            end_frame,
-                            fallback_error: &fallback_error,
-                        },
-                    ))
-                });
+            return Ok(state);
         }
         Ok(Err(error)) => return Err(error),
         Err(_) => {
@@ -530,17 +506,17 @@ pub(super) fn screenshot_timeout_message(
     viewport_id: egui::ViewportId,
     fallback_error: &str,
 ) -> String {
-    let base = "Screenshot timed out waiting for a screenshot event. The screenshot command may \
-                not have reached the viewport or the frame did not render.";
     if native_fallback_applies(viewport_id) {
         return format!(
-            "{base} A macOS native fallback was attempted for this child viewport and failed: \
-             {fallback_error}."
+            "Screenshot deadline exceeded for this child viewport. eguidev retried the macOS \
+             native window capture against fresh frames until the deadline, and the last attempt \
+             failed: {fallback_error}."
         );
     }
     format!(
-        "{base} Native screenshot fallback is only available for child viewports on macOS: \
-         {fallback_error}."
+        "Screenshot timed out waiting for a screenshot event. The screenshot command may not have \
+         reached the viewport or the frame did not render. Native screenshot fallback is only \
+         available for child viewports on macOS: {fallback_error}."
     )
 }
 
