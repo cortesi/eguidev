@@ -11,8 +11,7 @@ use std::{
 };
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
-use eguidev_runtime::script_definitions;
-use ruau::typecheck::{Checker, Config, Mode};
+use eguidev_runtime::{check_script_source, script_definitions};
 use serde_json::{Value, json};
 use tmcp::{
     Client,
@@ -311,41 +310,21 @@ fn smoke_edev(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
 /// Type-check checked-in Luau definitions and shipped script sources.
 fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
     let definitions_path = Path::new("crates/eguidev_runtime/luau/eguidev.d.luau");
-    let definitions = fs::read_to_string(definitions_path)?;
-    check_luau_source(definitions_path, "eguidev.d.luau", &definitions)?;
+    check_luau_source(definitions_path, "")?;
 
     for source_path in luau_sources()? {
         let source = fs::read_to_string(&source_path)?;
-        let module_name = source_path
-            .to_str()
-            .map(|path| path.replace('\\', "/"))
-            .unwrap_or_else(|| "script.luau".to_string());
-        let source = source_with_luau_definitions(&definitions, &source);
-        check_luau_source(&source_path, &module_name, &source)?;
+        check_luau_source(&source_path, &source)?;
     }
 
     Ok(())
 }
 
-/// Prefix a script with the checked-in declaration surface for Ruau's single-module checker.
-fn source_with_luau_definitions(definitions: &str, source: &str) -> String {
-    format!("{definitions}\n\n{source}")
-}
-
-/// Check one Luau source with Ruau's checker and surface any diagnostics.
-fn check_luau_source(path: &Path, module_name: &str, source: &str) -> Result<(), Box<dyn Error>> {
-    let mut checker = Checker::new();
-    let checked = checker.check_source_with_config(source, luau_checker_config());
-    if checked.has_errors() {
-        let diagnostics = checked.diagnostics().render(module_name);
-        return Err(format!("Luau check failed for {}:\n{diagnostics}", path.display()).into());
-    }
-    Ok(())
-}
-
-/// Return the checker settings used for shipped script validation.
-fn luau_checker_config() -> Config {
-    Config::with_source_mode(Mode::Strict)
+/// Check one Luau source against the runtime's exact declaration environment.
+fn check_luau_source(path: &Path, source: &str) -> Result<(), Box<dyn Error>> {
+    let source_name = path.to_string_lossy().replace('\\', "/");
+    check_script_source(&source_name, source)
+        .map_err(|error| format!("Luau check failed for {}:\n{error}", path.display()).into())
 }
 
 /// Enumerate checked-in example scripts that should type-check against the API definitions.

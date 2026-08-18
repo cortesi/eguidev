@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::{error::Error, fmt, sync::LazyLock};
 
 use ruau::typecheck::{
     Checker, Config, DiagnosticCategory, Mode,
@@ -23,6 +23,14 @@ pub struct CheckFailure {
     pub(crate) column: Option<usize>,
     pub(crate) diagnostics: Vec<String>,
 }
+
+impl fmt::Display for CheckFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for CheckFailure {}
 
 /// Check one tenant source against the exact checked-in public declaration.
 pub fn check_source(source_name: &str, source: &str) -> Result<(), CheckFailure> {

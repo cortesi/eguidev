@@ -3735,7 +3735,6 @@ dependencies = [
  "clap",
  "eguidev",
  "eguidev_runtime",
- "ruau",
  "serde_json",
  "tmcp",
  "tokio",
