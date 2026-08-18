@@ -61,11 +61,13 @@ sandbox has no filesystem, network, or module imports. eguidev adds one global,
   hierarchy, text fit, and painter output. eguidev records each call.
 - **Screenshots and pixels** -- capture one viewport or one widget. Sample exact
   pixels when a visual claim needs proof.
-- **Tree dumps** -- canonical widget-tree text for one viewport.
+- **Tree dumps** -- canonical widget-tree text for one viewport, also available
+  from the CLI as `edev dump`.
 - **Layout diagnostics** -- overlap and clipping defects, text measurement, and
   the identity warnings of egui.
 - **Fixtures** -- named states that your app registers. Each script starts from
-  a declared baseline.
+  a declared baseline. `edev fixtures` lists them, and `edev fixture NAME`
+  launches the app into one and stays up for manual work.
 
 ## Smoketests
 

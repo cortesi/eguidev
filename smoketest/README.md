@@ -12,6 +12,10 @@ This directory holds the checked-in Luau smoketest suite for `eguidev_demo`.
 - `edev smoke` ignores a script's final return value; use assertions for pass/fail and
   `eguidev.log(...)` for extra diagnostics.
 - Keep files independent. Do not rely on state left behind by an earlier smoketest.
+- Restore anything a fixture does not reset. Fixtures reset app state, not window
+  geometry or painted aids, so a script that resizes a viewport, highlights a widget, or
+  shows a debug overlay must put it back. A leaked resize is invisible in the script that
+  makes it and fails a later screenshot instead.
 
 ## Run
 
