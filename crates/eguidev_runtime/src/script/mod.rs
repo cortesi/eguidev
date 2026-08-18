@@ -13,7 +13,7 @@ mod types;
 mod value;
 
 pub use eval::run_script_eval;
-pub use typecheck::{CheckFailure, check_source};
+pub use typecheck::{CheckFailure, check_source, warm_checker_baseline};
 pub use types::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
     ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,

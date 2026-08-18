@@ -1,6 +1,6 @@
 //! Embedded runtime attachment for DevMCP automation.
 
-use std::{any::Any, sync::Arc};
+use std::{any::Any, sync::Arc, thread};
 
 use egui::{Context, FullOutput};
 use eguidev::internal::{
@@ -16,7 +16,10 @@ use crate::macos::{
 };
 use crate::{
     DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
-    automation::{DEFAULT_SCRIPT_EVAL_TIMEOUT_MS, script::run_script_eval},
+    automation::{
+        DEFAULT_SCRIPT_EVAL_TIMEOUT_MS,
+        script::{run_script_eval, warm_checker_baseline},
+    },
     automation_launch,
     egui_diagnostics::EguiDiagnosticJournal,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
@@ -274,6 +277,9 @@ fn attach_internal(
         runtime: Arc::clone(&runtime),
     });
     let devmcp = devmcp.activate_runtime(Arc::clone(&inner), hooks);
+    // Prepare the script checker off the startup path. A script that arrives
+    // first still blocks on the same work, so this only ever moves the cost.
+    drop(thread::spawn(warm_checker_baseline));
     if should_start_server {
         start_server(inner, runtime);
     }
