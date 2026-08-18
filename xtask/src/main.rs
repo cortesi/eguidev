@@ -178,7 +178,7 @@ fn test() -> Result<(), Box<dyn Error>> {
         ],
         "cargo check --locked -p eguidev --target wasm32-unknown-unknown",
     )?;
-    check_luau_definitions()?;
+    check_luau_scripts()?;
     check_default_eguidev_dependency_surface()?;
     Ok(())
 }
@@ -307,11 +307,8 @@ fn smoke_edev(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
     runtime.block_on(smoke_edev_transport(args.verbose))
 }
 
-/// Type-check checked-in Luau definitions and shipped script sources.
-fn check_luau_definitions() -> Result<(), Box<dyn Error>> {
-    let definitions_path = Path::new("crates/eguidev_runtime/luau/eguidev.d.luau");
-    check_luau_source(definitions_path, "")?;
-
+/// Type-check every checked-in Luau script against the runtime declaration.
+fn check_luau_scripts() -> Result<(), Box<dyn Error>> {
     for source_path in luau_sources()? {
         let source = fs::read_to_string(&source_path)?;
         check_luau_source(&source_path, &source)?;

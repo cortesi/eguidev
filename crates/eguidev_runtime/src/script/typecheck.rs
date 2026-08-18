@@ -76,6 +76,14 @@ pub fn check_source(source_name: &str, source: &str) -> Result<(), CheckFailure>
     })
 }
 
+/// Build the shared declaration environment before the first script needs it.
+///
+/// Lowering the declaration costs tens of milliseconds and is otherwise paid by
+/// whichever script checks first, which is the first call an agent makes.
+pub fn warm_checker_baseline() {
+    let _baseline = LazyLock::force(&CHECKER_BASE);
+}
+
 /// Clone a fresh checker from the prepared Eguidev declaration environment.
 fn fresh_checker() -> Result<Checker, CheckFailure> {
     match &*CHECKER_BASE {
@@ -107,6 +115,22 @@ mod tests {
     #[test]
     fn public_declaration_parses_as_the_checker_environment() {
         fresh_checker().expect("public declaration");
+    }
+
+    /// Building the checker environment lowers the declaration types, but it
+    /// does not check the declaration the way the checker checks a module.
+    /// Strict-check the source itself so a defect in the shipped declaration
+    /// cannot reach tenants.
+    #[test]
+    fn public_declaration_strict_checks_as_standalone_source() {
+        let mut checker = Checker::new();
+        let checked = checker
+            .check_source_with_config(PUBLIC_DECLARATION, Config::with_source_mode(Mode::Strict));
+        assert!(
+            !checked.has_errors(),
+            "{}",
+            checked.diagnostics().render("eguidev.d.luau")
+        );
     }
 
     #[test]
