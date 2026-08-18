@@ -12,6 +12,18 @@ Good doc comments explain *why* and *how*, not *what* — the signature already 
   comment, an example adds nothing. Only include examples when they clarify a non-obvious
   interaction or a surprising calling convention.
 
+## Documentation Snippets
+
+Code blocks in `README.md` come from real source files through
+[snips](https://github.com/cortesi/snips). An HTML comment above each block names the source file
+and the snippet, and the source file marks that region with `snips-start` and `snips-end` comments.
+
+`cargo xtask tidy` runs `snips` and rewrites every stale block, so edit the source file and not the
+Markdown block. Install the tool with `cargo install snips`.
+
+The README form example comes from `smoketest/10_basic_form.luau`. `cargo xtask test` therefore
+type-checks it, and `cargo xtask smoke` proves that it still passes.
+
 ## Tests
 
 Run the test lane from `xtask`:

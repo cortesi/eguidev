@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Run formatter and clippy with workspace defaults.
+/// Run formatter and clippy with workspace defaults, then sync doc snippets.
 fn tidy() -> Result<(), Box<dyn Error>> {
     run_command(
         "cargo",
@@ -138,7 +138,15 @@ fn tidy() -> Result<(), Box<dyn Error>> {
         ],
         "cargo clippy --locked",
     )?;
+    sync_doc_snippets()?;
     Ok(())
+}
+
+/// Rewrite Markdown snippets that no longer match their source files.
+fn sync_doc_snippets() -> Result<(), Box<dyn Error>> {
+    run_command("snips", &["--commands", "deny"], "snips").map_err(|error| {
+        format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
+    })
 }
 
 /// Run the test suite via nextest.

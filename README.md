@@ -5,40 +5,137 @@
 [![Documentation](https://docs.rs/eguidev/badge.svg)](https://docs.rs/eguidev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Like [Playwright](https://playwright.dev/) for [egui](https://github.com/emilk/egui)
-apps. eguidev lets AI agents drive your UI end-to-end -- inspecting widget
-state, injecting input, taking screenshots of windows or individual widgets --
-all from inside the process with no pixel guessing.
+eguidev is an automation library for [egui](https://github.com/emilk/egui) apps.
+It is like [Playwright](https://playwright.dev/), but it runs inside your app
+process and reads real widget state instead of screen pixels. You tag each
+widget with a string id. [Luau](https://luau.org/) scripts then use that id to
+inspect the widget, click, type, wait, and take screenshots. Each action runs in
+step with the event loop of the app.
+
+Write these scripts as a checked-in smoketest suite, or run one script at a time
+during development. You can also give the same surface to an AI agent through
+MCP.
 
 Join the [Discord server](https://discord.gg/fHmRmuBDxF) for discussion and
 release updates.
 
-## How it works
+## Scripting your UI
 
-eguidev instruments your app from the inside. You tag widgets with string ids,
-and eguidev captures their state (role, label, value, geometry) at every frame
-boundary and injects input in step with the real event loop. It also captures
-egui debug identity warnings from each completed viewport pass.
+A script refers to each widget by the id you gave it. Each action waits until
+the widget is ready for input, and then settles the UI before it returns.
+Scripts therefore need no sleeps. This example is part of a checked-in smoketest
+for the demo app:
 
-Agents talk to the app through MCP, and the agent-facing surface is
-[Luau](https://luau.org/) scripts rather than fine-grained RPC: a single
-`script_eval` call can inspect widgets, click and type, wait for state changes,
-take screenshots, and return structured results in one round trip.
+<!-- snips: smoketest/10_basic_form.luau#form_flow -->
+```lua
+eguidev.fixture("basic.empty")
 
-Three pieces make this work:
+eguidev.widget("basic.name"):type_text("Luau", { clear = true })
+eguidev.widget("basic.enabled"):set_value(true)
+eguidev.widget("basic.intensity"):set_value(73.25)
+eguidev.widget("basic.submit"):click()
 
-- **`eguidev`** -- the instrumentation library your app depends on. Compiles
-  for native and `wasm32`.
-- **`eguidev_runtime`** -- the native-only embedded runtime: script evaluation,
-  screenshots, and the in-process MCP server. Attached once at app startup.
-- **`edev`** -- the CLI and lifecycle launcher. It starts the app, reports its
-  direct MCP endpoint, and runs scripts, fixtures, and smoketest suites.
+local status = eguidev.widget("basic.status")
+    :expect({ value_text_contains = "Saved Luau" })
+assert(status ~= nil, "submit should update status")
+```
 
-## Getting started
+Scripts are strict Luau. eguidev checks each script before it runs, and the
+sandbox has no filesystem, network, or module imports. eguidev adds one global,
+`eguidev`. You can run the same script in three ways:
 
-**1. Instrument your app.** Add `eguidev` as a dependency, create a `DevMcp`
-handle, wrap each viewport frame with `frame_scope`, and tag widgets with the
-`dev_*` helpers:
+- **`edev eval script.luau`** runs one script and prints its structured result.
+- **`edev smoke`** runs your full suite against one live app.
+- **`script_eval` over MCP** lets an agent drive the app with its own scripts.
+
+### What a script can see and do
+
+- **Widget state** -- the role, label, value, geometry, and hierarchy of each
+  tagged widget, captured at every frame boundary.
+- **Real input** -- clicks, typing, drags, and scrolls, injected into the event
+  loop of the app.
+- **Waits** -- typed conditions and predicates over live state, plus `settle()`
+  for queued work. A bad wait is the main cause of flaky UI automation, so
+  eguidev supplies one shared condition model.
+- **Assertions** -- `Widget:expect(...)` checks state, relative geometry,
+  hierarchy, text fit, and painter output. eguidev records each call.
+- **Screenshots and pixels** -- capture one viewport or one widget. Sample exact
+  pixels when a visual claim needs proof.
+- **Tree dumps** -- canonical widget-tree text for one viewport.
+- **Layout diagnostics** -- overlap and clipping defects, text measurement, and
+  the identity warnings of egui.
+- **Fixtures** -- named states that your app registers. Each script starts from
+  a declared baseline.
+
+## Smoketests
+
+`edev smoke` runs a directory of independent `.luau` scripts against one managed
+app process. These scripts are regression tests, and they are also executable
+documentation of your UI:
+
+```console
+$ edev smoke
+[PASS] 10_basic_form.luau (412ms)
+[PASS] 20_menu_and_scroll.luau (508ms)
+[FAIL] 30_input_and_events.luau (1203ms): Widget(basic.status) expectation failed
+```
+
+Each script sets its own start state with a fixture, and asserts visible
+behavior instead of app internals. No script depends on another script.
+`edev smoke` ignores return values: assertions decide pass or fail, and
+`eguidev.log(...)` adds evidence to the result.
+
+Use these flags while you write a suite:
+
+- `--list [--json]` shows the selected scripts and does not launch the app.
+- `--only GLOB` narrows the run. `--fail-fast` stops at the first failure.
+- `--repeat N` and `--until-fail N` find intermittent failures across rounds.
+- `--bundle` writes a failure bundle for each failure. A bundle holds the tree
+  dump, diagnostics, screenshots, script logs, and app output.
+
+Each script result includes the egui `id_clash` and `rect_changed_id` warnings
+that no script dismissed. `edev smoke` fails on these warnings by default, so an
+intermittent identity bug cannot pass unnoticed. To keep the warnings without a
+failure, set `[smoke] fail_on_egui_diagnostics = false`. A script that causes a
+warning on purpose can consume it with `Viewport:egui_diagnostics()`.
+
+`edev record OUT.mov` runs the same suite and records the app window. This
+command works only on macOS. It uses ScreenCaptureKit directly, not an external
+recorder program, and writes H.264 video at the native pixel resolution of the
+window. The process that runs `edev` must have Screen Recording permission. The
+title of the root viewport selects the window. Use `--window-title` to select a
+different window.
+
+## Agent automation
+
+Register the `edev` launcher as an MCP server. For example, with Claude Code:
+
+```sh
+claude mcp add eguidev -- edev mcp
+```
+
+The launcher supplies four tools: `start`, `stop`, `restart`, and `status`. A
+successful lifecycle result includes the direct endpoint of the app, and the app
+serves `script_api` and `script_eval` at that endpoint. The agent surface is a
+complete script, not fine-grained RPC, so one call can set up, interact, assert,
+and report in one round trip.
+
+This repository also includes an agent skill at
+[`skills/SKILL.md`](./skills/SKILL.md) that teaches agents this workflow.
+
+## Setup
+
+eguidev has three crates, and you add them in this order:
+
+- **`eguidev`** is the instrumentation library that your app depends on. It
+  compiles for native and `wasm32` targets.
+- **`eguidev_runtime`** is the native-only embedded runtime. It supplies script
+  evaluation, screenshots, and the in-process MCP server.
+- **`edev`** is the CLI and lifecycle launcher. It runs scripts, suites, and
+  fixtures against a managed app process.
+
+**1. Instrument your app.** Put a `DevMcp` handle in your app state. Wrap each
+viewport frame with `frame_scope`. Tag each widget with a `dev_*` helper.
 
 ```rust
 eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
@@ -47,8 +144,7 @@ eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
 });
 ```
 
-**2. Attach the runtime.** Add `eguidev_runtime` and attach it in one bootstrap
-location:
+**2. Attach the runtime** in one bootstrap location.
 
 ```toml
 [dependencies]
@@ -59,98 +155,38 @@ eguidev_runtime = "0.1"
 let devmcp = eguidev_runtime::attach(devmcp);
 ```
 
-`attach` returns the inert handle unless Edev supplied `EGUIDEV_MCP_ADDR`.
-Normal direct launches do not start a server or change app presentation.
+`attach` returns the inert handle unless Edev supplies `EGUIDEV_MCP_ADDR`. A
+usual `cargo run` therefore starts a usual app, with no server and no change to
+presentation.
 
-**3. Tell `edev` how to launch your app.** Install the CLI with
-`cargo install edev`, then drop a `.edev.toml` next to your project with the
-full launch command:
+**3. Configure the launcher.** Install the CLI with `cargo install edev`. Then
+put a `.edev.toml` file in your project root:
 
 ```toml
 [app]
 command = ["cargo", "run", "--locked", "-p", "myapp"]
-# presentation = "background" # default; use "foreground" for manual sessions
-# shutdown_grace_secs = 30
+
+[smoke]
+suite_dir = "smoketest"
 ```
 
-See [`examples/edev.toml`](./examples/edev.toml) for a commented reference of
-all options.
+On macOS, the default `background` presentation continues to render covered
+windows. It adds no Dock item and does not take the focus. Set
+`presentation = "foreground"` for manual sessions. See
+[`examples/edev.toml`](./examples/edev.toml) for a commented reference of every
+option.
 
-On macOS, presentation belongs to the connected Edev session. The default
-`background` mode keeps covered windows rendering without adding a Dock item or
-stealing focus; `foreground` preserves ordinary foreground presentation for
-manual automation. Attaching `eguidev_runtime` alone does not change activation
-policy or occlusion behavior. Edev requests normal root-window closure and
-waits for process exit. It reports forced cleanup if the close request fails or
-the shutdown deadline expires. Applications should not create per-run `.app`
-bundles or identities for automation.
-
-**4. Connect your agent.** Register `edev mcp` as an MCP server -- for
-example, with Claude Code:
-
-```sh
-claude mcp add eguidev -- edev mcp
-```
-
-The launcher gives the agent `start`, `stop`, `restart`, and `status`. A
-successful lifecycle result contains the direct app MCP endpoint, where the app
-exposes `script_api` and `script_eval`. `stop` reports `graceful` or `forced`
-shutdown data. `status` retains that result until the next launch. The repo also ships an agent
-skill at
-[`skills/SKILL.md`](./skills/SKILL.md) that teaches agents the workflow.
-
-## Beyond the MCP server
-
-The same scripting surface powers developer-facing tooling:
-
-- `edev smoke` runs a directory of self-contained `.luau` smoketests against
-  the live app -- regression tests that double as executable documentation of
-  your UI. Use `--list [--json]` to inspect the selected set without launching
-  the app, `--only GLOB` to filter discovered scripts, `--repeat N` or
-  `--until-fail N` to hunt intermittent failures, and `--bundle` or
-  `--bundle-dir PATH` to write failure bundles with tree dumps, diagnostics,
-  screenshots, script logs, app stderr, and stdout notes/logs when the transport
-  leaves stdout available.
-- `edev record OUTFILE ...` runs the same smoke suite while recording one native
-  app window to a `.mov` file. Recording is macOS-only, uses ScreenCaptureKit
-  directly rather than an external recorder program, requires Screen Recording
-  permission for the terminal or process running `edev`, captures H.264 video at
-  the window's native pixel resolution, and keeps native recording details out
-  of the runtime and Luau APIs. The root viewport title selects the window by
-  default; use `--window-title <TITLE>` when you need another single window.
-- `edev eval` runs a single script and prints the structured result.
-- `edev dump` prints a canonical widget tree dump, optionally after applying
-  a fixture with `--param key=value` or restricting output to one viewport.
-  Without a fixture, it waits for a fresh capture before dumping.
-- `edev fixtures` / `edev fixture <name>` list registered fixtures, pass typed
-  params with `--param key=value`, optionally skip anchor waits with
-  `--no-wait`, and launch the app in a declared baseline or transition state for manual testing.
-- Scripts use the single `eguidev` namespace, immutable widget and viewport
-  references, exact `wait_viewport` / `Viewport:widget` selectors, shared
-  conditions, `Widget:expect(...)`, and capture diffs.
-- Each script result includes undismissed egui `id_clash` and
-  `rect_changed_id` warnings. `edev smoke` fails on these warnings by default,
-  so transient identity errors cannot pass unnoticed. Set
-  `[smoke] fail_on_egui_diagnostics = false` to retain the warnings without
-  failing the script.
-- Scripts that intentionally produce a warning can inspect and dismiss it with
-  `Viewport:egui_diagnostics()`, or dismiss it without returning it with
-  `Viewport:clear_egui_diagnostics()`. Both methods wait for the completed
-  output of the target viewport.
-- Apps can register `DevMcp::diagnostic(...)`, `DevMcp::diagnostic_ui(...)`,
-  fixture catalogs, and runtime/UI-thread fixture handlers. Scripts read them
-  with `eguidev.diagnostic(...)`, `eguidev.diagnostics()`, and
-  `eguidev.fixtures()`.
-
-Run `edev --help` for the details.
+Run `edev` with no arguments to see the full command list.
 
 ## Documentation
 
-- Luau scripting API: `edev docs`, or the `script_api` MCP tool. The
-  definition file is
-  [`eguidev.d.luau`](./crates/eguidev_runtime/luau/eguidev.d.luau).
-- Rust API: [docs.rs/eguidev](https://docs.rs/eguidev), including integration
-  details for custom widgets, fixtures, and multi-viewport apps.
+- Luau scripting: the API reference is
+  [`eguidev.d.luau`](./crates/eguidev_runtime/luau/eguidev.d.luau), which
+  `edev docs` and the `script_api` MCP tool return without change. For the
+  language itself, see [luau.org](https://luau.org/).
+- Worked example: the `eguidev_demo` app and its suite in
+  [`smoketest/`](./smoketest). See
+  [`docs/examples/README.md`](./docs/examples/README.md).
 
 ## License
 
