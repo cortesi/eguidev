@@ -892,6 +892,12 @@ mod tests {
         widget_registry::{WidgetMeta, record_widget},
     };
 
+    /// Script deadline for tests that assert an inner wait, fixture, or
+    /// completion. The deadline covers Luau compilation, which is slow and
+    /// highly variable under parallel test load, so it must stay far above the
+    /// inner timeout that the test actually exercises.
+    const TEST_SCRIPT_DEADLINE_MS: u64 = 10_000;
+
     fn discard_output(output: egui::FullOutput) {
         output.drop_without_applying_deltas();
     }
@@ -3087,7 +3093,7 @@ return eguidev.widget("status"):wait({ visible = true })"#
             .script_eval(
                 "return eguidev.fixture(\"blocked\", nil, { timeout_ms = 20, poll_interval_ms = 1 })"
                     .to_string(),
-                Some(500),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
@@ -3146,7 +3152,7 @@ return eguidev.widget("status"):wait({ visible = true })"#
         let result = server
             .script_eval(
                 "eguidev.fixture(\"slow\", nil, { wait = false })".to_string(),
-                Some(500),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
@@ -3365,7 +3371,7 @@ return { first = catalog[1].name, count = #catalog }"#
             .script_eval(
                 "return eguidev.fixture(\"multi\", nil, { timeout_ms = 200, poll_interval_ms = 1 })"
                     .to_string(),
-                Some(500),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
@@ -3441,7 +3447,7 @@ return { first = catalog[1].name, count = #catalog }"#
             .script_eval(
                 "return eguidev.fixture(\"viewer.mixed\", nil, { timeout_ms = 500, poll_interval_ms = 1 })"
                     .to_string(),
-                Some(1_000),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
@@ -3495,7 +3501,7 @@ return { first = catalog[1].name, count = #catalog }"#
             .script_eval(
                 "return eguidev.fixture(\"viewer.mixed\", nil, { timeout_ms = 80, poll_interval_ms = 1 })"
                     .to_string(),
-                Some(500),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
@@ -3587,7 +3593,7 @@ return { first = catalog[1].name, count = #catalog }"#
             .script_eval(
                 "return eguidev.fixture(\"scroll\", nil, { timeout_ms = 250, poll_interval_ms = 1 })"
                     .to_string(),
-                Some(500),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
@@ -3702,7 +3708,7 @@ return { first = catalog[1].name, count = #catalog }"#
 assert(state ~= nil and state.scroll_state ~= nil)
 return state.scroll_state.offset.y"#
                     .to_string(),
-                Some(500),
+                Some(TEST_SCRIPT_DEADLINE_MS),
                 None,
             )
             .await
