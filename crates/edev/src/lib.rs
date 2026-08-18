@@ -82,6 +82,12 @@ const APP_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 const APP_LOG_TAIL_LIMIT: usize = 4 * 1024 * 1024;
 /// Extra log bytes retained before trimming back to the stable tail limit.
 const APP_LOG_TAIL_TRIM_SLACK: usize = 256 * 1024;
+/// Maximum time allowed for the supervisor to publish its app record. The
+/// supervisor writes the record after it spawns the app, so a fast app can
+/// accept the MCP handshake before the record lands on disk.
+const APP_RECORD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Poll interval used while the launcher waits for the supervisor app record.
+const APP_RECORD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Maximum attempts for restart when the app MCP transport closes mid-handshake.
 const RESTART_MAX_ATTEMPTS: usize = 3;
 /// Fresh-capture attempts used while waiting for the native window to enter ScreenCaptureKit.
@@ -766,6 +772,22 @@ impl LifecycleAction {
     }
 }
 
+/// Read the supervisor's app record, tolerating the write that follows the app
+/// spawn. Returns `Ok(None)` only after the record stays absent for
+/// [`APP_RECORD_TIMEOUT`].
+async fn await_app_record(path: &Path) -> Result<Option<AppRecord>, std_io::Error> {
+    let deadline = Instant::now() + APP_RECORD_TIMEOUT;
+    loop {
+        if let Some(record) = read_app_record_for_path(path)? {
+            return Ok(Some(record));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        sleep(APP_RECORD_POLL_INTERVAL).await;
+    }
+}
+
 /// Encode the launcher's private presentation intent for the app handshake.
 fn client_capabilities(presentation: Presentation) -> ClientCapabilities {
     ClientCapabilities::default().with_experimental_capability(
@@ -877,7 +899,7 @@ async fn spawn_app(
     log_state.record_line("edev: app MCP connected");
 
     let app_record = match process.app_launch.as_ref() {
-        Some(launch) => match read_app_record_for_path(&launch.entry_path) {
+        Some(launch) => match await_app_record(&launch.entry_path).await {
             Ok(Some(record)) => Some(record),
             Ok(None) => {
                 drop(client);
