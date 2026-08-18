@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use ruau::typecheck::{
     Checker, Config, DiagnosticCategory, Mode,
     builtins::{DefinitionModule, Environment},
@@ -7,6 +9,10 @@ use ruau::typecheck::{
 const PUBLIC_DECLARATION: &str = include_str!("../../luau/eguidev.d.luau");
 #[cfg(test)]
 const PRIVATE_LIBRARY: &str = include_str!("../../luau/eguidev.luau");
+
+static CHECKER_BASE: LazyLock<Result<Checker, CheckFailure>> = LazyLock::new(|| {
+    checker_with_definitions(&[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)])
+});
 
 /// One strict-check failure with a source-relative primary location.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,8 +26,7 @@ pub struct CheckFailure {
 
 /// Check one tenant source against the exact checked-in public declaration.
 pub fn check_source(source_name: &str, source: &str) -> Result<(), CheckFailure> {
-    let mut checker =
-        checker_with_definitions(&[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)])?;
+    let mut checker = fresh_checker()?;
     let checked = checker.check_source_with_config(source, Config::with_source_mode(Mode::Strict));
     if !checked.has_errors() {
         return Ok(());
@@ -63,6 +68,14 @@ pub fn check_source(source_name: &str, source: &str) -> Result<(), CheckFailure>
     })
 }
 
+/// Clone a fresh checker from the prepared Eguidev declaration environment.
+fn fresh_checker() -> Result<Checker, CheckFailure> {
+    match &*CHECKER_BASE {
+        Ok(checker) => Ok(checker.clone()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
 fn checker_with_definitions(definitions: &[DefinitionModule]) -> Result<Checker, CheckFailure> {
     let mut arena = Arena::new();
     let builtins = Environment::standard_with_definition_modules(&mut arena, definitions)
@@ -85,8 +98,19 @@ mod tests {
 
     #[test]
     fn public_declaration_parses_as_the_checker_environment() {
-        checker_with_definitions(&[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)])
-            .expect("public declaration");
+        fresh_checker().expect("public declaration");
+    }
+
+    #[test]
+    fn prepared_checker_clones_isolate_source_allocations() {
+        let mut first = fresh_checker().expect("first checker");
+        let baseline_types = first.arena().type_len();
+        let checked = first.check_source("local value: { name: string } = { name = 'first' }");
+        assert!(!checked.has_errors());
+        assert!(first.arena().type_len() > baseline_types);
+
+        let second = fresh_checker().expect("second checker");
+        assert_eq!(second.arena().type_len(), baseline_types);
     }
 
     #[test]
