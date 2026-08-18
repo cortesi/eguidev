@@ -632,13 +632,15 @@ pub fn reassert_background_policy() -> Option<PolicyConflict> {
     }
     let first_conflict = session.report_conflict(observed_policy, ACTIVATION_POLICY_ACCESSORY);
     drop(session);
+    let mut restored = true;
     if observed_policy != Some(ACTIVATION_POLICY_ACCESSORY) {
-        let _ = set_activation_policy(ACTIVATION_POLICY_ACCESSORY);
+        restored = set_activation_policy(ACTIVATION_POLICY_ACCESSORY);
         deactivate_application();
     }
     first_conflict.then_some(PolicyConflict {
         observed_activation_policy: observed_policy.map(activation_policy_name),
         requested_presentation: Presentation::Background,
+        restored,
     })
 }
 
@@ -647,6 +649,10 @@ pub fn reassert_background_policy() -> Option<PolicyConflict> {
 pub struct PolicyConflict {
     requested_presentation: Presentation,
     observed_activation_policy: Option<String>,
+    /// False when NSApplication refused to restore the requested policy. The
+    /// app then cannot present windows, and automation that needs a rendered
+    /// frame will fail rather than recover.
+    restored: bool,
 }
 
 fn apply_transition(transition: PresentationTransition) -> Result<(), String> {
