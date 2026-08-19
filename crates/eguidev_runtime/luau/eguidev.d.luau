@@ -109,8 +109,6 @@ export type WidgetRole =
 --- for text edits.
 export type WidgetValue = boolean | number | string
 
-export type LayoutOverflow = boolean
-
 export type WidgetLayout = {
     --- Size the widget requested before layout constraints were applied.
     desired_size: Vec,
@@ -589,14 +587,12 @@ export type LayoutIssue = {
 }
 
 export type TextMeasureLine = {
-    --- The text content of this line.
     text: string,
     --- The rendered width of this line in logical points.
     width: number,
 }
 
 export type TextMeasure = {
-    --- The full text string of the widget.
     text: string,
     --- The portion of text actually visible after layout and clipping.
     visible_text: string,
@@ -606,7 +602,6 @@ export type TextMeasure = {
     actual_size: Vec,
     --- Height of a single text line in logical points.
     line_height: number,
-    --- Per-line breakdown of text content and rendered width.
     lines: { TextMeasureLine },
     --- Whether the text was truncated and an ellipsis character was inserted.
     ellipsis: boolean,

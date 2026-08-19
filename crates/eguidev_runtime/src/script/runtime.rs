@@ -790,12 +790,7 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<(Option<String>, Option<u64>, Option<u64>)> {
         let viewport_id = self.parse_optional_viewport_option(pos, options)?;
-        let timeout_ms = parse_optional_u64(options, "timeout_ms")
-            .map_err(|error| self.type_error(pos, error.message))?
-            .or_else(|| self.configured_timeout_ms());
-        let poll_interval_ms = parse_optional_u64(options, "poll_interval_ms")
-            .map_err(|error| self.type_error(pos, error.message))?
-            .or_else(|| self.configured_poll_interval_ms());
+        let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
         Ok((viewport_id, timeout_ms, poll_interval_ms))
     }
 
@@ -899,8 +894,7 @@ impl ScriptRuntime {
         if !self.action_settle_enabled(pos, options)? {
             return Ok(());
         }
-        let timeout_ms = self.configured_timeout_ms();
-        let poll_interval_ms = self.configured_poll_interval_ms();
+        let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
         self.await_tool(
             pos,
             self.server
@@ -918,6 +912,20 @@ impl ScriptRuntime {
         parse_optional_bool(options, "settle")
             .map_err(|error| self.type_error(pos, error.message))
             .map(|settle| settle.unwrap_or_else(|| self.configured_settle()))
+    }
+
+    fn action_timeouts(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Map<String, Value>>,
+    ) -> ScriptResult<(Option<u64>, Option<u64>)> {
+        let timeout_ms = parse_optional_u64(options, "timeout_ms")
+            .map_err(|error| self.type_error(pos, error.message))?
+            .or_else(|| self.configured_timeout_ms());
+        let poll_interval_ms = parse_optional_u64(options, "poll_interval_ms")
+            .map_err(|error| self.type_error(pos, error.message))?
+            .or_else(|| self.configured_poll_interval_ms());
+        Ok((timeout_ms, poll_interval_ms))
     }
 
     fn parse_action_target(
@@ -971,6 +979,14 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let label_contains = parse_optional_string(options, "label_contains")
             .map_err(|error| self.type_error(pos, error.message))?;
+        let visible = parse_optional_bool(options, "visible")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let enabled = parse_optional_bool(options, "enabled")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let focused = parse_optional_bool(options, "focused")
+            .map_err(|error| self.type_error(pos, error.message))?;
+        let selected = parse_optional_bool(options, "selected")
+            .map_err(|error| self.type_error(pos, error.message))?;
         let widgets = collect_widget_list(
             &self.server.inner,
             viewport_id,
@@ -979,6 +995,10 @@ impl ScriptRuntime {
             id_prefix.as_deref(),
             label.as_deref(),
             label_contains.as_deref(),
+            visible,
+            enabled,
+            focused,
+            selected,
         )
         .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_list_json(pos, &widgets)
@@ -1007,8 +1027,7 @@ impl ScriptRuntime {
         self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
             .await?;
         if settle_enabled {
-            let timeout_ms = self.configured_timeout_ms();
-            let poll_interval_ms = self.configured_poll_interval_ms();
+            let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
             self.await_tool(
                 pos,
                 self.server.wait_for_widget_state(
@@ -1312,8 +1331,7 @@ impl ScriptRuntime {
         self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
             .await?;
         if settle_enabled {
-            let timeout_ms = self.configured_timeout_ms();
-            let poll_interval_ms = self.configured_poll_interval_ms();
+            let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
             self.await_tool(
                 pos,
                 self.server.wait_for_widget_state(
@@ -1357,8 +1375,7 @@ impl ScriptRuntime {
             // Requesting the offsets only queues them. An animated scroll area
             // needs the target polled to the interaction-ready predicate, or
             // the next click fails on the call that just returned.
-            let timeout_ms = self.configured_timeout_ms();
-            let poll_interval_ms = self.configured_poll_interval_ms();
+            let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
             self.await_tool(
                 pos,
                 self.server.wait_for_widget_state(

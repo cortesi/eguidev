@@ -247,7 +247,16 @@ pub(super) fn parse_widget_ref(value: &Value) -> Result<WidgetRef, ScriptErrorIn
         .and_then(Value::as_str)
         .ok_or_else(|| type_error("WidgetRef requires string id"))?
         .to_string();
-    let viewport_id = parse_optional_string(Some(map), "viewport_id")?;
+    let viewport_id = match map.get("__viewport_id").or_else(|| map.get("viewport_id")) {
+        None => None,
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            return Err(type_error(
+                "WidgetRef viewport_id must be a string when present",
+            ));
+        }
+    };
     Ok(WidgetRef { id, viewport_id })
 }
 
@@ -271,5 +280,50 @@ fn type_error(message: impl Into<String>) -> ScriptErrorInfo {
         backtrace: None,
         code: None,
         details: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_widget_ref;
+    use serde_json::json;
+
+    #[test]
+    fn parse_widget_ref_reads_hidden_viewport_id() {
+        let parsed = parse_widget_ref(&json!({
+            "id": "field",
+            "__viewport_id": "secondary",
+        }))
+        .expect("widget ref");
+        assert_eq!(parsed.id, "field");
+        assert_eq!(parsed.viewport_id.as_deref(), Some("secondary"));
+    }
+
+    #[test]
+    fn parse_widget_ref_prefers_hidden_viewport_id() {
+        let parsed = parse_widget_ref(&json!({
+            "id": "field",
+            "__viewport_id": "secondary",
+            "viewport_id": "root",
+        }))
+        .expect("widget ref");
+        assert_eq!(parsed.viewport_id.as_deref(), Some("secondary"));
+    }
+
+    #[test]
+    fn parse_widget_ref_reads_public_viewport_id() {
+        let parsed = parse_widget_ref(&json!({
+            "id": "field",
+            "viewport_id": "root",
+        }))
+        .expect("widget ref");
+        assert_eq!(parsed.viewport_id.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn parse_widget_ref_string_has_no_viewport() {
+        let parsed = parse_widget_ref(&json!("field")).expect("widget ref");
+        assert_eq!(parsed.id, "field");
+        assert_eq!(parsed.viewport_id, None);
     }
 }

@@ -2975,7 +2975,7 @@ mod tests {
         DevMcp,
         automation::script::types::{ScriptArgValue, ScriptArgs},
         fixtures::FixtureHandler,
-        registry::Inner,
+        registry::{Inner, viewport_id_to_string},
         runtime::{self, Runtime},
         types::{
             FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, WidgetRegistryEntry,
@@ -3711,6 +3711,272 @@ return eguidev.args.count"#
         );
         assert!(outcome.success, "{outcome:?}");
         assert_eq!(outcome.value, Some(json!(4)));
+    }
+
+    #[test]
+    fn rejected_configure_does_not_poison_luau_defaults() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.configure({ timeout_ms = 30, poll_interval_ms = 1 })
+local configured = pcall(function()
+    eguidev.configure({ timeout_ms = -1 })
+end)
+assert(configured == false)
+eguidev.wait(function()
+    return false
+end)
+"#
+            .to_string(),
+            1_000,
+            "configure-reject.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("timeout error");
+        assert_eq!(error.error_type, "timeout");
+        assert!(
+            outcome.timing.exec_ms < 500,
+            "rejected configure must keep the previous timeout: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn capture_snapshots_are_immutable() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("status", 1, WidgetRole::Label));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local cap = eguidev.capture()
+local anyCap: any = cap
+local frameOk = pcall(function()
+    anyCap.frame = 1
+end)
+local nestedOk = pcall(function()
+    anyCap.__widgets[1].id = "mutated"
+end)
+local diff = cap:diff()
+return {
+    frame_ok = frameOk,
+    nested_ok = nestedOk,
+    change_count = #diff.changes,
+}
+"#
+            .to_string(),
+            1_000,
+            "capture-freeze.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "frame_ok": false,
+                "nested_ok": false,
+                "change_count": 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn wait_rejects_invalid_condition_combinations() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("status", 1, WidgetRole::Label));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local function code_of(run: () -> ()): string
+    local ok, err = pcall(run)
+    assert(ok == false)
+    return (err :: Error).code
+end
+local present = code_of(function()
+    eguidev.widget("status"):wait({ present = false, visible = true })
+end)
+local label = code_of(function()
+    eguidev.widget("status"):wait({ label = "" })
+end)
+local pointer = code_of(function()
+    eguidev.widget("status"):wait({ data = { pointer = "not-a-pointer", equals = true } })
+end)
+local viewport = code_of(function()
+    eguidev.root:wait({ present = false, focused = true })
+end)
+return {
+    present = present,
+    label = label,
+    pointer = pointer,
+    viewport = viewport,
+}
+"#
+            .to_string(),
+            1_000,
+            "wait-validate.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "present": "invalid_argument",
+                "label": "invalid_argument",
+                "pointer": "invalid_argument",
+                "viewport": "invalid_argument",
+            }))
+        );
+    }
+
+    #[test]
+    fn click_settle_shares_one_timeout_budget() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("button", 1, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("button"):click({ timeout_ms = 200, poll_interval_ms = 1 })
+"#
+            .to_string(),
+            3_000,
+            "click-timeout.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("timeout error");
+        assert_eq!(error.error_type, "timeout");
+        assert!(
+            !error.message.contains("Script timed out after"),
+            "settle must use the call timeout, not the script deadline: {error:?}"
+        );
+        assert!(
+            outcome.timing.exec_ms < 800,
+            "click wait plus settle must stay near 200 ms: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn widget_list_filters_focused_widgets() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        let mut focused = make_entry("focused", 1, WidgetRole::Button);
+        focused.focused = true;
+        inner.widgets.record_widget(viewport_id, focused);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("other", 2, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local focused = eguidev.root:widgets({ focused = true })
+local selected = eguidev.root:widgets({ selected = true })
+return { focused = focused[1].id, focused_count = #focused, selected_count = #selected }
+"#
+            .to_string(),
+            1_000,
+            "widget-filter.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "focused": "focused",
+                "focused_count": 1,
+                "selected_count": 0,
+            }))
+        );
+    }
+
+    #[test]
+    fn key_target_keeps_scoped_widget_viewport() {
+        let inner = Arc::new(Inner::new());
+        let secondary = egui::ViewportId::from_hash_of("script.key.target.secondary");
+        let secondary_id = viewport_id_to_string(secondary);
+        inner.viewports.remember_viewport_id(secondary);
+        inner.widgets.clear_registry(secondary);
+        let mut field = make_entry("field", 1, WidgetRole::TextEdit);
+        field.viewport_id = secondary_id.clone();
+        field.focused = true;
+        inner.widgets.record_widget(secondary, field);
+        inner.widgets.finalize_registry(secondary);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            format!(
+                r#"eguidev.configure({{ settle = false }})
+local viewport = eguidev.viewport("{secondary_id}")
+viewport:key("a", {{ target = viewport:widget("field"), settle = false }})
+return true
+"#
+            ),
+            1_000,
+            "key-target.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(outcome.value, Some(json!(true)));
+    }
+
+    #[test]
+    fn fixture_catalog_keeps_viewport_scoped_targets() {
+        let inner = Arc::new(Inner::new());
+        let secondary = egui::ViewportId::from_hash_of("fixture.list.secondary");
+        let secondary_id = viewport_id_to_string(secondary);
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("multi", "Multi viewport fixture.").ready_in("status", secondary),
+        ]);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local catalog = eguidev.fixtures()
+local ready = catalog[1].ready[1]
+local widget = ready.widget :: any
+return { id = ready.widget.id, viewport = widget.__viewport_id }
+"#
+            .to_string(),
+            1_000,
+            "fixture-catalog.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "id": "status",
+                "viewport": secondary_id,
+            }))
+        );
     }
 
     #[test]

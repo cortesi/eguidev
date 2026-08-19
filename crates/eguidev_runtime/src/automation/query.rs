@@ -59,6 +59,10 @@ impl DevMcpServer {
             id_prefix.as_deref(),
             label.as_deref(),
             label_contains.as_deref(),
+            None,
+            None,
+            None,
+            None,
         )?;
         Ok(CallToolResult::structured(widgets).map_err(|error| {
             ToolError::new(

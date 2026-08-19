@@ -1,12 +1,17 @@
 --!strict
 
 local function projectTargets(targets: { FixtureTarget }): { any }
-    local result = {}
+    local result: { any } = {}
     for _, target in targets do
-        table.insert(result, {
-            widget_id = target.widget.id,
+        local widget = target.widget :: any
+        local projected: any = {
+            widget_id = widget.id,
             condition = target.condition,
-        })
+        }
+        if widget.__viewport_id ~= nil then
+            projected.viewport_id = widget.__viewport_id
+        end
+        table.insert(result, projected)
     end
     return result
 end

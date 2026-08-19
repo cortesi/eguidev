@@ -2792,6 +2792,7 @@ mod tests {
                 "description": "baseline",
                 "ready": [{
                     "widget_id": "basic.status",
+                    "viewport_id": "secondary",
                     "condition": { "visible": true }
                 }],
                 "params": [{
@@ -2811,6 +2812,11 @@ mod tests {
         assert_eq!(fixtures[0].name, "basic.default");
         assert_eq!(fixtures[0].description, "baseline");
         assert_eq!(fixtures[0].ready.len(), 1);
+        assert_eq!(fixtures[0].ready[0].widget_id, "basic.status");
+        assert_eq!(
+            fixtures[0].ready[0].viewport_id.as_deref(),
+            Some("secondary")
+        );
         assert_eq!(fixtures[0].params[0].name, "offset");
         assert_eq!(fixtures[0].tags, vec!["scroll"]);
     }

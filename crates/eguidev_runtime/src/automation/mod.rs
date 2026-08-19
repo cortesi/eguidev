@@ -714,13 +714,31 @@ pub fn collect_widget_list(
     id_prefix: Option<&str>,
     label: Option<&str>,
     label_contains: Option<&str>,
+    visible: Option<bool>,
+    enabled: Option<bool>,
+    focused: Option<bool>,
+    selected: Option<bool>,
 ) -> ToolResult<Vec<WidgetRegistryEntry>> {
     ensure_automation_ready(inner)?;
     let viewport_id = resolve_viewport_id(inner, viewport_id)?;
     let mut widgets = inner.widgets.widget_list(viewport_id);
-    let include_invisible = include_invisible.unwrap_or(false);
+    let include_invisible = include_invisible.unwrap_or(false) || visible == Some(false);
     if !include_invisible {
         widgets.retain(|entry| entry.visible);
+    }
+    if let Some(visible) = visible {
+        widgets.retain(|entry| entry.visible == visible);
+    }
+    if let Some(enabled) = enabled {
+        widgets.retain(|entry| entry.enabled == enabled);
+    }
+    if let Some(focused) = focused {
+        widgets.retain(|entry| entry.focused == focused);
+    }
+    if let Some(selected) = selected {
+        widgets.retain(|entry| {
+            entry.role_state.as_ref().and_then(RoleState::selected) == Some(selected)
+        });
     }
     if let Some(role) = role {
         widgets.retain(|entry| entry.role == role);
@@ -4867,6 +4885,134 @@ return state.scroll_state.offset.y"#
             .expect("widget list payload");
         let tags: Vec<_> = contains.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(tags, vec!["status.ready", "status.busy"]);
+    }
+
+    #[test]
+    fn collect_widget_list_filters_boolean_fields() {
+        let inner = Inner::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+
+        let mut focused = make_entry("focused", 1, WidgetRole::Button);
+        focused.focused = true;
+        inner.widgets.record_widget(viewport_id, focused);
+
+        let mut hidden = make_entry("hidden", 2, WidgetRole::Button);
+        hidden.visible = false;
+        inner.widgets.record_widget(viewport_id, hidden);
+
+        let mut disabled = make_entry("disabled", 3, WidgetRole::Button);
+        disabled.enabled = false;
+        inner.widgets.record_widget(viewport_id, disabled);
+
+        let mut selected = make_entry("selected", 4, WidgetRole::Button);
+        selected.role_state = Some(RoleState::Button { selected: true });
+        inner.widgets.record_widget(viewport_id, selected);
+
+        inner.widgets.finalize_registry(viewport_id);
+
+        let focused_only = collect_widget_list(
+            &inner,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+        )
+        .expect("focused filter");
+        assert_eq!(
+            focused_only
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["focused"]
+        );
+
+        let hidden_only = collect_widget_list(
+            &inner,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(false),
+            None,
+            None,
+            None,
+        )
+        .expect("hidden filter");
+        assert_eq!(
+            hidden_only
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hidden"]
+        );
+
+        let enabled_only = collect_widget_list(
+            &inner,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+        )
+        .expect("enabled filter");
+        let enabled_ids: Vec<_> = enabled_only.iter().map(|entry| entry.id.as_str()).collect();
+        assert!(enabled_ids.contains(&"focused"));
+        assert!(enabled_ids.contains(&"selected"));
+        assert!(!enabled_ids.contains(&"disabled"));
+
+        let selected_only = collect_widget_list(
+            &inner,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+        )
+        .expect("selected filter");
+        assert_eq!(
+            selected_only
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["selected"]
+        );
+
+        let all = collect_widget_list(
+            &inner,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("unfiltered list");
+        let all_ids: Vec<_> = all.iter().map(|entry| entry.id.as_str()).collect();
+        assert!(all_ids.contains(&"hidden"));
+        assert!(all_ids.contains(&"disabled"));
     }
 
     #[tokio::test]

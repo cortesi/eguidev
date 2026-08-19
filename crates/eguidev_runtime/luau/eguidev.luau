@@ -4,7 +4,6 @@
 -- as ordered inputs before the VM applies the tenant sandbox.
 
 type QueryKernel = {
-    widget_find: (id: string, options: any?) -> any?,
     widget_state: (widget: any) -> any?,
     widget_parent: (widget: any) -> any?,
     widget_children: (widget: any) -> { any },
@@ -105,7 +104,6 @@ local defaults = {
     timeout_ms = 5000,
     poll_interval_ms = 16,
     settle = true,
-    animations = false,
 }
 
 local errorMetatable = table.freeze({
@@ -131,6 +129,28 @@ local function freezeOwned(value: any, seen: any?): any
         freezeOwned(child, visited)
     end
     return table.freeze(value)
+end
+
+local function freezeSnapshot(value: any, seen: any?): any
+    if type(value) ~= "table" then
+        return value
+    end
+    local visited: any = seen or {}
+    if visited[value] then
+        return value
+    end
+    visited[value] = true
+    for key, child in pairs(value) do
+        freezeSnapshot(key, visited)
+        freezeSnapshot(child, visited)
+    end
+    for index = 1, #value do
+        freezeSnapshot(value[index], visited)
+    end
+    if getmetatable(value) == nil and not table.isfrozen(value) then
+        table.freeze(value)
+    end
+    return value
 end
 
 local kernel = table.freeze({
@@ -195,7 +215,20 @@ local function actionOptions(options: ActionOptions?): any
     return result
 end
 
+local function remainingWaitOptions(options: any, startedMs: number): any
+    local result = waitOptions(options)
+    result.timeout_ms = math.max(0, math.ceil(result.timeout_ms - (os.clock() * 1000 - startedMs)))
+    return result
+end
+
+local function remainingActionOptions(options: any, startedMs: number): any
+    local result = actionOptions(options)
+    result.timeout_ms = math.max(0, math.ceil(result.timeout_ms - (os.clock() * 1000 - startedMs)))
+    return result
+end
+
 local function configure(options: ScriptOptions)
+    kernel.record.configure(options)
     if options.timeout_ms ~= nil then
         defaults.timeout_ms = options.timeout_ms
     end
@@ -205,10 +238,6 @@ local function configure(options: ScriptOptions)
     if options.settle ~= nil then
         defaults.settle = options.settle
     end
-    if options.animations ~= nil then
-        defaults.animations = options.animations
-    end
-    kernel.record.configure(options)
 end
 
 local function jsonPointer(value: any, pointer: string): (boolean, any)
@@ -230,6 +259,92 @@ local function jsonPointer(value: any, pointer: string): (boolean, any)
         end
     end
     return true, current
+end
+
+local function isValidJsonPointer(pointer: string): boolean
+    if pointer == "" then
+        return true
+    end
+    if string.sub(pointer, 1, 1) ~= "/" then
+        return false
+    end
+    local index = 1
+    while index <= #pointer do
+        if string.sub(pointer, index, index) == "~" then
+            local escape = string.sub(pointer, index + 1, index + 1)
+            if escape ~= "0" and escape ~= "1" then
+                return false
+            end
+            index += 2
+        else
+            index += 1
+        end
+    end
+    return true
+end
+
+local function isInvalidTolerance(value: number): boolean
+    return value ~= value or value <= 0 or value == math.huge or value == -math.huge
+end
+
+local function validateWidgetCondition(condition: WidgetCondition)
+    local hasStateField = condition.actionable ~= nil
+        or condition.visible ~= nil
+        or condition.enabled ~= nil
+        or condition.focused ~= nil
+        or condition.selected ~= nil
+        or condition.role ~= nil
+        or condition.label ~= nil
+        or condition.label_contains ~= nil
+        or condition.value ~= nil
+        or condition.value_text_contains ~= nil
+        or condition.scroll_ready ~= nil
+        or condition.scroll_at ~= nil
+        or condition.data ~= nil
+    if condition.present == false and hasStateField then
+        fail("invalid_argument", "present = false cannot be combined with a state condition", "wait")
+    end
+    if condition.label == "" then
+        fail("invalid_argument", "label must not be empty", "wait")
+    end
+    if condition.label_contains == "" then
+        fail("invalid_argument", "label_contains must not be empty", "wait")
+    end
+    if condition.value_text_contains == "" then
+        fail("invalid_argument", "value_text_contains must not be empty", "wait")
+    end
+    local scrollAt = condition.scroll_at
+    if scrollAt ~= nil and scrollAt.tolerance ~= nil and isInvalidTolerance(scrollAt.tolerance) then
+        fail("invalid_argument", "scroll_at tolerance must be finite and greater than 0", "wait")
+    end
+    local data = condition.data
+    if data ~= nil and not isValidJsonPointer(data.pointer) then
+        fail("invalid_argument", `data pointer "{data.pointer}" is not an RFC 6901 JSON pointer`, "wait")
+    end
+end
+
+local function validateViewportCondition(condition: ViewportCondition)
+    local hasStateField = condition.name ~= nil
+        or condition.title ~= nil
+        or condition.title_contains ~= nil
+        or condition.focused ~= nil
+        or condition.minimized ~= nil
+        or condition.occluded ~= nil
+        or condition.maximized ~= nil
+        or condition.fullscreen ~= nil
+        or condition.frame_at_least ~= nil
+    if condition.present == false and hasStateField then
+        fail("invalid_argument", "present = false cannot be combined with a state condition", "wait")
+    end
+    if condition.name == "" then
+        fail("invalid_argument", "name must not be empty", "wait")
+    end
+    if condition.title == "" then
+        fail("invalid_argument", "title must not be empty", "wait")
+    end
+    if condition.title_contains == "" then
+        fail("invalid_argument", "title_contains must not be empty", "wait")
+    end
 end
 
 local function widgetConditionMatches(state: WidgetState?, condition: WidgetCondition): boolean
@@ -408,6 +523,7 @@ function widgetMethods.wait(
 ): WidgetState?
     if type(condition) ~= "function" then
         local recordCondition = condition :: WidgetCondition
+        validateWidgetCondition(recordCondition)
         if recordCondition.present == false then
             kernel.wait.widget_wait_absent(scopedWidgetTarget(self), waitOptions(options))
             return nil
@@ -534,69 +650,97 @@ function widgetMethods.expect(
 end
 
 function widgetMethods.click(self: Widget, options: ClickOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
-    kernel.action.widget_click(scopedWidgetTarget(self), actionOptions(options))
+    kernel.action.widget_click(scopedWidgetTarget(self), remainingActionOptions(options, startedMs))
 end
 
 function widgetMethods.hover(self: Widget, options: HoverOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
-    kernel.action.widget_hover(scopedWidgetTarget(self), actionOptions(options))
+    kernel.action.widget_hover(scopedWidgetTarget(self), remainingActionOptions(options, startedMs))
 end
 
 function widgetMethods.focus(self: Widget, options: ActionOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ present = true, visible = true, enabled = true }, options)
-    kernel.action.widget_focus(scopedWidgetTarget(self), actionOptions(options))
+    kernel.action.widget_focus(scopedWidgetTarget(self), remainingActionOptions(options, startedMs))
 end
 
 function widgetMethods.type_text(self: Widget, text: string, options: TypeTextOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
-    kernel.action.widget_type_text(scopedWidgetTarget(self), text, actionOptions(options))
+    kernel.action.widget_type_text(
+        scopedWidgetTarget(self),
+        text,
+        remainingActionOptions(options, startedMs)
+    )
 end
 
 function widgetMethods.set_value(self: Widget, value: WidgetValue, options: ActionOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
-    kernel.action.widget_set_value(scopedWidgetTarget(self), value, actionOptions(options))
+    kernel.action.widget_set_value(
+        scopedWidgetTarget(self),
+        value,
+        remainingActionOptions(options, startedMs)
+    )
 end
 
 function widgetMethods.drag_to(self: Widget, target: Pos | Widget, options: DragOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
     local candidate: any = target
     if candidate.id ~= nil then
         local targetWidget = target :: Widget
-        targetWidget:wait({ actionable = true }, options)
+        targetWidget:wait({ actionable = true }, remainingWaitOptions(options, startedMs))
         kernel.action.widget_drag_to(
             scopedWidgetTarget(self),
             scopedWidgetTarget(targetWidget),
-            actionOptions(options)
+            remainingActionOptions(options, startedMs)
         )
     else
         kernel.action.widget_drag_position(
             scopedWidgetTarget(self),
             target :: Pos,
-            actionOptions(options)
+            remainingActionOptions(options, startedMs)
         )
     end
 end
 
 function widgetMethods.drag_relative(self: Widget, target: Vec, options: DragOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
-    local resolved = actionOptions(options)
-    kernel.action.widget_drag_relative(scopedWidgetTarget(self), target, resolved)
+    kernel.action.widget_drag_relative(
+        scopedWidgetTarget(self),
+        target,
+        remainingActionOptions(options, startedMs)
+    )
 end
 
 function widgetMethods.scroll(self: Widget, delta: Vec, options: ActionOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
-    kernel.action.widget_scroll(scopedWidgetTarget(self), delta, actionOptions(options))
+    kernel.action.widget_scroll(
+        scopedWidgetTarget(self),
+        delta,
+        remainingActionOptions(options, startedMs)
+    )
 end
 
 function widgetMethods.scroll_to(self: Widget, options: ScrollToOptions)
+    local startedMs = os.clock() * 1000
     self:wait({ present = true }, options)
-    kernel.action.widget_scroll_to(scopedWidgetTarget(self), actionOptions(options))
+    kernel.action.widget_scroll_to(scopedWidgetTarget(self), remainingActionOptions(options, startedMs))
 end
 
 function widgetMethods.scroll_into_view(self: Widget, options: ActionOptions?)
+    local startedMs = os.clock() * 1000
     self:wait({ present = true }, options)
-    kernel.action.widget_scroll_into_view(scopedWidgetTarget(self), actionOptions(options))
+    kernel.action.widget_scroll_into_view(
+        scopedWidgetTarget(self),
+        remainingActionOptions(options, startedMs)
+    )
 end
 
 function widgetMethods.text_measure(self: Widget): TextMeasure
@@ -648,6 +792,9 @@ function viewportMethods.wait(
     condition: ViewportCondition | ViewportPredicate,
     options: WaitOptions?
 ): ViewportState?
+    if type(condition) ~= "function" then
+        validateViewportCondition(condition :: ViewportCondition)
+    end
     local state = kernel.wait.viewport_wait(self, function(rawState: any?): boolean
         local currentState = freezeState(rawState) :: ViewportState?
         if type(condition) == "function" then
@@ -719,16 +866,7 @@ local function filterWidgetReferences(filter: WidgetFilter?, viewportId: string?
             viewportReference,
             widgetFilterOptions(filter, viewportId)
         ) do
-            local reference = widget(raw.id, raw.viewport_id)
-            local state = reference:state()
-            if state ~= nil
-                and (filter == nil or filter.visible == nil or state.visible == filter.visible)
-                and (filter == nil or filter.enabled == nil or state.enabled == filter.enabled)
-                and (filter == nil or filter.focused == nil or state.focused == filter.focused)
-                and (filter == nil or filter.selected == nil or state.selected == filter.selected)
-            then
-                table.insert(result, reference)
-            end
+            table.insert(result, widget(raw.id, raw.viewport_id))
         end
     end
     table.sort(result :: any, function(left: any, right: any): boolean return left.id < right.id end)
@@ -756,7 +894,11 @@ function viewportMethods.dismiss_popups(self: Viewport, options: ActionOptions?)
 end
 
 function viewportMethods.key(self: Viewport, key: string, options: KeyOptions?)
-    kernel.action.viewport_key(self, key, actionOptions(options))
+    local resolved = actionOptions(options)
+    if type(resolved.target) == "table" then
+        resolved.target = scopedWidgetTarget(resolved.target :: Widget)
+    end
+    kernel.action.viewport_key(self, key, resolved)
 end
 
 function viewportMethods.paste(self: Viewport, text: string, options: ActionOptions?)
@@ -825,8 +967,9 @@ table.freeze(captureMethods)
 
 local function capture(): Capture
     local result = kernel.query.capture()
-    setmetatable(result, captureMethods)
-    return freezeOwned(result) :: Capture
+    freezeSnapshot(result.__widgets)
+    freezeSnapshot(result.__viewports)
+    return table.freeze(setmetatable(result, captureMethods)) :: Capture
 end
 
 local function viewports(filter: ViewportFilter?): { Viewport }
