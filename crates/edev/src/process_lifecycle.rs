@@ -1257,6 +1257,7 @@ mod tests {
             presentation: Presentation::Background,
             shutdown_grace: Duration::from_secs(30),
             verbose: false,
+            request_timeout: crate::APP_REQUEST_TIMEOUT,
         }
     }
 

@@ -74,7 +74,7 @@ use failure_bundle::{
 use fixture_projection::{FIXTURE_APPLY_SCRIPT, FIXTURE_LIST_SCRIPT, parse_fixture_list};
 use session::AppSession;
 
-/// Timeout used for proxied request/response round-trips between edev and app MCP.
+/// Timeout used for app MCP request/response round-trips.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum time allowed for a launched app to build and open its direct MCP socket.
 const APP_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
@@ -862,7 +862,6 @@ async fn spawn_app(
         }
     });
     let stderr_buffer_clone = Arc::clone(&stderr_buffer);
-    let stderr_log_state = log_state.clone();
     let stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
         let mut line = String::new();
@@ -876,12 +875,18 @@ async fn spawn_app(
                 break;
             }
             append_tail_capped(&stderr_buffer_clone, line.as_bytes());
-            stderr_log_state.record_line(&line);
             let _write_result = tokio_io::stderr().write_all(line.as_bytes()).await;
         }
     });
 
-    let client = match connect_app_client(&mcp_endpoint, config.presentation, &mut process).await {
+    let client = match connect_app_client(
+        &mcp_endpoint,
+        config.presentation,
+        config.request_timeout,
+        &mut process,
+    )
+    .await
+    {
         Ok(client) => client,
         Err(error) => {
             return Err(fail_startup_handshake(
@@ -992,13 +997,14 @@ fn allocate_mcp_endpoint() -> std_io::Result<String> {
 async fn connect_app_client(
     endpoint: &str,
     presentation: Presentation,
+    request_timeout: Duration,
     process: &mut process_lifecycle::SpawnedProcess,
 ) -> Result<tmcp::Client<()>, McpError> {
     let deadline = Instant::now() + APP_CONNECT_TIMEOUT;
     loop {
         let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
             .with_capabilities(client_capabilities(presentation))
-            .with_request_timeout(APP_REQUEST_TIMEOUT);
+            .with_request_timeout(request_timeout);
         match client.connect_tcp(endpoint.to_string()).await {
             Ok(_) => return Ok(client),
             Err(error) => {
@@ -1622,6 +1628,7 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
         presentation: Presentation::Background,
         shutdown_grace: Duration::from_secs(30),
         verbose: false,
+        request_timeout: APP_REQUEST_TIMEOUT,
     }
 }
 

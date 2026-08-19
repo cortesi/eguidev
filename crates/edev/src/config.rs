@@ -62,6 +62,8 @@ pub struct LaunchConfig {
     pub(crate) shutdown_grace: Duration,
     /// Whether launcher lifecycle logs are enabled.
     pub(crate) verbose: bool,
+    /// MCP client request timeout used after the app handshake.
+    pub(crate) request_timeout: Duration,
 }
 
 impl LaunchConfig {
@@ -73,6 +75,15 @@ impl LaunchConfig {
         command.current_dir(&self.cwd);
         command.envs(&self.env);
         command
+    }
+
+    /// Size one-shot clients from the command script timeout without dropping
+    /// below the lifecycle handshake bound.
+    fn with_script_timeout(mut self, script_timeout: Option<Duration>) -> Self {
+        self.request_timeout = script_timeout
+            .unwrap_or(crate::APP_REQUEST_TIMEOUT)
+            .max(crate::APP_REQUEST_TIMEOUT);
+        self
     }
 }
 
@@ -789,7 +800,15 @@ fn resolve_fixture_config(
     loaded: Option<&LoadedConfig>,
     current_dir: &Path,
 ) -> Result<FixtureConfig, EdevError> {
-    let launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
+    let launch = resolve_launch_config(&cli.common, loaded, current_dir)?.with_script_timeout(
+        loaded.and_then(|config| {
+            config
+                .file
+                .smoke
+                .script_timeout_secs
+                .map(Duration::from_secs)
+        }),
+    );
     Ok(FixtureConfig {
         launch,
         name: cli.name,
@@ -814,8 +833,13 @@ fn resolve_dump_config(
         ));
     }
     let wait_for_initial_capture = cli.fixture.is_none();
+    let timeout = Some(Duration::from_secs(
+        cli.script_timeout_secs
+            .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
+            .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
+    ));
     Ok(DumpConfig {
-        launch,
+        launch: launch.with_script_timeout(timeout),
         fixture: cli.fixture,
         params: cli.params,
         viewport: cli.viewport,
@@ -825,11 +849,7 @@ fn resolve_dump_config(
             .out
             .as_ref()
             .map(|path| absolutize_path(path, current_dir)),
-        timeout: Some(Duration::from_secs(
-            cli.script_timeout_secs
-                .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
-                .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
-        )),
+        timeout,
     })
 }
 
@@ -855,15 +875,16 @@ fn resolve_eval_config(
         .map(|smoke| smoke.args.clone())
         .unwrap_or_default();
     args.extend(cli.args);
+    let timeout = Some(Duration::from_secs(
+        cli.script_timeout_secs
+            .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
+            .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
+    ));
     Ok(EvalConfig {
-        launch,
+        launch: launch.with_script_timeout(timeout),
         script,
         out_dir,
-        timeout: Some(Duration::from_secs(
-            cli.script_timeout_secs
-                .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
-                .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
-        )),
+        timeout,
         args,
     })
 }
@@ -873,7 +894,12 @@ fn resolve_mcp_config(
     loaded: Option<&LoadedConfig>,
     current_dir: &Path,
 ) -> Result<McpConfig, EdevError> {
-    let launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
+    let mut launch = resolve_launch_config(&cli.common, loaded, current_dir)?;
+    if cli.common.verbose.is_none()
+        && let Some(verbose) = loaded.and_then(|config| config.file.mcp.verbose)
+    {
+        launch.verbose = verbose;
+    }
     let idle_shutdown_after = Duration::from_secs(
         cli.idle_shutdown_after_secs
             .or_else(|| loaded.and_then(|config| config.file.mcp.idle_shutdown_after_secs))
@@ -966,7 +992,10 @@ fn resolve_smoke_config(
     let launch = if cli.list {
         None
     } else {
-        Some(resolve_launch_config(&cli.common, loaded, current_dir)?)
+        Some(
+            resolve_launch_config(&cli.common, loaded, current_dir)?
+                .with_script_timeout(suite.script_timeout),
+        )
     };
     let verbose_output = launch.as_ref().is_some_and(|launch| launch.verbose);
     Ok(SmokeConfig {
@@ -1020,7 +1049,6 @@ fn resolve_launch_config(
         .and_then(|config| config.path.parent())
         .unwrap_or(current_dir);
     let file_app = loaded.map(|config| &config.file.app);
-    let file_mcp = loaded.map(|config| &config.file.mcp);
     let cwd = resolve_path(
         cli.cwd.as_ref(),
         file_app.and_then(|app| app.cwd.as_ref()),
@@ -1058,10 +1086,8 @@ fn resolve_launch_config(
         env: file_app.map(|app| app.env.clone()).unwrap_or_default(),
         presentation,
         shutdown_grace,
-        verbose: cli
-            .verbose
-            .or_else(|| file_mcp.and_then(|mcp| mcp.verbose))
-            .unwrap_or(false),
+        verbose: cli.verbose.unwrap_or(false),
+        request_timeout: crate::APP_REQUEST_TIMEOUT,
     })
 }
 
@@ -1658,6 +1684,92 @@ args = { name = \"File\", count = 4 }
             Some(&ScriptArgValue::String("Cli".to_string()))
         );
         assert_eq!(config.args.get("count"), Some(&ScriptArgValue::Int(4)));
+        assert_eq!(config.launch.request_timeout, crate::APP_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn mcp_file_verbose_does_not_enable_smoke_or_eval_logs() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        fs::write(
+            repo_root.join(DEFAULT_CONFIG_FILE),
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[mcp]
+verbose = true
+",
+        )
+        .expect("write config");
+
+        let smoke =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke"]), &repo_root).expect("parse");
+        let EdevCommand::Smoke(smoke) = smoke else {
+            panic!("expected smoke command");
+        };
+        assert!(!smoke.verbose_output);
+        assert!(!smoke.launch.expect("launch").verbose);
+
+        let eval =
+            EdevCommand::parse_args_in_dir(&os_args(&["eval", "tmp/probe.luau"]), &repo_root)
+                .expect("parse");
+        let EdevCommand::Eval(eval) = eval else {
+            panic!("expected eval command");
+        };
+        assert!(!eval.launch.verbose);
+
+        let mcp = EdevCommand::parse_args_in_dir(&os_args(&["mcp"]), &repo_root).expect("parse");
+        let EdevCommand::Mcp(mcp) = mcp else {
+            panic!("expected mcp command");
+        };
+        assert!(mcp.launch.verbose);
+
+        let smoke_verbose =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke", "--verbose"]), &repo_root)
+                .expect("parse");
+        let EdevCommand::Smoke(smoke_verbose) = smoke_verbose else {
+            panic!("expected smoke command");
+        };
+        assert!(smoke_verbose.verbose_output);
+    }
+
+    #[test]
+    fn eval_and_smoke_client_timeout_follows_long_script_timeout() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        fs::write(
+            repo_root.join(DEFAULT_CONFIG_FILE),
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[smoke]
+script_timeout_secs = 180
+",
+        )
+        .expect("write config");
+
+        let eval =
+            EdevCommand::parse_args_in_dir(&os_args(&["eval", "tmp/probe.luau"]), &repo_root)
+                .expect("parse");
+        let EdevCommand::Eval(eval) = eval else {
+            panic!("expected eval command");
+        };
+        assert_eq!(eval.timeout, Some(Duration::from_secs(180)));
+        assert_eq!(eval.launch.request_timeout, Duration::from_secs(180));
+
+        let smoke =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke"]), &repo_root).expect("parse");
+        let EdevCommand::Smoke(smoke) = smoke else {
+            panic!("expected smoke command");
+        };
+        assert_eq!(
+            smoke.launch.expect("launch").request_timeout,
+            Duration::from_secs(180)
+        );
     }
 
     #[test]
