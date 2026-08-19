@@ -2,7 +2,6 @@ use std::sync::LazyLock;
 
 use tokio::sync::Mutex as AsyncMutex;
 
-mod eval;
 mod kernel;
 pub mod library;
 mod outcome;
@@ -12,7 +11,7 @@ mod typecheck;
 mod types;
 mod value;
 
-pub use eval::run_script_eval;
+pub use kernel::run_script_eval;
 pub use typecheck::{CheckFailure, check_source, warm_checker_baseline};
 pub use types::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,

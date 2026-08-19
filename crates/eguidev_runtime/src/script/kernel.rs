@@ -46,7 +46,7 @@ use crate::{
 
 const EGUIDEV_SEED: u64 = 0x00e9_d1de;
 
-pub(super) async fn run_script_eval(
+pub async fn run_script_eval(
     inner: Arc<Inner>,
     runtime: Arc<Runtime>,
     script: String,

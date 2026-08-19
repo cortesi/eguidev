@@ -979,6 +979,30 @@ mod tests {
         }
     }
 
+    fn listed_widgets(
+        inner: &Inner,
+        include_invisible: Option<bool>,
+        role: Option<WidgetRole>,
+        id_prefix: Option<&str>,
+        label: Option<&str>,
+        label_contains: Option<&str>,
+    ) -> Vec<WidgetRegistryEntry> {
+        collect_widget_list(
+            inner,
+            None,
+            include_invisible,
+            role,
+            id_prefix,
+            label,
+            label_contains,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("widget list")
+    }
+
     fn make_entry(id: &str, native_id: u64, role: WidgetRole) -> WidgetRegistryEntry {
         make_entry_with_rect(
             id,
@@ -4275,23 +4299,12 @@ return state.scroll_state.offset.y"#
             inner.widgets.finalize_registry(ctx.viewport_id());
         }));
 
-        let server = DevMcpServer::new(Arc::clone(&inner));
-        let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(false), None, None, None, None)
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let result = listed_widgets(&inner, Some(false), None, None, None, None);
         let tags: Vec<_> = result.iter().map(|entry| entry.id.as_str()).collect();
         assert!(tags.contains(&"visible"));
         assert!(!tags.contains(&"hidden"));
 
-        let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None, None, None)
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let result = listed_widgets(&inner, Some(true), None, None, None, None);
         let tags: Vec<_> = result.iter().map(|entry| entry.id.as_str()).collect();
         assert!(tags.contains(&"visible"));
         assert!(tags.contains(&"hidden"));
@@ -4411,13 +4424,7 @@ return state.scroll_state.offset.y"#
             .record_widget(viewport_id, make_entry("big", big_id, WidgetRole::Button));
         inner.widgets.finalize_registry(viewport_id);
 
-        let server = DevMcpServer::new(Arc::clone(&inner));
-        let list: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None, None, None)
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let list = listed_widgets(&inner, Some(true), None, None, None, None);
         let entry = list
             .iter()
             .find(|entry| entry.id == "big")
@@ -4520,13 +4527,7 @@ return state.scroll_state.offset.y"#
             .record_widget(viewport_id, make_generated_entry(5, WidgetRole::Button));
         inner.widgets.finalize_registry(viewport_id);
 
-        let server = DevMcpServer::new(Arc::clone(&inner));
-        let list: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None, None, None)
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let list = listed_widgets(&inner, Some(true), None, None, None, None);
         let entry = list
             .iter()
             .find(|entry| entry.id == "5")
@@ -4821,20 +4822,14 @@ return state.scroll_state.offset.y"#
         );
         inner.widgets.finalize_registry(viewport_id);
 
-        let server = DevMcpServer::new(Arc::clone(&inner));
-        let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(
-                None,
-                Some(true),
-                Some(WidgetRole::Slider),
-                Some("filter.".to_string()),
-                None,
-                None,
-            )
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let result = listed_widgets(
+            &inner,
+            Some(true),
+            Some(WidgetRole::Slider),
+            Some("filter."),
+            None,
+            None,
+        );
         let tags: Vec<_> = result.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(tags, vec!["filter.match"]);
     }
@@ -4853,36 +4848,11 @@ return state.scroll_state.offset.y"#
         inner.widgets.record_widget(viewport_id, busy);
         inner.widgets.finalize_registry(viewport_id);
 
-        let server = DevMcpServer::new(Arc::clone(&inner));
-        let exact: Vec<WidgetRegistryEntry> = server
-            .widget_list(
-                None,
-                Some(true),
-                None,
-                None,
-                Some("Ready state".to_string()),
-                None,
-            )
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let exact = listed_widgets(&inner, Some(true), None, None, Some("Ready state"), None);
         assert_eq!(exact.len(), 1);
         assert_eq!(exact[0].id, "status.ready");
 
-        let contains: Vec<WidgetRegistryEntry> = server
-            .widget_list(
-                None,
-                Some(true),
-                None,
-                None,
-                None,
-                Some("state".to_string()),
-            )
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let contains = listed_widgets(&inner, Some(true), None, None, None, Some("state"));
         let tags: Vec<_> = contains.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(tags, vec!["status.ready", "status.busy"]);
     }
@@ -5065,13 +5035,7 @@ return state.scroll_state.offset.y"#
             inner.widgets.finalize_registry(ctx.viewport_id());
         }));
 
-        let server = DevMcpServer::new(Arc::clone(&inner));
-        let result: Vec<WidgetRegistryEntry> = server
-            .widget_list(None, Some(true), None, None, None, None)
-            .await
-            .expect("widget list")
-            .structured_as()
-            .expect("widget list payload");
+        let result = listed_widgets(&inner, Some(true), None, None, None, None);
         let enabled = result
             .iter()
             .find(|entry| entry.id == "basic.enabled")

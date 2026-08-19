@@ -40,35 +40,4 @@ impl DevMcpServer {
     ) -> ToolResult<Vec<ViewportSnapshot>> {
         filter_viewport_snapshots(&self.inner, viewport_id).map_err(Into::into)
     }
-
-    #[cfg(test)]
-    pub(super) async fn widget_list(
-        &self,
-        viewport_id: Option<String>,
-        include_invisible: Option<bool>,
-        role: Option<WidgetRole>,
-        id_prefix: Option<String>,
-        label: Option<String>,
-        label_contains: Option<String>,
-    ) -> ToolResult {
-        let widgets = collect_widget_list(
-            &self.inner,
-            viewport_id,
-            include_invisible,
-            role,
-            id_prefix.as_deref(),
-            label.as_deref(),
-            label_contains.as_deref(),
-            None,
-            None,
-            None,
-            None,
-        )?;
-        Ok(CallToolResult::structured(widgets).map_err(|error| {
-            ToolError::new(
-                ErrorCode::Internal,
-                format!("Failed to serialize widget list: {error}"),
-            )
-        })?)
-    }
 }

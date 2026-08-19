@@ -52,13 +52,11 @@ pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>) {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub fn reset_start_server_calls() {
     START_SERVER_CALLS.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub fn start_server_calls() -> usize {
     START_SERVER_CALLS.load(Ordering::Relaxed)
 }

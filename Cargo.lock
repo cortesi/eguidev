@@ -744,7 +744,6 @@ dependencies = [
  "objc2-av-foundation",
  "objc2-foundation 0.3.2",
  "objc2-screen-capture-kit",
- "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -866,7 +865,6 @@ dependencies = [
 name = "eguidev_runtime"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "base64 0.23.1",
  "block2 0.6.2",
  "core-foundation 0.10.1",
@@ -883,7 +881,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
  "tmcp",
  "tokio",
 ]
@@ -2398,17 +2395,18 @@ dependencies = [
 name = "ruau"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "cap-std",
  "ruau-bytecode",
  "ruau-declaration",
- "ruau-executor",
- "ruau-filesystem",
- "ruau-json-schema",
- "ruau-session",
  "ruau-source",
- "ruau-surface",
  "ruau-syntax",
  "ruau-typecheck",
  "ruau-vm",
+ "same-file",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
@@ -2428,72 +2426,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "ruau-executor"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ruau-bytecode",
- "ruau-declaration",
- "ruau-source",
- "ruau-surface",
- "ruau-syntax",
- "ruau-typecheck",
- "ruau-vm",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "ruau-filesystem"
-version = "0.1.0"
-dependencies = [
- "cap-std",
- "ruau-source",
- "ruau-syntax",
- "ruau-typecheck",
- "same-file",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "ruau-json-schema"
-version = "0.1.0"
-dependencies = [
- "ruau-declaration",
- "serde_json",
-]
-
-[[package]]
-name = "ruau-session"
-version = "0.1.0"
-dependencies = [
- "ruau-bytecode",
- "ruau-declaration",
- "ruau-source",
- "ruau-surface",
- "ruau-typecheck",
- "ruau-vm",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "ruau-source"
 version = "0.1.0"
-
-[[package]]
-name = "ruau-surface"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ruau-bytecode",
- "ruau-declaration",
- "ruau-source",
- "ruau-syntax",
- "ruau-typecheck",
- "ruau-vm",
-]
 
 [[package]]
 name = "ruau-syntax"
@@ -3733,7 +3667,6 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "clap",
- "eguidev",
  "eguidev_runtime",
  "serde_json",
  "tmcp",

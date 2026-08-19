@@ -21,6 +21,5 @@ fail_fast = false
 args = {}
 
 [mcp]
-no_screenshots = false
 verbose = false
 idle_shutdown_after_secs = 1200
