@@ -51,6 +51,7 @@ pub struct ViewportSnapshot {
     pub viewport_id: String,
     pub name: Option<String>,
     pub inner_size: Vec2,
+    pub outer_pos: Option<Pos2>,
     pub outer_size: Option<Vec2>,
     pub pixels_per_point: f32,
     pub focused: bool,
@@ -130,6 +131,7 @@ impl ViewportState {
                 .inner_rect
                 .map(|rect| rect.size())
                 .unwrap_or_else(|| EguiVec2::ZERO);
+            let outer_pos = info.outer_rect.map(|rect| Pos2::from(rect.min));
             let outer_size = info.outer_rect.map(|rect| Vec2::from(rect.size()));
             let ppp = info.native_pixels_per_point.unwrap_or(pixels_per_point);
             let focused = info.focused.unwrap_or(focused);
@@ -143,6 +145,7 @@ impl ViewportState {
                     viewport_id: viewport_id_str,
                     name: names.get(&viewport_id).cloned(),
                     inner_size: Vec2::from(inner_size),
+                    outer_pos,
                     outer_size,
                     pixels_per_point: ppp,
                     focused,
@@ -284,6 +287,16 @@ impl ViewportState {
         lock(&self.input_snapshot, "input snapshot lock")
             .get(&viewport_id)
             .cloned()
+    }
+
+    pub fn recorded_frame_count(&self, viewport_id: egui::ViewportId) -> u64 {
+        self.capture_snapshot(viewport_id)
+            .map(|snapshot| snapshot.frame_count)
+            .or_else(|| {
+                self.frame_health(viewport_id)
+                    .map(|health| health.frame_count)
+            })
+            .unwrap_or_default()
     }
 
     pub fn capture_snapshot(&self, viewport_id: egui::ViewportId) -> Option<CaptureSnapshot> {
@@ -532,6 +545,37 @@ mod tests {
         );
         assert!(!state.is_live_viewport(secondary));
         assert!(state.is_live_viewport(egui::ViewportId::ROOT));
+    }
+
+    #[test]
+    fn update_viewports_records_outer_pos_from_outer_rect() {
+        let state = ViewportState::new();
+        let ctx = Context::default();
+        let mut raw_input = egui::RawInput {
+            viewport_id: egui::ViewportId::ROOT,
+            ..Default::default()
+        };
+        raw_input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                outer_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(12.0, 34.0),
+                    egui::vec2(640.0, 480.0),
+                )),
+                ..Default::default()
+            },
+        );
+        ctx.run_ui(raw_input, |_| {}).drop_without_applying_deltas();
+        state.update_viewports(&ctx);
+
+        let snapshot = state
+            .viewports_snapshot()
+            .into_iter()
+            .find(|snapshot| snapshot.viewport_id == "root")
+            .expect("root snapshot");
+        assert_eq!(snapshot.outer_pos, Some(Pos2 { x: 12.0, y: 34.0 }));
+        assert_eq!(snapshot.outer_size, Some(Vec2 { x: 640.0, y: 480.0 }));
+        assert_eq!(snapshot.pixels_per_point, ctx.pixels_per_point());
     }
 
     #[test]

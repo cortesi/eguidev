@@ -1100,6 +1100,7 @@ mod tests {
             viewport_id: viewport_id_to_string(egui::ViewportId::ROOT),
             name: None,
             inner_size,
+            outer_pos: None,
             outer_size: Some(inner_size),
             pixels_per_point: 1.0,
             focused: true,

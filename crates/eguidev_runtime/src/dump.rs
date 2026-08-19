@@ -175,16 +175,7 @@ fn build_viewport_dump(
         Some(root) => build_root_subtrees(&widgets, root, options.fields),
         None => build_widget_tree(&widgets, options.fields),
     };
-    let frame_count = inner
-        .viewports
-        .capture_snapshot(viewport_id)
-        .map(|snapshot| snapshot.frame_count)
-        .or_else(|| {
-            inner
-                .frame_health(viewport_id)
-                .map(|health| health.frame_count)
-        })
-        .unwrap_or_default();
+    let frame_count = inner.viewports.recorded_frame_count(viewport_id);
     Ok(ViewportDump {
         id: snapshot.viewport_id,
         name: snapshot.name,

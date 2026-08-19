@@ -3445,6 +3445,10 @@ local state = widget:state()
 local parent = widget:parent()
 local hits = viewport:widgets_at({ x = 1, y = 1 })
 assert(state ~= nil and parent ~= nil)
+local parent_state = parent:state()
+assert(state.parent_id == "panel")
+assert(#state.child_ids == 0)
+assert(parent_state ~= nil and parent_state.child_ids[1] == "status")
 return {
     role = state.role,
     label = state.label,
@@ -3630,11 +3634,13 @@ eguidev.widget("missing"):wait(
     { timeout_ms = 20, poll_interval_ms = 1 }
 )
 assert(from_widget ~= nil and viewport_state ~= nil and visible ~= nil)
+assert(viewport_state.id == viewport.id)
 return {
     viewport_label = from_widget.label,
     widget_label = from_widget.label,
     visible = visible.visible,
     frame_count = viewport_state.frame_count,
+    viewport_id = viewport_state.id,
 }"#
             .to_string(),
             1_000,
@@ -3649,6 +3655,7 @@ return {
                 "widget_label": "Ready",
                 "visible": true,
                 "frame_count": 0,
+                "viewport_id": "root",
             }))
         );
         assert_eq!(outcome.logs, vec!["widget:Ready"]);

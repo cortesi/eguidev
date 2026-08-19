@@ -780,9 +780,10 @@ pub fn viewport_snapshot_for(
 
 pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
     json!({
+        "id": snapshot.viewport_id,
         "name": snapshot.name,
         "title": snapshot.title,
-        "outer_pos": Value::Null,
+        "outer_pos": snapshot.outer_pos,
         "outer_size": snapshot.outer_size,
         "inner_size": snapshot.inner_size,
         "focused": snapshot.focused,
@@ -792,6 +793,7 @@ pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
         "os_occluded": snapshot.os_occluded,
         "maximized": snapshot.maximized,
         "fullscreen": snapshot.fullscreen,
+        "pixels_per_point": snapshot.pixels_per_point,
     })
 }
 

@@ -2721,6 +2721,12 @@ pub struct WidgetState {
     pub id: String,
     /// Id of the viewport that holds the widget.
     pub viewport_id: String,
+    /// Parent widget id in the same viewport, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Child widget ids in the same viewport, in registry order.
+    #[serde(default)]
+    pub child_ids: Vec<String>,
     /// Widget rect.
     pub rect: Rect,
     /// Widget interaction rect.
@@ -2789,6 +2795,8 @@ impl From<&WidgetRegistryEntry> for WidgetState {
         Self {
             id: entry.id.clone(),
             viewport_id: entry.viewport_id.clone(),
+            parent_id: entry.parent_id.clone(),
+            child_ids: Vec::new(),
             rect: entry.rect,
             interact_rect: entry.interact_rect,
             role: entry.role.clone(),

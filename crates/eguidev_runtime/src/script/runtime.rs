@@ -670,7 +670,21 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         widget: &WidgetRegistryEntry,
     ) -> ScriptResult<Value> {
-        self.to_json(pos, WidgetState::from(widget))
+        let mut state = WidgetState::from(widget);
+        if let Ok(viewport_id) =
+            resolve_viewport_id(&self.server.inner, Some(widget.viewport_id.clone()))
+        {
+            state.child_ids = self
+                .server
+                .inner
+                .widgets
+                .widget_list(viewport_id)
+                .into_iter()
+                .filter(|candidate| candidate.parent_id.as_deref() == Some(widget.id.as_str()))
+                .map(|candidate| candidate.id)
+                .collect();
+        }
+        self.to_json(pos, state)
     }
 
     fn widget_handle_list_json(
@@ -711,16 +725,25 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         snapshot: &ViewportSnapshot,
     ) -> ScriptResult<Value> {
-        let input = self.server.inner.viewports.input_snapshot(
-            resolve_viewport_id(&self.server.inner, Some(snapshot.viewport_id.clone()))
-                .unwrap_or_default(),
-        );
+        let resolved =
+            resolve_viewport_id(&self.server.inner, Some(snapshot.viewport_id.clone())).ok();
+        let input = resolved
+            .and_then(|viewport_id| self.server.inner.viewports.input_snapshot(viewport_id));
+        let frame_count = resolved
+            .map(|viewport_id| {
+                self.server
+                    .inner
+                    .viewports
+                    .recorded_frame_count(viewport_id)
+            })
+            .unwrap_or_default();
         self.to_json(
             pos,
             serde_json::json!({
+                "id": snapshot.viewport_id,
                 "name": snapshot.name,
                 "title": snapshot.title,
-                "outer_pos": Value::Null,
+                "outer_pos": snapshot.outer_pos,
                 "outer_size": snapshot.outer_size,
                 "inner_size": snapshot.inner_size,
                 "focused": snapshot.focused,
@@ -730,8 +753,8 @@ impl ScriptRuntime {
                 "os_occluded": snapshot.os_occluded,
                 "maximized": snapshot.maximized,
                 "fullscreen": snapshot.fullscreen,
-                "frame_count": self.server.inner.frame_count(),
-                "pixels_per_point": input.as_ref().map(|i| i.pixels_per_point).unwrap_or(1.0),
+                "frame_count": frame_count,
+                "pixels_per_point": snapshot.pixels_per_point,
                 "pointer_pos": input.as_ref().and_then(|i| i.pointer_pos),
             }),
         )
@@ -2518,6 +2541,12 @@ fn changed_widget_fields(
     }
     if before.data != after.data {
         fields.push("data");
+    }
+    if before.parent_id != after.parent_id {
+        fields.push("parent_id");
+    }
+    if before.child_ids != after.child_ids {
+        fields.push("child_ids");
     }
     fields
 }
