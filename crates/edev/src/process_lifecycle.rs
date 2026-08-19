@@ -20,11 +20,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, Interest, copy, stderr, stdout, unix::AsyncFd},
+    io::{AsyncRead, AsyncWrite, Interest, copy, stderr, stdout, unix::AsyncFd},
     task::{JoinError, spawn_blocking},
 };
 use tokio::{
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
+    process::{Child, ChildStderr, ChildStdout, Command},
     task::JoinHandle,
 };
 
@@ -43,10 +43,8 @@ const NORMAL_SHUTDOWN_MARKER: u8 = b'N';
 
 /// Process resources returned by one platform launch.
 pub struct SpawnedProcess {
-    /// App or supervisor stdout, used as the MCP client reader.
+    /// App or supervisor stdout, captured by the outer launcher.
     pub stdout: Option<ChildStdout>,
-    /// App or supervisor stdin, used as the MCP client writer.
-    pub stdin: Option<ChildStdin>,
     /// App or supervisor stderr, captured by the outer launcher.
     pub stderr: Option<ChildStderr>,
     /// Direct app child on platforms without a supervisor.
@@ -268,7 +266,7 @@ async fn spawn_direct(
     command.kill_on_drop(true);
     configure_child_process(&mut command);
     command
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command
@@ -280,10 +278,6 @@ async fn spawn_direct(
         .stdout
         .take()
         .ok_or_else(|| "failed to capture app stdout".to_string())?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "failed to capture app stdin".to_string())?;
     let stderr = child
         .stderr
         .take()
@@ -291,7 +285,6 @@ async fn spawn_direct(
 
     Ok(SpawnedProcess {
         stdout: Some(stdout),
-        stdin: Some(stdin),
         stderr: Some(stderr),
         child: Some(child),
         process_group_id,
@@ -333,8 +326,6 @@ struct ManagedApp {
     process_group_id: i32,
     /// Exact metadata written for this app launch.
     record: AppRecord,
-    /// App stdin used by the outer-to-app relay.
-    stdin: ChildStdin,
     /// App stdout used by the app-to-outer relay.
     stdout: ChildStdout,
     /// App stderr used by the app-to-outer relay.
@@ -411,7 +402,7 @@ async fn spawn_supervised_with_executable(
         .args(["__edev_supervisor", "--config-fd", &config_fd_arg])
         .current_dir(&config.cwd)
         .process_group(0)
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = match command.spawn() {
@@ -444,15 +435,6 @@ async fn spawn_supervised_with_executable(
             return Err("failed to capture supervisor stdout".to_string());
         }
     };
-    let stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            terminate_unobserved_supervisor(&mut child).await;
-            drop(ownership_writer);
-            drop(config_writer);
-            return Err("failed to capture supervisor stdin".to_string());
-        }
-    };
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
@@ -478,7 +460,6 @@ async fn spawn_supervised_with_executable(
 
     Ok(SpawnedProcess {
         stdout: Some(stdout),
-        stdin: Some(stdin),
         stderr: Some(stderr),
         child: None,
         process_group_id: None,
@@ -551,7 +532,7 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
         .args(&config.command[1..])
         .current_dir(&config.working_dir)
         .envs(&config.env)
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -566,8 +547,8 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
             return Err("managed app did not expose a supported PID".to_string());
         }
     };
-    let streams = (child.stdin.take(), child.stdout.take(), child.stderr.take());
-    let (Some(stdin), Some(stdout), Some(stderr)) = streams else {
+    let streams = (child.stdout.take(), child.stderr.take());
+    let (Some(stdout), Some(stderr)) = streams else {
         terminate_unobserved_app(&mut child, Some(process_group_id)).await;
         return Err("failed to capture managed app stdio".to_string());
     };
@@ -591,14 +572,13 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
         child,
         process_group_id,
         record,
-        stdin,
         stdout,
         stderr,
     })
 }
 
 #[cfg(target_os = "macos")]
-/// Execute the app command inside a new group and relay all three stdio streams.
+/// Execute the app command inside a new group and relay stdout and stderr.
 async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
     let ownership = unsafe { OwnedFd::from_raw_fd(config.ownership_fd) };
     set_nonblocking(ownership.as_raw_fd())
@@ -613,7 +593,6 @@ async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
         child: mut app,
         process_group_id: app_process_group_id,
         record,
-        stdin: app_stdin,
         stdout: app_stdout,
         stderr: app_stderr,
     } = managed;
@@ -635,7 +614,7 @@ async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
     }
 
     let mut child_wait_task = tokio::spawn(async move { app.wait().await });
-    let mut relays = RelayTasks::new(app_stdin, app_stdout, app_stderr);
+    let mut relays = RelayTasks::new(app_stdout, app_stderr);
     let trigger = relays
         .wait_for_trigger(&ownership, &mut child_wait_task)
         .await;
@@ -743,57 +722,6 @@ where
 }
 
 #[cfg(target_os = "macos")]
-/// Relay the supervisor's standard input without a non-cancellable blocking read.
-async fn relay_stdin(mut writer: ChildStdin) -> io::Result<u64> {
-    let stdin = AsyncFd::new(duplicate_stdin()?)?;
-    let mut buffer = [0_u8; 16 * 1024];
-    let mut total = 0_u64;
-    loop {
-        let mut readiness = stdin.readable().await?;
-        match readiness
-            .try_io(|inner| read_nonblocking_fd(inner.get_ref().as_raw_fd(), &mut buffer))
-        {
-            Ok(Ok(0)) => return Ok(total),
-            Ok(Ok(bytes_read)) => {
-                writer.write_all(&buffer[..bytes_read]).await?;
-                total += u64::try_from(bytes_read).unwrap_or(u64::MAX);
-            }
-            Ok(Err(error)) => return Err(error),
-            Err(_would_block) => {}
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-/// Duplicate standard input so cancelling the relay cannot close descriptor zero.
-fn duplicate_stdin() -> io::Result<OwnedFd> {
-    let fd = unsafe { libc::dup(libc::STDIN_FILENO) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    set_nonblocking(fd.as_raw_fd())?;
-    Ok(fd)
-}
-
-#[cfg(target_os = "macos")]
-/// Read from a nonblocking descriptor and preserve readiness retry semantics.
-fn read_nonblocking_fd(fd: RawFd, buffer: &mut [u8]) -> io::Result<usize> {
-    loop {
-        let result = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
-        if result >= 0 {
-            return usize::try_from(result)
-                .map_err(|_| io::Error::other("descriptor read size overflow"));
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EINTR) {
-            continue;
-        }
-        return Err(error);
-    }
-}
-
-#[cfg(target_os = "macos")]
 /// Decode one relay task result.
 fn relay_join_result(result: Result<io::Result<u64>, JoinError>) -> Result<(), String> {
     result
@@ -822,29 +750,13 @@ async fn await_relay(task: &mut JoinHandle<io::Result<u64>>, active: &mut bool) 
 }
 
 #[cfg(target_os = "macos")]
-/// Stop one relay after its app-side stream has ended.
-async fn abort_relay(task: &mut JoinHandle<io::Result<u64>>, active: &mut bool) {
-    if *active {
-        task.abort();
-        let _result = task.await;
-        *active = false;
-    }
-}
-
-#[cfg(target_os = "macos")]
 /// Stop relay tasks after a group-level cleanup path.
 async fn abort_relays(
-    stdin: &mut JoinHandle<io::Result<u64>>,
     stdout: &mut JoinHandle<io::Result<u64>>,
     stderr: &mut JoinHandle<io::Result<u64>>,
-    stdin_active: bool,
     stdout_active: bool,
     stderr_active: bool,
 ) {
-    if stdin_active {
-        stdin.abort();
-        let _result = stdin.await;
-    }
     if stdout_active {
         stdout.abort();
         let _result = stdout.await;
@@ -858,14 +770,10 @@ async fn abort_relays(
 #[cfg(target_os = "macos")]
 /// Stdio relay tasks and their completion state for one supervisor.
 struct RelayTasks {
-    /// Outer stdin to app stdin relay.
-    stdin: JoinHandle<io::Result<u64>>,
     /// App stdout to outer stdout relay.
     stdout: JoinHandle<io::Result<u64>>,
     /// App stderr to outer stderr relay.
     stderr: JoinHandle<io::Result<u64>>,
-    /// Whether the stdin relay is still pending.
-    stdin_active: bool,
     /// Whether the stdout relay is still pending.
     stdout_active: bool,
     /// Whether the stderr relay is still pending.
@@ -874,13 +782,11 @@ struct RelayTasks {
 
 #[cfg(target_os = "macos")]
 impl RelayTasks {
-    /// Start all three supervisor relay tasks.
-    fn new(stdin: ChildStdin, stdout_reader: ChildStdout, stderr_reader: ChildStderr) -> Self {
+    /// Start stdout and stderr supervisor relay tasks.
+    fn new(stdout_reader: ChildStdout, stderr_reader: ChildStderr) -> Self {
         Self {
-            stdin: tokio::spawn(relay_stdin(stdin)),
             stdout: tokio::spawn(relay(stdout_reader, stdout())),
             stderr: tokio::spawn(relay(stderr_reader, stderr())),
-            stdin_active: true,
             stdout_active: true,
             stderr_active: true,
         }
@@ -906,12 +812,6 @@ impl RelayTasks {
                             result.map_err(|error| format!("app wait failed: {error}"))
                         }));
                 }
-                relay_result = &mut self.stdin, if self.stdin_active => {
-                    self.stdin_active = false;
-                    if let Err(error) = relay_join_result(relay_result) {
-                        return SupervisorTrigger::Relay(error);
-                    }
-                }
                 relay_result = &mut self.stdout, if self.stdout_active => {
                     self.stdout_active = false;
                     if let Err(error) = relay_join_result(relay_result) {
@@ -931,15 +831,12 @@ impl RelayTasks {
     /// Drain natural output or abort all remaining relays after forced cleanup.
     async fn finish(&mut self, app_exited_naturally: bool) {
         if app_exited_naturally {
-            abort_relay(&mut self.stdin, &mut self.stdin_active).await;
             await_relay(&mut self.stdout, &mut self.stdout_active).await;
             await_relay(&mut self.stderr, &mut self.stderr_active).await;
         } else {
             abort_relays(
-                &mut self.stdin,
                 &mut self.stdout,
                 &mut self.stderr,
-                self.stdin_active,
                 self.stdout_active,
                 self.stderr_active,
             )
@@ -1342,7 +1239,6 @@ mod tests {
                         )
                         .await
                         .expect("spawn supervisor");
-                        process.stdin.take();
                         process.stdout.take();
                         process.stderr.take();
                         shutdown_receiver.recv().expect("shutdown signal");

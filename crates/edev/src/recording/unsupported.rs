@@ -27,12 +27,6 @@ pub fn process_group_members(_process_group_id: Option<i32>) -> Vec<i32> {
     Vec::new()
 }
 
-/// Return no live process-group members on unsupported platforms.
-#[cfg(not(all(test, target_os = "macos")))]
-pub fn live_process_group_members(_process_group_id: i32) -> Vec<i32> {
-    Vec::new()
-}
-
 /// Reject recording before any app launch happens.
 pub fn start(_request: &RecordingRequest) -> Result<NativeRecording, EdevError> {
     ensure_supported()?;

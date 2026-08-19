@@ -36,7 +36,7 @@ command = [
 # env = { RUST_LOG = "info" }
 
 
-# -- MCP proxy settings (edev mcp) --------------------------------------
+# -- MCP launcher settings (edev mcp) --------------------------------------
 
 [mcp]
 

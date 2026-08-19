@@ -182,7 +182,7 @@ pub struct FixtureConfig {
 #[derive(Debug, Clone)]
 /// Parsed top-level command for the edev binary.
 pub enum EdevCommand {
-    /// Run the launcher MCP proxy.
+    /// Run the launcher MCP server.
     Mcp(McpConfig),
     /// Run the checked-in smoke suite through the launcher.
     Smoke(SmokeConfig),
@@ -400,7 +400,7 @@ struct Cli {
 enum CliCommand {
     /// Print Luau API definitions and exit.
     Docs,
-    /// Run as an MCP proxy server for agent automation.
+    /// Run as an MCP server for agent automation.
     Mcp(McpArgs),
     /// Run the smoketest suite and exit.
     Smoke(SmokeArgs),
@@ -1233,6 +1233,18 @@ mod tests {
             panic!("expected help command");
         };
         assert!(help.contains("Usage:"));
+        assert!(!help.to_ascii_lowercase().contains("proxy"));
+    }
+
+    #[test]
+    fn mcp_subcommand_help_does_not_say_proxy() {
+        let about = Cli::command()
+            .find_subcommand("mcp")
+            .expect("mcp")
+            .get_about()
+            .expect("about")
+            .to_string();
+        assert!(!about.to_ascii_lowercase().contains("proxy"));
     }
 
     #[test]

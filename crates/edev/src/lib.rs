@@ -1,4 +1,4 @@
-//! Script-first MCP launcher and proxy for eguidev.
+//! Script-first MCP launcher for eguidev.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -54,8 +54,6 @@ mod config;
 mod failure_bundle;
 mod fixture_projection;
 mod instance_registry;
-#[cfg(test)]
-mod observations;
 mod process_lifecycle;
 mod recording;
 mod session;
@@ -181,7 +179,6 @@ struct State {
 /// Future returned by the app spawn helper.
 type SpawnFuture<'a> = Pin<Box<dyn Future<Output = Result<AppProcess, AppStartError>> + Send + 'a>>;
 
-/// Future returned by MCP server handlers.
 impl State {
     /// Create a new runtime state from the provided configuration.
     fn new(config: LaunchConfig, instance_registry: InstanceRegistry) -> Self {
@@ -345,8 +342,7 @@ impl State {
     {
         self.status = AppStatus::Starting;
         if replace_existing && let Some(app) = self.app.take() {
-            let shutdown = app.shutdown().await;
-            self.last_shutdown = Some(shutdown);
+            let _shutdown = app.shutdown().await;
         }
         self.last_shutdown = None;
         self.log_edev(format!("{} requested", action.as_str()));
@@ -821,15 +817,6 @@ async fn spawn_app(
             ));
         }
     };
-    let stdin = match process.stdin.take() {
-        Some(stdin) => stdin,
-        None => {
-            process_lifecycle::shutdown_spawned(process, &log_state).await;
-            return Err(AppStartError::Other(
-                "failed to capture process stdin".to_string(),
-            ));
-        }
-    };
     let stderr = match process.stderr.take() {
         Some(stderr) => stderr,
         None => {
@@ -842,7 +829,6 @@ async fn spawn_app(
 
     let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
     let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
-    drop(stdin);
     let stdout_buffer_clone = Arc::clone(&stdout_buffer);
     let stdout_log_state = log_state.clone();
     let stdout_task = tokio::spawn(async move {
@@ -1111,11 +1097,6 @@ fn snapshot_output(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
     )
 }
 
-/// Return buffered app stdout for failure bundles.
-fn stdout_bundle_text(buffer: &Arc<Mutex<Vec<u8>>>) -> String {
-    snapshot_output(buffer)
-}
-
 /// Append bytes to a tail-capped process-output buffer.
 fn append_tail_capped(buffer: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
     let Ok(mut data) = buffer.lock() else {
@@ -1128,9 +1109,9 @@ fn append_tail_capped(buffer: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
     }
 }
 
-/// MCP server implementation that proxies tool calls to the app.
+/// MCP server implementation for launcher lifecycle tools.
 struct EdevServer {
-    /// Shared runtime state for proxying and host-side lifecycle control.
+    /// Shared runtime state for host-side lifecycle control.
     state: Arc<AsyncMutex<State>>,
 }
 
@@ -1174,9 +1155,6 @@ impl ServerHandler for EdevServer {
         {
             let mut state_guard = state.lock().await;
             state_guard.mark_activity();
-        }
-        if !is_host_tool(&name) {
-            return Err(McpError::ToolNotFound(name));
         }
         let result = match name.as_str() {
             "start" => {
@@ -1364,11 +1342,6 @@ async fn probe_script_eval_ready(client: &Arc<AsyncMutex<tmcp::Client<()>>>) -> 
             .unwrap_or("script_eval readiness probe failed");
         Err(message.to_string())
     }
-}
-
-/// Return true when a tool is handled directly by the launcher.
-fn is_host_tool(name: &str) -> bool {
-    matches!(name, "start" | "stop" | "restart" | "status")
 }
 
 /// Tool definition for starting the app process.
@@ -1582,15 +1555,6 @@ impl ErrorKind {
 /// Return true when a restart result indicates transient transport closure.
 fn restart_result_is_transport_closed(result: &Result<LifecycleStartStatus, EdevError>) -> bool {
     matches!(
-        result,
-        Err(EdevError::Mcp(
-            McpError::TransportDisconnected | McpError::ConnectionClosed
-        ))
-    ) || matches!(
-        result,
-        Err(EdevError::Mcp(McpError::Transport(message)))
-            if transport_message_is_closed(message)
-    ) || matches!(
         result,
         Ok(LifecycleStartStatus::StartupFailed(output)) if transport_message_is_closed(output)
     )
@@ -1934,12 +1898,12 @@ mod tests {
     }
 
     #[test]
-    fn stdout_bundle_text_preserves_captured_output() {
+    fn snapshot_output_preserves_captured_output() {
         let empty = Arc::new(Mutex::new(Vec::new()));
-        assert_eq!(stdout_bundle_text(&empty), "");
+        assert_eq!(snapshot_output(&empty), "");
 
         let captured = Arc::new(Mutex::new(b"captured stdout\n".to_vec()));
-        assert_eq!(stdout_bundle_text(&captured), "captured stdout\n");
+        assert_eq!(snapshot_output(&captured), "captured stdout\n");
     }
 
     #[tokio::test]
@@ -2227,10 +2191,6 @@ mod tests {
                 Ok(successful_app_close_result().into())
             } else if name == "script_eval" {
                 Ok(successful_script_eval_result().into())
-            } else if name == "script_api" {
-                Ok(CallToolResult::new()
-                    .with_text_content("live app script api")
-                    .into())
             } else {
                 Err(McpError::ToolNotFound(name))
             }
@@ -2871,19 +2831,6 @@ mod tests {
         );
 
         assert_eq!(message, "script exploded");
-    }
-
-    #[test]
-    fn restart_retry_detector_matches_transport_closed_variants() {
-        assert!(restart_result_is_transport_closed(&Err(EdevError::Mcp(
-            McpError::TransportDisconnected,
-        ))));
-        assert!(restart_result_is_transport_closed(&Err(EdevError::Mcp(
-            McpError::ConnectionClosed,
-        ))));
-        assert!(restart_result_is_transport_closed(&Err(EdevError::Mcp(
-            McpError::Transport("transport closed".to_string()),
-        ))));
     }
 
     #[test]

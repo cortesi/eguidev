@@ -17,8 +17,6 @@ pub use macos::live_process_group_members;
 #[cfg(target_os = "macos")]
 pub use macos::{NativeRecording, ensure_supported, process_group_members, start};
 #[cfg(not(target_os = "macos"))]
-pub(crate) use unsupported::live_process_group_members;
-#[cfg(not(target_os = "macos"))]
 pub(crate) use unsupported::{NativeRecording, ensure_supported, process_group_members, start};
 
 /// Request needed to start a native recording session.

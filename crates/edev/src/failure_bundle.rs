@@ -210,7 +210,7 @@ pub async fn write_failure_bundle(
     )?;
     fs::write(
         bundle_dir.join("app.stdout.log"),
-        stdout_bundle_text(&context.stdout_buffer),
+        snapshot_output(&context.stdout_buffer),
     )?;
 
     let collection_result = match call_script_eval_result(
