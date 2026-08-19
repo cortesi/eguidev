@@ -61,7 +61,7 @@ eguidev.configure({ timeout_ms = 50, poll_interval_ms = 1 })
 local flat_ok = pcall(function()
     eguidev.widget("basic.visual.flat_canvas"):expect({ painted = { min_colors = 2 } })
 end)
-assert(not flat_ok, "flat canvas should fail expect_painted")
+assert(not flat_ok, "flat canvas should fail expect({ painted = ... })")
 
 return {
     sample = samples[1],

@@ -1,6 +1,6 @@
 //! macOS presentation and occlusion support for connected automation.
 //!
-//! eframe 0.35 skips `App::ui` and painting for minimized or occluded
+//! eframe 0.36 skips `App::ui` and painting for minimized or occluded
 //! windows (`ViewportInfo::visible()` gates `run_ui` in the glow and wgpu
 //! integrations). Frame-driven automation therefore freezes as soon as the
 //! developer's windows fully cover an instrumented app, and no

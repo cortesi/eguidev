@@ -11,8 +11,9 @@ Eguidev separates app instrumentation, in-process automation, and external proce
 3. `edev` launches the app and owns process lifecycle, CLI sessions, smoke suites, recording, and
    failure collection.
 
-The app MCP server lists exactly `script_eval` and `script_api`. The Edev launcher MCP server lists
-exactly `start`, `stop`, `restart`, and `status`; it never proxies app tools. Successful lifecycle
+The app MCP server lists `script_eval`, `script_api`, and launcher-only `app_close`. Agents must
+not call `app_close`. Edev owns `stop` and `restart`. The Edev launcher MCP server lists exactly
+`start`, `stop`, `restart`, and `status`. It never forwards app tools. Successful lifecycle
 results include a descriptor with the launch id, transport, and direct app MCP endpoint. A caller
 connects to that endpoint for scripting.
 

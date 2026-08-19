@@ -3,7 +3,7 @@ local vp = eguidev.root
 local submit = eguidev.widget("basic.submit")
 
 local layout = vp:layout_issues()
-assert(type(layout) == "table", "check_layout should return an issues array")
+assert(type(layout) == "table", "layout_issues() should return an issues array")
 
 local submit_layout = submit:layout_issues()
 assert(#submit_layout == 0, "submit subtree should be layout-clean in the default fixture")

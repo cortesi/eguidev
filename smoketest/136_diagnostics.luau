@@ -1,3 +1,4 @@
+eguidev.fixture("basic.default")
 eguidev.wait(function()
     return eguidev.diagnostic("demo.runtime").ready == true
 end)

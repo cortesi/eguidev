@@ -77,7 +77,6 @@ artifact directory by default.
 Record a macOS demo movie while running the smoke suite:
 
 ```sh
-cargo run --locked -p edev -- record tmp/spacecurve-smoke.mov -- cargo run --locked --features devtools -- --dev-mcp
 cargo run --locked -p edev -- record tmp/spacecurve-smoke.mov --only '*layout*'
 ```
 
@@ -147,7 +146,7 @@ eval; it does not attach to an already-running `edev mcp` app.
 
 ## Background automation (occluded windows)
 
-Stock eframe 0.35 stops running `App::ui` and painting when a window is minimized or
+Stock eframe 0.36 stops running `App::ui` and painting when a window is minimized or
 occluded (`ViewportInfo::visible()` gates `run_ui`), so automation would freeze as soon
 as the developer's windows fully cover an instrumented app, and no `request_repaint()`
 can revive it. On macOS, `eguidev_runtime::attach` installs the process-wide observation

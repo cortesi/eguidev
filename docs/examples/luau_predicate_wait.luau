@@ -1,8 +1,8 @@
-local vp = eguidev.root
+eguidev.fixture("basic.default")
 
 eguidev.wait(function()
-    local current = eguidev.widget("status"):state()
-    return current ~= nil and current.label == "Ready"
+    local current = eguidev.widget("basic.status"):state()
+    return current ~= nil
 end)
 
-return eguidev.widget("status"):state()
+return eguidev.widget("basic.status"):state()

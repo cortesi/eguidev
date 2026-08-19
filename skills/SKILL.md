@@ -13,8 +13,8 @@ available, `edev docs` returns the same canonical declaration bytes.
 
 The Edev launcher exposes four lifecycle tools: `start`, `stop`, `restart`, and `status`. A
 successful lifecycle result includes the direct app connection descriptor. Connect to its endpoint
-to use the app-owned `script_api` and `script_eval` tools. Do not expect the launcher to proxy app
-tools.
+to use the app-owned `script_api` and `script_eval` tools. Do not expect the launcher to forward app
+tools. Do not call `app_close`. Edev owns `stop` and `restart`.
 
 Do not change user-wide MCP configuration for one repository. Put an Edev launcher declaration in
 the trusted project configuration:
@@ -57,14 +57,12 @@ Each `script_eval` source must perform setup, action, verification, and reportin
 evaluation. Eguidev contributes one global namespace, `eguidev`; do not use legacy globals.
 
 ```luau
-eguidev.fixture("basic.with_items")
+eguidev.fixture("basic.empty")
 
-local delete = eguidev.widget("item.0.delete")
-delete:click()
-
-local remaining = eguidev.widget("items.count"):expect({ value_text_contains = "2" })
-assert(remaining ~= nil)
-return { remaining = remaining.value_text }
+eguidev.widget("basic.submit"):click()
+local status = eguidev.widget("basic.status"):expect({ present = true })
+assert(status ~= nil)
+return { status = status.value_text }
 ```
 
 Use `eguidev.log(...)` for intermediate evidence and return a compact structured summary. The

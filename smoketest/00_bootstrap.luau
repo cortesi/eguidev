@@ -31,7 +31,7 @@ local hit_point: Pos = {
     y = submit_state.interact_rect.min.y + 2,
 }
 local hit = vp:widgets_at(hit_point) :: any
-assert(hit[1] ~= nil, "widget_at_point should find the submit area")
+assert(hit[1] ~= nil, "Viewport:widgets_at should find the submit area")
 
 local measure = submit:text_measure() :: any
 assert(measure.actual_size.x > 0, "text_measure should report width")

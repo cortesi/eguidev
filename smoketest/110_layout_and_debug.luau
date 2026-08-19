@@ -2,7 +2,7 @@ eguidev.fixture("basic.default")
 local vp = eguidev.root
 
 local full_check = vp:layout_issues()
-assert(type(full_check) == "table", "check_layout should return the inspected issues array")
+assert(type(full_check) == "table", "layout_issues() should return the inspected issues array")
 
 local submit = eguidev.widget("basic.submit")
 local scoped = submit:layout_issues()

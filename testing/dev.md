@@ -37,8 +37,8 @@ interaction, waits, and verification inside Luau scripts.
 
 ## Wait and Synchronization
 
-- Test `Viewport:settle()` - does the composite settle check (InputSettled +
-  RepaintIdle) match expected flow semantics?
+- Test `Viewport:settle()`. Live phases are input drain, command drain, action
+  frame, clean capture, fresh frame, and optional app idle.
 - Inspect settle reports and timeout details. Do incomplete
   phases identify whether input, viewport commands, clean capture, fresh frame,
   or app idle blocked progress?

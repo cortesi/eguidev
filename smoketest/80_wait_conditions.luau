@@ -66,9 +66,9 @@ local focus_result = eguidev.widget("basic.name"):wait( function(widget)
 end)
 assert(focus_result ~= nil and focus_result.focused)
 
--- wait_for_settle
+-- Viewport:settle()
 local settle_report = vp:settle()
-assert(settle_report.settled, "wait_for_settle should return a settled report")
+assert(settle_report.settled, "Viewport:settle() should return a settled report")
 assert(#settle_report.phases >= 5, "settle report should include phase status")
 local saw_app_idle = false
 for _, phase in ipairs(settle_report.phases) do
