@@ -55,9 +55,9 @@ Checked-in smoke coverage now has two layers:
 
 - `edev smoke` runs the checked-in Luau smoketest suite.
 - `edev smoke --list [--json]` prints the discovered script set without
-  launching the demo. Add repeatable `--only GLOB` filters to narrow discovery;
-  globs match the forward-slash display path, so `*` may match across
-  directory separators.
+  launching the demo. Add `--only GLOB` filters to select scripts. Repeat
+  `--only` to select the union of those globs. Globs match the forward-slash
+  display path, so `*` may match across directory separators.
 - `edev smoke --verbose` keeps the same suite but also emits the extra suite summary and launcher
   output that are useful when debugging failures.
 - Smoke scripts fail by default when they leave egui `id_clash` or `rect_changed_id` diagnostics

@@ -476,7 +476,7 @@ struct SmokeSuiteArgs {
     /// Emit list output as JSON.
     #[arg(long = "json", action = ArgAction::SetTrue, requires = "list")]
     list_json: bool,
-    /// Filter discovered smoke scripts by display-path glob. Repeat to intersect filters.
+    /// Filter discovered smoke scripts by display-path glob. Repeat to select more scripts (union).
     #[arg(long = "only", value_name = "GLOB")]
     only: Vec<String>,
     /// Run the selected smoke scripts this many times.
@@ -1234,6 +1234,21 @@ mod tests {
         };
         assert!(help.contains("Usage:"));
         assert!(!help.to_ascii_lowercase().contains("proxy"));
+    }
+
+    #[test]
+    fn smoke_only_help_says_union() {
+        let help = Cli::command()
+            .find_subcommand("smoke")
+            .expect("smoke")
+            .get_arguments()
+            .find(|argument| argument.get_long() == Some("only"))
+            .expect("only")
+            .get_help()
+            .expect("help")
+            .to_string();
+        assert!(help.contains("union"), "{help}");
+        assert!(!help.contains("intersect"), "{help}");
     }
 
     #[test]

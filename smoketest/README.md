@@ -29,6 +29,7 @@ Useful authoring commands:
 cargo xtask smoke --list
 cargo xtask smoke --only '*visual*'
 cargo xtask smoke --only '*visual*' --only '*layout*'
+# Repeat `--only` to select more scripts (union).
 cargo xtask smoke --repeat 5 --only '*layout*'
 cargo xtask smoke --until-fail 50
 cargo xtask smoke --bundle --fail-fast

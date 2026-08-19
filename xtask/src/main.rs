@@ -45,7 +45,7 @@ enum Task {
     SmokeOcclusion(SmokeArgs),
     /// Run the minimal edev transport smoke.
     #[command(name = "smoke-edev", visible_alias = "smoke-edit")]
-    SmokeEdev(SmokeArgs),
+    SmokeEdev(SmokeEdevArgs),
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -60,7 +60,7 @@ struct SmokeArgs {
     /// Emit list output as JSON.
     #[arg(long, requires = "list")]
     json: bool,
-    /// Filter discovered smoke scripts by display-path glob. Repeat to intersect filters.
+    /// Filter discovered smoke scripts by display-path glob. Repeat to select more scripts (union).
     #[arg(long = "only", value_name = "GLOB")]
     only: Vec<String>,
     /// Run the selected smoke scripts this many times.
@@ -91,6 +91,14 @@ struct SmokeArgs {
     /// Stop the suite after the first smoketest failure.
     #[arg(long)]
     fail_fast: bool,
+}
+
+#[derive(ClapArgs, Debug, Clone)]
+/// Output controls for the edev transport smoke.
+struct SmokeEdevArgs {
+    /// Enable verbose smoke logging.
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 /// Entry point for the workspace xtask runner.
@@ -287,11 +295,12 @@ fn smoke_occlusion(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
 }
 
 /// Command used by occlusion smoke to launch the demo with a persistent cover viewport.
-fn occlusion_demo_command() -> [&'static str; 9] {
+fn occlusion_demo_command() -> [&'static str; 10] {
     [
         "cargo",
         "run",
         "--quiet",
+        "--locked",
         "-p",
         "eguidev_demo",
         "--bin",
@@ -302,7 +311,7 @@ fn occlusion_demo_command() -> [&'static str; 9] {
 }
 
 /// Run the edev transport smoke against the demo app.
-fn smoke_edev(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
+fn smoke_edev(args: &SmokeEdevArgs) -> Result<(), Box<dyn Error>> {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(smoke_edev_transport(args.verbose))
 }
@@ -326,10 +335,11 @@ fn check_luau_source(path: &Path, source: &str) -> Result<(), Box<dyn Error>> {
 
 /// Enumerate checked-in example scripts that should type-check against the API definitions.
 fn luau_sources() -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let root = workspace_root()?;
     let mut sources = Vec::new();
-    collect_luau_files(Path::new("docs/examples"), &mut sources)?;
-    collect_luau_files(Path::new("smoketest"), &mut sources)?;
-    collect_luau_files(Path::new("crates/edev/luau"), &mut sources)?;
+    collect_luau_files(&root.join("docs/examples"), &mut sources)?;
+    collect_luau_files(&root.join("smoketest"), &mut sources)?;
+    collect_luau_files(&root.join("crates/edev/luau"), &mut sources)?;
     sources.sort();
     Ok(sources)
 }
@@ -501,7 +511,9 @@ return {
 
 /// Return the workspace root used for xtask subprocesses.
 fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
-    Ok(env::current_dir()?.canonicalize()?)
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()?)
 }
 
 /// Parse the leading text block of a tool result as JSON.
@@ -600,4 +612,56 @@ fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
         leaks.join(", ")
     )
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn workspace_root_finds_checked_in_sources() {
+        let root = workspace_root().expect("workspace root");
+        assert!(root.join("smoketest").is_dir());
+        assert!(root.join("skills").join("SKILL.md").is_file());
+        let sources = luau_sources().expect("luau sources");
+        assert!(
+            sources
+                .iter()
+                .any(|path| path.ends_with("10_basic_form.luau")),
+            "{sources:?}"
+        );
+    }
+
+    #[test]
+    fn smoke_edev_rejects_unknown_list_flag() {
+        let error = match Args::try_parse_from(["xtask", "smoke-edev", "--list"]) {
+            Ok(_) => panic!("smoke-edev should reject --list"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unexpected argument"), "{error}");
+    }
+
+    #[test]
+    fn occlusion_demo_command_passes_locked() {
+        let command = occlusion_demo_command();
+        assert!(command.contains(&"--locked"));
+        assert!(command.contains(&"--quiet"));
+        assert!(command.contains(&"--force-occluder"));
+    }
+
+    #[test]
+    fn smoke_only_help_says_union() {
+        let help = Args::command()
+            .find_subcommand("smoke")
+            .expect("smoke")
+            .get_arguments()
+            .find(|argument| argument.get_long() == Some("only"))
+            .expect("only")
+            .get_help()
+            .expect("help")
+            .to_string();
+        assert!(help.contains("union"), "{help}");
+        assert!(!help.contains("intersect"), "{help}");
+    }
 }
