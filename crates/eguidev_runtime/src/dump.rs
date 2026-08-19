@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    automation::{ensure_automation_ready, filter_viewport_snapshots},
     error::ToolError,
-    registry::{Inner, viewport_id_to_string},
+    registry::Inner,
     types::{
         Rect, RoleState, Vec2, WidgetLayout, WidgetRange, WidgetRegistryEntry, WidgetRole,
         WidgetValue,
@@ -111,23 +112,13 @@ fn default_include_invisible() -> bool {
 }
 
 pub fn build_tree_dump(inner: &Inner, options: &DumpOptions) -> Result<TreeDump, ToolError> {
-    ensure_dump_ready(inner)?;
-    let snapshots = resolve_viewport_snapshots(inner, options.viewport.as_deref())?;
+    ensure_automation_ready(inner)?;
+    let snapshots = filter_viewport_snapshots(inner, options.viewport.clone())?;
     let viewports = snapshots
         .into_iter()
         .map(|snapshot| build_viewport_dump(inner, snapshot, options))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(TreeDump { viewports })
-}
-
-fn ensure_dump_ready(inner: &Inner) -> Result<(), ToolError> {
-    if let Some(error) = inner.widgets.duplicate_explicit_id_error(&inner.viewports) {
-        return Err(error.into());
-    }
-    if let Some(error) = inner.viewports.viewport_name_error() {
-        return Err(error.into());
-    }
-    Ok(())
 }
 
 pub fn dump_text(dump: &TreeDump) -> String {
@@ -139,24 +130,6 @@ pub fn dump_text(dump: &TreeDump) -> String {
         }
     }
     out.trim_end().to_string()
-}
-
-fn resolve_viewport_snapshots(
-    inner: &Inner,
-    viewport: Option<&str>,
-) -> Result<Vec<ViewportSnapshot>, ToolError> {
-    let snapshots = inner.viewports.viewports_snapshot();
-    let Some(viewport) = viewport else {
-        return Ok(snapshots);
-    };
-    let resolved = inner
-        .viewports
-        .resolve_viewport_id(Some(viewport.to_string()))?;
-    let selector = viewport_id_to_string(resolved);
-    Ok(snapshots
-        .into_iter()
-        .filter(|snapshot| snapshot.viewport_id == selector)
-        .collect())
 }
 
 fn build_viewport_dump(

@@ -32,6 +32,7 @@ use crate::{
     fixtures::FixtureExecution,
     overlay::{
         OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry, parse_color,
+        rect_intersection,
     },
     registry::{Inner, viewport_id_to_string},
     runtime::Runtime,
@@ -69,6 +70,7 @@ use capture::{
     should_try_native_screenshot_fallback,
 };
 use layout::*;
+pub(crate) use query::filter_viewport_snapshots;
 use query::widgets_at_point;
 use results::*;
 pub use script::{
@@ -77,6 +79,7 @@ pub use script::{
     ScriptTiming,
 };
 use types::{OverlayDebugModeName, OverlayDebugOptionsInput};
+pub(crate) use utils::ensure_automation_ready;
 use utils::{parse_key_combo, resolve_key_name, *};
 
 pub use crate::error::*;
@@ -578,20 +581,6 @@ fn image_logical_rect(image: &egui::ColorImage, pixels_per_point: f32) -> Rect {
             y: image.size[1] as f32 / pixels_per_point,
         },
     }
-}
-
-fn rect_intersection(first: Rect, second: Rect) -> Option<Rect> {
-    let rect = Rect {
-        min: Pos2 {
-            x: first.min.x.max(second.min.x),
-            y: first.min.y.max(second.min.y),
-        },
-        max: Pos2 {
-            x: first.max.x.min(second.max.x),
-            y: first.max.y.min(second.max.y),
-        },
-    };
-    rect_is_positive(rect).then_some(rect)
 }
 
 fn point_in_rect_exclusive(position: Pos2, rect: Rect) -> bool {

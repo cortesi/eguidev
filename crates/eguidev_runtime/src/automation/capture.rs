@@ -14,13 +14,7 @@ pub(super) fn captured_viewport_name(
     inner: &Inner,
     viewport_id: egui::ViewportId,
 ) -> Option<String> {
-    let id = viewport_id_to_string(viewport_id);
-    inner
-        .viewports
-        .viewports_snapshot()
-        .into_iter()
-        .find(|viewport| viewport.viewport_id == id)
-        .and_then(|viewport| viewport.name)
+    viewport_snapshot_for(inner, viewport_id).and_then(|viewport| viewport.name)
 }
 
 impl DevMcpServer {
@@ -343,7 +337,7 @@ async fn await_screenshot(
                         ),
                     );
                     return Err(ToolError::new(
-                        ErrorCode::Internal,
+                        ErrorCode::Timeout,
                         screenshot_timeout_message(viewport_id, &fallback_error),
                     )
                     .with_details(screenshot_timeout_details(

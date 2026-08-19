@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::Notify;
 
 use crate::{
@@ -60,7 +60,7 @@ pub fn screenshot_kind_label(kind: &ScreenshotKind) -> String {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotDebugRequest {
     pub request_id: u64,
     pub viewport_id: String,
@@ -68,14 +68,14 @@ pub struct ScreenshotDebugRequest {
     pub frame_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotDebugCommand {
     pub request_id: Option<u64>,
     pub viewport_id: String,
     pub frame_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotDebugEvent {
     pub request_id: Option<u64>,
     pub viewport_id: String,
@@ -85,7 +85,7 @@ pub struct ScreenshotDebugEvent {
     pub image_size: Option<[usize; 2]>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ScreenshotDebugState {
     pub requests_queued: u64,
     pub commands_sent: u64,
@@ -98,14 +98,14 @@ pub struct ScreenshotDebugState {
     pub last_event: Option<ScreenshotDebugEvent>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotDebugRequestInfo {
     pub request_id: u64,
     pub kind: String,
     pub ready: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ScreenshotDebugSnapshot {
     pub enabled: bool,
     pub frame_count: u64,
@@ -353,5 +353,13 @@ mod tests {
         let last_event = snapshot.debug.last_event.expect("last event");
         assert!(last_event.request_id.is_none());
         assert!(!last_event.matched);
+    }
+
+    #[test]
+    fn screenshot_debug_snapshot_reports_verbose_flag() {
+        let manager = ScreenshotManager::new();
+        let snapshot = manager.screenshot_debug_snapshot(false, 3);
+        assert!(!snapshot.enabled);
+        assert_eq!(snapshot.frame_count, 3);
     }
 }

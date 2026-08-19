@@ -558,7 +558,7 @@ pub async fn wait_for_frames(
         if elapsed_ms >= timeout_ms {
             let observation = observation_start.finish(inner);
             return Err(ToolError::new(
-                ErrorCode::Internal,
+                ErrorCode::Timeout,
                 wait_timeout_message("Timed out waiting for frame notifications", &observation),
             )
             .with_details(json!({
@@ -699,21 +699,19 @@ pub fn validate_widget_value(
             matches!(value, WidgetValue::Bool(_))
         }
         WidgetRole::Slider => match value {
-            WidgetValue::Float(v) => slider_accepts(widget, *v),
-            WidgetValue::Int(v) => slider_accepts(widget, *v as f64),
+            WidgetValue::Float(v) => range_accepts(widget, *v),
+            WidgetValue::Int(v) => range_accepts(widget, *v as f64),
             _ => false,
         },
         WidgetRole::ComboBox => {
             matches!(value, WidgetValue::Int(index) if combo_box_accepts(widget, *index))
         }
         WidgetRole::DragValue => match (widget.value.as_ref(), value) {
-            (Some(WidgetValue::Int(_)), WidgetValue::Int(v)) => {
-                drag_value_accepts(widget, *v as f64)
-            }
-            (Some(WidgetValue::Float(_)), WidgetValue::Float(v)) => drag_value_accepts(widget, *v),
+            (Some(WidgetValue::Int(_)), WidgetValue::Int(v)) => range_accepts(widget, *v as f64),
+            (Some(WidgetValue::Float(_)), WidgetValue::Float(v)) => range_accepts(widget, *v),
             (Some(_), _) => false,
-            (None, WidgetValue::Int(v)) => drag_value_accepts(widget, *v as f64),
-            (None, WidgetValue::Float(v)) => drag_value_accepts(widget, *v),
+            (None, WidgetValue::Int(v)) => range_accepts(widget, *v as f64),
+            (None, WidgetValue::Float(v)) => range_accepts(widget, *v),
             (None, _) => false,
         },
         WidgetRole::ColorPicker => {
@@ -730,15 +728,7 @@ pub fn validate_widget_value(
     Ok(())
 }
 
-fn slider_accepts(widget: &WidgetRegistryEntry, value: f64) -> bool {
-    widget
-        .role_state
-        .as_ref()
-        .and_then(RoleState::range)
-        .is_none_or(|range| range.contains(value))
-}
-
-fn drag_value_accepts(widget: &WidgetRegistryEntry, value: f64) -> bool {
+fn range_accepts(widget: &WidgetRegistryEntry, value: f64) -> bool {
     widget
         .role_state
         .as_ref()

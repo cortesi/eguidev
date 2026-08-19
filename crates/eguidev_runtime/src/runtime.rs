@@ -141,7 +141,7 @@ impl Runtime {
 
     pub(crate) fn screenshot_debug_snapshot(&self, inner: &Inner) -> ScreenshotDebugSnapshot {
         self.screenshots
-            .screenshot_debug_snapshot(true, inner.frame_count())
+            .screenshot_debug_snapshot(inner.verbose_logging(), inner.frame_count())
     }
 
     pub(crate) fn log_screenshot(&self, inner: &Inner, message: String) {
