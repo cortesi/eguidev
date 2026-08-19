@@ -17,7 +17,7 @@ use crate::{
 };
 
 thread_local! {
-    pub(crate) static ACTIVE: RefCell<Option<Arc<Inner>>> = const { RefCell::new(None) };
+    pub(crate) static ACTIVE: RefCell<Vec<Arc<Inner>>> = const { RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]
@@ -36,7 +36,7 @@ pub fn active_inner() -> Option<Arc<Inner>> {
         active
             .try_borrow()
             .ok()
-            .and_then(|guard| guard.as_ref().cloned())
+            .and_then(|guard| guard.last().cloned())
     })
 }
 
@@ -638,7 +638,7 @@ mod tests {
                 ui.dev_button("menu.item", "Reset");
             });
             let _advanced = ui.dev_collapsing("advanced", &mut advanced_open, "Advanced", |ui| {
-                ui.dev_label("advanced.body", "Shown");
+                ui.dev_label("advanced.summary", "Shown");
             });
             devmcp.end_frame(ctx);
         });
@@ -664,7 +664,9 @@ mod tests {
         assert_menu_button_widget(widget_by_id(&widgets, "menu"));
         assert_collapsing_widget(widget_by_id(&widgets, "advanced"));
         assert_eq!(
-            widget_by_id(&widgets, "advanced.body").parent_id.as_deref(),
+            widget_by_id(&widgets, "advanced.summary")
+                .parent_id
+                .as_deref(),
             Some("advanced.body")
         );
     }

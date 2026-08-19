@@ -219,6 +219,8 @@ pub trait DevUiExt {
     ) -> egui::Response;
 
     /// Add a menu button with an explicit id.
+    ///
+    /// Records a `{id}.menu` container for the menu contents.
     fn dev_menu_button<R>(
         &mut self,
         id: impl Into<String>,
@@ -227,6 +229,8 @@ pub trait DevUiExt {
     ) -> egui::InnerResponse<Option<R>>;
 
     /// Add a collapsing header with an explicit id, bound to app state.
+    ///
+    /// Records a `{id}.body` container for the expanded contents.
     fn dev_collapsing<R>(
         &mut self,
         id: impl Into<String>,
@@ -1007,16 +1011,7 @@ fn widget_range_from_i32(range: &RangeInclusive<i32>) -> WidgetRange {
 
 /// Parse a CSS-style `#RRGGBB` or `#RRGGBBAA` color literal.
 pub fn parse_color_hex(value: &str) -> Option<egui::Color32> {
-    let hex = value.strip_prefix('#')?;
-    if hex.len() != 8 {
-        return None;
-    }
-    let bytes = u32::from_str_radix(hex, 16).ok()?;
-    let r = ((bytes >> 24) & 0xff) as u8;
-    let g = ((bytes >> 16) & 0xff) as u8;
-    let b = ((bytes >> 8) & 0xff) as u8;
-    let a = (bytes & 0xff) as u8;
-    Some(egui::Color32::from_rgba_unmultiplied(r, g, b, a))
+    crate::overlay::parse_css_hex(value, true)
 }
 
 pub fn format_color_hex(color: egui::Color32) -> String {

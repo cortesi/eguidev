@@ -29,37 +29,19 @@ impl ToolError {
     }
 
     pub(crate) fn into_tmcp(self) -> tmcp::ToolError {
-        let (code, message, operation, target, details, source) = self.0.into_parts();
-        let code = code.as_str();
+        let code = self.0.code().as_str();
+        let message = self.0.message().to_string();
         let mut structured = serde_json::json!({
             "error": {
                 "code": code,
                 "message": message,
             }
         });
-        if let Some(details) = details
+        if let Some(details) = self.0.details()
             && let Some(error) = structured.get_mut("error")
             && let Some(map) = error.as_object_mut()
         {
-            map.insert("details".to_string(), details);
-        }
-        if let Some(operation) = operation
-            && let Some(error) = structured.get_mut("error")
-            && let Some(map) = error.as_object_mut()
-        {
-            map.insert("operation".to_string(), operation.into());
-        }
-        if let Some(target) = target
-            && let Some(error) = structured.get_mut("error")
-            && let Some(map) = error.as_object_mut()
-        {
-            map.insert("target".to_string(), serde_json::json!(target));
-        }
-        if let Some(source) = source
-            && let Some(error) = structured.get_mut("error")
-            && let Some(map) = error.as_object_mut()
-        {
-            map.insert("source".to_string(), source.into());
+            map.insert("details".to_string(), details.clone());
         }
         tmcp::ToolError::new(code, message).with_structured(structured)
     }

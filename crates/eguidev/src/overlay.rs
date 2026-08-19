@@ -74,8 +74,16 @@ impl Default for OverlayDebugConfig {
 }
 
 pub fn parse_color(value: &str) -> Option<Color32> {
+    parse_css_hex(value, false)
+}
+
+pub(crate) fn parse_css_hex(value: &str, require_hash: bool) -> Option<Color32> {
     let value = value.trim();
-    let hex = value.strip_prefix('#').unwrap_or(value);
+    let hex = match value.strip_prefix('#') {
+        Some(hex) => hex,
+        None if require_hash => return None,
+        None => value,
+    };
     let bytes = match hex.len() {
         6 => u32::from_str_radix(hex, 16).ok().map(|v| v << 8 | 0xff)?,
         8 => u32::from_str_radix(hex, 16).ok()?,
@@ -85,7 +93,7 @@ pub fn parse_color(value: &str) -> Option<Color32> {
     let g = ((bytes >> 16) & 0xff) as u8;
     let b = ((bytes >> 8) & 0xff) as u8;
     let a = (bytes & 0xff) as u8;
-    Some(Color32::from_rgba_premultiplied(r, g, b, a))
+    Some(Color32::from_rgba_unmultiplied(r, g, b, a))
 }
 
 pub struct OverlayManager {
@@ -302,5 +310,32 @@ pub fn rect_size(rect: Rect) -> Vec2 {
     Vec2 {
         x: rect.max.x - rect.min.x,
         y: rect.max.y - rect.min.y,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::Color32;
+
+    use super::{parse_color, parse_css_hex};
+    use crate::ui_ext::{format_color_hex, parse_color_hex};
+
+    #[test]
+    fn css_hex_is_unpremultiplied_for_overlay_and_widgets() {
+        let translucent = Color32::from_rgba_unmultiplied(255, 0, 0, 128);
+        assert_eq!(parse_color("#FF000080"), Some(translucent));
+        assert_eq!(parse_color_hex("#FF000080"), Some(translucent));
+        assert_eq!(
+            parse_color("#409CFF"),
+            Some(Color32::from_rgb(0x40, 0x9c, 0xff))
+        );
+        assert_eq!(
+            parse_color_hex("#409CFF"),
+            Some(Color32::from_rgb(0x40, 0x9c, 0xff))
+        );
+        let opaque = Color32::from_rgba_unmultiplied(0x40, 0x9c, 0xff, 0xff);
+        assert_eq!(parse_color_hex(&format_color_hex(opaque)), Some(opaque));
+        assert_eq!(parse_css_hex("409CFFFF", true), None);
+        assert_eq!(parse_color("409CFFFF"), Some(opaque));
     }
 }

@@ -360,10 +360,12 @@ impl DevMcp {
         let Some(inner) = self.inner() else {
             return;
         };
-        ctx.add_plugin(AutomationPlugin {
-            devmcp: self.clone(),
-            output_viewport_id: Some(ctx.viewport_id()),
-        });
+        if ctx.with_plugin::<AutomationPlugin, _>(|_| ()).is_none() {
+            ctx.add_plugin(AutomationPlugin {
+                devmcp: self.clone(),
+                output_viewport_id: Some(ctx.viewport_id()),
+            });
+        }
         swallow_panic("begin_frame", || {
             let viewport_id = ctx.viewport_id();
             inner.begin_frame(viewport_id);
@@ -379,7 +381,7 @@ impl DevMcp {
             inner.widgets.clear_registry(viewport_id);
             ACTIVE.with(|active| {
                 if let Ok(mut active) = active.try_borrow_mut() {
-                    *active = Some(Arc::clone(inner));
+                    active.push(Arc::clone(inner));
                 } else {
                     eprintln!("eguidev: begin_frame skipped; active already borrowed");
                 }
@@ -396,13 +398,15 @@ impl DevMcp {
         };
         swallow_panic("end_frame", || {
             self.finish_frame(inner, ctx);
-            ACTIVE.with(|active| {
-                if let Ok(mut active) = active.try_borrow_mut() {
-                    *active = None;
-                } else {
-                    eprintln!("eguidev: end_frame skipped; active already borrowed");
+        });
+        ACTIVE.with(|active| {
+            if let Ok(mut active) = active.try_borrow_mut() {
+                if active.last().is_some_and(|top| Arc::ptr_eq(top, inner)) {
+                    active.pop();
                 }
-            });
+            } else {
+                eprintln!("eguidev: end_frame skipped; active already borrowed");
+            }
         });
     }
 
@@ -784,5 +788,88 @@ mod inactive_tests {
 
         assert!(devmcp.context_for(egui::ViewportId::ROOT).is_none());
         assert_eq!(instrument::test_layout_capture_count(), 0);
+    }
+
+    #[test]
+    fn nested_frame_guard_keeps_parent_recording() {
+        let inner = Arc::new(Inner::new());
+        let hooks: Arc<dyn RuntimeHooks> = Arc::new(CountingRuntimeHooks::default());
+        let devmcp = DevMcp::new().activate_runtime(inner, hooks);
+        let ctx = Context::default();
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            let _outer = FrameGuard::new(&devmcp, &ctx);
+            ui.dev_button("outer.first", "First");
+            {
+                let _inner = FrameGuard::new(&devmcp, &ctx);
+                ui.dev_button("inner", "Inner");
+            }
+            assert!(
+                instrument::active_inner().is_some(),
+                "parent frame should stay active after the nested guard drops"
+            );
+            ui.dev_button("outer.second", "Second");
+        })
+        .drop_without_applying_deltas();
+
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        let ids = widgets
+            .iter()
+            .map(|widget| widget.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"outer.second"), "{ids:?}");
+        assert!(
+            ctx.plugin_opt::<AutomationPlugin>().is_some(),
+            "second frame on the same context should reuse the installed plugin"
+        );
+    }
+
+    #[test]
+    fn finish_frame_panic_does_not_leave_recording_armed() {
+        struct PanicOnEnd;
+
+        impl RuntimeHooks for PanicOnEnd {
+            fn as_any(&self) -> &(dyn Any + Send + Sync) {
+                self
+            }
+
+            fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {
+                panic!("finish_frame test panic");
+            }
+        }
+
+        let inner = Arc::new(Inner::new());
+        let hooks: Arc<dyn RuntimeHooks> = Arc::new(PanicOnEnd);
+        let devmcp = DevMcp::new().activate_runtime(inner, hooks);
+        let ctx = Context::default();
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            let _guard = FrameGuard::new(&devmcp, &ctx);
+            ui.dev_button("inside", "Inside");
+        })
+        .drop_without_applying_deltas();
+
+        assert!(instrument::active_inner().is_none());
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.dev_button("ungarded", "Ungarded");
+        })
+        .drop_without_applying_deltas();
+
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        assert!(
+            widgets.iter().all(|widget| widget.id != "ungarded"),
+            "unguarded widgets must not record after a swallowed finish_frame panic"
+        );
     }
 }

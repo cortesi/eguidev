@@ -1,7 +1,12 @@
 //! Widget registry for tracking egui widgets across frames.
 #![allow(missing_docs)]
 
-use std::{collections::HashMap, error::Error, fmt, mem, sync::Mutex};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt, mem,
+    sync::Mutex,
+};
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -211,23 +216,6 @@ impl WidgetRegistry {
                     let matches = widgets
                         .iter()
                         .filter(|entry| entry.id == target.id)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    (matches, resolved_viewport)
-                }
-                Err(error)
-                    if error.code == ErrorCode::InvalidArgument && target.viewport_id.is_some() =>
-                {
-                    let resolved_viewport = target
-                        .viewport_id
-                        .clone()
-                        .expect("checked target viewport id");
-                    let matches = registry
-                        .values()
-                        .flatten()
-                        .filter(|entry| {
-                            entry.viewport_id == resolved_viewport && entry.id == target.id
-                        })
                         .cloned()
                         .collect::<Vec<_>>();
                     (matches, resolved_viewport)
@@ -789,8 +777,12 @@ fn parent_chain_for(
         .map(|entry| (entry.id.as_str(), entry))
         .collect::<HashMap<_, _>>();
     let mut chain = Vec::new();
+    let mut seen = HashSet::new();
     let mut parent_id = candidate.parent_id.as_deref();
     while let Some(id) = parent_id {
+        if !seen.insert(id) {
+            break;
+        }
         chain.push(id.to_string());
         parent_id = by_id.get(id).and_then(|entry| entry.parent_id.as_deref());
     }
@@ -840,7 +832,7 @@ mod tests {
     };
     use serde_json::{Value, json};
 
-    use super::{WidgetMeta, normalize_widget_data};
+    use super::{WidgetMeta, WidgetRegistry, normalize_widget_data};
 
     struct FailingData;
 
@@ -900,5 +892,67 @@ mod tests {
         let meta = WidgetMeta::default().with_data(NonFiniteData);
 
         assert_eq!(meta.data, Some(json!({ "nan": Value::Null })));
+    }
+
+    #[test]
+    fn duplicate_explicit_id_error_stays_finite_when_parent_ids_cycle() {
+        use crate::{
+            error::ErrorCode,
+            types::{Pos2, Rect, WidgetRef, WidgetRegistryEntry, WidgetRole},
+            viewports::ViewportState,
+        };
+
+        fn entry(id: &str, parent_id: Option<&str>) -> WidgetRegistryEntry {
+            let rect = Rect {
+                min: Pos2 { x: 0.0, y: 0.0 },
+                max: Pos2 { x: 1.0, y: 1.0 },
+            };
+            WidgetRegistryEntry {
+                id: id.to_string(),
+                explicit_id: true,
+                native_id: 1,
+                viewport_id: "root".to_string(),
+                layer_id: "background".to_string(),
+                rect,
+                interact_rect: rect,
+                role: WidgetRole::Label,
+                label: None,
+                value: None,
+                data: None,
+                layout: None,
+                role_state: None,
+                parent_id: parent_id.map(str::to_string),
+                enabled: true,
+                visible: true,
+                focused: false,
+            }
+        }
+
+        let registry = WidgetRegistry::new();
+        registry.record_widget(egui::ViewportId::ROOT, entry("dup", None));
+        registry.record_widget(egui::ViewportId::ROOT, entry("dup", Some("dup")));
+        registry.finalize_registry(egui::ViewportId::ROOT);
+        let viewports = ViewportState::new();
+        let error = registry
+            .duplicate_explicit_id_error(&viewports)
+            .expect("duplicate id fault");
+        assert_eq!(error.code(), ErrorCode::InstrumentationFault);
+        let chain =
+            error.details().expect("details")["duplicate_ids"][0]["candidates"][1]["parent_chain"]
+                .as_array()
+                .expect("parent_chain");
+        assert!(!chain.is_empty());
+        let resolved = registry.resolve_widget(
+            &viewports,
+            None,
+            &WidgetRef {
+                id: "dup".to_string(),
+                viewport_id: None,
+            },
+        );
+        assert_eq!(
+            resolved.expect_err("duplicate id").code(),
+            ErrorCode::InstrumentationFault
+        );
     }
 }
