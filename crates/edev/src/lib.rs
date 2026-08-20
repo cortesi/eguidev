@@ -242,17 +242,43 @@ impl State {
     }
 
     /// Start the app process unless it is already running.
+    #[cfg(test)]
     async fn start(&mut self) -> Result<StartStatus, EdevError> {
-        match &self.status {
-            AppStatus::Running => return Ok(StartStatus::AlreadyRunning),
-            AppStatus::StartupFailed { output } => {
-                return Ok(StartStatus::RestartRequired(output.clone()));
+        match self.prepare_start() {
+            PrepareStart::AlreadyRunning => Ok(StartStatus::AlreadyRunning),
+            PrepareStart::AppStarting => Ok(StartStatus::AppStarting),
+            PrepareStart::RestartRequired(output) => Ok(StartStatus::RestartRequired(output)),
+            PrepareStart::Ready => {
+                self.start_with(|config, log_state| Box::pin(spawn_app(config, log_state)))
+                    .await
             }
-            AppStatus::Starting => return Ok(StartStatus::AppStarting),
-            AppStatus::NotRunning => {}
         }
-        self.start_with(|config, log_state| Box::pin(spawn_app(config, log_state)))
-            .await
+    }
+
+    fn prepare_start(&mut self) -> PrepareStart {
+        match &self.status {
+            AppStatus::Running => PrepareStart::AlreadyRunning,
+            AppStatus::StartupFailed { output } => PrepareStart::RestartRequired(output.clone()),
+            AppStatus::Starting => PrepareStart::AppStarting,
+            AppStatus::NotRunning => {
+                self.status = AppStatus::Starting;
+                self.last_shutdown = None;
+                self.log_edev("start requested");
+                PrepareStart::Ready
+            }
+        }
+    }
+
+    fn prepare_restart(&mut self) -> PrepareRestart {
+        match &self.status {
+            AppStatus::Starting => PrepareRestart::AppStarting,
+            _ => {
+                self.status = AppStatus::Starting;
+                self.last_shutdown = None;
+                self.log_edev("restart requested");
+                PrepareRestart::Ready(self.app.take())
+            }
+        }
     }
 
     /// Restart the app process using the default spawn behavior.
@@ -309,6 +335,7 @@ impl State {
     }
 
     /// Start the app process using a caller-provided spawn routine.
+    #[cfg(test)]
     async fn start_with<F>(&mut self, spawn: F) -> Result<StartStatus, EdevError>
     where
         F: for<'a> FnOnce(&'a LaunchConfig, LogState) -> SpawnFuture<'a>,
@@ -340,13 +367,38 @@ impl State {
     where
         F: for<'a> FnOnce(&'a LaunchConfig, LogState) -> SpawnFuture<'a>,
     {
-        self.status = AppStatus::Starting;
+        if !matches!(self.status, AppStatus::Starting) {
+            self.status = AppStatus::Starting;
+            self.last_shutdown = None;
+            self.log_edev(format!("{} requested", action.as_str()));
+        }
         if replace_existing && let Some(app) = self.app.take() {
             let _shutdown = app.shutdown().await;
         }
-        self.last_shutdown = None;
-        self.log_edev(format!("{} requested", action.as_str()));
-        match spawn(&self.config, self.log_state.clone()).await {
+        let spawned = spawn(&self.config, self.log_state.clone()).await;
+        self.install_spawned(action, spawned).await
+    }
+
+    async fn install_spawned(
+        &mut self,
+        action: LifecycleAction,
+        spawned: Result<AppProcess, AppStartError>,
+    ) -> Result<LifecycleStartStatus, EdevError> {
+        if !matches!(self.status, AppStatus::Starting) {
+            if let Ok(app) = spawned {
+                let shutdown = app.shutdown().await;
+                self.last_shutdown = Some(shutdown);
+            }
+            self.log_edev(format!(
+                "{} cancelled because the app was stopped",
+                action.as_str()
+            ));
+            return Err(EdevError::AppStart(format!(
+                "{} cancelled because the app was stopped",
+                action.as_str()
+            )));
+        }
+        match spawned {
             Ok(app) => {
                 if let Err(output) = probe_script_eval_ready(&app.client).await {
                     let shutdown = app.shutdown().await;
@@ -665,6 +717,24 @@ enum LifecycleStartStatus {
     Running,
     /// Startup failed before the app became ready.
     StartupFailed(String),
+}
+
+#[derive(Debug)]
+enum PrepareStart {
+    AlreadyRunning,
+    AppStarting,
+    RestartRequired(String),
+    Ready,
+}
+
+enum PrepareRestart {
+    AppStarting,
+    Ready(Option<AppProcess>),
+}
+
+enum UnlockedRestart {
+    AppStarting,
+    Done(Result<LifecycleStartStatus, EdevError>),
 }
 
 #[derive(Debug)]
@@ -1113,6 +1183,89 @@ struct EdevServer {
     state: Arc<AsyncMutex<State>>,
 }
 
+async fn start_app_unlocked(state: &Arc<AsyncMutex<State>>) -> Result<StartStatus, EdevError> {
+    start_app_unlocked_with(state, |config, log_state| async move {
+        spawn_app(&config, log_state).await
+    })
+    .await
+}
+
+async fn start_app_unlocked_with<F, Fut>(
+    state: &Arc<AsyncMutex<State>>,
+    spawn: F,
+) -> Result<StartStatus, EdevError>
+where
+    F: FnOnce(LaunchConfig, LogState) -> Fut,
+    Fut: Future<Output = Result<AppProcess, AppStartError>> + Send,
+{
+    let prepared = {
+        let mut state = state.lock().await;
+        match state.prepare_start() {
+            PrepareStart::AlreadyRunning => return Ok(StartStatus::AlreadyRunning),
+            PrepareStart::AppStarting => return Ok(StartStatus::AppStarting),
+            PrepareStart::RestartRequired(output) => {
+                return Ok(StartStatus::RestartRequired(output));
+            }
+            PrepareStart::Ready => (state.config.clone(), state.log_state.clone()),
+        }
+    };
+    let (config, log_state) = prepared;
+    let spawned = spawn(config, log_state).await;
+    let mut state = state.lock().await;
+    match state.install_spawned(LifecycleAction::Start, spawned).await {
+        Ok(LifecycleStartStatus::Running) => Ok(StartStatus::Started),
+        Ok(LifecycleStartStatus::StartupFailed(output)) => Ok(StartStatus::StartupFailed(output)),
+        Err(error) => Err(error),
+    }
+}
+
+async fn restart_app_unlocked(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart {
+    let mut attempt = 1;
+    loop {
+        let outcome = restart_app_unlocked_once(state).await;
+        let should_retry = match &outcome {
+            UnlockedRestart::Done(result)
+                if restart_result_is_transport_closed(result) && attempt < RESTART_MAX_ATTEMPTS =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if should_retry {
+            state.lock().await.log_edev(format!(
+                "restart attempt {attempt} failed with closed transport; retrying"
+            ));
+            attempt += 1;
+            continue;
+        }
+        return outcome;
+    }
+}
+
+async fn restart_app_unlocked_once(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart {
+    let old_app = {
+        let mut state = state.lock().await;
+        match state.prepare_restart() {
+            PrepareRestart::AppStarting => return UnlockedRestart::AppStarting,
+            PrepareRestart::Ready(app) => app,
+        }
+    };
+    if let Some(app) = old_app {
+        let _shutdown = app.shutdown().await;
+    }
+    let (config, log_state) = {
+        let state = state.lock().await;
+        (state.config.clone(), state.log_state.clone())
+    };
+    let spawned = spawn_app(&config, log_state).await;
+    let mut state = state.lock().await;
+    UnlockedRestart::Done(
+        state
+            .install_spawned(LifecycleAction::Restart, spawned)
+            .await,
+    )
+}
+
 #[async_trait]
 impl ServerHandler for EdevServer {
     async fn initialize(
@@ -1156,25 +1309,30 @@ impl ServerHandler for EdevServer {
         }
         let result = match name.as_str() {
             "start" => {
-                let mut state = state.lock().await;
                 let start = Instant::now();
-                match state.start().await {
-                    Ok(StartStatus::Started) => lifecycle_success(
-                        "started",
-                        start.elapsed(),
-                        state
-                            .app
-                            .as_ref()
-                            .and_then(AppProcess::connection_descriptor),
-                    ),
-                    Ok(StartStatus::AlreadyRunning) => lifecycle_success(
-                        "already_running",
-                        start.elapsed(),
-                        state
-                            .app
-                            .as_ref()
-                            .and_then(AppProcess::connection_descriptor),
-                    ),
+                match start_app_unlocked(&state).await {
+                    Ok(StartStatus::Started) => {
+                        let state = state.lock().await;
+                        lifecycle_success(
+                            "started",
+                            start.elapsed(),
+                            state
+                                .app
+                                .as_ref()
+                                .and_then(AppProcess::connection_descriptor),
+                        )
+                    }
+                    Ok(StartStatus::AlreadyRunning) => {
+                        let state = state.lock().await;
+                        lifecycle_success(
+                            "already_running",
+                            start.elapsed(),
+                            state
+                                .app
+                                .as_ref()
+                                .and_then(AppProcess::connection_descriptor),
+                        )
+                    }
                     Ok(StartStatus::AppStarting) => tool_error(
                         ErrorKind::AppStarting,
                         "App is starting. Try again shortly.",
@@ -1214,23 +1372,31 @@ impl ServerHandler for EdevServer {
                 }
             }
             "restart" => {
-                let mut state = state.lock().await;
                 let start = Instant::now();
-                match state.restart().await {
-                    Ok(LifecycleStartStatus::Running) => lifecycle_success(
-                        "completed",
-                        start.elapsed(),
-                        state
-                            .app
-                            .as_ref()
-                            .and_then(AppProcess::connection_descriptor),
+                match restart_app_unlocked(&state).await {
+                    UnlockedRestart::AppStarting => tool_error(
+                        ErrorKind::AppStarting,
+                        "App is starting. Try again shortly.",
                     ),
-                    Ok(LifecycleStartStatus::StartupFailed(output)) => lifecycle_startup_failed(
-                        "App startup failed. Fix the issue and call restart again.",
-                        &output,
-                        start.elapsed(),
-                    ),
-                    Err(error) => lifecycle_failed(
+                    UnlockedRestart::Done(Ok(LifecycleStartStatus::Running)) => {
+                        let state = state.lock().await;
+                        lifecycle_success(
+                            "completed",
+                            start.elapsed(),
+                            state
+                                .app
+                                .as_ref()
+                                .and_then(AppProcess::connection_descriptor),
+                        )
+                    }
+                    UnlockedRestart::Done(Ok(LifecycleStartStatus::StartupFailed(output))) => {
+                        lifecycle_startup_failed(
+                            "App startup failed. Fix the issue and call restart again.",
+                            &output,
+                            start.elapsed(),
+                        )
+                    }
+                    UnlockedRestart::Done(Err(error)) => lifecycle_failed(
                         ErrorKind::RestartFailed,
                         format!("Restart failed: {error}"),
                         start.elapsed(),
@@ -2619,6 +2785,35 @@ mod tests {
         assert!(matches!(status, LifecycleStartStatus::Running));
         assert!(matches!(state.status, AppStatus::Running));
         assert!(state.app.is_some());
+    }
+
+    #[tokio::test]
+    async fn status_reports_starting_during_stalled_spawn() {
+        let tempdir = test_tempdir();
+        let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let start_state = Arc::clone(&state);
+        let start_task = tokio::spawn(async move {
+            start_app_unlocked_with(&start_state, |_, _| async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+                Err(AppStartError::Other("stalled spawn".to_string()))
+            })
+            .await
+        });
+
+        entered_rx.await.expect("spawn started");
+        let report = timeout(Duration::from_secs(1), async {
+            state.lock().await.status_report()
+        })
+        .await
+        .expect("status should not wait on spawn");
+        assert_eq!(report.state, "starting");
+        let _ = release_tx.send(());
+        let status = start_task.await.expect("start task");
+        assert!(matches!(status, Err(EdevError::AppStart(_))));
+        assert_eq!(state.lock().await.status_report().state, "not_running");
     }
 
     #[tokio::test]
