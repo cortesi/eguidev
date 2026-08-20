@@ -148,10 +148,13 @@ fn finish_smoke_run(
     shutdown_result: Result<(), EdevError>,
     verbose_output: bool,
 ) -> Result<(), EdevError> {
-    match (result, shutdown_result) {
-        (Ok(summary), Ok(())) => {
+    match result {
+        Ok(summary) => {
             for line in summary.render_lines(verbose_output) {
                 println!("{line}");
+            }
+            if let Err(error) = shutdown_result {
+                eprintln!("edev: shutdown failed: {error}");
             }
             if summary.success() {
                 Ok(())
@@ -159,8 +162,12 @@ fn finish_smoke_run(
                 Err(EdevError::SmokeFailed("smoke suite failed".to_string()))
             }
         }
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error),
+        Err(error) => {
+            if let Err(shutdown_error) = shutdown_result {
+                eprintln!("edev: shutdown failed: {shutdown_error}");
+            }
+            Err(error)
+        }
     }
 }
 
@@ -955,5 +962,44 @@ fn print_fixture_table(fixtures: &[FixtureSpec]) {
                 width = max_name
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eguidev_runtime::smoke::{ScriptResult, ScriptStatus, SuiteResult};
+
+    use super::*;
+
+    fn failed_suite() -> SuiteResult {
+        SuiteResult {
+            results: vec![ScriptResult {
+                round: 1,
+                path: "10_fail.luau".to_string(),
+                status: ScriptStatus::Fail,
+                elapsed_ms: 5,
+                message: Some("boom".to_string()),
+                logs: Vec::new(),
+                fixtures: Vec::new(),
+                egui_diagnostics: eguidev_runtime::EguiDiagnosticBatch::default(),
+                details: None,
+            }],
+            rounds: Vec::new(),
+            requested_rounds: 1,
+            elapsed_ms: 5,
+        }
+    }
+
+    #[test]
+    fn finish_smoke_run_keeps_suite_failure_through_forced_shutdown() {
+        let result = finish_smoke_run(
+            Ok(failed_suite()),
+            Err(EdevError::AppStart("forced".to_string())),
+            false,
+        );
+        assert!(
+            matches!(result, Err(EdevError::SmokeFailed(_))),
+            "{result:?}"
+        );
     }
 }

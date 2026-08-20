@@ -528,23 +528,21 @@ impl AppProcess {
 
     /// Await the existing supervisor or direct-child exit event.
     async fn wait_for_exit(&mut self) -> Result<(), String> {
-        if let Some(task) = self.supervisor_exit_task.as_mut() {
+        if let Some(task) = self.supervisor_exit_task.take() {
             let status = task
                 .await
                 .map_err(|error| format!("supervisor exit task failed: {error}"))?
                 .map_err(|error| format!("supervisor exit failed: {error}"))?;
-            self.supervisor_exit_task.take();
             if status.success() {
                 return Ok(());
             }
             return Err(format!("supervisor exited with {status}"));
         }
-        if let Some(child) = self.child.as_mut() {
+        if let Some(mut child) = self.child.take() {
             let status = child
                 .wait()
                 .await
                 .map_err(|error| format!("app exit wait failed: {error}"))?;
-            self.child.take();
             if status.success() {
                 return Ok(());
             }
