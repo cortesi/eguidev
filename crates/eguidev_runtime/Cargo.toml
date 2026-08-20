@@ -33,7 +33,6 @@ tmcp = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-eframe.workspace = true
 tmcp = { workspace = true, features = ["testutils"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

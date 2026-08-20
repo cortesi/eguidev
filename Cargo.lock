@@ -843,7 +843,6 @@ dependencies = [
 name = "eguidev"
 version = "0.1.0"
 dependencies = [
- "eframe",
  "egui",
  "schemars",
  "serde",
@@ -870,7 +869,6 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",
  "dispatch2",
- "eframe",
  "egui",
  "eguidev",
  "foreign-types",

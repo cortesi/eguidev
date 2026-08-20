@@ -13,8 +13,6 @@
 //! The process-wide window hook is installed when instrumentation attaches, but
 //! its visible-state override is enabled only for a connected MCP session.
 
-#[cfg(test)]
-use std::path::{Path, PathBuf};
 use std::{
     collections::{HashMap, HashSet},
     ffi::{CStr, c_char},
@@ -740,18 +738,6 @@ fn activation_policy_name(policy: i64) -> String {
     }
 }
 
-#[cfg(test)]
-fn bundle_root(executable: &Path) -> Option<String> {
-    let mut root = PathBuf::new();
-    for component in executable.components() {
-        root.push(component.as_os_str());
-        if component.as_os_str().to_string_lossy().ends_with(".app") {
-            return Some(root.display().to_string());
-        }
-    }
-    None
-}
-
 async fn run_on_main<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -911,11 +897,6 @@ mod tests {
         assert_eq!(
             activation_policy_name(ACTIVATION_POLICY_ACCESSORY),
             "accessory"
-        );
-        assert_eq!(bundle_root(Path::new("bin/example")), None);
-        assert_eq!(
-            bundle_root(Path::new("build/example.app/Contents/MacOS/example")),
-            Some("build/example.app".to_string())
         );
     }
 }

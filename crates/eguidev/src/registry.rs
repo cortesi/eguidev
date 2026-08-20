@@ -545,19 +545,6 @@ impl Inner {
         self.viewports.frame_health(viewport_id)
     }
 
-    pub fn frame_health_snapshot(&self) -> Vec<FrameHealth> {
-        self.viewports.frame_health_snapshot()
-    }
-
-    pub fn frames_observed_since(
-        &self,
-        viewport_id: egui::ViewportId,
-        start_frame: u64,
-    ) -> Option<u64> {
-        self.viewports
-            .frames_observed_since(viewport_id, start_frame)
-    }
-
     pub fn begin_fixture_epoch(&self) -> u64 {
         self.fixture_epoch.fetch_add(1, Ordering::Relaxed) + 1
     }

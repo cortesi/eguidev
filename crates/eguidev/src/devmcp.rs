@@ -608,11 +608,6 @@ pub fn frame_scope<R>(
     container(ui, container_id, add_contents)
 }
 
-/// Clear script-visible widgets for a viewport that is no longer rendered.
-pub fn clear_viewport(devmcp: &DevMcp, viewport_id: egui::ViewportId) {
-    devmcp.clear_viewport(viewport_id);
-}
-
 #[cfg(test)]
 #[allow(deprecated)]
 #[allow(clippy::tests_outside_test_module)]

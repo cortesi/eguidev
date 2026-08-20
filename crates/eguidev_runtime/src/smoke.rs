@@ -430,6 +430,9 @@ pub fn discover_suite_scripts(config: &SuiteConfig) -> io::Result<Vec<SuiteScrip
 }
 
 /// Run a smoketest suite against a live `DevMcp` instance.
+///
+/// Blocks the calling thread on `handle` for each script. Prefer
+/// [`run_suite_with`] when the caller already owns the async context.
 pub fn run_suite(devmcp: &DevMcp, handle: &Handle, config: &SuiteConfig) -> SuiteResult {
     run_suite_with(config, |request| {
         Ok(handle.block_on(runtime::eval_script(

@@ -16,29 +16,18 @@
 //! The handle stays inert until a native app opts into `eguidev_runtime` and
 //! attaches the embedded runtime in one bootstrap location.
 //!
-//! ```rust
+//! ```rust,ignore
 //! use eframe::{App, egui};
-//! use eguidev::{DevMcp, DevUiExt, FrameGuard};
+//! use eguidev::{DevMcp, DevUiExt};
 //!
 //! struct MyApp {
 //!     devmcp: DevMcp,
 //!     name: String,
 //! }
 //!
-//! impl MyApp {
-//!     fn new() -> Self {
-//!         Self {
-//!             devmcp: DevMcp::new(),
-//!             name: String::new(),
-//!         }
-//!     }
-//! }
-//!
 //! impl App for MyApp {
 //!     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-//!         let ctx = ui.ctx().clone();
-//!         let _guard = FrameGuard::new(&self.devmcp, &ctx);
-//!         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+//!         eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
 //!             ui.dev_text_edit("app.name", &mut self.name);
 //!             if ui.dev_button("app.submit", "Submit").clicked() {
 //!                 // ...
@@ -176,7 +165,7 @@ mod viewports;
 mod widget_registry;
 
 pub use crate::{
-    devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
+    devmcp::{AutomationOptions, DevMcp, FrameGuard, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
     instrument::{
         ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, name_viewport,

@@ -42,7 +42,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-clap = { version = "4.6", features = ["derive"] }
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
