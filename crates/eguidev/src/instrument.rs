@@ -583,7 +583,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
         let widgets = devmcp
             .inner()
@@ -640,7 +640,7 @@ mod tests {
             let _advanced = ui.dev_collapsing("advanced", &mut advanced_open, "Advanced", |ui| {
                 ui.dev_label("advanced.summary", "Shown");
             });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -725,7 +725,7 @@ mod tests {
                 },
             );
             ui.dev_color_edit("accent", &mut color);
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -783,7 +783,7 @@ mod tests {
                     ui.add_space(200.0);
                     ui.dev_button("clipped", "Clipped");
                 });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -817,7 +817,7 @@ mod tests {
                 .dev_show(ui, "scroll", |ui| {
                     ui.add_space(200.0);
                 });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -858,7 +858,7 @@ mod tests {
                     }
                     ui.add_space(200.0);
                 });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -900,7 +900,7 @@ mod tests {
                     }
                     ui.add_space(200.0);
                 });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         assert!(
@@ -928,7 +928,7 @@ mod tests {
                         ui.add_space(200.0);
                     },
                 );
-                devmcp.end_frame(ctx);
+                devmcp.end_frame(ctx, true);
             });
         };
 
@@ -967,7 +967,7 @@ mod tests {
                         ui.add_space(200.0);
                     },
                 );
-                devmcp.end_frame(ctx);
+                devmcp.end_frame(ctx, true);
             });
         };
 
@@ -1006,7 +1006,7 @@ mod tests {
                     ui.dev_button("leaf", "Leaf");
                 });
             });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -1046,7 +1046,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -1093,7 +1093,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -1131,7 +1131,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp
@@ -1160,7 +1160,7 @@ mod tests {
                     ui.add_space(100.0);
                     ui.dev_label("clipped_lbl", "Clipped");
                 });
-            devmcp.end_frame(ctx);
+            devmcp.end_frame(ctx, true);
         });
 
         let widgets = devmcp

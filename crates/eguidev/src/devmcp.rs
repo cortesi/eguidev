@@ -4,7 +4,10 @@
 use std::{
     any::Any,
     fmt,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -356,9 +359,9 @@ impl DevMcp {
     /// Begin a frame, enabling widget tracking for this thread.
     ///
     /// Prefer [`FrameGuard`] over calling this directly.
-    pub(crate) fn begin_frame(&self, ctx: &Context) {
+    pub(crate) fn begin_frame(&self, ctx: &Context) -> bool {
         let Some(inner) = self.inner() else {
-            return;
+            return false;
         };
         if ctx.with_plugin::<AutomationPlugin, _>(|_| ()).is_none() {
             ctx.add_plugin(AutomationPlugin {
@@ -366,11 +369,13 @@ impl DevMcp {
                 output_viewport_id: Some(ctx.viewport_id()),
             });
         }
+        let viewport_id = ctx.viewport_id();
+        let outermost = inner.enter_viewport_frame(viewport_id);
+        let pushed = AtomicBool::new(false);
         swallow_panic("begin_frame", || {
-            let viewport_id = ctx.viewport_id();
             inner.begin_frame(viewport_id);
             inner.capture_context(viewport_id, ctx);
-            if viewport_id == egui::ViewportId::ROOT {
+            if outermost && viewport_id == egui::ViewportId::ROOT {
                 inner.fixtures.drain_ui(ctx);
                 inner.diagnostics.drain_ui(ctx);
             }
@@ -378,36 +383,46 @@ impl DevMcp {
                 let events = ctx.input(|input| input.events.clone());
                 hooks.on_raw_input(inner, &events);
             }
-            inner.widgets.clear_registry(viewport_id);
-            ACTIVE.with(|active| {
-                if let Ok(mut active) = active.try_borrow_mut() {
-                    active.push(Arc::clone(inner));
-                } else {
-                    eprintln!("eguidev: begin_frame skipped; active already borrowed");
-                }
-            });
+            if outermost {
+                inner.widgets.clear_registry(viewport_id);
+                ACTIVE.with(|active| {
+                    if let Ok(mut active) = active.try_borrow_mut() {
+                        active.push(Arc::clone(inner));
+                        pushed.store(true, Ordering::Relaxed);
+                    } else {
+                        eprintln!("eguidev: begin_frame skipped; active already borrowed");
+                    }
+                });
+            }
         });
+        pushed.load(Ordering::Relaxed)
     }
 
     /// End a frame, finalizing widget registry and handling automation state.
     ///
     /// Prefer [`FrameGuard`] over calling this directly.
-    pub(crate) fn end_frame(&self, ctx: &Context) {
+    pub(crate) fn end_frame(&self, ctx: &Context, pushed: bool) {
         let Some(inner) = self.inner() else {
             return;
         };
-        swallow_panic("end_frame", || {
-            self.finish_frame(inner, ctx);
-        });
-        ACTIVE.with(|active| {
-            if let Ok(mut active) = active.try_borrow_mut() {
-                if active.last().is_some_and(|top| Arc::ptr_eq(top, inner)) {
-                    active.pop();
+        let viewport_id = ctx.viewport_id();
+        let outermost = inner.exit_viewport_frame(viewport_id);
+        if outermost {
+            swallow_panic("end_frame", || {
+                self.finish_frame(inner, ctx);
+            });
+        }
+        if pushed {
+            ACTIVE.with(|active| {
+                if let Ok(mut active) = active.try_borrow_mut() {
+                    if active.last().is_some_and(|top| Arc::ptr_eq(top, inner)) {
+                        active.pop();
+                    }
+                } else {
+                    eprintln!("eguidev: end_frame skipped; active already borrowed");
                 }
-            } else {
-                eprintln!("eguidev: end_frame skipped; active already borrowed");
-            }
-        });
+            });
+        }
     }
 
     fn finish_frame(&self, inner: &Arc<Inner>, ctx: &Context) {
@@ -506,19 +521,25 @@ pub struct FrameGuard<'a> {
     devmcp: &'a DevMcp,
     /// Egui context for the current frame.
     ctx: &'a egui::Context,
+    /// Whether this guard pushed the recording stack.
+    pushed: bool,
 }
 
 impl<'a> FrameGuard<'a> {
     /// Create a new frame guard for the provided DevMcp.
     pub fn new(devmcp: &'a DevMcp, ctx: &'a Context) -> Self {
-        devmcp.begin_frame(ctx);
-        Self { devmcp, ctx }
+        let pushed = devmcp.begin_frame(ctx);
+        Self {
+            devmcp,
+            ctx,
+            pushed,
+        }
     }
 }
 
 impl Drop for FrameGuard<'_> {
     fn drop(&mut self) {
-        self.devmcp.end_frame(self.ctx);
+        self.devmcp.end_frame(self.ctx, self.pushed);
     }
 }
 
@@ -822,6 +843,8 @@ mod inactive_tests {
             .iter()
             .map(|widget| widget.id.as_str())
             .collect::<Vec<_>>();
+        assert!(ids.contains(&"outer.first"), "{ids:?}");
+        assert!(ids.contains(&"inner"), "{ids:?}");
         assert!(ids.contains(&"outer.second"), "{ids:?}");
         assert!(
             ctx.plugin_opt::<AutomationPlugin>().is_some(),
