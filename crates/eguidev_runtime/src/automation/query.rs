@@ -33,6 +33,18 @@ pub(super) fn widgets_at_point(
     hits
 }
 
+pub(super) fn covering_widget_id(
+    inner: &Inner,
+    viewport_id: egui::ViewportId,
+    position: Pos2,
+    target_id: &str,
+) -> Option<String> {
+    let top = widgets_at_point(inner, viewport_id, position, false)
+        .into_iter()
+        .next()?;
+    (top.id != target_id).then_some(top.id)
+}
+
 impl DevMcpServer {
     pub(super) async fn viewports_list(
         &self,

@@ -164,6 +164,8 @@ declare class Widget
     read parent: (self: Widget) -> Widget?
     read children: (self: Widget) -> { Widget }
 
+    --- Clicks the widget's interact-rect center. Input is coordinate-based: a
+    --- covering widget receives the event. Probe occlusion with Viewport:widgets_at.
     read click: (self: Widget, options: ClickOptions?) -> ()
     read hover: (self: Widget, options: HoverOptions?) -> ()
     read focus: (self: Widget, options: ActionOptions?) -> ()
@@ -174,6 +176,8 @@ declare class Widget
     read drag_to: (self: Widget, target: Pos | Widget, options: DragOptions?) -> ()
     --- The target is normalized within the widget, from 0 to 1 on each axis.
     read drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> ()
+    --- Scroll-area widgets apply an offset override and ignore modifiers.
+    --- Offset is clamped to `[0, max_offset]`. Other roles inject a pointer scroll.
     read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
     --- Times out when the widget is disabled. The same `interaction_ready`

@@ -73,7 +73,7 @@ use capture::{
 };
 use layout::*;
 pub(crate) use query::filter_viewport_snapshots;
-use query::widgets_at_point;
+use query::{covering_widget_id, widgets_at_point};
 use results::*;
 pub use script::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
@@ -1192,6 +1192,82 @@ mod tests {
 
         assert!(message.contains("Native screenshot fallback is only available"));
         assert!(!message.contains("attempted for this child viewport"));
+    }
+
+    #[test]
+    fn covering_widget_id_reports_the_topmost_hit() {
+        let inner = Inner::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        let button = make_entry_with_rect(
+            "under",
+            1,
+            WidgetRole::Button,
+            Rect {
+                min: Pos2 { x: 0.0, y: 0.0 },
+                max: Pos2 { x: 10.0, y: 10.0 },
+            },
+            None,
+        );
+        let overlay = make_entry_with_rect(
+            "cover",
+            2,
+            WidgetRole::Button,
+            Rect {
+                min: Pos2 { x: 0.0, y: 0.0 },
+                max: Pos2 { x: 10.0, y: 10.0 },
+            },
+            None,
+        );
+        inner.widgets.record_widget(viewport_id, button);
+        inner.widgets.record_widget(viewport_id, overlay);
+        inner.widgets.finalize_registry(viewport_id);
+        let pos = Pos2 { x: 5.0, y: 5.0 };
+        assert_eq!(
+            covering_widget_id(&inner, viewport_id, pos, "under").as_deref(),
+            Some("cover")
+        );
+        assert_eq!(covering_widget_id(&inner, viewport_id, pos, "cover"), None);
+    }
+
+    #[tokio::test]
+    async fn scroll_area_rejects_modifiers_and_clamps_to_max_offset() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let mut area = make_entry("scroller", 1, WidgetRole::ScrollArea);
+        area.role_state = Some(RoleState::ScrollArea {
+            offset: Vec2 { x: 0.0, y: 0.0 },
+            viewport_size: Vec2 { x: 100.0, y: 40.0 },
+            content_size: Vec2 { x: 100.0, y: 80.0 },
+        });
+        inner.widgets.record_widget(viewport_id, area);
+        inner.widgets.finalize_registry(viewport_id);
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let target = WidgetRef {
+            id: "scroller".to_string(),
+            viewport_id: None,
+        };
+        let error = server
+            .action_scroll(
+                None,
+                target.clone(),
+                Vec2 { x: 0.0, y: -10.0 },
+                Some(Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                }),
+            )
+            .await
+            .expect_err("modifiers rejected on scroll area");
+        assert!(error.to_string().contains("modifiers"), "{error}");
+
+        server
+            .action_scroll(None, target, Vec2 { x: 0.0, y: -1000.0 }, None)
+            .await
+            .expect("scroll");
+        let offset = inner
+            .take_scroll_override(viewport_id, 1)
+            .expect("override");
+        assert!((offset.y - 40.0).abs() < f32::EPSILON, "{offset:?}");
     }
 
     #[test]

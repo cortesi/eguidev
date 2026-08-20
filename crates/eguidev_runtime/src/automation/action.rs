@@ -300,6 +300,7 @@ impl DevMcpServer {
             .into());
         }
         let pointer_button = egui_pointer_button(button);
+        log_pointer_cover(&self.inner, viewport_id, pos, &widget.id);
         queue_click(
             &self.inner,
             viewport_id,
@@ -493,20 +494,29 @@ impl DevMcpServer {
         let (widget, viewport_id) =
             self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
         let pos = widget.interact_rect.center();
+        log_pointer_cover(&self.inner, viewport_id, pos, &widget.id);
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
         let mut applied_override = false;
         if widget.role == WidgetRole::ScrollArea {
-            let current = widget
-                .role_state
-                .as_ref()
-                .and_then(RoleState::scroll_state)
+            if modifiers.is_some() {
+                return Err(ToolError::new(
+                    ErrorCode::InvalidArgument,
+                    "modifiers are not applied when scrolling a scroll area",
+                )
+                .into());
+            }
+            let scroll = widget.role_state.as_ref().and_then(RoleState::scroll_state);
+            let current = scroll
                 .map(|scroll| scroll.offset.into())
+                .unwrap_or(egui::Vec2::ZERO);
+            let max_offset = scroll
+                .map(|scroll| scroll.max_offset.into())
                 .unwrap_or(egui::Vec2::ZERO);
             let delta_vec: egui::Vec2 = delta.into();
             let mut target = current - delta_vec;
-            target.x = target.x.max(0.0);
-            target.y = target.y.max(0.0);
+            target.x = target.x.clamp(0.0, max_offset.x);
+            target.y = target.y.clamp(0.0, max_offset.y);
             self.inner
                 .set_scroll_override(viewport_id, widget.native_id, target);
             applied_override = true;
@@ -617,5 +627,13 @@ impl DevMcpServer {
         }
 
         Ok(())
+    }
+}
+
+fn log_pointer_cover(inner: &Inner, viewport_id: egui::ViewportId, pos: Pos2, target_id: &str) {
+    if let Some(coverer) = super::query::covering_widget_id(inner, viewport_id, pos, target_id) {
+        eprintln!(
+            "eguidev: pointer target {target_id:?} is covered by {coverer:?}; clicks use coordinates (probe with Viewport:widgets_at)"
+        );
     }
 }
