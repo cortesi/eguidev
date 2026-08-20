@@ -47,6 +47,7 @@ pub struct Inner {
     widget_value_consumers: Mutex<HashSet<WidgetValueKey>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     frame_fixture_epochs: Mutex<HashMap<egui::ViewportId, u64>>,
+    frame_depth: Mutex<HashMap<egui::ViewportId, u32>>,
     next_request_id: AtomicU64,
     frame_count: AtomicU64,
     fixture_epoch: AtomicU64,
@@ -125,6 +126,7 @@ impl Inner {
             widget_value_consumers: Mutex::new(HashSet::new()),
             scroll_overrides: Mutex::new(HashMap::new()),
             frame_fixture_epochs: Mutex::new(HashMap::new()),
+            frame_depth: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             frame_count: AtomicU64::new(0),
             fixture_epoch: AtomicU64::new(0),
@@ -490,10 +492,34 @@ impl Inner {
         lock(&self.frame_fixture_epochs, "frame fixture epochs lock").insert(viewport_id, epoch);
     }
 
+    /// Enter a viewport frame. Returns true when this is the outermost begin.
+    pub fn enter_viewport_frame(&self, viewport_id: egui::ViewportId) -> bool {
+        let mut depths = lock(&self.frame_depth, "frame depth lock");
+        let depth = depths.entry(viewport_id).or_insert(0);
+        *depth = depth.saturating_add(1);
+        *depth == 1
+    }
+
+    /// Exit a viewport frame. Returns true when this is the matching outermost end.
+    pub fn exit_viewport_frame(&self, viewport_id: egui::ViewportId) -> bool {
+        let mut depths = lock(&self.frame_depth, "frame depth lock");
+        let Some(depth) = depths.get_mut(&viewport_id) else {
+            return true;
+        };
+        *depth = depth.saturating_sub(1);
+        if *depth == 0 {
+            depths.remove(&viewport_id);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn finish_frame_fixture_epoch(&self, viewport_id: egui::ViewportId) -> Option<u64> {
         lock(&self.frame_fixture_epochs, "frame fixture epochs lock").remove(&viewport_id)
     }
 
+    /// Count a completed egui pass. Multi-pass frames increment this more than once.
     pub fn advance_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }

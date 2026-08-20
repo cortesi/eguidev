@@ -146,6 +146,7 @@ pub struct ActionQueue {
     staged_actions: [Mutex<ActionMap>; ACTION_STAGE_COUNT],
     commands: Mutex<HashMap<egui::ViewportId, Vec<egui::ViewportCommand>>>,
     stats: Mutex<HashMap<egui::ViewportId, ActionQueueStats>>,
+    last_promotion_frame: Mutex<HashMap<egui::ViewportId, u64>>,
 }
 
 impl Default for ActionQueue {
@@ -160,6 +161,7 @@ impl ActionQueue {
             staged_actions: array::from_fn(|_| Mutex::new(HashMap::new())),
             commands: Mutex::new(HashMap::new()),
             stats: Mutex::new(HashMap::new()),
+            last_promotion_frame: Mutex::new(HashMap::new()),
         }
     }
 
@@ -179,10 +181,18 @@ impl ActionQueue {
     }
 
     pub fn drain_actions(&self, viewport_id: egui::ViewportId, frame: u64) -> Vec<InputAction> {
-        let current = self.take_staged_actions(ActionTiming::Immediate, viewport_id);
-        for stage in ACTION_STAGES.windows(2) {
-            self.promote_staged_actions(stage[0], stage[1], viewport_id);
+        let mut last_promotion = lock(&self.last_promotion_frame, "action promotion frame lock");
+        if last_promotion
+            .get(&viewport_id)
+            .is_some_and(|previous| *previous != frame)
+        {
+            for stage in ACTION_STAGES.windows(2) {
+                self.promote_staged_actions(stage[0], stage[1], viewport_id);
+            }
         }
+        last_promotion.insert(viewport_id, frame);
+        drop(last_promotion);
+        let current = self.take_staged_actions(ActionTiming::Immediate, viewport_id);
         self.record_drain(viewport_id, current.len(), frame);
         current
     }
@@ -198,6 +208,7 @@ impl ActionQueue {
         }
         lock(&self.commands, "commands lock").clear();
         lock(&self.stats, "action stats lock").clear();
+        lock(&self.last_promotion_frame, "action promotion frame lock").clear();
     }
 
     pub fn stats(&self, viewport_id: egui::ViewportId) -> ActionQueueStats {
@@ -386,5 +397,45 @@ mod tests {
 
         assert!(queue.drain_actions(viewport_id, 12).is_empty());
         assert_eq!(queue.stats(viewport_id).last_drain_frame, Some(11));
+    }
+
+    #[test]
+    fn drain_actions_promotes_once_per_frame_number() {
+        let queue = ActionQueue::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        queue.queue_action_with_timing(
+            viewport_id,
+            ActionTiming::Immediate,
+            InputAction::Text {
+                text: "now".to_string(),
+            },
+        );
+        queue.queue_action_with_timing(
+            viewport_id,
+            ActionTiming::AfterOneFrame,
+            InputAction::Text {
+                text: "next".to_string(),
+            },
+        );
+
+        let first = queue
+            .drain_actions(viewport_id, 10)
+            .into_iter()
+            .map(text_payload)
+            .collect::<Vec<_>>();
+        let second = queue
+            .drain_actions(viewport_id, 10)
+            .into_iter()
+            .map(text_payload)
+            .collect::<Vec<_>>();
+        let third = queue
+            .drain_actions(viewport_id, 11)
+            .into_iter()
+            .map(text_payload)
+            .collect::<Vec<_>>();
+
+        assert_eq!(first, vec!["now".to_string()]);
+        assert!(second.is_empty());
+        assert_eq!(third, vec!["next".to_string()]);
     }
 }
