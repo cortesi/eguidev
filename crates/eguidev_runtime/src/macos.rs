@@ -366,29 +366,22 @@ pub async fn configure_session(
 pub async fn disconnect_session(session_id: u64) -> Result<(), String> {
     run_on_main(move || {
         let observed_policy = activation_policy();
-        let (previous, transition) = {
+        let transition = {
             let mut sessions = presentation_session()
                 .lock()
                 .expect("presentation session lock poisoned");
-            let previous = sessions.clone();
-            let transition =
-                sessions.disconnect(session_id, observed_policy, ACTIVATION_POLICY_ACCESSORY);
-            (previous, transition)
+            sessions.disconnect(session_id, observed_policy, ACTIVATION_POLICY_ACCESSORY)
         };
-        if let Some(transition) = transition
-            && let Err(error) = apply_transition(transition)
-        {
-            *presentation_session()
-                .lock()
-                .expect("presentation session lock poisoned") = previous;
-            return Err(error);
-        }
         let active = presentation_session()
             .lock()
             .expect("presentation session lock poisoned")
             .is_active();
         SPOOF_OCCLUSION.store(active, Ordering::Release);
+        let apply_error = transition.and_then(|transition| apply_transition(transition).err());
         reevaluate_live_windows();
+        if let Some(error) = apply_error {
+            return Err(error);
+        }
         Ok::<_, String>(())
     })
     .await?

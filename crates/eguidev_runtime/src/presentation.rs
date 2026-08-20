@@ -196,6 +196,17 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_leaves_session_removed_when_transition_cannot_apply() {
+        let mut session = PresentationSession::default();
+        session.configure(7, Presentation::Background, Some(0), 1);
+        let previous = session.clone();
+        let transition = session.disconnect(7, Some(1), 1);
+        assert!(transition.is_some());
+        assert!(!session.is_active());
+        assert_ne!(session, previous);
+    }
+
+    #[test]
     fn conflicting_policy_is_reported_once() {
         let mut session = PresentationSession::default();
         session.configure(1, Presentation::Background, Some(0), 1);
