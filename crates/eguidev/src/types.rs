@@ -702,6 +702,8 @@ const fn default_scroll_tolerance() -> f32 {
 ///
 /// An empty pointer selects the whole document. Any other pointer starts with
 /// `/`, and `~` only introduces the `~0` and `~1` escapes.
+///
+/// Keep aligned with `isValidJsonPointer` in `eguidev.luau`.
 fn is_valid_json_pointer(pointer: &str) -> bool {
     if pointer.is_empty() {
         return true;

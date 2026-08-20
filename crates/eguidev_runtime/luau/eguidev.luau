@@ -240,6 +240,43 @@ local function configure(options: ScriptOptions)
     end
 end
 
+local function isJsonArray(value: any): boolean
+    if type(value) ~= "table" then
+        return false
+    end
+    local count = 0
+    for key in value do
+        if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then
+            return false
+        end
+        count += 1
+    end
+    return count == 0 or count == #value
+end
+
+local function deepEquals(left: any, right: any): boolean
+    if left == right then
+        return true
+    end
+    if type(left) ~= "table" or type(right) ~= "table" then
+        return false
+    end
+    local seen = {}
+    for key, value in left do
+        if not deepEquals(value, right[key]) then
+            return false
+        end
+        seen[key] = true
+    end
+    for key in right do
+        if not seen[key] then
+            return false
+        end
+    end
+    return true
+end
+
+-- RFC 6901. Keep aligned with `is_valid_json_pointer` in crates/eguidev/src/types.rs.
 local function jsonPointer(value: any, pointer: string): (boolean, any)
     if pointer == "" then
         return true, value
@@ -253,7 +290,12 @@ local function jsonPointer(value: any, pointer: string): (boolean, any)
             return false, nil
         end
         local part = string.gsub(string.gsub(rawPart, "~1", "/"), "~0", "~")
-        current = current[part]
+        local index = tonumber(part)
+        if isJsonArray(current) and index ~= nil and string.match(part, "^%d+$") ~= nil then
+            current = current[index + 1]
+        else
+            current = current[part]
+        end
         if current == nil then
             return false, nil
         end
@@ -261,6 +303,7 @@ local function jsonPointer(value: any, pointer: string): (boolean, any)
     return true, current
 end
 
+-- Keep aligned with `is_valid_json_pointer` in crates/eguidev/src/types.rs.
 local function isValidJsonPointer(pointer: string): boolean
     if pointer == "" then
         return true
@@ -390,7 +433,7 @@ local function widgetConditionMatches(state: WidgetState?, condition: WidgetCond
     end
     if condition.data ~= nil then
         local found, selected = jsonPointer(current.data, condition.data.pointer)
-        if not found or selected ~= condition.data.equals then return false end
+        if not found or not deepEquals(selected, condition.data.equals) then return false end
     end
     return true
 end
@@ -614,32 +657,43 @@ function widgetMethods.expect(
     end
     local wantedDescendants = wanted.descendants
     if passed and wantedDescendants ~= nil then
-        local descendants: any = {}
-        local function collect(current: Widget)
-            for _, child in current:children() do
-                descendants[child.id] = true
-                collect(child)
+        if state == nil then
+            passed = false
+        else
+            local descendants: any = {}
+            local function collect(current: Widget)
+                for _, child in current:children() do
+                    descendants[child.id] = true
+                    collect(child)
+                end
             end
-        end
-        collect(self)
-        for _, child in wantedDescendants do
-            if not descendants[child.id] then passed = false break end
+            collect(self)
+            for _, child in wantedDescendants do
+                if not descendants[child.id] then passed = false break end
+            end
         end
     end
     if passed and wanted.text_fits == true then
-        passed = not self:text_measure().ellipsis
+        passed = state ~= nil and not self:text_measure().ellipsis
     end
     local painted = wanted.painted
     if passed and painted ~= nil then
-        local samples = self:sample_grid(24, 24)
-        local colors = {}
-        for _, sample in samples do colors[sample.hex] = true end
-        local count = 0
-        for _ in colors do count += 1 end
-        local minimumColors: number = painted.min_colors or 2
-        passed = count >= minimumColors
+        if state == nil then
+            passed = false
+        else
+            local samples = self:sample_grid(24, 24)
+            local colors = {}
+            for _, sample in samples do colors[sample.hex] = true end
+            local count = 0
+            for _ in colors do count += 1 end
+            local minimumColors: number = painted.min_colors or 2
+            passed = count >= minimumColors
+        end
     end
-    recordExpectation(passed, `Widget({self.id}) expectation`)
+    recordExpectation(
+        passed,
+        if passed then `Widget({self.id}) expectation` else `Widget({self.id}) expectation failed`
+    )
     if not passed then
         fail("expectation_failed", `Widget({self.id}) expectation failed`, "widget.expect", {
             kind = "widget",

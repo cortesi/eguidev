@@ -24,6 +24,14 @@ local loaded_data = loaded.data
 assert(loaded_data ~= nil, "the loaded state should publish data")
 assert(loaded_data.analysed == 8, "the pass should have analysed every game")
 assert(loaded_data.complete == true, "the pass should report itself complete")
+assert(loaded_data.pass_meta.kind == "analysis", "the table data anchor should match structurally")
+assert(loaded_data.rgba[1] == 28, "Lua arrays stay 1-based")
+eguidev.widget("status.summary"):expect({
+    data = { pointer = "/pass_meta", equals = { kind = "analysis" } },
+})
+eguidev.widget("status.summary"):expect({
+    data = { pointer = "/rgba/0", equals = 28 },
+})
 
 -- The fixture catalog exposes the data anchor in its readiness contract.
 local found = false

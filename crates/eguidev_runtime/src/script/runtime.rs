@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use eguidev::AutomationOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tmcp::ToolResult;
@@ -106,6 +107,7 @@ pub(super) struct ScriptRuntime {
     egui_diagnostic_start: u64,
     dismissed_egui_diagnostics: Mutex<BTreeSet<u64>>,
     targeted_viewports: Mutex<BTreeSet<String>>,
+    saved_automation_options: AutomationOptions,
 }
 
 fn resolve_widget(
@@ -187,6 +189,7 @@ impl ScriptRuntime {
             .checked_add(Duration::from_millis(timeout_ms))
             .unwrap_or(started_at);
         let egui_diagnostic_start = runtime.egui_diagnostics().tail_sequence();
+        let saved_automation_options = inner.automation_options();
         Self {
             server: DevMcpServer::with_runtime(inner, runtime),
             logs: Mutex::new(Vec::new()),
@@ -204,7 +207,14 @@ impl ScriptRuntime {
             egui_diagnostic_start,
             dismissed_egui_diagnostics: Mutex::new(BTreeSet::new()),
             targeted_viewports: Mutex::new(BTreeSet::new()),
+            saved_automation_options,
         }
+    }
+
+    pub(super) fn restore_automation_options(&self) {
+        self.server
+            .inner
+            .set_automation_options(self.saved_automation_options);
     }
 
     pub(super) fn record_targeted_viewport(&self, viewport_id: impl Into<String>) {
@@ -1653,7 +1663,12 @@ impl ScriptRuntime {
                                 format!("Failed to prepare widget state for predicate: {error:?}"),
                             )),
                         },
-                        Err(error) if error.code() == ErrorCode::NotFound => Ok((false, None)),
+                        Err(error) if error.code() == ErrorCode::NotFound => {
+                            match predicate(Value::Null).await {
+                                Ok(matched) => Ok((matched, None)),
+                                Err(error) => Err(error),
+                            }
+                        }
                         Err(error) => Err(self.tool_error(pos, error.into())),
                     }
                 }

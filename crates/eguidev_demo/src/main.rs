@@ -112,6 +112,11 @@ fn demo_fixtures() -> Vec<FixtureSpec> {
         // `/complete` alone would already hold at zero of zero, so the static
         // ready names the pass itself and the handler returns the count.
         .ready_data("status.summary", "/pass", "analysis")
+        .ready_data(
+            "status.summary",
+            "/pass_meta",
+            json!({ "kind": "analysis" }),
+        )
         .param(
             FixtureParam::int("games", "Games the staged pass analyses.")
                 .default(6)
@@ -943,9 +948,15 @@ impl DemoApp {
             }
             .with_data(json!({
                 "pass": if s.analysis_total == 0 { "idle" } else { "analysis" },
+                "pass_meta": if s.analysis_total == 0 {
+                    json!(null)
+                } else {
+                    json!({ "kind": "analysis" })
+                },
                 "analysed": s.analysed,
                 "total": s.analysis_total,
                 "complete": s.analysis_total > 0 && s.analysed >= s.analysis_total,
+                "rgba": [28, 34, 44],
             })),
         );
     }

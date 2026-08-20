@@ -2964,6 +2964,7 @@ mod tests {
         },
     };
 
+    use eguidev::AutomationOptions;
     use ruau::vm::{
         Ambient, Function, Limits, RuntimeCapabilities, Vm, serde::json_to_scoped_value,
     };
@@ -3333,6 +3334,100 @@ return state ~= nil"#
     }
 
     #[test]
+    fn script_eval_widget_predicate_receives_nil_when_absent() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.configure({ timeout_ms = 50, poll_interval_ms = 1 })
+local seen_nil = false
+local state = eguidev.widget("missing"):wait(function(current)
+    if current == nil then
+        seen_nil = true
+        return true
+    end
+    return false
+end)
+return { seen_nil = seen_nil, state_nil = state == nil }"#
+                .to_string(),
+            1_000,
+            "absent-predicate.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({ "seen_nil": true, "state_nil": true }))
+        );
+    }
+
+    #[test]
+    fn script_eval_expect_text_fits_on_absent_widget_records_failure() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("missing"):expect(
+    { present = false, text_fits = true },
+    { timeout_ms = 20, poll_interval_ms = 1 }
+)"#
+            .to_string(),
+            1_000,
+            "expect-absent-text-fits.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.expect("expectation error");
+        assert_eq!(error.error_type, "eguidev");
+        assert_eq!(error.code.as_deref(), Some("expectation_failed"));
+        assert_eq!(outcome.assertions.len(), 1);
+        assert!(!outcome.assertions[0].passed);
+        assert!(outcome.assertions[0].message.contains("expectation failed"));
+    }
+
+    #[test]
+    fn script_eval_data_condition_matches_tables_and_zero_based_array_index() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("status", 1, WidgetRole::Label);
+        entry.data = Some(json!({
+            "palette": { "name": "analysis", "rgba": [28, 34, 44] },
+            "pass": "analysis"
+        }));
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.configure({ timeout_ms = 50, poll_interval_ms = 1 })
+local table_match = eguidev.widget("status"):wait({
+    data = { pointer = "/palette", equals = { name = "analysis", rgba = { 28, 34, 44 } } },
+})
+local zero = eguidev.widget("status"):wait({
+    data = { pointer = "/palette/rgba/0", equals = 28 },
+})
+local one = eguidev.widget("status"):wait({
+    data = { pointer = "/palette/rgba/1", equals = 34 },
+})
+return { table_match = table_match ~= nil, zero = zero ~= nil, one = one ~= nil }"#
+                .to_string(),
+            1_000,
+            "data-table-pointer.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({ "table_match": true, "zero": true, "one": true }))
+        );
+    }
+
+    #[test]
     fn initial_ruau_slice_runs_configure_fixture_and_fixtures() {
         let inner = Arc::new(Inner::new());
         inner.fixtures.set_fixtures(vec![
@@ -3385,7 +3480,42 @@ return state ~= nil"#
             outcome.value,
             Some(json!({ "first": "alpha", "count": 2, "frame": 0, "params": "mode" }))
         );
-        assert!(inner.automation_options().animations);
+        assert!(!inner.automation_options().animations);
+    }
+
+    #[test]
+    fn configure_animations_does_not_leak_across_evaluations() {
+        let inner = Arc::new(Inner::new());
+        inner.set_automation_options(AutomationOptions {
+            keep_alive: true,
+            animations: false,
+        });
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let first = run_script_eval_blocking(
+            Arc::clone(&inner),
+            Arc::clone(&runtime),
+            r#"eguidev.configure({ animations = true })
+return true"#
+                .to_string(),
+            1_000,
+            "configure-animations-first.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(first.success, "{first:?}");
+        assert!(!inner.automation_options().animations);
+
+        let second = run_script_eval_blocking(
+            Arc::clone(&inner),
+            runtime,
+            r#"eguidev.configure({ animations = true })
+return true"#
+                .to_string(),
+            1_000,
+            "configure-animations-second.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(second.success, "{second:?}");
+        assert!(!inner.automation_options().animations);
     }
 
     #[test]
