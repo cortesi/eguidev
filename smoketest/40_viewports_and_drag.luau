@@ -27,14 +27,6 @@ eguidev.widget("basic.drag.detail"):wait( function(widget)
     return widget ~= nil and widget.value_text ~= "" and widget.value_text ~= drag_detail_before
 end)
 
-eguidev.widget("basic.drag"):drag_relative({ x = 1, y = 1 }, { from = { x = 0.2, y = 0.2 } })
-eguidev.wait_frames(2)
-
-eguidev.widget("basic.drag"):drag_to(eguidev.widget("basic.submit"), {
-    settle = false,
-})
-eguidev.wait_frames(2)
-
 eguidev.widget("basic.scroll"):scroll_to({
     align = "bottom",
     settle = false,

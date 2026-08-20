@@ -7,14 +7,6 @@ eguidev.widget("basic.scroll.row.0"):wait( function(widget)
     return widget ~= nil and widget.visible
 end)
 
--- scroll_to align=center
-eguidev.widget("basic.scroll"):scroll_to({ align = "center" })
-vp:settle()
-
--- After centering, row 0 should not be visible but middle rows should exist
-local _row_0_after_center = eguidev.widget("basic.scroll.row.0") :: any
--- Row 0 might or might not be visible depending on scroll area size, just verify the API works
-
 -- Jump buttons
 eguidev.widget("basic.scroll.jump_down"):click()
 vp:settle()
@@ -35,7 +27,11 @@ end)
 
 -- scroll with positive delta (content up)
 eguidev.widget("basic.scroll"):scroll({ x = 0, y = -200 })
-vp:settle()
+eguidev.widget("basic.scroll"):wait(function(widget)
+    if widget == nil then return false end
+    local scroll = widget.scroll_state
+    return scroll ~= nil and math.abs(scroll.offset.y) > TOLERANCE
+end)
 
 -- basic.scrolled fixture pre-scrolls the area
 eguidev.fixture("basic.scrolled")

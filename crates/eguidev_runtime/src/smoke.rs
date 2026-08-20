@@ -740,8 +740,43 @@ fn filter_suite_scripts(
 fn collect_suite_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     collect_suite_paths_recursive(root, root, &mut paths)?;
-    paths.sort();
+    paths.sort_by(|left, right| natural_path_cmp(left, right));
     Ok(paths)
+}
+
+fn natural_path_cmp(left: &Path, right: &Path) -> std::cmp::Ordering {
+    natural_key(&left.to_string_lossy()).cmp(&natural_key(&right.to_string_lossy()))
+}
+
+fn natural_key(value: &str) -> Vec<NaturalChunk<'_>> {
+    let mut chunks = Vec::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        if rest.as_bytes()[0].is_ascii_digit() {
+            let end = rest
+                .bytes()
+                .position(|byte| !byte.is_ascii_digit())
+                .unwrap_or(rest.len());
+            let digits = &rest[..end];
+            let number = digits.parse::<u64>().unwrap_or(u64::MAX);
+            chunks.push(NaturalChunk::Number(number, digits.len()));
+            rest = &rest[end..];
+        } else {
+            let end = rest
+                .bytes()
+                .position(|byte| byte.is_ascii_digit())
+                .unwrap_or(rest.len());
+            chunks.push(NaturalChunk::Text(&rest[..end]));
+            rest = &rest[end..];
+        }
+    }
+    chunks
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NaturalChunk<'a> {
+    Text(&'a str),
+    Number(u64, usize),
 }
 
 fn collect_suite_paths_recursive(
@@ -1088,6 +1123,28 @@ mod tests {
             vec![
                 PathBuf::from("20_second.luau"),
                 PathBuf::from("nested/10_first.luau"),
+            ]
+        );
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn collect_suite_paths_sorts_numerically() {
+        let root = test_root("collect_suite_paths_sorts_numerically");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&root).expect("create suite dir");
+        fs::write(root.join("100_later.luau"), "return true").expect("write 100");
+        fs::write(root.join("10_early.luau"), "return true").expect("write 10");
+        fs::write(root.join("2_first.luau"), "return true").expect("write 2");
+
+        let all = collect_suite_paths(&root).expect("all paths");
+        assert_eq!(
+            all,
+            vec![
+                PathBuf::from("2_first.luau"),
+                PathBuf::from("10_early.luau"),
+                PathBuf::from("100_later.luau"),
             ]
         );
 
