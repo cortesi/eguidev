@@ -634,7 +634,7 @@ impl ModuleSurface {
                     .or_default()
                     .insert(name.to_string());
             }
-            ModuleBinding::Library(_) => {}
+            ModuleBinding::Library(_) | ModuleBinding::LibraryOverride(_) => {}
         }
     }
 }

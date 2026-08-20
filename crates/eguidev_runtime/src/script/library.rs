@@ -29,6 +29,7 @@ pub fn declared_binding(binding: ModuleBinding) -> Binding {
         ModuleBinding::Global => Binding::declared_global(),
         ModuleBinding::GlobalOverride => Binding::declared_global_override(),
         ModuleBinding::Library(name) => Binding::declared_library(name),
+        ModuleBinding::LibraryOverride(name) => Binding::declared_library_override(name),
         ModuleBinding::Hidden(name) => Binding::hidden(name),
     }
 }
