@@ -183,6 +183,7 @@ declare class Widget
     read text_measure: (self: Widget) -> TextMeasure
     read layout_issues: (self: Widget) -> { LayoutIssue }
     --- Waits for a fresh screenshot and crops it to the widget.
+    --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
     read screenshot: (self: Widget) -> ImageRef
     --- Waits for one fresh screenshot. Positions are logical offsets from the
     --- widget rectangle's minimum point.
@@ -223,7 +224,8 @@ export type WidgetState = {
     range: Range?,
     --- combo_box only.
     options: { string }?,
-    --- button only when selected-aware metadata is recorded.
+    --- True when a toggle, radio, selectable, checkbox, or selected-aware
+    --- button is on. Nil for an indeterminate checkbox.
     selected: boolean?,
     --- checkbox only when indeterminate-aware metadata is recorded.
     indeterminate: boolean?,
@@ -391,6 +393,7 @@ declare class Viewport
     --- Dismisses evaluation-scoped entries without returning them.
     read clear_egui_diagnostics: (self: Viewport) -> ()
     --- Waits for a fresh screenshot of the viewport.
+    --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
     read screenshot: (self: Viewport) -> ImageRef
     --- Waits for one fresh screenshot. Positions are viewport-local logical
     --- points.

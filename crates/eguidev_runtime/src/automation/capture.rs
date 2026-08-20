@@ -589,11 +589,43 @@ fn screenshot_request_details_with_frames(
     })
 }
 
+const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1600;
+
+fn scale_screenshot_image(image: &egui::ColorImage, max_dimension: u32) -> egui::ColorImage {
+    let width = image.width();
+    let height = image.height();
+    let long_edge = width.max(height) as u32;
+    if long_edge <= max_dimension {
+        return image.clone();
+    }
+    let scale = max_dimension as f32 / long_edge as f32;
+    let new_width = ((width as f32) * scale).round().max(1.0) as usize;
+    let new_height = ((height as f32) * scale).round().max(1.0) as usize;
+    let mut pixels = Vec::with_capacity(new_width * new_height);
+    for y in 0..new_height {
+        for x in 0..new_width {
+            let source_x = x * width / new_width;
+            let source_y = y * height / new_height;
+            pixels.push(image.pixels[source_y * width + source_x]);
+        }
+    }
+    egui::ColorImage {
+        size: [new_width, new_height],
+        source_size: egui::Vec2::new(new_width as f32, new_height as f32),
+        pixels,
+    }
+}
+
 fn encode_jpeg(image: &egui::ColorImage) -> Result<String, ToolError> {
     const JPEG_QUALITY: u8 = 80;
+    let image = scale_screenshot_image(image, DEFAULT_MAX_SCREENSHOT_DIMENSION);
     let width = image.size[0] as u32;
     let height = image.size[1] as u32;
-    let mut bytes = Vec::with_capacity((width * height * 3) as usize);
+    let capacity = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .unwrap_or(0) as usize;
+    let mut bytes = Vec::with_capacity(capacity);
     for pixel in &image.pixels {
         let [r, g, b, a] = pixel.to_array();
         if a == 255 {
@@ -657,4 +689,31 @@ fn crop_image(
         source_size: egui::Vec2::new(crop_width as f32, crop_height as f32),
         pixels,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_MAX_SCREENSHOT_DIMENSION, scale_screenshot_image};
+
+    fn solid_image(width: usize, height: usize) -> egui::ColorImage {
+        egui::ColorImage {
+            size: [width, height],
+            source_size: egui::Vec2::new(width as f32, height as f32),
+            pixels: vec![egui::Color32::WHITE; width * height],
+        }
+    }
+
+    #[test]
+    fn scale_screenshot_image_leaves_small_images_unchanged() {
+        let image = solid_image(800, 600);
+        let scaled = scale_screenshot_image(&image, DEFAULT_MAX_SCREENSHOT_DIMENSION);
+        assert_eq!(scaled.size, [800, 600]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_caps_the_long_edge() {
+        let image = solid_image(3200, 1800);
+        let scaled = scale_screenshot_image(&image, 1600);
+        assert_eq!(scaled.size, [1600, 900]);
+    }
 }
