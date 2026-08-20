@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{env, future::pending, sync::Arc, thread};
+use std::{future::pending, sync::Arc, thread};
 
 use tmcp::Server;
 use tokio::runtime::Builder;
@@ -16,12 +16,13 @@ pub const MCP_ADDR_ENV: &str = "EGUIDEV_MCP_ADDR";
 static START_SERVER_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>) {
+pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>, addr: String) {
     if cfg!(test) {
         #[cfg(test)]
         START_SERVER_CALLS.fetch_add(1, Ordering::Relaxed);
         drop(inner);
         drop(runtime_state);
+        drop(addr);
         return;
     }
 
@@ -33,18 +34,12 @@ pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>) {
         };
         let server =
             Server::new(move || AppMcpServer::new(Arc::clone(&inner), Arc::clone(&runtime_state)));
-        let result: tmcp::Result<()> = match env::var(MCP_ADDR_ENV) {
-            Ok(addr) => runtime.block_on(async move {
-                let _server = server.serve_tcp(addr).await?;
-                pending::<()>().await;
-                #[allow(unreachable_code)]
-                Ok(())
-            }),
-            Err(error) => {
-                eprintln!("eguidev: invalid {MCP_ADDR_ENV}: {error}");
-                return;
-            }
-        };
+        let result: tmcp::Result<()> = runtime.block_on(async move {
+            let _server = server.serve_tcp(addr).await?;
+            pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok(())
+        });
         if let Err(error) = result {
             eprintln!("eguidev: MCP server failed: {error}");
         }

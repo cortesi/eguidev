@@ -77,12 +77,30 @@ pub use eguidev::{DevMcp, Rect, ScrollAreaMeta};
 
 /// Return whether this process was launched for Eguidev automation.
 pub fn automation_launch() -> bool {
-    automation_launch_from(env::var_os(MCP_ADDR_ENV).as_deref())
+    matches!(
+        mcp_endpoint_from(env::var_os(MCP_ADDR_ENV).as_deref()),
+        McpEndpoint::Valid(_)
+    )
 }
 
-/// Resolve automation activation from an explicit endpoint input.
-fn automation_launch_from(endpoint: Option<&OsStr>) -> bool {
-    endpoint.is_some()
+#[derive(Debug, PartialEq, Eq)]
+enum McpEndpoint {
+    Absent,
+    Invalid(String),
+    Valid(String),
+}
+
+fn mcp_endpoint_from(endpoint: Option<&OsStr>) -> McpEndpoint {
+    let Some(endpoint) = endpoint else {
+        return McpEndpoint::Absent;
+    };
+    let Some(text) = endpoint.to_str() else {
+        return McpEndpoint::Invalid(format!("{MCP_ADDR_ENV} is not valid UTF-8"));
+    };
+    if text.is_empty() {
+        return McpEndpoint::Invalid(format!("{MCP_ADDR_ENV} is empty"));
+    }
+    McpEndpoint::Valid(text.to_string())
 }
 
 /// Keep a background-launched app from taking focus for its whole run.
@@ -121,13 +139,30 @@ pub use crate::{
 mod tests {
     use std::ffi::OsStr;
 
-    use super::automation_launch_from;
+    use super::{McpEndpoint, mcp_endpoint_from};
 
     #[test]
     fn automation_activation_uses_endpoint_presence() {
-        assert!(!automation_launch_from(None));
-        assert!(automation_launch_from(Some(OsStr::new(""))));
-        assert!(automation_launch_from(Some(OsStr::new("127.0.0.1:9000"))));
+        assert_eq!(mcp_endpoint_from(None), McpEndpoint::Absent);
+        assert!(matches!(
+            mcp_endpoint_from(Some(OsStr::new(""))),
+            McpEndpoint::Invalid(_)
+        ));
+        assert_eq!(
+            mcp_endpoint_from(Some(OsStr::new("127.0.0.1:9000"))),
+            McpEndpoint::Valid("127.0.0.1:9000".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automation_activation_rejects_non_utf8_endpoint() {
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(matches!(
+            mcp_endpoint_from(Some(OsStr::from_bytes(b"127.0.0.1:\xff"))),
+            McpEndpoint::Invalid(_)
+        ));
     }
 }
 

@@ -15,13 +15,13 @@ use crate::macos::{
     configure_session, disconnect_session, platform_window_states, reassert_background_policy,
 };
 use crate::{
-    DevMcp, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
+    DevMcp, McpEndpoint, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     automation::{
         DEFAULT_SCRIPT_EVAL_TIMEOUT_MS,
         script::{run_script_eval, warm_checker_baseline},
     },
-    automation_launch,
     egui_diagnostics::EguiDiagnosticJournal,
+    mcp_endpoint_from,
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
     server::start_server,
 };
@@ -253,13 +253,20 @@ impl RuntimeHooks for RuntimeHooksImpl {
 
 /// Attach the embedded runtime to an inert `DevMcp` handle.
 pub fn attach(devmcp: DevMcp) -> DevMcp {
-    attach_internal(devmcp, automation_launch(), true, true)
+    match mcp_endpoint_from(std::env::var_os(crate::MCP_ADDR_ENV).as_deref()) {
+        McpEndpoint::Absent => attach_internal(devmcp, false, None, true),
+        McpEndpoint::Invalid(message) => {
+            eprintln!("eguidev: {message}");
+            attach_internal(devmcp, false, None, true)
+        }
+        McpEndpoint::Valid(addr) => attach_internal(devmcp, true, Some(addr), true),
+    }
 }
 
 fn attach_internal(
     devmcp: DevMcp,
     automation_active: bool,
-    should_start_server: bool,
+    server_addr: Option<String>,
     diagnostic_barriers_enabled: bool,
 ) -> DevMcp {
     if devmcp.is_enabled() || !automation_active {
@@ -281,15 +288,15 @@ fn attach_internal(
     // Prepare the script checker off the startup path. A script that arrives
     // first still blocks on the same work, so this only ever moves the cost.
     drop(thread::spawn(warm_checker_baseline));
-    if should_start_server {
-        start_server(inner, runtime);
+    if let Some(addr) = server_addr {
+        start_server(inner, runtime, addr);
     }
     devmcp
 }
 
 #[cfg(test)]
 pub fn attach_for_tests(devmcp: DevMcp) -> DevMcp {
-    attach_internal(devmcp, true, false, false)
+    attach_internal(devmcp, true, None, false)
 }
 
 /// Evaluate a Luau script directly against this attached `DevMcp` instance.
@@ -340,7 +347,7 @@ mod tests {
     #[test]
     fn inactive_attach_stays_inert() {
         reset_start_server_calls();
-        let devmcp = attach_internal(DevMcp::new(), false, true, true);
+        let devmcp = attach_internal(DevMcp::new(), false, Some("127.0.0.1:0".to_string()), true);
         assert!(!devmcp.is_enabled());
         assert_eq!(start_server_calls(), 0);
     }
@@ -348,7 +355,7 @@ mod tests {
     #[test]
     fn active_attach_starts_server_once() {
         reset_start_server_calls();
-        let devmcp = attach_internal(DevMcp::new(), true, true, true);
+        let devmcp = attach_internal(DevMcp::new(), true, Some("127.0.0.1:0".to_string()), true);
         assert!(devmcp.is_enabled());
         assert_eq!(start_server_calls(), 1);
     }
