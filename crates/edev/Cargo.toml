@@ -1,6 +1,7 @@
 [package]
 name = "edev"
 default-run = "edev"
+autobins = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,8 +14,25 @@ readme.workspace = true
 keywords.workspace = true
 categories = ["command-line-utilities", "development-tools"]
 description = "MCP launcher, fixture runner, and smoketest harness for eguidev apps"
-# Test-only binary; it must not ship to users of the published crate.
-exclude = ["src/bin/edev_test_app.rs"]
+# Test-only binary and its integration test; they must not ship in the published crate.
+exclude = ["src/bin/edev_test_app.rs", "tests/supervisor_lifecycle.rs"]
+
+[[bin]]
+name = "edev"
+path = "src/main.rs"
+
+[[bin]]
+name = "edev_test_app"
+path = "src/bin/edev_test_app.rs"
+required-features = ["test-app"]
+
+[features]
+default = []
+test-app = []
+
+[[test]]
+name = "supervisor_lifecycle"
+required-features = ["test-app"]
 
 [lib]
 doctest = false

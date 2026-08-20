@@ -207,7 +207,14 @@ fn sync_doc_snippets() -> Result<(), Box<dyn Error>> {
 fn test() -> Result<(), Box<dyn Error>> {
     run_command(
         "cargo",
-        &["nextest", "run", "--locked", "--all"],
+        &[
+            "nextest",
+            "run",
+            "--locked",
+            "--all",
+            "--features",
+            "edev/test-app",
+        ],
         "cargo nextest --locked",
     )?;
     run_command(
