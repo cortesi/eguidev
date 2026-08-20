@@ -409,6 +409,12 @@ fn is_process_alive(pid: u32) -> bool {
     pidinfo::<BSDInfo>(pid, 0).is_ok_and(|info| info.pbi_status != libc::SZOMB)
 }
 
+#[cfg(target_os = "macos")]
+/// Return whether `pid` is alive under the production liveness definition.
+pub fn process_is_alive(pid: i32) -> bool {
+    u32::try_from(pid).is_ok_and(is_process_alive)
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 /// Return true when a process with the provided pid appears alive.
 fn is_process_alive(pid: u32) -> bool {

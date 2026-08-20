@@ -62,6 +62,16 @@ pub use command::run;
 use command::{
     call_script_eval_result, decode_tool_result, script_eval_error_message, start_app_client,
 };
+
+#[cfg(all(feature = "test-app", target_os = "macos"))]
+#[doc(hidden)]
+pub mod process_test_support {
+    pub use crate::{
+        instance_registry::process_is_alive,
+        process_lifecycle::{ProcessGroupObserver, create_inherited_pipe, set_cloexec},
+        recording::live_process_group_members,
+    };
+}
 use config::{
     DumpConfig, EdevCommand, EvalConfig, FixtureConfig, LaunchConfig, McpConfig, RecordConfig,
     SmokeConfig,

@@ -8,184 +8,39 @@ mod tests {
         error::Error,
         fs,
         io::{self, Write},
-        mem,
-        os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+        os::fd::AsRawFd,
         path::{Path, PathBuf},
         process::{self, ExitStatus, Stdio},
-        ptr,
     };
 
-    use libproc::processes::{self, ProcFilter};
+    use edev::process_test_support::{
+        ProcessGroupObserver, create_inherited_pipe, live_process_group_members, process_is_alive,
+        set_cloexec,
+    };
     use serde_json::json;
     use tempfile::Builder;
     use tmcp::Client;
     use tokio::{
-        io::{Interest, unix::AsyncFd},
         process::Command,
         time::{Duration, timeout},
     };
 
     const CONFIG_SECRET: &str = "watchdog-config-secret-not-in-ps";
 
-    struct ProcessExitObserver {
-        queue: AsyncFd<OwnedFd>,
-    }
-
-    impl ProcessExitObserver {
-        fn new() -> io::Result<Self> {
-            let fd = unsafe { libc::kqueue() };
-            if fd < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-            let queue = AsyncFd::with_interest(fd, Interest::READABLE)?;
-            Ok(Self { queue })
-        }
-
-        fn watch_pid(&self, pid: i32) -> io::Result<bool> {
-            if pid <= 0 {
-                return Ok(false);
-            }
-            let event = libc::kevent {
-                ident: usize::try_from(pid).unwrap_or_default(),
-                filter: libc::EVFILT_PROC,
-                flags: libc::EV_ADD | libc::EV_ONESHOT,
-                fflags: libc::NOTE_EXIT,
-                data: 0,
-                udata: ptr::null_mut(),
-            };
-            let result = unsafe {
-                libc::kevent(
-                    self.queue.get_ref().as_raw_fd(),
-                    &event,
-                    1,
-                    ptr::null_mut(),
-                    0,
-                    ptr::null(),
-                )
-            };
-            if result == 0 {
-                return Ok(true);
-            }
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
-                Ok(false)
-            } else {
-                Err(error)
-            }
-        }
-
-        async fn wait_for_cleanup(
-            &self,
-            app_process_group_id: i32,
-            supervisor_pid: i32,
-        ) -> io::Result<()> {
-            loop {
-                let app_members = live_process_group_members(app_process_group_id);
-                let supervisor_alive = process_alive(supervisor_pid);
-                if app_members.is_empty() && !supervisor_alive {
-                    return Ok(());
+    async fn wait_for_cleanup(
+        observer: &ProcessGroupObserver,
+        app_process_group_id: i32,
+        supervisor_pid: i32,
+    ) -> io::Result<()> {
+        observer
+            .wait_until_pids_exit(|| {
+                let mut pids = live_process_group_members(app_process_group_id);
+                if process_is_alive(supervisor_pid) {
+                    pids.push(supervisor_pid);
                 }
-                let mut watched_process_vanished = false;
-                for pid in app_members {
-                    watched_process_vanished |= !self.watch_pid(pid)?;
-                }
-                if supervisor_alive {
-                    watched_process_vanished |= !self.watch_pid(supervisor_pid)?;
-                }
-                if watched_process_vanished {
-                    continue;
-                }
-                self.next_event().await?;
-            }
-        }
-
-        async fn next_event(&self) -> io::Result<()> {
-            loop {
-                let mut readiness = self.queue.readable().await?;
-                match readiness.try_io(|inner| read_events(inner.get_ref().as_raw_fd())) {
-                    Ok(result) => {
-                        result?;
-                        return Ok(());
-                    }
-                    Err(_would_block) => {}
-                }
-            }
-        }
-    }
-
-    fn read_events(fd: RawFd) -> io::Result<()> {
-        let mut events = [unsafe { mem::zeroed::<libc::kevent>() }; 32];
-        let timeout = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        let result = unsafe {
-            libc::kevent(
-                fd,
-                ptr::null(),
-                0,
-                events.as_mut_ptr(),
-                i32::try_from(events.len()).unwrap_or(i32::MAX),
-                &timeout,
-            )
-        };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if result == 0 {
-            return Err(io::Error::from(io::ErrorKind::WouldBlock));
-        }
-        Ok(())
-    }
-
-    fn live_process_group_members(process_group_id: i32) -> Vec<i32> {
-        let Ok(pgrpid) = u32::try_from(process_group_id) else {
-            return Vec::new();
-        };
-        processes::pids_by_type(ProcFilter::ByProgramGroup { pgrpid })
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|pid| i32::try_from(pid).ok())
-            .collect()
-    }
-
-    fn process_alive(pid: i32) -> bool {
-        if pid <= 0 {
-            return false;
-        }
-        if unsafe { libc::kill(pid, 0) } == 0 {
-            return true;
-        }
-        io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-    }
-
-    fn inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-        let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-        set_cloexec(reader.as_raw_fd(), true)?;
-        set_cloexec(writer.as_raw_fd(), true)?;
-        Ok((reader, writer))
-    }
-
-    fn set_cloexec(fd: RawFd, enabled: bool) -> io::Result<()> {
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let flags = if enabled {
-            flags | libc::FD_CLOEXEC
-        } else {
-            flags & !libc::FD_CLOEXEC
-        };
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+                pids
+            })
+            .await
     }
 
     fn test_tempdir() -> tempfile::TempDir {
@@ -413,7 +268,7 @@ mod tests {
             !live_process_group_members(app_process_group_id).is_empty(),
             "managed app should be running before normal stop"
         );
-        assert!(process_alive(supervisor_pid));
+        assert!(process_is_alive(supervisor_pid));
 
         let stop = client.call_tool("stop", json!({})).await?;
         assert!(!stop.is_error(), "normal stop should succeed: {stop:?}");
@@ -430,7 +285,7 @@ mod tests {
         assert_eq!(stopped["app_present"], false);
         assert_eq!(stopped["last_shutdown"]["mode"], "graceful");
         assert!(live_process_group_members(app_process_group_id).is_empty());
-        assert!(!process_alive(supervisor_pid));
+        assert!(!process_is_alive(supervisor_pid));
         assert!(
             !record_path.exists(),
             "normal stop should remove the exact managed-app record"
@@ -531,8 +386,8 @@ mod tests {
         let registry_dir = tempdir.path().join(".edev-instances");
         fs::create_dir(&registry_dir)?;
         let record_path = registry_dir.join("app-normal-owner.json");
-        let (owner_reader, owner_writer) = inherited_pipe()?;
-        let (config_reader, config_writer) = inherited_pipe()?;
+        let (owner_reader, owner_writer) = create_inherited_pipe()?;
+        let (config_reader, config_writer) = create_inherited_pipe()?;
         let owner_fd = owner_reader.as_raw_fd();
         let config_fd = config_reader.as_raw_fd();
         let payload = serde_json::to_vec(&json!({
@@ -623,7 +478,7 @@ mod tests {
                 .ok_or("status did not report app record path")?,
         );
 
-        let observer = ProcessExitObserver::new()?;
+        let observer = ProcessGroupObserver::new()?;
         for pid in live_process_group_members(old_process_group_id) {
             let _exists = observer.watch_pid(pid)?;
         }
@@ -631,7 +486,7 @@ mod tests {
         assert_eq!(unsafe { libc::kill(old_supervisor_pid, libc::SIGKILL) }, 0);
         timeout(
             Duration::from_secs(30),
-            observer.wait_for_cleanup(old_process_group_id, old_supervisor_pid),
+            wait_for_cleanup(&observer, old_process_group_id, old_supervisor_pid),
         )
         .await??;
 
@@ -757,7 +612,7 @@ mod tests {
             );
         }
 
-        let observer = ProcessExitObserver::new()?;
+        let observer = ProcessGroupObserver::new()?;
         for pid in live_process_group_members(app_process_group_id) {
             let _exists = observer.watch_pid(pid)?;
         }
@@ -768,7 +623,7 @@ mod tests {
 
         let cleanup = timeout(
             Duration::from_secs(30),
-            observer.wait_for_cleanup(app_process_group_id, supervisor_pid),
+            wait_for_cleanup(&observer, app_process_group_id, supervisor_pid),
         )
         .await;
         if cleanup.is_err() {

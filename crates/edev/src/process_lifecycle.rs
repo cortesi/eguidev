@@ -939,7 +939,7 @@ fn write_normal_shutdown_marker(writer: &OwnedFd) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 /// Create a pipe whose ends remain close-on-exec until a child clears its reader.
-fn create_inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+pub fn create_inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     // macOS has no atomic pipe-with-CLOEXEC API, so protect both ends before returning them.
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
@@ -954,7 +954,7 @@ fn create_inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 
 #[cfg(target_os = "macos")]
 /// Set or clear close-on-exec for one file descriptor.
-fn set_cloexec(fd: RawFd, enabled: bool) -> io::Result<()> {
+pub fn set_cloexec(fd: RawFd, enabled: bool) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
@@ -993,7 +993,7 @@ fn terminate_process_group_without_logging(process_group_id: Option<i32>) {
 
 #[cfg(target_os = "macos")]
 /// Observe process exits using kqueue rather than polling.
-struct ProcessGroupObserver {
+pub struct ProcessGroupObserver {
     /// Tokio-registered kqueue descriptor.
     queue: AsyncFd<OwnedFd>,
 }
@@ -1001,7 +1001,7 @@ struct ProcessGroupObserver {
 #[cfg(target_os = "macos")]
 impl ProcessGroupObserver {
     /// Create an empty process-exit observer.
-    fn new() -> io::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         let fd = unsafe { libc::kqueue() };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -1020,7 +1020,10 @@ impl ProcessGroupObserver {
     }
 
     /// Register one process for a one-shot NOTE_EXIT event.
-    fn watch_pid(&self, pid: i32) -> io::Result<bool> {
+    pub fn watch_pid(&self, pid: i32) -> io::Result<bool> {
+        if pid <= 0 {
+            return Ok(false);
+        }
         let event = libc::kevent {
             ident: usize::try_from(pid).unwrap_or_default(),
             filter: libc::EVFILT_PROC,
@@ -1052,8 +1055,17 @@ impl ProcessGroupObserver {
 
     /// Wait for all observed process-group members to disappear.
     async fn wait_until_group_empty(&self, process_group_id: i32) -> io::Result<()> {
+        self.wait_until_pids_exit(|| recording::live_process_group_members(process_group_id))
+            .await
+    }
+
+    /// Wait until `current_pids` reports no remaining processes.
+    pub async fn wait_until_pids_exit<F>(&self, current_pids: F) -> io::Result<()>
+    where
+        F: Fn() -> Vec<i32>,
+    {
         loop {
-            let members = recording::live_process_group_members(process_group_id);
+            let members = current_pids();
             if members.is_empty() {
                 return Ok(());
             }
@@ -1069,7 +1081,7 @@ impl ProcessGroupObserver {
     }
 
     /// Wait for one kqueue event.
-    async fn next_event(&self) -> io::Result<()> {
+    pub async fn next_event(&self) -> io::Result<()> {
         loop {
             let mut readiness = self.queue.readable().await?;
             match readiness.try_io(|inner| read_kqueue(inner.get_ref().as_raw_fd())) {
