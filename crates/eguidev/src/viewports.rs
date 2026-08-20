@@ -1,10 +1,12 @@
 //! Viewport and input snapshot state.
 #![allow(missing_docs)]
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use egui::{Context, Vec2 as EguiVec2};
@@ -33,12 +35,20 @@ pub struct CaptureSnapshot {
 pub struct FrameHealth {
     pub viewport_id: egui::ViewportId,
     pub frame_count: u64,
+    #[cfg(not(target_arch = "wasm32"))]
     pub last_completed: Instant,
 }
 
 impl FrameHealth {
     pub fn age(&self) -> Duration {
-        self.last_completed.elapsed()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.last_completed.elapsed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Duration::ZERO
+        }
     }
 
     pub fn frames_observed_since(&self, start_frame: u64) -> u64 {
@@ -258,6 +268,7 @@ impl ViewportState {
             FrameHealth {
                 viewport_id,
                 frame_count,
+                #[cfg(not(target_arch = "wasm32"))]
                 last_completed: Instant::now(),
             },
         );
