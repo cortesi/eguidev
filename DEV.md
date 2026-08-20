@@ -1,5 +1,19 @@
 # Development Notes
 
+## Prerequisites
+
+Install a Rust 1.85+ toolchain with the `wasm32-unknown-unknown` target, plus:
+
+- nightly rustfmt (`rustup toolchain install nightly` and `rustup component add rustfmt --toolchain nightly`)
+- cargo-nextest (`cargo install cargo-nextest`)
+- snips (`cargo install snips`)
+
+`cargo xtask tidy` applies format and clippy fixes. `cargo xtask check` verifies
+format, clippy (`-D warnings`), snips, and a release compilation without
+writing. `cargo xtask test` runs the test lane.
+
+## Documentation Comments in `.d.luau`
+
 ## Documentation Comments in `.d.luau`
 
 Good doc comments explain *why* and *how*, not *what* — the signature already says what.

@@ -33,6 +33,8 @@ struct Args {
 enum Task {
     /// Run formatter and clippy fixes.
     Tidy,
+    /// Check format, lints, snips, and release compilation without mutating the tree.
+    Check,
     /// Run tests via nextest.
     Test,
     /// Install this repository's SKILL.md for local coding agents.
@@ -107,6 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match args.command {
         Task::Tidy => tidy(),
+        Task::Check => check(),
         Task::Test => test(),
         Task::InstallSkill => install_skill(),
         Task::Smoke(args) => smoke(&args),
@@ -146,6 +149,50 @@ fn tidy() -> Result<(), Box<dyn Error>> {
         "cargo clippy --locked",
     )?;
     sync_doc_snippets()?;
+    Ok(())
+}
+
+/// Check format, clippy, snips, and release compilation without writing.
+fn check() -> Result<(), Box<dyn Error>> {
+    run_command(
+        "cargo",
+        &[
+            "+nightly",
+            "fmt",
+            "--all",
+            "--check",
+            "--",
+            "--config-path",
+            "./rustfmt-nightly.toml",
+        ],
+        "cargo fmt --check",
+    )?;
+    run_command(
+        "cargo",
+        &[
+            "clippy",
+            "--locked",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        "cargo clippy --locked -D warnings",
+    )?;
+    run_command("snips", &["--check", "--commands", "deny"], "snips --check").map_err(|error| {
+        format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
+    })?;
+    run_command(
+        "cargo",
+        &[
+            "check",
+            "--locked",
+            "--release",
+            "--workspace",
+            "--all-targets",
+        ],
+        "cargo check --locked --release",
+    )?;
     Ok(())
 }
 
