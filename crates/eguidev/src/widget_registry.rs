@@ -3,8 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    error::Error,
-    fmt, mem,
+    mem,
     sync::Mutex,
 };
 
@@ -59,39 +58,7 @@ impl WidgetMeta {
             ..self
         }
     }
-
-    /// Attach structured app-domain data, returning serialization errors.
-    pub fn try_with_data<T: Serialize>(self, data: T) -> Result<Self, WidgetDataError> {
-        let data = serde_json::to_value(data).map_err(|error| WidgetDataError {
-            code: "widget_data_serialize".to_string(),
-            message: format!("failed to serialize widget data: {error}"),
-            details: None,
-        })?;
-        Ok(Self {
-            data: Some(normalize_widget_data(Some(data)).expect("data just provided")),
-            ..self
-        })
-    }
 }
-
-/// Error returned by strict widget data attachment.
-#[derive(Debug, Clone)]
-pub struct WidgetDataError {
-    /// Stable machine-readable error code.
-    pub code: String,
-    /// Human-readable error message.
-    pub message: String,
-    /// Optional structured error details.
-    pub details: Option<Value>,
-}
-
-impl fmt::Display for WidgetDataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl Error for WidgetDataError {}
 
 #[derive(Debug, Clone)]
 struct DuplicateExplicitIdFault {

@@ -469,52 +469,6 @@ pub enum PointerButton {
     Middle,
 }
 
-/// Options for a widget click.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-pub struct ClickOptions {
-    /// Shared action controls.
-    #[serde(flatten)]
-    pub action: ActionOptions,
-    /// Pointer button to click. Defaults to primary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub button: Option<PointerButton>,
-    /// Number of click press/release pairs. Defaults to one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub click_count: Option<u32>,
-}
-
-/// Options for hovering within a widget.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct HoverOptions {
-    /// Shared action controls.
-    #[serde(flatten)]
-    pub action: ActionOptions,
-    /// Optional normalized position within the widget.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub position: Option<Vec2>,
-    /// Optional hover duration before settlement.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<u64>,
-}
-
-/// Options for typing text into a widget.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-pub struct TypeTextOptions {
-    /// Shared action controls.
-    #[serde(flatten)]
-    pub action: ActionOptions,
-    /// Clear the current value before typing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub clear: Option<bool>,
-    /// Send Enter after the text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enter: Option<bool>,
-}
-
 /// Options for a drag action.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DragOptions {
@@ -536,34 +490,6 @@ pub enum ScrollAlign {
     Center,
     /// Align to the bottom.
     Bottom,
-}
-
-/// Options for moving a scroll area.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ScrollToOptions {
-    /// Shared action controls.
-    #[serde(flatten)]
-    pub action: ActionOptions,
-    /// Optional exact scroll offset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offset: Option<Vec2>,
-    /// Optional coarse alignment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub align: Option<ScrollAlign>,
-}
-
-/// Options for high-level keyboard input.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct KeyOptions {
-    /// Shared action controls.
-    #[serde(flatten)]
-    pub action: ActionOptions,
-    /// Number of repeated key presses. Defaults to one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repeat_count: Option<u32>,
-    /// Optional widget that receives focus before delivery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<WidgetRef>,
 }
 
 /// One resize command applied atomically before settlement.
@@ -643,55 +569,6 @@ pub enum RawInputEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         modifiers: Option<Modifiers>,
     },
-}
-
-/// Widget relation used by geometry expectations.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct RelationExpectation {
-    /// Related widget reference.
-    pub widget: WidgetRef,
-    /// Optional minimum gap in egui points.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_gap: Option<f32>,
-}
-
-/// Lossless paint expectation for a widget.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-pub struct PaintExpectation {
-    /// Minimum number of distinct sampled colors.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_colors: Option<usize>,
-}
-
-/// Widget condition plus hierarchy, geometry, text, and paint expectations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct WidgetExpectation {
-    /// Shared widget condition.
-    #[serde(flatten)]
-    pub condition: WidgetCondition,
-    /// Widget that must be to the right of this widget.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub left_of: Option<RelationExpectation>,
-    /// Widget that must be below this widget.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub above: Option<RelationExpectation>,
-    /// Widget whose rectangle must not overlap this widget.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub no_overlap: Option<WidgetRef>,
-    /// Widget that must contain this widget.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub within: Option<WidgetRef>,
-    /// Widgets that must occur in this widget's descendant subtree.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub descendants: Vec<WidgetRef>,
-    /// Whether measured text must fit without truncation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_fits: Option<bool>,
-    /// Optional lossless paint-sampling expectation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub painted: Option<PaintExpectation>,
 }
 
 const fn default_scroll_tolerance() -> f32 {

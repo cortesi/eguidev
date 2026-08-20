@@ -164,7 +164,6 @@ mod devmcp;
 mod diagnostics;
 mod error;
 mod fixtures;
-mod helpers;
 mod idle;
 mod instrument;
 mod overlay;
@@ -179,27 +178,24 @@ mod widget_registry;
 pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, clear_viewport, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
-    helpers::{TypedFixture, TypedFixtures, value_anchor, viewport_frame},
     instrument::{
         ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, name_viewport,
         publish_rect_container, publish_rect_meta, track_response, track_widget,
         track_widget_with_meta,
     },
     types::{
-        ActionOptions, ClickOptions, DragOptions, FixtureCall, FixtureError, FixtureParam,
-        FixtureParams, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec,
-        HoverOptions, KeyOptions, PaintExpectation, ParamKind, PointerButton, Pos2, RawInputAction,
-        RawInputEvent, Rect, RelationExpectation, ResizeOptions, RoleState, ScrollAlign,
-        ScrollAreaMeta, ScrollToOptions, TypeTextOptions, Vec2, ViewportCondition,
-        ViewportNameError, ViewportSel, ViewportSelParseError, WaitOptions, WidgetCondition,
-        WidgetExpectation, WidgetLayout, WidgetRange, WidgetRef, WidgetRole, WidgetRoleMeta,
-        WidgetState, WidgetValue,
+        ActionOptions, DragOptions, FixtureCall, FixtureError, FixtureParam, FixtureParams,
+        FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, ParamKind, PointerButton,
+        Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState, ScrollAlign,
+        ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
+        ViewportSelParseError, WaitOptions, WidgetCondition, WidgetLayout, WidgetRange, WidgetRef,
+        WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
         TextEditOptions, take_widget_value_override,
     },
-    widget_registry::{WidgetDataError, WidgetMeta},
+    widget_registry::WidgetMeta,
 };
 #[doc(hidden)]
 pub mod internal {
@@ -250,14 +246,12 @@ pub mod internal {
 
     pub mod types {
         pub use crate::types::{
-            ActionOptions, ClickOptions, DragOptions, FixtureCall, FixtureError, FixtureParam,
-            FixtureParams, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec,
-            HoverOptions, KeyOptions, Modifiers, PaintExpectation, ParamKind, PointerButton, Pos2,
-            RawInputAction, RawInputEvent, Rect, RelationExpectation, ResizeOptions, RoleState,
-            ScrollAlign, ScrollAreaMeta, ScrollToOptions, TypeTextOptions, Vec2, ViewportCondition,
-            ViewportNameError, ViewportSel, ViewportSelParseError, WaitOptions, WidgetCondition,
-            WidgetExpectation, WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry,
-            WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+            ActionOptions, DragOptions, FixtureCall, FixtureError, FixtureParam, FixtureParams,
+            FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, Modifiers, ParamKind,
+            PointerButton, Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState,
+            ScrollAlign, ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
+            ViewportSelParseError, WaitOptions, WidgetCondition, WidgetLayout, WidgetRange,
+            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
         };
     }
 
@@ -272,8 +266,6 @@ pub mod internal {
     }
 
     pub mod widget_registry {
-        pub use crate::widget_registry::{
-            WidgetDataError, WidgetMeta, WidgetRegistry, record_widget,
-        };
+        pub use crate::widget_registry::{WidgetMeta, WidgetRegistry, record_widget};
     }
 }
