@@ -50,7 +50,7 @@ impl From<CliPresentation> for presentation::Presentation {
 #[derive(Debug, Clone)]
 /// Fully resolved app launch configuration.
 pub struct LaunchConfig {
-    /// Canonical working directory used for app execution and instance locking.
+    /// Canonical working directory used for app execution.
     pub(crate) cwd: PathBuf,
     /// Full argv used to launch the app with DevMCP enabled.
     pub(crate) command: Vec<String>,
@@ -1060,6 +1060,12 @@ fn resolve_launch_config(
         file_base_dir,
         current_dir,
     )?;
+    if !cwd.is_dir() {
+        return Err(EdevError::InvalidArgs(format!(
+            "cwd is not an existing directory: {}",
+            cwd.display()
+        )));
+    }
     let command = cli
         .command
         .clone()
@@ -1903,6 +1909,30 @@ suite_dir = \"suite\"
             repo_root.join("app")
         );
         assert_eq!(config.suite.suite_dir, repo_root.join("suite"));
+    }
+
+    #[test]
+    fn file_config_rejects_missing_cwd() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        let config_path = repo_root.join(DEFAULT_CONFIG_FILE);
+        fs::write(
+            &config_path,
+            "\
+[app]
+cwd = \"missing\"
+command = [\"cargo\", \"run\"]
+",
+        )
+        .expect("write config");
+
+        let args = os_args(&["mcp"]);
+        let error = EdevCommand::parse_args_in_dir(&args, &repo_root).expect_err("missing cwd");
+        assert!(
+            matches!(error, EdevError::InvalidArgs(ref message) if message.contains("cwd is not an existing directory")),
+            "{error:?}"
+        );
     }
 
     #[test]

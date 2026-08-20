@@ -31,9 +31,7 @@ use tokio::{
 use super::{LaunchConfig, LogState, instance_registry::AppLaunch};
 #[cfg(target_os = "macos")]
 use super::{
-    instance_registry::{
-        self, AppRecord, REGISTRY_DIR_NAME, app_launch_for, read_app_record_for_path,
-    },
+    instance_registry::{self, AppRecord, app_launch_for, read_app_record_for_path},
     recording,
 };
 
@@ -484,13 +482,16 @@ async fn monitor_supervisor_exit(mut child: Child, record_path: PathBuf) -> io::
     let Some(record) = read_app_record_for_path(&record_path)? else {
         return Ok(status);
     };
-    recover_after_supervisor_exit(&record).await?;
+    recover_after_supervisor_exit(&record_path, &record).await?;
     Ok(status)
 }
 
 #[cfg(target_os = "macos")]
 /// Recover a group left behind by an abruptly dead supervisor.
-async fn recover_after_supervisor_exit(record: &AppRecord) -> io::Result<()> {
+async fn recover_after_supervisor_exit(
+    record_path: &std::path::Path,
+    record: &AppRecord,
+) -> io::Result<()> {
     let observer = ProcessGroupObserver::new()?;
     if instance_registry::recorded_app_group_is_current(record)
         && !recording::live_process_group_members(record.app_process_group_id).is_empty()
@@ -503,21 +504,12 @@ async fn recover_after_supervisor_exit(record: &AppRecord) -> io::Result<()> {
                 .await?;
         }
     }
-    instance_registry::remove_app_record_if_matches(&record_path(record), record)?;
+    instance_registry::remove_app_record_if_matches(record_path, record)?;
     let _removed_launcher = instance_registry::remove_launcher_record_if_dead(
         &instance_registry::launcher_record_path(&record.working_dir, record.launcher_pid),
         record,
     )?;
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-/// Reconstruct the exact record path carried by an app record.
-fn record_path(record: &AppRecord) -> PathBuf {
-    record
-        .working_dir
-        .join(REGISTRY_DIR_NAME)
-        .join(format!("app-{}.json", record.launch_id))
 }
 
 #[cfg(target_os = "macos")]
@@ -656,7 +648,7 @@ async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
         .map_err(|error| format!("confirm app process-group exit: {error}"));
     let record_removal = if group_exit.is_ok() {
         Some(
-            instance_registry::remove_app_record_if_matches(&record_path(&record), &record)
+            instance_registry::remove_app_record_if_matches(&config.app_record_path, &record)
                 .map(|_| ())
                 .map_err(|error| format!("remove app record: {error}")),
         )
