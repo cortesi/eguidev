@@ -204,6 +204,7 @@ impl Runtime {
             ctx.request_repaint();
         }
         inner.viewports.update_viewports(ctx);
+        inner.forget_dead_viewports();
         #[cfg(target_os = "macos")]
         inner
             .viewports

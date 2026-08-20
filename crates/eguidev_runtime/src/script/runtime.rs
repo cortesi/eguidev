@@ -1510,6 +1510,17 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         viewport_id: String,
     ) -> ScriptResult<Value> {
+        let resolved = self
+            .server
+            .inner
+            .viewports
+            .resolve_viewport_id(Some(viewport_id.clone()))
+            .ok();
+        if let Some(resolved) = resolved
+            && !self.server.inner.viewports.is_live_viewport(resolved)
+        {
+            return Ok(Value::Null);
+        }
         let snapshot = self
             .server
             .inner
@@ -1923,11 +1934,23 @@ impl ScriptRuntime {
                                 ),
                             )),
                         },
-                        None => Err(self.tool_error(
-                            pos,
-                            ToolError::new(ErrorCode::NotActionable, "Viewport not ready for wait")
-                                .into_tmcp(),
-                        )),
+                        None => {
+                            if self.server.inner.viewports.is_live_viewport(viewport_id) {
+                                Err(self.tool_error(
+                                    pos,
+                                    ToolError::new(
+                                        ErrorCode::NotActionable,
+                                        "Viewport not ready for wait",
+                                    )
+                                    .into_tmcp(),
+                                ))
+                            } else {
+                                match predicate(Value::Null).await {
+                                    Ok(matched) => Ok((matched, None)),
+                                    Err(error) => Err(error),
+                                }
+                            }
+                        }
                     }
                 }
             },

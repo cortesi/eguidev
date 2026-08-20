@@ -528,6 +528,19 @@ impl Inner {
         self.frame_count.load(Ordering::Relaxed)
     }
 
+    /// Drop heavy per-viewport maps for non-root viewports that left the live set.
+    pub fn forget_dead_viewports(&self) {
+        let Some(live) = self.viewports.live_viewport_ids() else {
+            return;
+        };
+        let is_live = |viewport_id: &egui::ViewportId| {
+            *viewport_id == egui::ViewportId::ROOT || live.contains(viewport_id)
+        };
+        lock(&self.contexts, "contexts lock").retain(|viewport_id, _| is_live(viewport_id));
+        lock(&self.animation_baselines, "animation baselines lock")
+            .retain(|viewport_id, _| is_live(viewport_id));
+    }
+
     pub fn frame_health(&self, viewport_id: egui::ViewportId) -> Option<FrameHealth> {
         self.viewports.frame_health(viewport_id)
     }
