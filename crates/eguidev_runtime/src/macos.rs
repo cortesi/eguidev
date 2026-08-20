@@ -101,7 +101,7 @@ pub fn platform_window_states() -> Vec<PlatformViewportState> {
     };
     states
         .lock()
-        .expect("platform window states lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .values()
         .cloned()
         .collect()
@@ -121,7 +121,9 @@ fn recorded_window_number_for_title(title: &str) -> Result<u32, String> {
         return Err("no macOS window state has been recorded yet".to_string());
     };
     let live_window_numbers = current_process_window_numbers();
-    let mut states = states.lock().expect("platform window states lock poisoned");
+    let mut states = states
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Ok(live_window_numbers) = &live_window_numbers {
         states.retain(|_, state| {
             state
@@ -264,10 +266,9 @@ fn spoof_occlusion_state() {
     // SAFETY: the replacement implementation matches the original method
     // signature (no arguments, returns `NSUInteger`) and never unwinds.
     unsafe {
-        let original = method.set_implementation(mem::transmute::<OcclusionStateFn, Imp>(imp));
-        match ORIGINAL_OCCLUSION_STATE.set(mem::transmute::<Imp, OcclusionStateFn>(original)) {
-            Ok(()) | Err(_) => {}
-        }
+        let original = mem::transmute::<Imp, OcclusionStateFn>(method.implementation());
+        let _ = ORIGINAL_OCCLUSION_STATE.set(original);
+        method.set_implementation(mem::transmute::<OcclusionStateFn, Imp>(imp));
     }
 }
 
@@ -284,7 +285,7 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
     let states = WINDOW_STATES.get_or_init(|| Mutex::new(HashMap::new()));
     states
         .lock()
-        .expect("platform window states lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(window as usize, state);
 }
 
@@ -340,7 +341,7 @@ pub async fn configure_session(
         let (previous, transition) = {
             let mut sessions = presentation_session()
                 .lock()
-                .expect("presentation session lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = sessions.clone();
             let transition = sessions.configure(
                 session_id,
@@ -353,7 +354,7 @@ pub async fn configure_session(
         if let Err(error) = apply_transition(transition) {
             *presentation_session()
                 .lock()
-                .expect("presentation session lock poisoned") = previous;
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous;
             return Err(error);
         }
         SPOOF_OCCLUSION.store(true, Ordering::Release);
@@ -369,12 +370,12 @@ pub async fn disconnect_session(session_id: u64) -> Result<(), String> {
         let transition = {
             let mut sessions = presentation_session()
                 .lock()
-                .expect("presentation session lock poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             sessions.disconnect(session_id, observed_policy, ACTIVATION_POLICY_ACCESSORY)
         };
         let active = presentation_session()
             .lock()
-            .expect("presentation session lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_active();
         SPOOF_OCCLUSION.store(active, Ordering::Release);
         let apply_error = transition.and_then(|transition| apply_transition(transition).err());
@@ -410,7 +411,7 @@ fn activation_guard_enabled() -> bool {
     BACKGROUND_LAUNCH.load(Ordering::Acquire)
         && presentation_session()
             .lock()
-            .expect("presentation session lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .requested()
             == Presentation::Background
 }
@@ -619,7 +620,7 @@ pub fn reassert_background_policy() -> Option<PolicyConflict> {
     let observed_policy = activation_policy();
     let mut session = presentation_session()
         .lock()
-        .expect("presentation session lock poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !session.should_reassert(observed_policy, ACTIVATION_POLICY_ACCESSORY) {
         return None;
     }
