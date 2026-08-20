@@ -37,6 +37,11 @@ stay headless. Lifecycle tests that need a managed app process launch the `edev_
 which serves the app side of the launcher handshake over a reserved loopback endpoint and opens no
 window.
 
+On Linux, launcher death kills only the direct child (`PR_SET_PDEATHSIG`). A
+`cargo run` app is a grandchild and survives `SIGKILL` of `edev`. Prefer a
+direct binary path in `[app].command` for supervised Linux sessions. macOS uses
+the supervisor and process-group cleanup instead.
+
 ## Smoketests
 
 Run the default smoke wrapper from `xtask`:
@@ -77,7 +82,7 @@ artifact directory by default.
 Record a macOS demo movie while running the smoke suite:
 
 ```sh
-cargo run --locked -p edev -- record tmp/spacecurve-smoke.mov --only '*layout*'
+cargo run --locked -p edev -- record tmp/eguidev-smoke.mov --only '*layout*'
 ```
 
 `edev record OUTFILE ...` is the native macOS recording boundary. It records one selected app

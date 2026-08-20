@@ -44,7 +44,7 @@ enum Task {
     #[command(name = "smoke-occlusion")]
     SmokeOcclusion(SmokeArgs),
     /// Run the minimal edev transport smoke.
-    #[command(name = "smoke-edev", visible_alias = "smoke-edit")]
+    #[command(name = "smoke-edev")]
     SmokeEdev(SmokeEdevArgs),
 }
 

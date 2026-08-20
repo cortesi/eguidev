@@ -29,7 +29,10 @@ pub struct CheckboxOptions {
 pub struct TextEditOptions {
     /// Whether the edit is multiline.
     pub multiline: bool,
-    /// Whether the edit masks its contents.
+    /// Whether the edit masks its contents in the UI.
+    ///
+    /// Masking is presentation only. Automation still records the cleartext
+    /// value in widget state, dumps, script output, and failure bundles.
     pub password: bool,
 }
 
@@ -115,6 +118,9 @@ pub trait DevUiExt {
     fn dev_text_edit(&mut self, id: impl Into<String>, text: &mut String) -> egui::Response;
 
     /// Add a text edit with explicit mode metadata.
+    ///
+    /// `options.password` masks the field in the UI only. The recorded value
+    /// stays cleartext for scripts, dumps, and failure bundles.
     fn dev_text_edit_with(
         &mut self,
         id: impl Into<String>,

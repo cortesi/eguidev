@@ -146,6 +146,9 @@ eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
 });
 ```
 
+`TextEditOptions.password` masks the field in the UI only. Scripts, dumps, and
+failure bundles still see the cleartext value.
+
 **2. Attach the runtime** in one bootstrap location.
 
 ```toml

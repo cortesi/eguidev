@@ -12,6 +12,9 @@
 
 # Full argv to start the app. Edev supplies the private automation endpoint.
 # You can pass a command after `--` on any subcommand to replace this value.
+# On Linux, launcher death kills only this direct child. Prefer a compiled
+# binary path over `cargo run` for supervised sessions, so the app is not a
+# grandchild that survives `edev` SIGKILL.
 command = [
   "cargo", "run", "--locked",
   "-p", "myapp",
@@ -91,7 +94,7 @@ command = [
 
 # Recording has no config defaults. Use `edev record OUTFILE ...` with the
 # smoke flags above, for example:
-#   edev record tmp/spacecurve-smoke.mov --only '*layout*'
+#   edev record tmp/eguidev-smoke.mov --only '*layout*'
 #
 # Recording is macOS-only, uses native ScreenCaptureKit direct recording rather
 # than an external recorder, requires Screen Recording permission for the

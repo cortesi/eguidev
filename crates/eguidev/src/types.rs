@@ -2760,6 +2760,8 @@ pub struct WidgetState {
     /// Optional multiline flag for text edits.
     pub multiline: Option<bool>,
     /// Optional password-masking flag for text edits.
+    ///
+    /// Masking is presentation only. [`Self::value`] still holds the cleartext.
     pub password: Option<bool>,
     /// Whether the widget is enabled.
     pub enabled: bool,

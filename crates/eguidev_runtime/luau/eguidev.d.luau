@@ -206,6 +206,8 @@ export type WidgetState = {
     interact_rect: Rect,
     role: WidgetRole,
     label: string?,
+    --- Cleartext even when `password` is true. Masking is presentation only;
+    --- scripts, dumps, and failure bundles see the typed value.
     value: WidgetValue?,
     data: any?,
     --- String representation of value. Empty string when value is nil.
@@ -268,6 +270,7 @@ export type WidgetDump = {
     id: string,
     role: WidgetRole,
     label: string?,
+    --- Cleartext even when the widget is a password field.
     value: WidgetValue?,
     value_text: string,
     data: any?,
