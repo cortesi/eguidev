@@ -291,6 +291,9 @@ fn smoke_occlusion(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
     occlusion_args
         .script_args
         .push("force_occluder=true".to_string());
+    occlusion_args
+        .script_args
+        .push("require_occlusion=true".to_string());
     smoke_with_app_command(&occlusion_args, Some(&occlusion_demo_command()))
 }
 
