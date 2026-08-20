@@ -148,6 +148,16 @@ impl WidgetRegistry {
             .unwrap_or_default()
     }
 
+    pub fn child_ids_of(&self, viewport_id: egui::ViewportId, parent_id: &str) -> Vec<String> {
+        lock(&self.registry_snapshot, "registry snapshot lock")
+            .get(&viewport_id)
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.parent_id.as_deref() == Some(parent_id))
+            .map(|entry| entry.id.clone())
+            .collect()
+    }
+
     pub fn duplicate_explicit_id_error(&self, viewports: &ViewportState) -> Option<ToolError> {
         let fault = lock(
             &self.duplicate_explicit_id_fault,
@@ -173,9 +183,10 @@ impl WidgetRegistry {
         let (matches, resolved_viewport) =
             match resolve_viewport_selector(viewports, tool_viewport, target) {
                 Ok((viewport_id, resolved_viewport)) => {
-                    let widgets = registry.get(&viewport_id).cloned().unwrap_or_default();
-                    let matches = widgets
-                        .iter()
+                    let matches = registry
+                        .get(&viewport_id)
+                        .into_iter()
+                        .flatten()
                         .filter(|entry| entry.id == target.id)
                         .cloned()
                         .collect::<Vec<_>>();

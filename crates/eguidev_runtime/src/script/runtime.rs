@@ -695,11 +695,7 @@ impl ScriptRuntime {
                 .server
                 .inner
                 .widgets
-                .widget_list(viewport_id)
-                .into_iter()
-                .filter(|candidate| candidate.parent_id.as_deref() == Some(widget.id.as_str()))
-                .map(|candidate| candidate.id)
-                .collect();
+                .child_ids_of(viewport_id, widget.id.as_str());
         }
         self.to_json(pos, state)
     }
