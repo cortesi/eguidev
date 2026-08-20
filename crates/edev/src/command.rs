@@ -119,7 +119,7 @@ async fn run_record(config: RecordConfig) -> Result<(), EdevError> {
             ))
         },
     };
-    let recording_result = recorder.stop();
+    let recording_result = block_in_place(|| recorder.stop());
     let shutdown_result = session.shutdown().await;
     finish_record_run(
         suite_result,
@@ -250,7 +250,7 @@ async fn start_recording_with_retries(
         if attempt > 0 {
             wait_for_initial_capture_refresh(client, timeout).await?;
         }
-        match recording::start(&request) {
+        match block_in_place(|| recording::start(&request)) {
             Ok(recording) => return Ok(recording),
             Err(error) => last_error = Some(error),
         }
