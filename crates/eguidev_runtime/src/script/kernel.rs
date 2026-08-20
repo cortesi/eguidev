@@ -4045,6 +4045,44 @@ return { focused = focused[1].id, focused_count = #focused, selected_count = #se
     }
 
     #[test]
+    fn widget_list_filters_selected_toggle() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        let mut toggle = make_entry("feature", 1, WidgetRole::Toggle);
+        toggle.value = Some(WidgetValue::Bool(true));
+        inner.widgets.record_widget(viewport_id, toggle);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("other", 2, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local selected = eguidev.root:widgets({ selected = true })
+local state = eguidev.widget("feature"):state()
+assert(state ~= nil)
+return { selected = selected[1].id, selected_count = #selected, state_selected = state.selected }
+"#
+            .to_string(),
+            1_000,
+            "widget-selected-toggle.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "selected": "feature",
+                "selected_count": 1,
+                "state_selected": true,
+            }))
+        );
+    }
+
+    #[test]
     fn key_target_keeps_scoped_widget_viewport() {
         let inner = Arc::new(Inner::new());
         let secondary = egui::ViewportId::from_hash_of("script.key.target.secondary");

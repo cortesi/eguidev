@@ -2112,9 +2112,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        FixtureParam, FixtureSpec, FixtureTargetSpec, Modifiers, RawInputAction, RawInputEvent,
-        RoleState, Vec2, ViewportCondition, ViewportSel, WidgetCondition, WidgetRange, WidgetRole,
-        WidgetRoleMeta, WidgetValue, validate_viewport_name,
+        FixtureParam, FixtureSpec, FixtureTargetSpec, Modifiers, Pos2, RawInputAction,
+        RawInputEvent, Rect, RoleState, Vec2, ViewportCondition, ViewportSel, WidgetCondition,
+        WidgetRange, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+        validate_viewport_name,
     };
 
     #[test]
@@ -2540,6 +2541,71 @@ mod tests {
         assert_eq!(scroll.max_offset.x, 0.0);
         assert_eq!(scroll.max_offset.y, 0.0);
     }
+
+    #[test]
+    fn widget_state_projects_selected_for_toggle_roles() {
+        fn entry(
+            role: WidgetRole,
+            value: Option<WidgetValue>,
+            role_state: Option<RoleState>,
+        ) -> WidgetRegistryEntry {
+            let rect = Rect {
+                min: Pos2 { x: 0.0, y: 0.0 },
+                max: Pos2 { x: 1.0, y: 1.0 },
+            };
+            WidgetRegistryEntry {
+                id: "control".to_string(),
+                explicit_id: true,
+                native_id: 1,
+                viewport_id: "root".to_string(),
+                layer_id: "background".to_string(),
+                rect,
+                interact_rect: rect,
+                role,
+                label: None,
+                value,
+                data: None,
+                layout: None,
+                role_state,
+                parent_id: None,
+                enabled: true,
+                visible: true,
+                focused: false,
+            }
+        }
+
+        let toggle = WidgetState::from(&entry(
+            WidgetRole::Toggle,
+            Some(WidgetValue::Bool(true)),
+            None,
+        ));
+        assert_eq!(toggle.selected, Some(true));
+
+        let checkbox = WidgetState::from(&entry(
+            WidgetRole::Checkbox,
+            Some(WidgetValue::Bool(false)),
+            Some(RoleState::Checkbox {
+                indeterminate: false,
+            }),
+        ));
+        assert_eq!(checkbox.selected, Some(false));
+
+        let indeterminate = WidgetState::from(&entry(
+            WidgetRole::Checkbox,
+            Some(WidgetValue::Bool(true)),
+            Some(RoleState::Checkbox {
+                indeterminate: true,
+            }),
+        ));
+        assert_eq!(indeterminate.selected, None);
+
+        let selected_button = WidgetState::from(&entry(
+            WidgetRole::Button,
+            None,
+            Some(RoleState::Button { selected: true }),
+        ));
+        assert_eq!(selected_button.selected, Some(true));
+    }
 }
 
 /// Widget registry entry captured per frame.
@@ -2650,6 +2716,32 @@ pub struct WidgetState {
     pub focused: bool,
 }
 
+impl WidgetRegistryEntry {
+    /// Selected-on projection used by widget state, dumps, and list filters.
+    pub fn selected(&self) -> Option<bool> {
+        widget_selected_state(self)
+    }
+}
+
+fn widget_selected_state(entry: &WidgetRegistryEntry) -> Option<bool> {
+    if let Some(selected) = entry.role_state.as_ref().and_then(RoleState::selected) {
+        return Some(selected);
+    }
+    let value = match &entry.value {
+        Some(WidgetValue::Bool(value)) => *value,
+        _ => return None,
+    };
+    match entry.role {
+        WidgetRole::Toggle | WidgetRole::Radio | WidgetRole::Selectable => Some(value),
+        WidgetRole::Checkbox
+            if entry.role_state.as_ref().and_then(RoleState::indeterminate) != Some(true) =>
+        {
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
 impl From<&WidgetRegistryEntry> for WidgetState {
     fn from(entry: &WidgetRegistryEntry) -> Self {
         let value_text = entry
@@ -2664,7 +2756,7 @@ impl From<&WidgetRegistryEntry> for WidgetState {
             .as_ref()
             .and_then(RoleState::options)
             .map(<[String]>::to_vec);
-        let selected = entry.role_state.as_ref().and_then(RoleState::selected);
+        let selected = entry.selected();
         let indeterminate = entry.role_state.as_ref().and_then(RoleState::indeterminate);
         let (multiline, password) = entry
             .role_state

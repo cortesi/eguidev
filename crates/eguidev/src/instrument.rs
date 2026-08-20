@@ -72,6 +72,7 @@ pub fn track_widget(
         &response,
         WidgetMeta {
             visible,
+            layout: Some(capture_layout(ui, &response)),
             ..Default::default()
         },
     );
@@ -594,6 +595,25 @@ mod tests {
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
         assert!(widgets.contains(&"save".to_string()));
+    }
+
+    #[test]
+    fn track_widget_records_layout() {
+        let devmcp = devmcp_enabled();
+        let ctx = Context::default();
+        reset_test_counters();
+        run_panel(&ctx, egui::RawInput::default(), |ctx, ui| {
+            devmcp.begin_frame(ctx);
+            track_widget(ui, "custom", |ui| ui.label("Custom"));
+            devmcp.end_frame(ctx, true);
+        });
+        assert!(test_layout_capture_count() >= 1);
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        assert!(widget_by_id(&widgets, "custom").layout.is_some());
     }
 
     #[test]

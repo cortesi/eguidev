@@ -19,7 +19,7 @@ use crate::{
     fixtures::{FixtureHandler, RuntimeFixtureHandler, UiFixtureHandler},
     idle::IdleRegistry,
     instrument::{ACTIVE, container, swallow_panic},
-    registry::Inner,
+    registry::{Inner, lock},
     types::{FixtureCall, FixtureResult, FixtureSpec},
 };
 
@@ -122,27 +122,47 @@ impl egui::Plugin for AutomationPlugin {
     }
 }
 
+#[derive(Default)]
+struct DevMcpShared {
+    fixtures: Mutex<Vec<FixtureSpec>>,
+    fixture_handler: Mutex<Option<FixtureHandler>>,
+    verbose_logging: AtomicBool,
+    automation_options: Mutex<AutomationOptions>,
+}
+
 /// DevMCP handle stored in app state.
+///
+/// `Clone` is a cheap shared handle: configuration, fixtures, diagnostics, and
+/// idle providers are observed by every clone.
 #[derive(Clone, Default)]
 pub struct DevMcp {
     state: DevMcpState,
-    fixtures: Vec<FixtureSpec>,
+    shared: Arc<DevMcpShared>,
     diagnostics: DiagnosticRegistry,
     idle: IdleRegistry,
-    verbose_logging: bool,
-    fixture_handler: Option<FixtureHandler>,
-    automation_options: AutomationOptions,
 }
 
 impl fmt::Debug for DevMcp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DevMcp")
             .field("state", &self.state)
-            .field("fixtures", &self.fixtures)
+            .field(
+                "fixtures",
+                &lock(&self.shared.fixtures, "devmcp fixtures lock").len(),
+            )
             .field("diagnostics", &self.diagnostics)
             .field("idle", &self.idle)
-            .field("verbose_logging", &self.verbose_logging)
-            .field("automation_options", &self.automation_options)
+            .field(
+                "verbose_logging",
+                &self.shared.verbose_logging.load(Ordering::Relaxed),
+            )
+            .field(
+                "automation_options",
+                &*lock(
+                    &self.shared.automation_options,
+                    "devmcp automation options lock",
+                ),
+            )
             .finish()
     }
 }
@@ -154,8 +174,10 @@ impl DevMcp {
     }
 
     /// Enable or disable verbose internal logging for DevMCP operations.
-    pub fn verbose_logging(mut self, verbose_logging: bool) -> Self {
-        self.verbose_logging = verbose_logging;
+    pub fn verbose_logging(self, verbose_logging: bool) -> Self {
+        self.shared
+            .verbose_logging
+            .store(verbose_logging, Ordering::Relaxed);
         if let Some(inner) = self.inner() {
             inner.set_verbose_logging(verbose_logging);
         }
@@ -163,8 +185,11 @@ impl DevMcp {
     }
 
     /// Configure runtime-owned automation behavior.
-    pub fn automation_options(mut self, options: AutomationOptions) -> Self {
-        self.automation_options = options;
+    pub fn automation_options(self, options: AutomationOptions) -> Self {
+        *lock(
+            &self.shared.automation_options,
+            "devmcp automation options lock",
+        ) = options;
         if let Some(inner) = self.inner() {
             inner.set_automation_options(options);
         }
@@ -172,28 +197,43 @@ impl DevMcp {
     }
 
     /// Enable or disable runtime repaint keep-alive while automation is attached.
-    pub fn keep_alive(mut self, keep_alive: bool) -> Self {
-        self.automation_options.keep_alive = keep_alive;
+    pub fn keep_alive(self, keep_alive: bool) -> Self {
+        let options = {
+            let mut options = lock(
+                &self.shared.automation_options,
+                "devmcp automation options lock",
+            );
+            options.keep_alive = keep_alive;
+            *options
+        };
         if let Some(inner) = self.inner() {
-            inner.set_automation_options(self.automation_options);
+            inner.set_automation_options(options);
         }
         self
     }
 
     /// Enable or disable egui animations while automation is attached.
-    pub fn animations(mut self, animations: bool) -> Self {
-        self.automation_options.animations = animations;
+    pub fn animations(self, animations: bool) -> Self {
+        let options = {
+            let mut options = lock(
+                &self.shared.automation_options,
+                "devmcp automation options lock",
+            );
+            options.animations = animations;
+            *options
+        };
         if let Some(inner) = self.inner() {
-            inner.set_automation_options(self.automation_options);
+            inner.set_automation_options(options);
         }
         self
     }
 
     /// Register fixture metadata for discovery and validation.
-    pub fn fixtures(mut self, fixtures: impl IntoIterator<Item = FixtureSpec>) -> Self {
-        self.fixtures = fixtures.into_iter().collect();
+    pub fn fixtures(self, fixtures: impl IntoIterator<Item = FixtureSpec>) -> Self {
+        let fixtures: Vec<_> = fixtures.into_iter().collect();
+        *lock(&self.shared.fixtures, "devmcp fixtures lock") = fixtures.clone();
         if let Some(inner) = self.inner() {
-            inner.fixtures.set_fixtures(self.fixtures.clone());
+            inner.fixtures.set_fixtures(fixtures);
         }
         self
     }
@@ -203,7 +243,7 @@ impl DevMcp {
     /// An app registers exactly one fixture handler. Calling this after either
     /// handler is already registered returns a `duplicate_fixture_handler`
     /// configuration error. The handler reaches app state by closing over it.
-    pub fn on_fixture_runtime<F>(mut self, handler: F) -> Result<Self, DevMcpConfigError>
+    pub fn on_fixture_runtime<F>(self, handler: F) -> Result<Self, DevMcpConfigError>
     where
         F: Fn(&FixtureCall) -> FixtureResult + Send + Sync + 'static,
     {
@@ -213,7 +253,7 @@ impl DevMcp {
         if let Some(inner) = self.inner() {
             inner.fixtures.set_handler(handler.clone())?;
         }
-        self.fixture_handler = Some(handler);
+        *lock(&self.shared.fixture_handler, "devmcp fixture handler lock") = Some(handler);
         Ok(self)
     }
 
@@ -223,7 +263,7 @@ impl DevMcp {
     /// exactly one fixture handler. Calling this after either handler is
     /// already registered returns a `duplicate_fixture_handler` configuration
     /// error. The handler reaches app state by closing over it.
-    pub fn on_fixture_ui<F>(mut self, handler: F) -> Result<Self, DevMcpConfigError>
+    pub fn on_fixture_ui<F>(self, handler: F) -> Result<Self, DevMcpConfigError>
     where
         F: FnMut(&Context, &FixtureCall) -> FixtureResult + Send + 'static,
     {
@@ -233,7 +273,7 @@ impl DevMcp {
         if let Some(inner) = self.inner() {
             inner.fixtures.set_handler(handler.clone())?;
         }
-        self.fixture_handler = Some(handler);
+        *lock(&self.shared.fixture_handler, "devmcp fixture handler lock") = Some(handler);
         Ok(self)
     }
 
@@ -309,12 +349,14 @@ impl DevMcp {
     }
 
     fn verbose_logging_enabled(&self) -> bool {
-        self.inner()
-            .map_or(self.verbose_logging, |inner| inner.verbose_logging())
+        self.inner().map_or_else(
+            || self.shared.verbose_logging.load(Ordering::Relaxed),
+            |inner| inner.verbose_logging(),
+        )
     }
 
     fn ensure_no_fixture_handler(&self) -> Result<(), DevMcpConfigError> {
-        if self.fixture_handler.is_some() {
+        if lock(&self.shared.fixture_handler, "devmcp fixture handler lock").is_some() {
             return Err(DevMcpConfigError::new(
                 "duplicate_fixture_handler",
                 "fixture handler is already registered",
@@ -332,15 +374,21 @@ impl DevMcp {
     #[doc(hidden)]
     pub fn activate_runtime(mut self, inner: Arc<Inner>, hooks: Arc<dyn RuntimeHooks>) -> Self {
         inner.set_runtime_hooks(hooks);
-        inner.set_verbose_logging(self.verbose_logging);
-        inner.set_automation_options(self.automation_options);
-        if !self.fixtures.is_empty() {
-            inner.fixtures.set_fixtures(self.fixtures.clone());
+        inner.set_verbose_logging(self.shared.verbose_logging.load(Ordering::Relaxed));
+        inner.set_automation_options(*lock(
+            &self.shared.automation_options,
+            "devmcp automation options lock",
+        ));
+        let fixtures = lock(&self.shared.fixtures, "devmcp fixtures lock").clone();
+        if !fixtures.is_empty() {
+            inner.fixtures.set_fixtures(fixtures);
         }
-        if let Some(handler) = &self.fixture_handler {
+        if let Some(handler) =
+            lock(&self.shared.fixture_handler, "devmcp fixture handler lock").clone()
+        {
             inner
                 .fixtures
-                .set_handler(handler.clone())
+                .set_handler(handler)
                 .expect("fixture handler was validated before runtime activation");
         }
         inner.diagnostics.set_providers_from(&self.diagnostics);
@@ -894,5 +942,36 @@ mod inactive_tests {
             widgets.iter().all(|widget| widget.id != "ungarded"),
             "unguarded widgets must not record after a swallowed finish_frame panic"
         );
+    }
+
+    #[test]
+    fn clone_shares_configuration() {
+        let a = DevMcp::new();
+        let b = a.clone();
+        let spec = FixtureSpec::new("shared.fixture", "Shared");
+        let b = b.verbose_logging(true).keep_alive(false).fixtures([spec]);
+        let a = a.animations(true);
+
+        assert!(a.verbose_logging_enabled());
+        assert!(b.verbose_logging_enabled());
+        assert_eq!(
+            lock(&a.shared.fixtures, "devmcp fixtures lock")
+                .iter()
+                .map(|fixture| fixture.name.as_str())
+                .collect::<Vec<_>>(),
+            ["shared.fixture"]
+        );
+        let a_options = *lock(
+            &a.shared.automation_options,
+            "devmcp automation options lock",
+        );
+        let b_options = *lock(
+            &b.shared.automation_options,
+            "devmcp automation options lock",
+        );
+        assert!(!a_options.keep_alive);
+        assert!(a_options.animations);
+        assert_eq!(a_options, b_options);
+        assert!(lock(&a.shared.fixture_handler, "devmcp fixture handler lock").is_none());
     }
 }

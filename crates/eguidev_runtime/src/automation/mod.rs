@@ -737,9 +737,7 @@ pub fn collect_widget_list(
         widgets.retain(|entry| entry.focused == focused);
     }
     if let Some(selected) = selected {
-        widgets.retain(|entry| {
-            entry.role_state.as_ref().and_then(RoleState::selected) == Some(selected)
-        });
+        widgets.retain(|entry| entry.selected() == Some(selected));
     }
     if let Some(role) = role {
         widgets.retain(|entry| entry.role == role);

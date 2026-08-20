@@ -197,7 +197,7 @@ fn build_widget_dump(
         .as_ref()
         .map(WidgetValue::to_text)
         .unwrap_or_default();
-    let selected = widget.role_state.as_ref().and_then(RoleState::selected);
+    let selected = widget.selected();
     let scroll = (fields == DumpFields::Full)
         .then(|| widget.role_state.as_ref().and_then(RoleState::scroll_state))
         .flatten();
