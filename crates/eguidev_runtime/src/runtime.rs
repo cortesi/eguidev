@@ -1,6 +1,8 @@
 //! Embedded runtime attachment for DevMCP automation.
 
-use std::{any::Any, sync::Arc, thread};
+#[cfg(any(test, target_os = "macos"))]
+use std::pin::pin;
+use std::{any::Any, future::Future, sync::Arc, thread, time::Duration};
 
 use egui::{Context, FullOutput};
 use eguidev::internal::{
@@ -8,7 +10,7 @@ use eguidev::internal::{
     presentation::Presentation,
     registry::{Inner, viewport_id_to_string},
 };
-use tokio::sync::Notify;
+use tokio::{sync::Notify, time::timeout};
 
 #[cfg(target_os = "macos")]
 use crate::macos::{
@@ -25,6 +27,8 @@ use crate::{
     screenshots::{ScreenshotDebugSnapshot, ScreenshotKind, ScreenshotManager, ScreenshotState},
     server::start_server,
 };
+
+const PRESENTATION_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug)]
 pub struct Runtime {
@@ -151,22 +155,41 @@ impl Runtime {
 
     pub(crate) async fn configure_presentation(
         &self,
+        inner: &Inner,
         session_id: u64,
         presentation: Presentation,
     ) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
-            let frame_complete = self.frame_notify.notified();
-            let needs_frame = configure_session(session_id, presentation).await?;
+            let mut frame_complete = pin!(self.frame_notify.notified());
+            frame_complete.as_mut().enable();
+            let needs_frame = timeout(
+                PRESENTATION_HANDSHAKE_TIMEOUT,
+                configure_session(session_id, presentation),
+            )
+            .await
+            .map_err(|_| "timed out waiting for macOS presentation handshake".to_string())??;
             if needs_frame {
-                frame_complete.await;
+                inner.request_repaint_of(egui::ViewportId::ROOT);
+                self.await_frame_notification(frame_complete, PRESENTATION_HANDSHAKE_TIMEOUT)
+                    .await?;
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = (session_id, presentation);
+            let _ = (inner, session_id, presentation);
         }
         Ok(())
+    }
+
+    async fn await_frame_notification(
+        &self,
+        notified: impl Future<Output = ()>,
+        bound: Duration,
+    ) -> Result<(), String> {
+        timeout(bound, notified).await.map_err(|_| {
+            "timed out waiting for a UI frame after presentation configure".to_string()
+        })
     }
 
     pub(crate) async fn disconnect_presentation(&self, session_id: u64) -> Result<(), String> {
@@ -358,5 +381,37 @@ mod tests {
         let devmcp = attach_internal(DevMcp::new(), true, Some("127.0.0.1:0".to_string()), true);
         assert!(devmcp.is_enabled());
         assert_eq!(start_server_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn await_frame_notification_times_out_without_frames() {
+        use std::time::Instant;
+
+        let runtime = Runtime::new(false);
+        let mut notified = pin!(runtime.frame_notify.notified());
+        notified.as_mut().enable();
+        let started = Instant::now();
+        let error = runtime
+            .await_frame_notification(notified, Duration::from_millis(30))
+            .await
+            .expect_err("missing frames should time out");
+        assert!(error.contains("timed out waiting for a UI frame"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn await_frame_notification_succeeds_after_notify() {
+        let runtime = Arc::new(Runtime::new(false));
+        let mut notified = pin!(runtime.frame_notify.notified());
+        notified.as_mut().enable();
+        let runtime_for_notify = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            runtime_for_notify.frame_notify.notify_waiters();
+        });
+        runtime
+            .await_frame_notification(notified, Duration::from_secs(1))
+            .await
+            .expect("notify should complete the wait");
     }
 }

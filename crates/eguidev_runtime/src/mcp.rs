@@ -50,7 +50,7 @@ impl AppMcpServer {
         let presentation =
             parse_client_capabilities(&capabilities).map_err(tmcp::Error::InvalidParams)?;
         self.runtime
-            .configure_presentation(self.presentation_session_id, presentation)
+            .configure_presentation(&self.inner, self.presentation_session_id, presentation)
             .await
             .map_err(tmcp::Error::InternalError)?;
         Ok(InitializeResult::new("eguidev")

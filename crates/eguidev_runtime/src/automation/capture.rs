@@ -193,10 +193,11 @@ async fn ensure_event_loop_active(
             if current_frame > initial_frame {
                 return;
             }
-            let notified = runtime.frame_notify().notified();
+            let mut notified = std::pin::pin!(runtime.frame_notify().notified());
+            notified.as_mut().enable();
             inner.request_repaint_of(viewport_id);
             let poll = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
-            drop(timeout(poll, notified).await);
+            drop(timeout(poll, notified.as_mut()).await);
         }
     };
 

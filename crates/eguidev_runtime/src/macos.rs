@@ -24,6 +24,7 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
+    time::Duration,
 };
 
 use block2::RcBlock;
@@ -53,7 +54,7 @@ use objc2::{
     sel,
 };
 use serde::Serialize;
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, time::timeout};
 
 use crate::{
     presentation::{PresentationSession, PresentationTransition},
@@ -764,8 +765,9 @@ where
     DispatchQueue::main().exec_async(move || {
         drop(sender.send(operation()));
     });
-    receiver
+    timeout(Duration::from_secs(15), receiver)
         .await
+        .map_err(|_| "timed out waiting for macOS main-thread presentation work".to_string())?
         .map_err(|_| "macOS main-thread operation was cancelled".to_string())
 }
 

@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    pin::pin,
     time::{Duration, Instant},
 };
 
@@ -567,11 +568,12 @@ pub async fn wait_for_frames(
                 "observation": observation,
             })));
         }
-        let notified = runtime.frame_notify().notified();
+        let mut notified = pin!(runtime.frame_notify().notified());
+        notified.as_mut().enable();
         request_wait_repaint(inner, Some(egui::ViewportId::ROOT));
         let remaining = timeout_ms.saturating_sub(elapsed_ms).max(1);
         let poll = Duration::from_millis(FRAME_DURATION_MS).min(Duration::from_millis(remaining));
-        if timeout(poll, notified).await.is_ok() {
+        if timeout(poll, notified.as_mut()).await.is_ok() {
             completed += 1;
         }
     }
@@ -668,7 +670,8 @@ where
                 ));
             }
 
-            let notified = runtime.frame_notify().notified();
+            let mut notified = pin!(runtime.frame_notify().notified());
+            notified.as_mut().enable();
             request_wait_repaint(inner, target_viewport_id);
 
             let remaining_poll = poll_deadline.saturating_duration_since(Instant::now());
@@ -678,7 +681,7 @@ where
                 .min(remaining_timeout)
                 .max(Duration::from_millis(1));
             tokio::select! {
-                _ = notified => {}
+                _ = notified.as_mut() => {}
                 _ = sleep(step) => {}
             }
         }
