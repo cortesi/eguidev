@@ -62,14 +62,7 @@ impl WidgetMeta {
 
 #[derive(Debug, Clone)]
 struct DuplicateExplicitIdFault {
-    duplicate_ids: Vec<DuplicateExplicitIdEntry>,
-    snapshot: Vec<WidgetRegistryEntry>,
-}
-
-#[derive(Debug, Clone)]
-struct DuplicateExplicitIdEntry {
-    id: String,
-    candidates: Vec<WidgetRegistryEntry>,
+    duplicate_ids: Vec<String>,
 }
 
 const MAX_CANDIDATE_SUMMARIES: usize = 5;
@@ -156,12 +149,13 @@ impl WidgetRegistry {
     }
 
     pub fn duplicate_explicit_id_error(&self, viewports: &ViewportState) -> Option<ToolError> {
-        lock(
+        let fault = lock(
             &self.duplicate_explicit_id_fault,
             "duplicate explicit id fault lock",
         )
-        .clone()
-        .map(|fault| fault.into_tool_error(viewports))
+        .clone()?;
+        let snapshot = lock(&self.registry_snapshot, "registry snapshot lock");
+        Some(fault.into_tool_error(viewports, &snapshot))
     }
 
     pub fn resolve_widget(
@@ -518,41 +512,31 @@ fn summarize_candidates(candidates: &[WidgetRegistryEntry]) -> (Vec<serde_json::
 fn build_duplicate_explicit_id_fault(
     snapshot: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
 ) -> Option<DuplicateExplicitIdFault> {
-    let mut by_id: HashMap<String, Vec<WidgetRegistryEntry>> = HashMap::new();
+    let mut counts: HashMap<&str, usize> = HashMap::new();
     for entry in snapshot.values().flatten() {
-        if !entry.explicit_id {
-            continue;
+        if entry.explicit_id {
+            *counts.entry(entry.id.as_str()).or_insert(0) += 1;
         }
-        by_id
-            .entry(entry.id.clone())
-            .or_default()
-            .push(entry.clone());
     }
-    let snapshot = snapshot.values().flatten().cloned().collect::<Vec<_>>();
-
-    let mut duplicate_ids = by_id
+    let mut duplicate_ids = counts
         .into_iter()
-        .filter_map(|(id, candidates)| {
-            (candidates.len() > 1).then_some(DuplicateExplicitIdEntry { id, candidates })
-        })
+        .filter_map(|(id, count)| (count > 1).then(|| id.to_string()))
         .collect::<Vec<_>>();
-    duplicate_ids.sort_by(|left, right| left.id.cmp(&right.id));
-    (!duplicate_ids.is_empty()).then_some(DuplicateExplicitIdFault {
-        duplicate_ids,
-        snapshot,
-    })
+    duplicate_ids.sort();
+    (!duplicate_ids.is_empty()).then_some(DuplicateExplicitIdFault { duplicate_ids })
 }
 
 impl DuplicateExplicitIdFault {
-    fn into_tool_error(self, viewports: &ViewportState) -> ToolError {
-        let Self {
-            duplicate_ids,
-            snapshot,
-        } = self;
+    fn into_tool_error(
+        self,
+        viewports: &ViewportState,
+        snapshot: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
+    ) -> ToolError {
+        let Self { duplicate_ids } = self;
         let summary = duplicate_ids
             .iter()
             .take(5)
-            .map(|entry| entry.id.as_str())
+            .map(String::as_str)
             .collect::<Vec<_>>()
             .join(", ");
         let suffix = if duplicate_ids.len() > 5 {
@@ -563,26 +547,29 @@ impl DuplicateExplicitIdFault {
         let message = format!(
             "Duplicate explicit widget ids detected: {summary}{suffix}; make ids unique or scope one side with container() before continuing automation"
         );
-        let duplicate_ids = duplicate_ids
+        let flat: Vec<WidgetRegistryEntry> = snapshot.values().flatten().cloned().collect();
+        let duplicate_payload = duplicate_ids
             .into_iter()
-            .map(|entry| {
-                json!({
-                    "id": entry.id,
-                    "candidates": entry.candidates.into_iter().map(|candidate| {
+            .map(|id| {
+                let candidates = flat
+                    .iter()
+                    .filter(|entry| entry.explicit_id && entry.id == id)
+                    .map(|candidate| {
                         json!({
                             "viewport": viewport_summary(viewports, &candidate.viewport_id),
                             "role": candidate.role,
                             "label": candidate.label,
                             "rect": candidate.rect,
-                            "parent_chain": parent_chain_for(&candidate, &snapshot),
+                            "parent_chain": parent_chain_for(candidate, &flat),
                         })
-                    }).collect::<Vec<_>>(),
-                })
+                    })
+                    .collect::<Vec<_>>();
+                json!({ "id": id, "candidates": candidates })
             })
             .collect::<Vec<_>>();
         ToolError::new(ErrorCode::InstrumentationFault, message).with_details(json!({
             "reason": "duplicate_explicit_widget_ids",
-            "duplicate_ids": duplicate_ids,
+            "duplicate_ids": duplicate_payload,
         }))
     }
 }
