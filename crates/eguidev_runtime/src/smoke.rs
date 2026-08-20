@@ -472,9 +472,7 @@ where
         }
     };
 
-    let suite_deadline = suite_start
-        .checked_add(config.suite_timeout)
-        .unwrap_or_else(Instant::now);
+    let suite_deadline = suite_start.checked_add(config.suite_timeout);
     let mut results = Vec::new();
     let mut rounds = Vec::new();
     let mut stop_suite = false;
@@ -482,7 +480,7 @@ where
     for round in 1..=round_limit {
         let round_start = Instant::now();
         for (index, script) in scripts.iter().enumerate() {
-            if Instant::now() >= suite_deadline {
+            if suite_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 append_skipped(
                     &mut results,
                     round,
@@ -521,7 +519,7 @@ where
                 path: relative_display.clone(),
                 round,
                 source,
-                timeout_ms: config.script_timeout.map(duration_to_millis),
+                timeout_ms: script_timeout_ms(config.script_timeout, suite_deadline),
                 args: config.args.clone(),
             });
             let elapsed_ms = script_start.elapsed().as_millis() as u64;
@@ -637,6 +635,20 @@ fn append_skipped(
 
 fn duration_to_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn script_timeout_ms(
+    script_timeout: Option<Duration>,
+    suite_deadline: Option<Instant>,
+) -> Option<u64> {
+    let remaining =
+        suite_deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()));
+    match (script_timeout, remaining) {
+        (Some(script), Some(remain)) => Some(duration_to_millis(script.min(remain))),
+        (Some(script), None) => Some(duration_to_millis(script)),
+        (None, Some(remain)) => Some(duration_to_millis(remain)),
+        (None, None) => None,
+    }
 }
 
 fn collect_suite_scripts(config: &SuiteConfig) -> io::Result<Vec<SuiteScript>> {
@@ -1344,6 +1356,60 @@ return true
         assert_eq!(result.failed(), 1);
         assert_eq!(result.skipped(), 1);
 
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn suite_timeout_clamps_script_timeout() {
+        let root = test_root("suite_timeout_clamps_script_timeout");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_long.luau"), "return true").expect("write script");
+
+        let mut seen = None;
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.suite_timeout = Duration::from_millis(40);
+                config.script_timeout = Some(Duration::from_secs(60));
+                config
+            },
+            |request: ScriptRunRequest| {
+                seen = request.timeout_ms;
+                Ok(success_outcome())
+            },
+        );
+
+        assert!(result.success());
+        let timeout_ms = seen.expect("timeout");
+        assert!(timeout_ms <= 40, "{timeout_ms}");
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn overflowed_suite_timeout_runs_scripts() {
+        let root = test_root("overflowed_suite_timeout_runs_scripts");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_run.luau"), "return true").expect("write script");
+
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.suite_timeout = Duration::from_secs(u64::MAX);
+                config.script_timeout = Some(Duration::from_secs(7));
+                config
+            },
+            |request: ScriptRunRequest| {
+                assert_eq!(request.timeout_ms, Some(7_000));
+                Ok(success_outcome())
+            },
+        );
+
+        assert!(result.success());
+        assert_eq!(result.passed(), 1);
         drop(fs::remove_dir_all(&root));
     }
 

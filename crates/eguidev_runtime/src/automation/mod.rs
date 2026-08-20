@@ -48,6 +48,8 @@ use crate::{
 
 pub const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 16;
+const MAX_SAMPLE_GRID_COUNT: u64 = 512;
+const MAX_KEY_REPEAT: u32 = 1_000;
 const SCROLL_STABILITY_TOLERANCE: f32 = 0.75;
 const WIDGET_SAMPLE_GRID_INSET: f32 = 1.0;
 mod action;
@@ -208,11 +210,7 @@ fn settle_report(
     let observed_new_capture = capture_frame.is_some_and(|frame| frame > start_capture);
     let target_viewport_closed =
         viewport_id != egui::ViewportId::ROOT && !inner.viewports.is_live_viewport(viewport_id);
-    let observed_settle_frame = if viewport_id == egui::ViewportId::ROOT {
-        inner.frame_count() > start_frame
-    } else {
-        observed_new_capture
-    };
+    let observed_settle_frame = observed_new_capture;
     let pending_actions = inner.actions.pending_action_count(viewport_id);
     let pending_commands = inner.actions.pending_command_count(viewport_id);
     let last_action_frame = inner.last_action_frame.load(Ordering::Relaxed);
@@ -478,7 +476,10 @@ fn sample_widget_grid(
             json!({}),
         )
     })?;
-    let mut samples = Vec::with_capacity(nx * ny);
+    let capacity = nx.checked_mul(ny).ok_or_else(|| {
+        ToolError::new(ErrorCode::InvalidArgument, "sample_grid nx * ny overflowed")
+    })?;
+    let mut samples = Vec::with_capacity(capacity);
     for y in grid_axis(sample_rect.min.y, sample_rect.max.y, ny) {
         for x in grid_axis(sample_rect.min.x, sample_rect.max.x, nx) {
             let absolute = Pos2 { x, y };
@@ -772,11 +773,12 @@ fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
 
 /// Whether a widget exists in a state that can accept an interaction.
 ///
-/// This one predicate governs pointer admission, the visibility waits, and the
-/// poll that `scroll_into_view` runs. Keeping them identical means a wait that
-/// passes cannot be followed by a click that fails for the same reason.
+/// This one predicate governs pointer admission, the Luau `actionable`
+/// condition, and the poll that `scroll_into_view` runs. Keeping them identical
+/// means a wait that passes cannot be followed by a click that fails for the
+/// same reason.
 pub fn interaction_ready(widget: &WidgetRegistryEntry) -> bool {
-    widget.visible && widget_visible_fraction(widget) > 0.0
+    widget.visible && widget.enabled && widget_visible_fraction(widget) > 0.0
 }
 
 /// Remedy named by the invisible-interaction error and by its `hint` detail.
@@ -794,6 +796,8 @@ fn invisible_interaction_error(
     let viewport = viewport_snapshot_for(inner, viewport_id);
     let reason = if !widget.visible {
         "widget is not visible"
+    } else if !widget.enabled {
+        "widget is not enabled"
     } else {
         "widget visible_fraction is 0"
     };
@@ -4059,6 +4063,24 @@ return state.scroll_state.offset.y"#
         let mut partly_clipped = make_entry("partly", 1, WidgetRole::Button);
         partly_clipped.layout = Some(clipped_layout(0.25));
         assert!(interaction_ready(&partly_clipped));
+
+        let mut disabled = make_entry("disabled", 1, WidgetRole::Button);
+        disabled.enabled = false;
+        assert!(!interaction_ready(&disabled));
+    }
+
+    #[test]
+    fn settle_root_fresh_frame_requires_root_capture() {
+        let inner = Arc::new(Inner::new());
+        inner.advance_frame();
+        inner.advance_frame();
+        let report = settle_report(&inner, egui::ViewportId::ROOT, 0, 0, 0);
+        let fresh = report
+            .phases
+            .iter()
+            .find(|phase| matches!(phase.phase, SettlePhase::FreshFrame))
+            .expect("fresh_frame");
+        assert!(!fresh.complete, "{fresh:?}");
     }
 
     #[tokio::test]
@@ -5143,6 +5165,24 @@ return state.scroll_state.offset.y"#
                 .iter()
                 .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
         );
+    }
+
+    #[tokio::test]
+    async fn action_key_rejects_repeat_count_over_cap() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let error = server
+            .action_key(
+                None,
+                egui::Key::A,
+                Modifiers::default(),
+                "a",
+                Some(MAX_KEY_REPEAT + 1),
+            )
+            .await
+            .expect_err("repeat cap");
+        assert_eq!(error.code, ErrorCode::InvalidArgument.as_str());
+        assert!(error.message.contains("repeat_count"), "{error:?}");
     }
 
     #[tokio::test]

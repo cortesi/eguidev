@@ -176,6 +176,8 @@ declare class Widget
     read drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> ()
     read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
+    --- Times out when the widget is disabled. The same `interaction_ready`
+    --- predicate governs this poll, `actionable` waits, and pointer admission.
     read scroll_into_view: (self: Widget, options: ActionOptions?) -> ()
 
     read text_measure: (self: Widget) -> TextMeasure
@@ -186,6 +188,7 @@ declare class Widget
     --- widget rectangle's minimum point.
     read sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample }
     --- Samples an evenly spaced grid over the widget's visible rectangle.
+    --- Each axis is at most 512.
     read sample_grid: (self: Widget, nx: number, ny: number) -> { PixelSample }
 
     --- Visual aids persist until cleared. These methods do not wait or settle.
@@ -488,6 +491,7 @@ export type KeyOptions = {
     timeout_ms: number?,
     poll_interval_ms: number?,
     settle: boolean?,
+    --- At most 1000. Defaults to 1.
     repeat_count: number?,
     target: Widget?,
 }

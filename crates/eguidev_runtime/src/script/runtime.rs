@@ -19,10 +19,10 @@ use tokio::{task::spawn_blocking, time::timeout};
 use super::{
     super::{
         DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode,
-        OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError, capture_screenshot,
-        collect_widget_list, interaction_ready, parse_key_combo, resolve_screenshot_viewport,
-        resolve_widget_and_viewport, viewport_snapshot_for, wait_timeout_details,
-        wait_timeout_message,
+        MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError,
+        capture_screenshot, collect_widget_list, interaction_ready, parse_key_combo,
+        resolve_screenshot_viewport, resolve_widget_and_viewport, viewport_snapshot_for,
+        wait_timeout_details, wait_timeout_message,
     },
     parse::{
         map_has_any, map_value, parse_modifiers, parse_optional_bool, parse_optional_f32,
@@ -99,7 +99,7 @@ pub(super) struct ScriptRuntime {
     image_counter: AtomicUsize,
     source_name: String,
     started_at: Instant,
-    deadline: Instant,
+    deadline: Option<Instant>,
     script_timeout_ms: u64,
     config_timeout_ms: Mutex<Option<u64>>,
     config_poll_interval_ms: Mutex<Option<u64>>,
@@ -185,9 +185,7 @@ impl ScriptRuntime {
         timeout_ms: u64,
         started_at: Instant,
     ) -> Self {
-        let deadline = started_at
-            .checked_add(Duration::from_millis(timeout_ms))
-            .unwrap_or(started_at);
+        let deadline = started_at.checked_add(Duration::from_millis(timeout_ms));
         let egui_diagnostic_start = runtime.egui_diagnostics().tail_sequence();
         let saved_automation_options = inner.automation_options();
         Self {
@@ -350,15 +348,19 @@ impl ScriptRuntime {
             if pending.is_empty() {
                 return Ok(());
             }
-            let remaining = self
-                .deadline
-                .checked_duration_since(Instant::now())
-                .unwrap_or_default();
-            if remaining.is_zero() {
-                return Err(self.diagnostic_barrier_error(&pending));
-            }
-            if timeout(remaining, notified).await.is_err() {
-                return Err(self.diagnostic_barrier_error(&pending));
+            match self.deadline {
+                Some(deadline) => {
+                    let remaining = deadline
+                        .checked_duration_since(Instant::now())
+                        .unwrap_or_default();
+                    if remaining.is_zero() {
+                        return Err(self.diagnostic_barrier_error(&pending));
+                    }
+                    if timeout(remaining, notified).await.is_err() {
+                        return Err(self.diagnostic_barrier_error(&pending));
+                    }
+                }
+                None => notified.await,
             }
         }
     }
@@ -623,15 +625,17 @@ impl ScriptRuntime {
         }
     }
 
-    fn remaining_script_duration(&self, pos: ScriptPosition) -> ScriptResult<Duration> {
-        let remaining = self
-            .deadline
+    fn remaining_script_duration(&self, pos: ScriptPosition) -> ScriptResult<Option<Duration>> {
+        let Some(deadline) = self.deadline else {
+            return Ok(None);
+        };
+        let remaining = deadline
             .checked_duration_since(Instant::now())
             .unwrap_or_default();
         if remaining.is_zero() {
             return Err(self.script_timeout_error(pos));
         }
-        Ok(remaining)
+        Ok(Some(remaining))
     }
 
     async fn await_tool<T>(
@@ -640,16 +644,19 @@ impl ScriptRuntime {
         fut: impl Future<Output = ToolResult<T>>,
     ) -> ScriptResult<T> {
         let remaining = self.remaining_script_duration(pos)?;
-        let result = timeout(remaining, fut).await.map_err(|_| {
-            self.tool_error(
-                pos,
-                ToolError::new(
-                    ErrorCode::Timeout,
-                    "Script deadline exceeded while waiting for tool call",
+        let result = match remaining {
+            Some(remaining) => timeout(remaining, fut).await.map_err(|_| {
+                self.tool_error(
+                    pos,
+                    ToolError::new(
+                        ErrorCode::Timeout,
+                        "Script deadline exceeded while waiting for tool call",
+                    )
+                    .into_tmcp(),
                 )
-                .into_tmcp(),
-            )
-        })?;
+            })?,
+            None => fut.await,
+        };
         result.map_err(|error| self.tool_error(pos, error))
     }
 
@@ -1646,7 +1653,7 @@ impl ScriptRuntime {
             timeout_ms,
             poll_interval_ms,
             target_viewport,
-            Some(self.deadline),
+            self.deadline,
             || {
                 let predicate = predicate.clone();
                 let target = target.clone();
@@ -1678,7 +1685,11 @@ impl ScriptRuntime {
 
         match result {
             Ok((matched, widget, elapsed_ms, observation)) => {
-                if !matched && self.deadline <= Instant::now() {
+                if !matched
+                    && self
+                        .deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                {
                     return Err(self.script_timeout_error(pos));
                 }
                 if matched {
@@ -1745,7 +1756,7 @@ impl ScriptRuntime {
             timeout_ms,
             poll_interval_ms,
             target_viewport,
-            Some(self.deadline),
+            self.deadline,
             || {
                 let result = match resolve_wait_widget(
                     &self.server.inner,
@@ -1763,7 +1774,11 @@ impl ScriptRuntime {
 
         match result {
             Ok((matched, _widget, elapsed_ms, observation)) => {
-                if !matched && self.deadline <= Instant::now() {
+                if !matched
+                    && self
+                        .deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                {
                     return Err(self.script_timeout_error(pos));
                 }
                 if matched {
@@ -1891,7 +1906,7 @@ impl ScriptRuntime {
             timeout_ms,
             poll_interval_ms,
             Some(viewport_id),
-            Some(self.deadline),
+            self.deadline,
             || {
                 let predicate = predicate.clone();
                 async move {
@@ -1921,7 +1936,11 @@ impl ScriptRuntime {
 
         match result {
             Ok((matched, viewport, elapsed_ms, observation)) => {
-                if !matched && self.deadline <= Instant::now() {
+                if !matched
+                    && self
+                        .deadline
+                        .is_some_and(|deadline| deadline <= Instant::now())
+                {
                     return Err(self.script_timeout_error(pos));
                 }
                 let viewport = viewport
@@ -2356,6 +2375,7 @@ impl ScriptRuntime {
                         error.message,
                     )
                 })?;
+                let remaining = remaining.unwrap_or(Duration::from_secs(24 * 60 * 60));
                 spawn_blocking(move || receiver.recv_timeout(remaining))
                     .await
                     .map_err(|error| {
@@ -2438,8 +2458,10 @@ fn parse_sample_grid_count(value: &Value, name: &'static str) -> Result<usize, S
     let Some(count) = number.as_u64() else {
         return Err(format!("sample_grid {name} must be a positive integer"));
     };
-    if count == 0 || count > usize::MAX as u64 {
-        return Err(format!("sample_grid {name} must be a positive integer"));
+    if count == 0 || count > MAX_SAMPLE_GRID_COUNT {
+        return Err(format!(
+            "sample_grid {name} must be an integer from 1 to {MAX_SAMPLE_GRID_COUNT}"
+        ));
     }
     usize::try_from(count).map_err(|_| format!("sample_grid {name} is too large"))
 }
@@ -2601,9 +2623,12 @@ fn image_ref_json(id: String) -> Value {
 mod tests {
     use std::sync::Arc;
 
+    use serde_json::json;
     use tokio::task::yield_now;
 
-    use super::{ScriptRuntime, changed_widget_fields};
+    use super::{
+        MAX_SAMPLE_GRID_COUNT, ScriptRuntime, changed_widget_fields, parse_sample_grid_count,
+    };
     use crate::{
         EguiDiagnosticBatch, EguiDiagnosticKind,
         automation::script::types::ScriptPosition,
@@ -2675,6 +2700,16 @@ mod tests {
             timeout_ms,
         ));
         (runtime, script)
+    }
+
+    #[test]
+    fn parse_sample_grid_count_rejects_axis_over_cap() {
+        assert!(parse_sample_grid_count(&json!(0), "nx").is_err());
+        assert!(parse_sample_grid_count(&json!(MAX_SAMPLE_GRID_COUNT + 1), "nx").is_err());
+        assert_eq!(
+            parse_sample_grid_count(&json!(MAX_SAMPLE_GRID_COUNT), "nx").expect("max"),
+            MAX_SAMPLE_GRID_COUNT as usize
+        );
     }
 
     #[test]

@@ -110,6 +110,13 @@ impl DevMcpServer {
                 ToolError::new(ErrorCode::InvalidArgument, "Repeat must be at least 1").into(),
             );
         }
+        if repeat > MAX_KEY_REPEAT {
+            return Err(ToolError::new(
+                ErrorCode::InvalidArgument,
+                format!("repeat_count must be at most {MAX_KEY_REPEAT}"),
+            )
+            .into());
+        }
         let text = if modifiers.ctrl || modifiers.command || modifiers.alt {
             None
         } else {
