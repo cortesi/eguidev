@@ -7,6 +7,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
     time::Duration,
@@ -139,12 +140,14 @@ struct UiDiagnosticRequest {
     name: String,
     provider: UiDiagnosticProvider,
     sender: mpsc::Sender<DiagnosticResult>,
+    cancelled: Arc<AtomicBool>,
 }
 
 /// Pending UI-thread diagnostic result.
 pub struct DiagnosticReceiver {
     name: String,
     receiver: mpsc::Receiver<DiagnosticResult>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl DiagnosticReceiver {
@@ -152,11 +155,17 @@ impl DiagnosticReceiver {
     pub fn recv_timeout(self, timeout: Duration) -> DiagnosticResult {
         match self.receiver.recv_timeout(timeout) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(DiagnosticError::new(
-                "timeout",
-                format!("diagnostic provider {:?} timed out", self.name),
-            )),
-            Err(RecvTimeoutError::Disconnected) => Err(DiagnosticError::disconnected(&self.name)),
+            Err(RecvTimeoutError::Timeout) => {
+                self.cancelled.store(true, Ordering::Release);
+                Err(DiagnosticError::new(
+                    "timeout",
+                    format!("diagnostic provider {:?} timed out", self.name),
+                ))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                self.cancelled.store(true, Ordering::Release);
+                Err(DiagnosticError::disconnected(&self.name))
+            }
         }
     }
 }
@@ -258,14 +267,17 @@ impl DiagnosticRegistry {
             }
             Some(DiagnosticProvider::Ui(provider)) => {
                 let (sender, receiver) = mpsc::channel();
+                let cancelled = Arc::new(AtomicBool::new(false));
                 lock(&self.pending_ui, "pending diagnostic lock").push_back(UiDiagnosticRequest {
                     name: name.to_string(),
                     provider,
                     sender,
+                    cancelled: Arc::clone(&cancelled),
                 });
                 DiagnosticExecution::Queued(DiagnosticReceiver {
                     name: name.to_string(),
                     receiver,
+                    cancelled,
                 })
             }
             None => DiagnosticExecution::Ready(Err(DiagnosticError::not_found(name))),
@@ -279,8 +291,11 @@ impl DiagnosticRegistry {
             pending.drain(..).collect::<Vec<_>>()
         };
         for request in requests {
+            if request.cancelled.load(Ordering::Acquire) {
+                continue;
+            }
             let result = run_ui_provider(&request.name, &request.provider, ctx);
-            if request.sender.send(result).is_err() {}
+            drop(request.sender.send(result));
         }
     }
 }
@@ -395,6 +410,30 @@ mod tests {
             .expect("ui result");
         assert_eq!(value, json!({ "pixels_per_point": 1.0 }));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn timed_out_ui_diagnostic_is_not_run_later() {
+        let registry = DiagnosticRegistry::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_provider = Arc::clone(&calls);
+        registry
+            .insert_ui("ui.timeout".to_string(), move |_ctx| {
+                calls_for_provider.fetch_add(1, Ordering::SeqCst);
+                Ok(json!(true))
+            })
+            .expect("provider");
+
+        let DiagnosticExecution::Queued(receiver) = registry.start("ui.timeout") else {
+            panic!("ui provider should queue");
+        };
+        let error = receiver
+            .recv_timeout(Duration::ZERO)
+            .expect_err("diagnostic should time out");
+        assert_eq!(error.code, "timeout");
+
+        registry.drain_ui(&egui::Context::default());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
