@@ -748,6 +748,7 @@ fn parse_fixture_param_cli(raw: &str) -> Result<(String, ScriptArgValue), String
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     #[serde(default)]
     app: FileAppConfig,
@@ -758,6 +759,7 @@ struct FileConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct FileAppConfig {
     cwd: Option<PathBuf>,
     command: Option<Vec<String>>,
@@ -768,6 +770,7 @@ struct FileAppConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct FileSmokeConfig {
     suite_dir: Option<PathBuf>,
     #[serde(rename = "filter")]
@@ -784,6 +787,7 @@ struct FileSmokeConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct FileMcpConfig {
     verbose: Option<bool>,
     idle_shutdown_after_secs: Option<u64>,
@@ -2004,6 +2008,35 @@ filter = \"10_*\"
             panic!("expected invalid args");
         };
         assert!(message.contains("smoke.filter is no longer supported"));
+    }
+
+    #[test]
+    fn file_config_rejects_unknown_keys() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        let config_path = repo_root.join(DEFAULT_CONFIG_FILE);
+        fs::write(
+            &config_path,
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[smoke]
+fail_fastt = true
+",
+        )
+        .expect("write config");
+
+        let args = os_args(&["smoke"]);
+        let error = EdevCommand::parse_args_in_dir(&args, &repo_root).expect_err("parse");
+        let EdevError::InvalidArgs(message) = error else {
+            panic!("expected invalid args: {error:?}");
+        };
+        assert!(
+            message.contains("fail_fastt") && message.contains("unknown field"),
+            "{message}"
+        );
     }
 
     #[test]
