@@ -6,6 +6,7 @@ use egui::{collapsing_header::CollapsingResponse, scroll_area::ScrollAreaOutput}
 
 use crate::{
     instrument::{active_inner, capture_layout, container, swallow_panic},
+    overlay::parse_css_hex,
     types::{WidgetRange, WidgetRole, WidgetRoleMeta, WidgetValue},
     widget_registry::{WidgetMeta, record_widget},
 };
@@ -1017,7 +1018,7 @@ fn widget_range_from_i32(range: &RangeInclusive<i32>) -> WidgetRange {
 
 /// Parse a CSS-style `#RRGGBB` or `#RRGGBBAA` color literal.
 pub fn parse_color_hex(value: &str) -> Option<egui::Color32> {
-    crate::overlay::parse_css_hex(value, true)
+    parse_css_hex(value, true)
 }
 
 pub fn format_color_hex(color: egui::Color32) -> String {

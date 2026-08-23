@@ -531,7 +531,8 @@ fn build_duplicate_explicit_id_fault(
     }
     let mut duplicate_ids = counts
         .into_iter()
-        .filter_map(|(id, count)| (count > 1).then(|| id.to_string()))
+        .filter(|(_, count)| *count > 1)
+        .map(|(id, _)| id.to_string())
         .collect::<Vec<_>>();
     duplicate_ids.sort();
     (!duplicate_ids.is_empty()).then_some(DuplicateExplicitIdFault { duplicate_ids })

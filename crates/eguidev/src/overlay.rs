@@ -77,7 +77,7 @@ pub fn parse_color(value: &str) -> Option<Color32> {
     parse_css_hex(value, false)
 }
 
-pub(crate) fn parse_css_hex(value: &str, require_hash: bool) -> Option<Color32> {
+pub fn parse_css_hex(value: &str, require_hash: bool) -> Option<Color32> {
     let value = value.trim();
     let hex = match value.strip_prefix('#') {
         Some(hex) => hex,

@@ -1,6 +1,7 @@
 //! Smoketest suite runner for Luau scripts against a live DevMCP app.
 
 use std::{
+    cmp::Ordering,
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -747,7 +748,7 @@ fn collect_suite_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn natural_path_cmp(left: &Path, right: &Path) -> std::cmp::Ordering {
+fn natural_path_cmp(left: &Path, right: &Path) -> Ordering {
     natural_key(&left.to_string_lossy()).cmp(&natural_key(&right.to_string_lossy()))
 }
 

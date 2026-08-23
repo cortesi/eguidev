@@ -265,6 +265,7 @@ impl State {
         }
     }
 
+    /// Mark an idle app as starting, or report why a start cannot proceed.
     fn prepare_start(&mut self) -> PrepareStart {
         match &self.status {
             AppStatus::Running => PrepareStart::AlreadyRunning,
@@ -279,6 +280,7 @@ impl State {
         }
     }
 
+    /// Mark the app as starting and detach the process that restart must stop.
     fn prepare_restart(&mut self) -> PrepareRestart {
         match &self.status {
             AppStatus::Starting => PrepareRestart::AppStarting,
@@ -286,7 +288,7 @@ impl State {
                 self.status = AppStatus::Starting;
                 self.last_shutdown = None;
                 self.log_edev("restart requested");
-                PrepareRestart::Ready(self.app.take())
+                PrepareRestart::Ready(self.app.take().map(Box::new))
             }
         }
     }
@@ -389,6 +391,7 @@ impl State {
         self.install_spawned(action, spawned).await
     }
 
+    /// Install a completed spawn result unless another action cancelled it.
     async fn install_spawned(
         &mut self,
         action: LifecycleAction,
@@ -730,20 +733,31 @@ enum LifecycleStartStatus {
 }
 
 #[derive(Debug)]
+/// State transition selected before starting an app without holding the state lock.
 enum PrepareStart {
+    /// The app is already running.
     AlreadyRunning,
+    /// Another lifecycle action is starting the app.
     AppStarting,
+    /// The previous startup failed and requires an explicit restart.
     RestartRequired(String),
+    /// The caller can start the app.
     Ready,
 }
 
+/// State transition selected before restarting without holding the state lock.
 enum PrepareRestart {
+    /// Another lifecycle action is starting the app.
     AppStarting,
-    Ready(Option<AppProcess>),
+    /// The caller can restart after stopping the detached app, if present.
+    Ready(Option<Box<AppProcess>>),
 }
 
+/// Outcome of a restart performed without holding the state lock during I/O.
 enum UnlockedRestart {
+    /// Another lifecycle action is starting the app.
     AppStarting,
+    /// The restart attempt completed.
     Done(Result<LifecycleStartStatus, EdevError>),
 }
 
@@ -1193,6 +1207,7 @@ struct EdevServer {
     state: Arc<AsyncMutex<State>>,
 }
 
+/// Start the app without holding the shared state lock during process startup.
 async fn start_app_unlocked(state: &Arc<AsyncMutex<State>>) -> Result<StartStatus, EdevError> {
     start_app_unlocked_with(state, |config, log_state| async move {
         spawn_app(&config, log_state).await
@@ -1200,6 +1215,7 @@ async fn start_app_unlocked(state: &Arc<AsyncMutex<State>>) -> Result<StartStatu
     .await
 }
 
+/// Start the app through a supplied spawn routine without locking state during I/O.
 async fn start_app_unlocked_with<F, Fut>(
     state: &Arc<AsyncMutex<State>>,
     spawn: F,
@@ -1229,18 +1245,16 @@ where
     }
 }
 
+/// Restart the app without holding state during I/O, retrying closed transports.
 async fn restart_app_unlocked(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart {
     let mut attempt = 1;
     loop {
         let outcome = restart_app_unlocked_once(state).await;
-        let should_retry = match &outcome {
+        let should_retry = matches!(
+            &outcome,
             UnlockedRestart::Done(result)
-                if restart_result_is_transport_closed(result) && attempt < RESTART_MAX_ATTEMPTS =>
-            {
-                true
-            }
-            _ => false,
-        };
+                if restart_result_is_transport_closed(result) && attempt < RESTART_MAX_ATTEMPTS
+        );
         if should_retry {
             state.lock().await.log_edev(format!(
                 "restart attempt {attempt} failed with closed transport; retrying"
@@ -1252,6 +1266,7 @@ async fn restart_app_unlocked(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart
     }
 }
 
+/// Perform one unlocked restart attempt.
 async fn restart_app_unlocked_once(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart {
     let old_app = {
         let mut state = state.lock().await;
@@ -1261,7 +1276,7 @@ async fn restart_app_unlocked_once(state: &Arc<AsyncMutex<State>>) -> UnlockedRe
         }
     };
     if let Some(app) = old_app {
-        let _shutdown = app.shutdown().await;
+        let _shutdown = (*app).shutdown().await;
     }
     let (config, log_state) = {
         let state = state.lock().await;
@@ -1786,7 +1801,7 @@ mod tests {
         },
         testutils::{TestServerContext, make_duplex_pair},
     };
-    use tokio::time::timeout;
+    use tokio::{sync::oneshot, time::timeout};
 
     use super::*;
     use crate::{
@@ -2801,13 +2816,15 @@ mod tests {
     async fn status_reports_starting_during_stalled_spawn() {
         let tempdir = test_tempdir();
         let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
         let start_state = Arc::clone(&state);
         let start_task = tokio::spawn(async move {
             start_app_unlocked_with(&start_state, |_, _| async move {
-                let _ = entered_tx.send(());
-                let _ = release_rx.await;
+                entered_tx
+                    .send(())
+                    .expect("start observer should be waiting");
+                release_rx.await.expect("test should release stalled spawn");
                 Err(AppStartError::Other("stalled spawn".to_string()))
             })
             .await
@@ -2820,7 +2837,9 @@ mod tests {
         .await
         .expect("status should not wait on spawn");
         assert_eq!(report.state, "starting");
-        let _ = release_tx.send(());
+        release_tx
+            .send(())
+            .expect("stalled spawn should be waiting");
         let status = start_task.await.expect("start task");
         assert!(matches!(status, Err(EdevError::AppStart(_))));
         assert_eq!(state.lock().await.status_report().state, "not_running");

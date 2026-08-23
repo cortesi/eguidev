@@ -7,7 +7,7 @@ use std::{
     io::{Read, Write},
     mem,
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-    path::PathBuf,
+    path::{Path, PathBuf},
     ptr,
 };
 use std::{
@@ -488,10 +488,7 @@ async fn monitor_supervisor_exit(mut child: Child, record_path: PathBuf) -> io::
 
 #[cfg(target_os = "macos")]
 /// Recover a group left behind by an abruptly dead supervisor.
-async fn recover_after_supervisor_exit(
-    record_path: &std::path::Path,
-    record: &AppRecord,
-) -> io::Result<()> {
+async fn recover_after_supervisor_exit(record_path: &Path, record: &AppRecord) -> io::Result<()> {
     let observer = ProcessGroupObserver::new()?;
     if instance_registry::recorded_app_group_is_current(record)
         && !recording::live_process_group_members(record.app_process_group_id).is_empty()

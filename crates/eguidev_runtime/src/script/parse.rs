@@ -285,8 +285,9 @@ fn type_error(message: impl Into<String>) -> ScriptErrorInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_widget_ref;
     use serde_json::json;
+
+    use super::parse_widget_ref;
 
     #[test]
     fn parse_widget_ref_reads_hidden_viewport_id() {

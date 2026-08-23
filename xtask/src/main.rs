@@ -179,9 +179,11 @@ fn check() -> Result<(), Box<dyn Error>> {
         ],
         "cargo clippy --locked -D warnings",
     )?;
-    run_command("snips", &["--check", "--commands", "deny"], "snips --check").map_err(|error| {
-        format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
-    })?;
+    run_command("snips", &["--check", "--commands", "deny"], "snips --check").map_err(
+        |error| -> Box<dyn Error> {
+            format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
+        },
+    )?;
     run_command(
         "cargo",
         &[
@@ -673,8 +675,9 @@ fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use clap::{CommandFactory, Parser};
+
+    use super::*;
 
     #[test]
     fn workspace_root_finds_checked_in_sources() {

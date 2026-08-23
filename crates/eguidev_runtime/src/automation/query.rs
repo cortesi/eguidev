@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(crate) fn filter_viewport_snapshots(
+pub fn filter_viewport_snapshots(
     inner: &Inner,
     viewport_id: Option<String>,
 ) -> Result<Vec<ViewportSnapshot>, ToolError> {

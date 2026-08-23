@@ -2,7 +2,7 @@
 
 #[cfg(any(test, target_os = "macos"))]
 use std::pin::pin;
-use std::{any::Any, future::Future, sync::Arc, thread, time::Duration};
+use std::{any::Any, env, future::Future, sync::Arc, thread, time::Duration};
 
 use egui::{Context, FullOutput};
 use eguidev::internal::{
@@ -10,6 +10,8 @@ use eguidev::internal::{
     presentation::Presentation,
     registry::{Inner, viewport_id_to_string},
 };
+#[cfg(test)]
+use tokio::time::sleep;
 use tokio::{sync::Notify, time::timeout};
 
 #[cfg(target_os = "macos")]
@@ -276,7 +278,7 @@ impl RuntimeHooks for RuntimeHooksImpl {
 
 /// Attach the embedded runtime to an inert `DevMcp` handle.
 pub fn attach(devmcp: DevMcp) -> DevMcp {
-    match mcp_endpoint_from(std::env::var_os(crate::MCP_ADDR_ENV).as_deref()) {
+    match mcp_endpoint_from(env::var_os(crate::MCP_ADDR_ENV).as_deref()) {
         McpEndpoint::Absent => attach_internal(devmcp, false, None, true),
         McpEndpoint::Invalid(message) => {
             eprintln!("eguidev: {message}");
@@ -406,7 +408,7 @@ mod tests {
         notified.as_mut().enable();
         let runtime_for_notify = Arc::clone(&runtime);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            sleep(Duration::from_millis(5)).await;
             runtime_for_notify.frame_notify.notify_waiters();
         });
         runtime

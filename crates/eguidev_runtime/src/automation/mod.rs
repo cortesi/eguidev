@@ -72,8 +72,10 @@ use capture::{
     should_try_native_screenshot_fallback,
 };
 use layout::*;
-pub(crate) use query::filter_viewport_snapshots;
-use query::{covering_widget_id, widgets_at_point};
+#[cfg(test)]
+use query::covering_widget_id;
+pub use query::filter_viewport_snapshots;
+use query::widgets_at_point;
 use results::*;
 pub use script::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
@@ -81,7 +83,7 @@ pub use script::{
     ScriptTiming,
 };
 use types::{OverlayDebugModeName, OverlayDebugOptionsInput};
-pub(crate) use utils::ensure_automation_ready;
+pub use utils::ensure_automation_ready;
 use utils::{parse_key_combo, resolve_key_name, *};
 
 pub use crate::error::*;
@@ -707,6 +709,10 @@ pub struct DevMcpServer {
     runtime: Arc<Runtime>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments mirror the script-facing widget query fields"
+)]
 pub fn collect_widget_list(
     inner: &Inner,
     viewport_id: Option<String>,

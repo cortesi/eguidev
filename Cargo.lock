@@ -2395,6 +2395,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "cap-std",
+ "libc",
  "ruau-bytecode",
  "ruau-declaration",
  "ruau-source",
@@ -2433,6 +2434,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "stacker",
  "strum",
 ]
 
@@ -2445,6 +2447,7 @@ dependencies = [
  "ruau-syntax",
  "serde",
  "serde_json",
+ "stacker",
 ]
 
 [[package]]

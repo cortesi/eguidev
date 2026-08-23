@@ -266,7 +266,9 @@ fn spoof_occlusion_state() {
     // signature (no arguments, returns `NSUInteger`) and never unwinds.
     unsafe {
         let original = mem::transmute::<Imp, OcclusionStateFn>(method.implementation());
-        let _ = ORIGINAL_OCCLUSION_STATE.set(original);
+        if ORIGINAL_OCCLUSION_STATE.set(original).is_err() {
+            return;
+        }
         method.set_implementation(mem::transmute::<OcclusionStateFn, Imp>(imp));
     }
 }
