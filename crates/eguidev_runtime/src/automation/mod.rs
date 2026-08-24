@@ -4937,6 +4937,58 @@ return state.scroll_state.offset.y"#
     }
 
     #[tokio::test]
+    async fn pointer_cover_ignores_an_enclosing_container() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let full = Rect {
+            min: Pos2 { x: 0.0, y: 0.0 },
+            max: Pos2 { x: 100.0, y: 100.0 },
+        };
+        let button = Rect {
+            min: Pos2 { x: 10.0, y: 10.0 },
+            max: Pos2 { x: 30.0, y: 30.0 },
+        };
+        let position = Pos2 { x: 20.0, y: 20.0 };
+
+        inner.widgets.clear_registry(viewport_id);
+        // A container is recorded after its contents, so it is the last hit at any point inside it.
+        inner.widgets.record_widget(
+            viewport_id,
+            make_entry_with_rect("app.action", 2, WidgetRole::Button, button, Some("app.root")),
+        );
+        inner.widgets.record_widget(
+            viewport_id,
+            make_entry_with_rect("app.root", 1, WidgetRole::Unknown, full, None),
+        );
+        inner.widgets.finalize_registry(viewport_id);
+
+        assert_eq!(
+            covering_widget_id(&inner, viewport_id, position, "app.action"),
+            None
+        );
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.record_widget(
+            viewport_id,
+            make_entry_with_rect("app.action", 2, WidgetRole::Button, button, Some("app.root")),
+        );
+        inner.widgets.record_widget(
+            viewport_id,
+            make_entry_with_rect("app.root", 1, WidgetRole::Unknown, full, None),
+        );
+        inner.widgets.record_widget(
+            viewport_id,
+            make_entry_with_rect("app.sheet", 3, WidgetRole::Window, full, None),
+        );
+        inner.widgets.finalize_registry(viewport_id);
+
+        assert_eq!(
+            covering_widget_id(&inner, viewport_id, position, "app.action"),
+            Some("app.sheet".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn widget_list_filters_label_and_label_contains() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
