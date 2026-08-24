@@ -931,7 +931,13 @@ mod tests {
         Ok(FixtureResponse::new())
     }
 
+    /// Drain queued actions into one synthetic frame's raw input.
+    ///
+    /// A staged action promotes only when the frame counter moved since the last drain, which a
+    /// real application advances for each completed pass. A test that drives `Context::run_ui`
+    /// directly must do the same, or an `AfterOneFrame` action never reaches the application.
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
+        inner.advance_frame();
         let viewport_id = raw_input.viewport_id;
         let actions = inner
             .actions
