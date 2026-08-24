@@ -777,10 +777,12 @@ fn natural_key(value: &str) -> Vec<NaturalChunk<'_>> {
     chunks
 }
 
+/// One natural-order chunk. A number sorts before text, so a numbered script at the suite root
+/// runs before a directory whose name begins with a letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NaturalChunk<'a> {
-    Text(&'a str),
     Number(u64, usize),
+    Text(&'a str),
 }
 
 fn collect_suite_paths_recursive(

@@ -899,6 +899,7 @@ mod tests {
             native_id: 1,
             viewport_id: "root".to_string(),
             layer_id: "layer".to_string(),
+            layer_order: 0,
             rect: Rect {
                 min: Pos2 { x: 0.0, y: 0.0 },
                 max: Pos2 { x: 10.0, y: 10.0 },

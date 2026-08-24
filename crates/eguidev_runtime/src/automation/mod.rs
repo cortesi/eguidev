@@ -1043,6 +1043,7 @@ mod tests {
             native_id,
             viewport_id: "root".to_string(),
             layer_id: "layer".to_string(),
+            layer_order: 0,
             rect,
             interact_rect: rect,
             role,
@@ -4954,7 +4955,13 @@ return state.scroll_state.offset.y"#
         // A container is recorded after its contents, so it is the last hit at any point inside it.
         inner.widgets.record_widget(
             viewport_id,
-            make_entry_with_rect("app.action", 2, WidgetRole::Button, button, Some("app.root")),
+            make_entry_with_rect(
+                "app.action",
+                2,
+                WidgetRole::Button,
+                button,
+                Some("app.root"),
+            ),
         );
         inner.widgets.record_widget(
             viewport_id,
@@ -4970,7 +4977,13 @@ return state.scroll_state.offset.y"#
         inner.widgets.clear_registry(viewport_id);
         inner.widgets.record_widget(
             viewport_id,
-            make_entry_with_rect("app.action", 2, WidgetRole::Button, button, Some("app.root")),
+            make_entry_with_rect(
+                "app.action",
+                2,
+                WidgetRole::Button,
+                button,
+                Some("app.root"),
+            ),
         );
         inner.widgets.record_widget(
             viewport_id,
@@ -4985,6 +4998,41 @@ return state.scroll_state.offset.y"#
         assert_eq!(
             covering_widget_id(&inner, viewport_id, position, "app.action"),
             Some("app.sheet".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn pointer_cover_ranks_a_later_layer_above_registry_order() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let full = Rect {
+            min: Pos2 { x: 0.0, y: 0.0 },
+            max: Pos2 { x: 100.0, y: 100.0 },
+        };
+        let item = Rect {
+            min: Pos2 { x: 10.0, y: 10.0 },
+            max: Pos2 { x: 30.0, y: 30.0 },
+        };
+        let position = Pos2 { x: 20.0, y: 20.0 };
+
+        inner.widgets.clear_registry(viewport_id);
+        // A menu item paints in a later layer, and the panel behind it is recorded afterwards.
+        let mut menu_item =
+            make_entry_with_rect("menu.item", 1, WidgetRole::Button, item, Some("menu"));
+        menu_item.layer_order = 2;
+        inner.widgets.record_widget(viewport_id, menu_item);
+        let mut panel = make_entry_with_rect("panel.group", 2, WidgetRole::Unknown, full, None);
+        panel.layer_order = 0;
+        inner.widgets.record_widget(viewport_id, panel);
+        inner.widgets.finalize_registry(viewport_id);
+
+        assert_eq!(
+            covering_widget_id(&inner, viewport_id, position, "menu.item"),
+            None
+        );
+        assert_eq!(
+            covering_widget_id(&inner, viewport_id, position, "panel.group"),
+            Some("menu.item".to_string())
         );
     }
 

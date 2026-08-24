@@ -2559,6 +2559,7 @@ mod tests {
                 native_id: 1,
                 viewport_id: "root".to_string(),
                 layer_id: "background".to_string(),
+                layer_order: 0,
                 rect,
                 interact_rect: rect,
                 role,
@@ -2627,6 +2628,10 @@ pub struct WidgetRegistryEntry {
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     pub layer_id: String,
+    /// Paint order of the widget's layer, where a larger value paints later (internal use only).
+    #[serde(skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    pub layer_order: u8,
     /// Widget rect.
     pub rect: Rect,
     /// Widget interaction rect.

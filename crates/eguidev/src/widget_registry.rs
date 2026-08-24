@@ -330,6 +330,17 @@ struct WidgetEntryInput<'a> {
     focused: bool,
 }
 
+/// Map one egui layer order onto a comparable paint rank, where a larger value paints later.
+fn layer_paint_order(order: egui::Order) -> u8 {
+    match order {
+        egui::Order::Background => 0,
+        egui::Order::Middle => 1,
+        egui::Order::Foreground => 2,
+        egui::Order::Tooltip => 3,
+        egui::Order::Debug => 4,
+    }
+}
+
 fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
     let WidgetEntryInput {
         id,
@@ -357,6 +368,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         native_id,
         viewport_id: viewport_id_to_string(viewport_id),
         layer_id: format!("{layer_id:?}"),
+        layer_order: layer_paint_order(layer_id.order),
         rect: rect.into(),
         interact_rect: interact_rect.into(),
         role: meta.role.role(),
@@ -879,6 +891,7 @@ mod tests {
                 native_id: 1,
                 viewport_id: "root".to_string(),
                 layer_id: "background".to_string(),
+                layer_order: 0,
                 rect,
                 interact_rect: rect,
                 role: WidgetRole::Label,

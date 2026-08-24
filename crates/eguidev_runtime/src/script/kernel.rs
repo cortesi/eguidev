@@ -4194,6 +4194,7 @@ return { id = ready.widget.id, viewport = widget.__viewport_id }
             native_id,
             viewport_id: "root".to_string(),
             layer_id: "layer".to_string(),
+            layer_order: 0,
             rect,
             interact_rect: rect,
             role,
