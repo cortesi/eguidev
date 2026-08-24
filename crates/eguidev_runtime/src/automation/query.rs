@@ -1,5 +1,7 @@
 //! Snapshot query helpers.
 
+use std::collections::HashSet;
+
 use super::*;
 
 pub fn filter_viewport_snapshots(
@@ -33,16 +35,43 @@ pub(super) fn widgets_at_point(
     hits
 }
 
+/// Return the widget that actually covers one target at a point.
+///
+/// An enclosing container is recorded after its contents, so it is the last hit in registry order
+/// even though it never occludes its own descendants. Ancestors are therefore transparent here.
 pub(super) fn covering_widget_id(
     inner: &Inner,
     viewport_id: egui::ViewportId,
     position: Pos2,
     target_id: &str,
 ) -> Option<String> {
-    let top = widgets_at_point(inner, viewport_id, position, false)
-        .into_iter()
-        .next()?;
-    (top.id != target_id).then_some(top.id)
+    let widgets = inner.widgets.widget_list(viewport_id);
+    let ancestors = ancestor_ids(&widgets, target_id);
+    let top = widgets.iter().rev().find(|widget| {
+        point_in_rect(position, widget.interact_rect) && !ancestors.contains(&widget.id)
+    })?;
+    (top.id != target_id).then(|| top.id.clone())
+}
+
+/// Collect every recorded ancestor id of one widget, excluding the widget itself.
+fn ancestor_ids(widgets: &[WidgetRegistryEntry], target_id: &str) -> HashSet<String> {
+    let by_id: HashMap<&str, &WidgetRegistryEntry> = widgets
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect();
+    let mut ancestors = HashSet::new();
+    let mut next = by_id
+        .get(target_id)
+        .and_then(|entry| entry.parent_id.clone());
+    while let Some(parent) = next {
+        if !ancestors.insert(parent.clone()) {
+            break;
+        }
+        next = by_id
+            .get(parent.as_str())
+            .and_then(|entry| entry.parent_id.clone());
+    }
+    ancestors
 }
 
 impl DevMcpServer {
