@@ -1,8 +1,11 @@
 //! Thin MCP adapter for the app-owned script boundary.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use tmcp::{
@@ -97,31 +100,54 @@ impl AppMcpServer {
     }
 
     #[tool]
-    /// Request normal closure of the app's root viewport.
+    /// Request normal application shutdown.
     async fn app_close(&self) -> ToolResult<CallToolResult> {
-        queue_app_close(&self.inner);
-        Ok(
-            CallToolResult::new().with_structured_content(serde_json::json!({
-                "queued": true,
-            })),
-        )
+        match request_app_shutdown(&self.inner) {
+            Ok(path) => Ok(
+                CallToolResult::new().with_structured_content(serde_json::json!({
+                    "queued": true,
+                    "path": path,
+                })),
+            ),
+            Err(message) => Ok(CallToolResult::new()
+                .with_is_error(true)
+                .with_text_content(message)),
+        }
     }
 }
 
+/// Request app-owned shutdown or use root-viewport closure as the default.
+fn request_app_shutdown(inner: &Inner) -> Result<&'static str, &'static str> {
+    let Some(handler) = inner.shutdown_handler() else {
+        queue_root_viewport_close(inner);
+        return Ok("root_viewport_close");
+    };
+    catch_unwind(AssertUnwindSafe(|| handler()))
+        .map(|()| "application_handler")
+        .map_err(|_| "application shutdown handler panicked")
+}
+
 /// Queue root-viewport closure through the ordinary UI-thread command path.
-fn queue_app_close(inner: &Inner) {
+fn queue_root_viewport_close(inner: &Inner) {
     inner.queue_command(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::queue_app_close;
-    use crate::registry::Inner;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use eguidev::DevMcp;
+
+    use super::request_app_shutdown;
+    use crate::{registry::Inner, runtime::attach_for_tests};
 
     #[test]
-    fn app_close_queues_root_viewport_close() {
+    fn app_shutdown_defaults_to_root_viewport_close() {
         let inner = Inner::new();
-        queue_app_close(&inner);
+        assert_eq!(request_app_shutdown(&inner), Ok("root_viewport_close"));
         assert!(matches!(
             inner
                 .actions
@@ -129,5 +155,43 @@ mod tests {
                 .as_slice(),
             [egui::ViewportCommand::Close]
         ));
+    }
+
+    #[test]
+    fn app_shutdown_uses_the_registered_application_handler() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let devmcp = attach_for_tests(DevMcp::new().on_shutdown(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
+        let inner = devmcp.inner_arc().expect("attached runtime");
+
+        assert_eq!(request_app_shutdown(&inner), Ok("application_handler"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            inner
+                .actions
+                .drain_commands(egui::ViewportId::ROOT)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn app_shutdown_reports_a_panicking_application_handler() {
+        let devmcp = attach_for_tests(DevMcp::new().on_shutdown(|| {
+            panic!("shutdown failed");
+        }));
+        let inner = devmcp.inner_arc().expect("attached runtime");
+
+        assert_eq!(
+            request_app_shutdown(&inner),
+            Err("application shutdown handler panicked")
+        );
+        assert!(
+            inner
+                .actions
+                .drain_commands(egui::ViewportId::ROOT)
+                .is_empty()
+        );
     }
 }

@@ -370,12 +370,13 @@ mod tests {
             "unexpected stderr: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        let lifecycle_records = fs::read_dir(tempdir.path().join(".edev-instances"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>();
         assert!(
-            fs::read_dir(tempdir.path().join(".edev-instances"))?
-                .filter_map(Result::ok)
-                .next()
-                .is_none(),
-            "forced eval teardown left lifecycle records"
+            lifecycle_records.is_empty(),
+            "forced eval teardown left lifecycle records: {lifecycle_records:?}"
         );
         Ok(())
     }

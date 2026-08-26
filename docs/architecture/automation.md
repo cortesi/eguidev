@@ -100,9 +100,10 @@ uses `script_eval`, so the CLI and MCP paths share one automation implementation
 
 ## Managed shutdown
 
-The app server exposes a private `app_close` tool. It queues root-viewport closure through the
-same UI-thread action queue as other viewport commands and requests a repaint. The tool confirms
-only that it queued the command.
+The app server exposes a private `app_close` tool. A registered `DevMcp::on_shutdown` handler can
+publish an application-owned shutdown request without a UI frame. Without this handler, the tool
+queues root-viewport closure through the UI-thread action queue and requests a repaint. The tool
+confirms only that it accepted the request.
 
 Edev keeps the launcher ownership channel open while it waits for the existing supervisor or
 child-exit event. `[app].shutdown_grace_secs` sets an asynchronous escalation deadline and

@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::{
     actions::{ActionQueue, ActionTiming, InputAction},
-    devmcp::{AutomationOptions, RuntimeHooks},
+    devmcp::{AppShutdownHandler, AutomationOptions, RuntimeHooks},
     diagnostics::DiagnosticRegistry,
     error::{ErrorCode, ToolError},
     fixtures::{FixtureExecution, FixtureManager},
@@ -57,6 +57,7 @@ pub struct Inner {
     pub diagnostics: DiagnosticRegistry,
     pub idle: IdleRegistry,
     runtime_hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
+    shutdown_handler: Mutex<Option<AppShutdownHandler>>,
     automation_options: Mutex<AutomationOptions>,
 }
 
@@ -136,6 +137,7 @@ impl Inner {
             diagnostics: DiagnosticRegistry::new(),
             idle: IdleRegistry::new(),
             runtime_hooks: Mutex::new(None),
+            shutdown_handler: Mutex::new(None),
             automation_options: Mutex::new(AutomationOptions::default()),
         }
     }
@@ -146,6 +148,14 @@ impl Inner {
 
     pub fn runtime_hooks(&self) -> Option<Arc<dyn RuntimeHooks>> {
         lock(&self.runtime_hooks, "runtime hooks lock").clone()
+    }
+
+    pub fn set_shutdown_handler(&self, handler: Option<AppShutdownHandler>) {
+        *lock(&self.shutdown_handler, "shutdown handler lock") = handler;
+    }
+
+    pub fn shutdown_handler(&self) -> Option<AppShutdownHandler> {
+        lock(&self.shutdown_handler, "shutdown handler lock").clone()
     }
 
     pub fn set_automation_options(&self, options: AutomationOptions) {

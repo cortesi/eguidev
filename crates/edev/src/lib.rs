@@ -27,7 +27,9 @@ use eguidev_runtime::{
     ScriptEvalRequest, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, discover_suite_scripts, run_suite_with},
 };
-use instance_registry::{AppLaunch, AppRecord, InstanceRegistry, read_app_record_for_path};
+use instance_registry::{
+    AppLaunch, AppRecord, InstanceRegistry, read_app_record_for_path, remove_app_record_if_matches,
+};
 use serde::{
     Deserialize, Serialize,
     de::{DeserializeOwned, Error as SerdeDeError},
@@ -581,6 +583,7 @@ impl AppProcess {
             self.supervisor_pid.take();
             self.ownership_writer.take();
         }
+        self.remove_app_record();
         if let Some(task) = self.stderr_task.take() {
             let _wait_result = task.await;
         }
@@ -589,6 +592,19 @@ impl AppProcess {
         }
         let _drain_result = drain_stderr(&self.stderr_buffer).await;
         result
+    }
+
+    /// Remove this exact app record after the managed process tree has exited.
+    fn remove_app_record(&self) {
+        let (Some(launch), Some(record)) = (&self.app_launch, &self.app_record) else {
+            return;
+        };
+        if let Err(error) = remove_app_record_if_matches(&launch.entry_path, record) {
+            eprintln!(
+                "edev: could not remove app record {}: {error}",
+                launch.entry_path.display()
+            );
+        }
     }
 
     /// Await the existing supervisor or direct-child exit event.

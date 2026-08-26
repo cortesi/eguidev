@@ -25,6 +25,9 @@ use crate::{
 
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// Nonblocking application shutdown request supplied by the embedding app.
+pub type AppShutdownHandler = Arc<dyn Fn() + Send + Sync>;
+
 #[derive(Clone, Debug, Default)]
 enum DevMcpState {
     #[default]
@@ -126,14 +129,15 @@ impl egui::Plugin for AutomationPlugin {
 struct DevMcpShared {
     fixtures: Mutex<Vec<FixtureSpec>>,
     fixture_handler: Mutex<Option<FixtureHandler>>,
+    shutdown_handler: Mutex<Option<AppShutdownHandler>>,
     verbose_logging: AtomicBool,
     automation_options: Mutex<AutomationOptions>,
 }
 
 /// DevMCP handle stored in app state.
 ///
-/// `Clone` is a cheap shared handle: configuration, fixtures, diagnostics, and
-/// idle providers are observed by every clone.
+/// `Clone` is a cheap shared handle: configuration, the shutdown handler, fixtures, diagnostics,
+/// and idle providers are observed by every clone.
 #[derive(Clone, Default)]
 pub struct DevMcp {
     state: DevMcpState,
@@ -149,6 +153,14 @@ impl fmt::Debug for DevMcp {
             .field(
                 "fixtures",
                 &lock(&self.shared.fixtures, "devmcp fixtures lock").len(),
+            )
+            .field(
+                "shutdown_handler",
+                &lock(
+                    &self.shared.shutdown_handler,
+                    "devmcp shutdown handler lock",
+                )
+                .is_some(),
             )
             .field("diagnostics", &self.diagnostics)
             .field("idle", &self.idle)
@@ -225,6 +237,26 @@ impl DevMcp {
         if let Some(inner) = self.inner() {
             inner.set_automation_options(options);
         }
+        self
+    }
+
+    /// Register a nonblocking application shutdown request.
+    ///
+    /// Edev calls this handler on the app MCP runtime thread during managed shutdown. The handler
+    /// must publish its request to the application's lifecycle owner and return immediately. If no
+    /// handler is registered, Eguidev closes the root viewport.
+    pub fn on_shutdown<F>(self, handler: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let handler: AppShutdownHandler = Arc::new(handler);
+        if let Some(inner) = self.inner() {
+            inner.set_shutdown_handler(Some(Arc::clone(&handler)));
+        }
+        *lock(
+            &self.shared.shutdown_handler,
+            "devmcp shutdown handler lock",
+        ) = Some(handler);
         self
     }
 
@@ -391,6 +423,13 @@ impl DevMcp {
                 .set_handler(handler)
                 .expect("fixture handler was validated before runtime activation");
         }
+        inner.set_shutdown_handler(
+            lock(
+                &self.shared.shutdown_handler,
+                "devmcp shutdown handler lock",
+            )
+            .clone(),
+        );
         inner.diagnostics.set_providers_from(&self.diagnostics);
         inner.idle.set_from(&self.idle);
         self.state = DevMcpState::Active(inner);
@@ -944,7 +983,11 @@ mod inactive_tests {
         let a = DevMcp::new();
         let b = a.clone();
         let spec = FixtureSpec::new("shared.fixture", "Shared");
-        let b = b.verbose_logging(true).keep_alive(false).fixtures([spec]);
+        let b = b
+            .verbose_logging(true)
+            .keep_alive(false)
+            .on_shutdown(|| {})
+            .fixtures([spec]);
         let a = a.animations(true);
 
         assert!(a.verbose_logging_enabled());
@@ -968,5 +1011,6 @@ mod inactive_tests {
         assert!(a_options.animations);
         assert_eq!(a_options, b_options);
         assert!(lock(&a.shared.fixture_handler, "devmcp fixture handler lock").is_none());
+        assert!(lock(&a.shared.shutdown_handler, "devmcp shutdown handler lock").is_some());
     }
 }
