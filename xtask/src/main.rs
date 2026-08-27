@@ -11,7 +11,7 @@ use std::{
 };
 
 use clap::{Args as ClapArgs, Parser, Subcommand};
-use eguidev_runtime::{check_script_source, script_definitions};
+use eguidev_runtime::check_script_source;
 use serde_json::{Value, json};
 use tmcp::{
     Client,
@@ -485,12 +485,51 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let script_api_result = app_client.call_tool("script_api", json!({})).await?;
-        let script_api = script_api_result
-            .text()
-            .ok_or("script_api response did not include text content")?;
-        if script_api != script_definitions() {
-            return Err("script_api payload did not match checked-in definitions".into());
+        let overview = app_client.call_tool("script_api", json!({})).await?;
+        if overview
+            .structured_content
+            .as_ref()
+            .and_then(|value| value["mode"].as_str())
+            != Some("overview")
+        {
+            return Err(format!("script_api overview was invalid: {overview:?}").into());
+        }
+        let listed = app_client
+            .call_tool("script_api", json!({ "list": true }))
+            .await?;
+        if !listed
+            .structured_content
+            .as_ref()
+            .and_then(|value| value["entries"].as_array())
+            .is_some_and(|entries| entries.iter().any(|entry| entry["path"] == "Widget.click"))
+        {
+            return Err(format!("script_api list was invalid: {listed:?}").into());
+        }
+        let detail = app_client
+            .call_tool("script_api", json!({ "filter": "Widget.click" }))
+            .await?;
+        if detail
+            .structured_content
+            .as_ref()
+            .and_then(|value| value["mode"].as_str())
+            != Some("detail")
+            || !detail
+                .text()
+                .is_some_and(|content| content.contains("click"))
+        {
+            return Err(format!("script_api detail was invalid: {detail:?}").into());
+        }
+        let missing = app_client
+            .call_tool("script_api", json!({ "filter": "missing-path" }))
+            .await?;
+        if !missing.is_error()
+            || missing
+                .structured_content
+                .as_ref()
+                .and_then(|value| value["kind"].as_str())
+                != Some("not_found")
+        {
+            return Err(format!("script_api error was invalid: {missing:?}").into());
         }
 
         let result = app_client

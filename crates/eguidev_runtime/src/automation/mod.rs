@@ -13,6 +13,8 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::codecs::jpeg::JpegEncoder;
+#[cfg(test)]
+use ruau_script_api::ScriptApiQuery;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tmcp::ToolResult;
@@ -26,7 +28,7 @@ use tokio::{
 #[cfg(target_os = "macos")]
 use crate::macos::{capture_window_image, window_number_for_title};
 #[cfg(test)]
-use crate::script_definitions;
+use crate::script_docs::{script_api_response, script_api_tool_result};
 use crate::{
     actions::{ActionTiming, InputAction},
     fixtures::FixtureExecution,
@@ -866,9 +868,9 @@ impl DevMcpServer {
     }
 
     #[cfg(test)]
-    /// Return the checked-in Luau definitions for the full scripting API.
-    async fn script_api(&self) -> ToolResult<CallToolResult> {
-        Ok(CallToolResult::new().with_text_content(script_definitions()))
+    /// Return shared discovery for the checked scripting API.
+    async fn script_api(&self, params: ScriptApiQuery) -> ToolResult<CallToolResult> {
+        script_api_tool_result(script_api_response(&params))
     }
 }
 
@@ -1462,15 +1464,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_api_returns_checked_in_definitions() {
+    async fn script_api_returns_shared_discovery() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(inner);
-        let result = server.script_api().await.expect("script_api");
-        let content = result.content.first().expect("content");
-        match content {
-            ContentBlock::Text(text) => assert_eq!(text.text, script_definitions()),
-            other => panic!("expected text content, got {other:?}"),
-        }
+        let overview = server
+            .script_api(ScriptApiQuery::default())
+            .await
+            .expect("overview");
+        assert_eq!(overview.structured_content.unwrap()["mode"], "overview");
+        let detail = server
+            .script_api(ScriptApiQuery {
+                list: false,
+                filter: Some("Widget.click".to_owned()),
+            })
+            .await
+            .expect("detail");
+        assert_eq!(detail.structured_content.unwrap()["mode"], "detail");
     }
 
     #[tokio::test]

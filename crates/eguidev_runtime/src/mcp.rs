@@ -8,6 +8,7 @@ use std::{
     },
 };
 
+use ruau_script_api::{ScriptApiQuery, ScriptApiResponse};
 use tmcp::{
     ServerCtx, ToolResult, mcp_server,
     schema::{
@@ -20,7 +21,7 @@ use crate::{
     presentation::parse_client_capabilities,
     registry::Inner,
     runtime::Runtime,
-    script_definitions,
+    script_docs::{script_api_response, script_api_tool_result},
 };
 
 /// App MCP server. Automation policy remains in the script and automation modules.
@@ -93,10 +94,10 @@ impl AppMcpServer {
         Ok(outcome.to_tool_result())
     }
 
-    #[tool]
-    /// Return the exact checked-in Luau declaration bytes.
-    async fn script_api(&self) -> ToolResult<CallToolResult> {
-        Ok(CallToolResult::new().with_text_content(script_definitions()))
+    #[tool(read_only, output_schema = ScriptApiResponse)]
+    /// Return shared discovery for the checked Eguidev API.
+    async fn script_api(&self, params: ScriptApiQuery) -> ToolResult<CallToolResult> {
+        script_api_tool_result(script_api_response(&params))
     }
 
     #[tool]

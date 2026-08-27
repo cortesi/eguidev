@@ -876,6 +876,7 @@ dependencies = [
  "image",
  "objc2 0.6.4",
  "ruau",
+ "ruau-script-api",
  "schemars",
  "serde",
  "serde_json",
@@ -2422,6 +2423,15 @@ name = "ruau-declaration"
 version = "0.1.0"
 dependencies = [
  "ruau-syntax",
+]
+
+[[package]]
+name = "ruau-script-api"
+version = "0.1.0"
+dependencies = [
+ "ruau-declaration",
+ "schemars",
+ "serde",
 ]
 
 [[package]]
