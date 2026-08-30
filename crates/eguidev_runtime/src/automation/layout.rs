@@ -316,7 +316,8 @@ impl<'a> LayoutAnalysis<'a> {
             .any(|ancestor| ancestor.id == ancestor_id)
     }
 
-    /// Walk parents from the widget upward, stopping on a missing id or a cycle.
+    /// Walk parents from the widget upward, stopping on a missing id or a
+    /// cycle.
     fn ancestors(
         &self,
         widget: &WidgetRegistryEntry,
@@ -501,7 +502,8 @@ mod tests {
         }
     }
 
-    /// A scroll area that fills the viewport, holding rows with the same clip rect.
+    /// A scroll area that fills the viewport, holding rows with the same clip
+    /// rect.
     fn viewport_filling_scroll(
         viewport_rect: Rect,
         offset_y: f32,
@@ -612,7 +614,8 @@ mod tests {
     #[test]
     fn widget_off_a_non_scrollable_axis_is_offscreen() {
         let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
-        // The content is only as wide as the viewport, so horizontal escape is a defect.
+        // The content is only as wide as the viewport, so horizontal escape is a
+        // defect.
         let scroll = viewport_filling_scroll(viewport_rect, 0.0, 500.0);
         let mut wide = entry(
             "wide",

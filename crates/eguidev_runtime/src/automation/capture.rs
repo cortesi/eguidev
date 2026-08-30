@@ -18,7 +18,8 @@ pub(super) fn captured_viewport_name(
 }
 
 impl DevMcpServer {
-    /// Capture a viewport once and sample exact RGBA pixels at logical positions.
+    /// Capture a viewport once and sample exact RGBA pixels at logical
+    /// positions.
     pub(super) async fn viewport_sample_pixels(
         &self,
         viewport_id: Option<String>,
@@ -30,7 +31,8 @@ impl DevMcpServer {
         sample_color_image(&image, pixels_per_point, &positions).map_err(Into::into)
     }
 
-    /// Capture a widget's viewport once and sample relative widget positions from it.
+    /// Capture a widget's viewport once and sample relative widget positions
+    /// from it.
     pub(super) async fn widget_sample_pixels(
         &self,
         viewport_id: Option<String>,
@@ -52,7 +54,8 @@ impl DevMcpServer {
         .map_err(Into::into)
     }
 
-    /// Capture a widget's viewport once and sample a grid over its visible rect.
+    /// Capture a widget's viewport once and sample a grid over its visible
+    /// rect.
     pub(super) async fn widget_sample_grid(
         &self,
         viewport_id: Option<String>,
@@ -121,9 +124,9 @@ async fn capture_screenshot_state(
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
 ) -> Result<ScreenshotState, ToolError> {
-    // Best-effort wake-up before sending the screenshot command. Some idle windows won't
-    // produce a frame until a command is queued, so only treat this as fatal if context
-    // capture is not ready yet.
+    // Best-effort wake-up before sending the screenshot command. Some idle windows
+    // won't produce a frame until a command is queued, so only treat this as
+    // fatal if context capture is not ready yet.
     let event_loop_ready = ensure_event_loop_active(inner, runtime, viewport_id).await;
     let has_snapshot = inner.viewports.has_viewport_snapshot(viewport_id);
     if !inner.has_context() {

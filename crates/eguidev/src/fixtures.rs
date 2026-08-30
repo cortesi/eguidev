@@ -50,7 +50,8 @@ pub struct UiFixtureReceiver {
 }
 
 impl UiFixtureReceiver {
-    /// Wait until the UI-thread fixture returns or the caller's timeout expires.
+    /// Wait until the UI-thread fixture returns or the caller's timeout
+    /// expires.
     pub fn recv_timeout(self, timeout: Duration) -> FixtureResult {
         match self.receiver.recv_timeout(timeout) {
             Ok(result) => result,
@@ -76,11 +77,13 @@ impl UiFixtureReceiver {
 pub enum FixtureExecution {
     /// The fixture handler completed immediately.
     Ready(FixtureResult),
-    /// The fixture handler must be awaited after the UI thread drains the request.
+    /// The fixture handler must be awaited after the UI thread drains the
+    /// request.
     Queued(UiFixtureReceiver),
 }
 
-/// Manages fixture metadata and dispatches fixture application through a registered handler.
+/// Manages fixture metadata and dispatches fixture application through a
+/// registered handler.
 pub struct FixtureManager {
     fixtures: Mutex<Vec<FixtureSpec>>,
     handler: Mutex<Option<FixtureHandler>>,
@@ -176,7 +179,8 @@ impl FixtureManager {
         }
     }
 
-    /// Run one queued UI-thread fixture handler against the current root context.
+    /// Run one queued UI-thread fixture handler against the current root
+    /// context.
     pub fn drain_ui(&self, ctx: &Context) {
         let request = loop {
             let request = {

@@ -769,7 +769,8 @@ pub fn collect_widget_list(
     Ok(widgets)
 }
 
-/// Fraction of the widget that survives clipping, or 1.0 with no layout metadata.
+/// Fraction of the widget that survives clipping, or 1.0 with no layout
+/// metadata.
 fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
     widget
         .layout
@@ -841,7 +842,8 @@ impl DevMcpServer {
     }
 
     #[cfg(test)]
-    /// Evaluate a Luau script with DevMCP helpers. Scripts are assumed to be strict.
+    /// Evaluate a Luau script with DevMCP helpers. Scripts are assumed to be
+    /// strict.
     async fn script_eval(
         &self,
         script: String,
@@ -935,9 +937,10 @@ mod tests {
 
     /// Drain queued actions into one synthetic frame's raw input.
     ///
-    /// A staged action promotes only when the frame counter moved since the last drain, which a
-    /// real application advances for each completed pass. A test that drives `Context::run_ui`
-    /// directly must do the same, or an `AfterOneFrame` action never reaches the application.
+    /// A staged action promotes only when the frame counter moved since the
+    /// last drain, which a real application advances for each completed
+    /// pass. A test that drives `Context::run_ui` directly must do the
+    /// same, or an `AfterOneFrame` action never reaches the application.
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
         inner.advance_frame();
         let viewport_id = raw_input.viewport_id;
@@ -4967,7 +4970,8 @@ return state.scroll_state.offset.y"#
         let position = Pos2 { x: 20.0, y: 20.0 };
 
         inner.widgets.clear_registry(viewport_id);
-        // A container is recorded after its contents, so it is the last hit at any point inside it.
+        // A container is recorded after its contents, so it is the last hit at any
+        // point inside it.
         inner.widgets.record_widget(
             viewport_id,
             make_entry_with_rect(
@@ -5031,7 +5035,8 @@ return state.scroll_state.offset.y"#
         let position = Pos2 { x: 20.0, y: 20.0 };
 
         inner.widgets.clear_registry(viewport_id);
-        // A menu item paints in a later layer, and the panel behind it is recorded afterwards.
+        // A menu item paints in a later layer, and the panel behind it is recorded
+        // afterwards.
         let mut menu_item =
             make_entry_with_rect("menu.item", 1, WidgetRole::Button, item, Some("menu"));
         menu_item.layer_order = 2;

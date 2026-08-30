@@ -86,7 +86,8 @@ use session::AppSession;
 
 /// Timeout used for app MCP request/response round-trips.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-/// Maximum time allowed for a launched app to build and open its direct MCP socket.
+/// Maximum time allowed for a launched app to build and open its direct MCP
+/// socket.
 const APP_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum app stdout/stderr bytes retained for diagnostics.
 const APP_LOG_TAIL_LIMIT: usize = 4 * 1024 * 1024;
@@ -98,9 +99,11 @@ const APP_LOG_TAIL_TRIM_SLACK: usize = 256 * 1024;
 const APP_RECORD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Poll interval used while the launcher waits for the supervisor app record.
 const APP_RECORD_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Maximum attempts for restart when the app MCP transport closes mid-handshake.
+/// Maximum attempts for restart when the app MCP transport closes
+/// mid-handshake.
 const RESTART_MAX_ATTEMPTS: usize = 3;
-/// Fresh-capture attempts used while waiting for the native window to enter ScreenCaptureKit.
+/// Fresh-capture attempts used while waiting for the native window to enter
+/// ScreenCaptureKit.
 const RECORD_WINDOW_DISCOVERY_ATTEMPTS: usize = 3;
 /// Checked-in projection used by the dump command.
 const DUMP_SCRIPT: &str = include_str!("../luau/dump.luau");
@@ -230,7 +233,8 @@ impl State {
         self.mark_activity();
     }
 
-    /// Stop the managed app process and reset launcher state without unregistering the launcher.
+    /// Stop the managed app process and reset launcher state without
+    /// unregistering the launcher.
     async fn stop_app(&mut self) -> Result<StopStatus, EdevError> {
         if let Some(app) = self.app.take() {
             let shutdown = app.shutdown().await;
@@ -313,7 +317,8 @@ impl State {
         }
     }
 
-    /// Resolve the current direct app client, or return a lifecycle-specific tool error.
+    /// Resolve the current direct app client, or return a lifecycle-specific
+    /// tool error.
     fn app_client(&self) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, CallToolResult> {
         match &self.status {
             AppStatus::Running => {
@@ -371,7 +376,8 @@ impl State {
         self.spawn_with(LifecycleAction::Restart, true, spawn).await
     }
 
-    /// Spawn and attach an app process for either a start or restart transition.
+    /// Spawn and attach an app process for either a start or restart
+    /// transition.
     async fn spawn_with<F>(
         &mut self,
         action: LifecycleAction,
@@ -552,7 +558,8 @@ struct AppProcess {
 }
 
 impl AppProcess {
-    /// Trigger immediate app termination without waiting for child process exit.
+    /// Trigger immediate app termination without waiting for child process
+    /// exit.
     fn start_termination(&mut self) {
         let process_group_id = self.process_group_id.take();
         process_lifecycle::terminate_process_group(process_group_id, &self.log_state);
@@ -570,7 +577,8 @@ impl AppProcess {
         }
     }
 
-    /// Request normal app closure and escalate only when the request or exit fails.
+    /// Request normal app closure and escalate only when the request or exit
+    /// fails.
     async fn shutdown(mut self) -> ShutdownResult {
         let close_result = request_app_close(&self.client).await;
         let shutdown_grace = self.shutdown_grace;
@@ -749,7 +757,8 @@ enum LifecycleStartStatus {
 }
 
 #[derive(Debug)]
-/// State transition selected before starting an app without holding the state lock.
+/// State transition selected before starting an app without holding the state
+/// lock.
 enum PrepareStart {
     /// The app is already running.
     AlreadyRunning,
@@ -1084,7 +1093,8 @@ fn allocate_mcp_endpoint() -> std_io::Result<String> {
     Ok(listener.local_addr()?.to_string())
 }
 
-/// Connect to a newly launched app, including time spent in an app build command.
+/// Connect to a newly launched app, including time spent in an app build
+/// command.
 // Non-macOS startup probes need mutable access for `Child::try_wait`; macOS
 // probes the supervisor task through the same cross-platform call boundary.
 #[cfg_attr(target_os = "macos", allow(clippy::needless_pass_by_ref_mut))]
@@ -1181,7 +1191,8 @@ async fn wait_for_idle_shutdown(state: Arc<AsyncMutex<State>>, idle_after: Durat
 enum IdleShutdownAction {
     /// Re-check idle state after this duration.
     Sleep(Duration),
-    /// A client is attached, so the guard should stay pending until stdio exits.
+    /// A client is attached, so the guard should stay pending until stdio
+    /// exits.
     Suspend,
     /// No client attached before the idle budget elapsed.
     Shutdown,
@@ -1231,7 +1242,8 @@ async fn start_app_unlocked(state: &Arc<AsyncMutex<State>>) -> Result<StartStatu
     .await
 }
 
-/// Start the app through a supplied spawn routine without locking state during I/O.
+/// Start the app through a supplied spawn routine without locking state during
+/// I/O.
 async fn start_app_unlocked_with<F, Fut>(
     state: &Arc<AsyncMutex<State>>,
     spawn: F,
@@ -1261,7 +1273,8 @@ where
     }
 }
 
-/// Restart the app without holding state during I/O, retrying closed transports.
+/// Restart the app without holding state during I/O, retrying closed
+/// transports.
 async fn restart_app_unlocked(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart {
     let mut attempt = 1;
     loop {
@@ -1455,7 +1468,8 @@ impl ServerHandler for EdevServer {
     }
 }
 
-/// Execute the resolved smoke suite by calling `script_eval` for each discovered script.
+/// Execute the resolved smoke suite by calling `script_eval` for each
+/// discovered script.
 async fn run_smoke_suite(
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
     config: &SmokeConfig,
@@ -1512,7 +1526,8 @@ async fn run_smoke_suite(
     ))
 }
 
-/// Decode a proxied `script_eval` tool result back into the checked-in outcome shape.
+/// Decode a proxied `script_eval` tool result back into the checked-in outcome
+/// shape.
 fn parse_script_eval_outcome(result: &CallToolResult) -> Result<ScriptEvalOutcome, String> {
     decode_tool_result(result, "script_eval", "script_eval outcome")
 }

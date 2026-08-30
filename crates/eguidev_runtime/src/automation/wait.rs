@@ -119,9 +119,10 @@ impl DevMcpServer {
         .into())
     }
 
-    /// Wait until the UI has settled: all input actions and viewport commands are drained
-    /// and at least one clean frame has been captured after the last input drain, unless
-    /// the target child viewport closed while handling the action.
+    /// Wait until the UI has settled: all input actions and viewport commands
+    /// are drained and at least one clean frame has been captured after the
+    /// last input drain, unless the target child viewport closed while
+    /// handling the action.
     pub(super) async fn wait_for_settle(
         &self,
         viewport_id: Option<String>,

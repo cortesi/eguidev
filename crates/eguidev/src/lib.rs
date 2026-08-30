@@ -134,11 +134,11 @@
 //! establishing its declared entry state. Both kinds leave the app in a state
 //! described by ready conditions. Use typed fixture params for controlled
 //! variants and handler-returned values or ready for dynamic fixture outcomes.
-//! Scripts call `eguidev.fixture("name", params?)` to apply the named fixture, wait for a
-//! fresh capture, verify static and returned ready conditions, and receive the
-//! returned values. Widget and viewport references resolve fresh across fixture
-//! boundaries. Pass `{ wait = false }` only when a script intentionally needs
-//! the state before ready conditions are satisfied.
+//! Scripts call `eguidev.fixture("name", params?)` to apply the named fixture,
+//! wait for a fresh capture, verify static and returned ready conditions, and
+//! receive the returned values. Widget and viewport references resolve fresh
+//! across fixture boundaries. Pass `{ wait = false }` only when a script
+//! intentionally needs the state before ready conditions are satisfied.
 //!
 //! # Scripting reference
 //!

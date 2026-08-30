@@ -510,7 +510,8 @@ impl Inner {
         *depth == 1
     }
 
-    /// Exit a viewport frame. Returns true when this is the matching outermost end.
+    /// Exit a viewport frame. Returns true when this is the matching outermost
+    /// end.
     pub fn exit_viewport_frame(&self, viewport_id: egui::ViewportId) -> bool {
         let mut depths = lock(&self.frame_depth, "frame depth lock");
         let Some(depth) = depths.get_mut(&viewport_id) else {
@@ -529,7 +530,8 @@ impl Inner {
         lock(&self.frame_fixture_epochs, "frame fixture epochs lock").remove(&viewport_id)
     }
 
-    /// Count a completed egui pass. Multi-pass frames increment this more than once.
+    /// Count a completed egui pass. Multi-pass frames increment this more than
+    /// once.
     pub fn advance_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -538,7 +540,8 @@ impl Inner {
         self.frame_count.load(Ordering::Relaxed)
     }
 
-    /// Drop heavy per-viewport maps for non-root viewports that left the live set.
+    /// Drop heavy per-viewport maps for non-root viewports that left the live
+    /// set.
     pub fn forget_dead_viewports(&self) {
         let Some(live) = self.viewports.live_viewport_ids() else {
             return;

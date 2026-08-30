@@ -136,8 +136,8 @@ struct DevMcpShared {
 
 /// DevMCP handle stored in app state.
 ///
-/// `Clone` is a cheap shared handle: configuration, the shutdown handler, fixtures, diagnostics,
-/// and idle providers are observed by every clone.
+/// `Clone` is a cheap shared handle: configuration, the shutdown handler,
+/// fixtures, diagnostics, and idle providers are observed by every clone.
 #[derive(Clone, Default)]
 pub struct DevMcp {
     state: DevMcpState,
@@ -208,7 +208,8 @@ impl DevMcp {
         self
     }
 
-    /// Enable or disable runtime repaint keep-alive while automation is attached.
+    /// Enable or disable runtime repaint keep-alive while automation is
+    /// attached.
     pub fn keep_alive(self, keep_alive: bool) -> Self {
         let options = {
             let mut options = lock(
@@ -242,9 +243,10 @@ impl DevMcp {
 
     /// Register a nonblocking application shutdown request.
     ///
-    /// Edev calls this handler on the app MCP runtime thread during managed shutdown. The handler
-    /// must publish its request to the application's lifecycle owner and return immediately. If no
-    /// handler is registered, Eguidev closes the root viewport.
+    /// Edev calls this handler on the app MCP runtime thread during managed
+    /// shutdown. The handler must publish its request to the application's
+    /// lifecycle owner and return immediately. If no handler is registered,
+    /// Eguidev closes the root viewport.
     pub fn on_shutdown<F>(self, handler: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -309,7 +311,8 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register a named diagnostic provider that runs on the automation runtime thread.
+    /// Register a named diagnostic provider that runs on the automation runtime
+    /// thread.
     pub fn diagnostic<F>(
         self,
         name: impl Into<String>,
@@ -341,7 +344,8 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register an app-level idle check that runs on the automation runtime thread.
+    /// Register an app-level idle check that runs on the automation runtime
+    /// thread.
     pub fn on_idle<F>(self, is_idle: F) -> Result<Self, DevMcpConfigError>
     where
         F: Fn() -> bool + Send + Sync + 'static,
@@ -353,7 +357,8 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register an app-level idle check that runs on the UI thread at root frame end.
+    /// Register an app-level idle check that runs on the UI thread at root
+    /// frame end.
     pub fn on_idle_ui<F>(self, is_idle: F) -> Result<Self, DevMcpConfigError>
     where
         F: FnMut(&Context) -> bool + Send + 'static,

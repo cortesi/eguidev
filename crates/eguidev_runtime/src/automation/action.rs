@@ -93,8 +93,9 @@ impl DevMcpServer {
 
     /// Press and release a key (optionally repeating), with modifiers.
     ///
-    /// `key_name` is the original user-provided key name string, used to derive the text event
-    /// (preserving case for single characters like `"a"` vs `"A"`).
+    /// `key_name` is the original user-provided key name string, used to derive
+    /// the text event (preserving case for single characters like `"a"` vs
+    /// `"A"`).
     pub(super) async fn action_key(
         &self,
         viewport_id: Option<String>,
@@ -213,13 +214,15 @@ impl DevMcpServer {
 
     /// Request OS-level focus for a viewport.
     ///
-    /// Raises the window and steals keyboard focus from whatever the user is currently working in.
+    /// Raises the window and steals keyboard focus from whatever the user is
+    /// currently working in.
     ///
-    /// **WARNING: Do not use this for general app interaction or automation.** Input injection,
-    /// clicks, keyboard events, and all other automation actions work correctly without OS focus.
-    /// This function exists solely for testing window focus events themselves (e.g. verifying that
-    /// your app responds correctly when it gains or loses focus). Using it unnecessarily disrupts
-    /// the user's workflow.
+    /// **WARNING: Do not use this for general app interaction or automation.**
+    /// Input injection, clicks, keyboard events, and all other automation
+    /// actions work correctly without OS focus. This function exists solely
+    /// for testing window focus events themselves (e.g. verifying that your
+    /// app responds correctly when it gains or loses focus). Using it
+    /// unnecessarily disrupts the user's workflow.
     pub(super) async fn focus_window(&self, viewport_id: String) -> ToolResult<()> {
         let viewport_id = self
             .inner

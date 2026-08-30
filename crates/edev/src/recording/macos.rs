@@ -391,7 +391,8 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, EdevError> {
         .map_err(EdevError::RecordFailed)
 }
 
-/// Run a ScreenCaptureKit start/stop action and wait for its completion callback.
+/// Run a ScreenCaptureKit start/stop action and wait for its completion
+/// callback.
 fn complete_stream_action(
     name: &'static str,
     action: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),

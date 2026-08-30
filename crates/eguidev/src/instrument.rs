@@ -228,8 +228,8 @@ fn begin_container_with_inner(
 
 /// Run a closure within a container scope with an explicit id.
 ///
-/// The container is registered as a widget so it is discoverable via `parent()` and
-/// `children()`.
+/// The container is registered as a widget so it is discoverable via `parent()`
+/// and `children()`.
 pub fn container<R>(
     ui: &mut egui::Ui,
     id: impl Into<String>,
@@ -237,8 +237,8 @@ pub fn container<R>(
 ) -> R {
     let id = id.into();
     let inner = active_inner();
-    // Run contents inside a scope to get a response, with the container on the stack
-    // so children get the right parent_id.
+    // Run contents inside a scope to get a response, with the container on the
+    // stack so children get the right parent_id.
     let output = ui.scope(|ui| {
         let _guard = begin_container_with_inner(ui, inner.clone(), id.clone());
         add_contents(ui)
@@ -295,13 +295,15 @@ impl ScrollAreaState {
         self.pending_offset = Some(offset);
     }
 
-    /// Reset tracked state and request that the next frame jump back to the origin.
+    /// Reset tracked state and request that the next frame jump back to the
+    /// origin.
     pub fn reset(&mut self) {
         self.offset = egui::Vec2::ZERO;
         self.pending_offset = Some(egui::Vec2::ZERO);
     }
 
-    /// Show a scroll area, record DevMCP metadata, and update the tracked offset.
+    /// Show a scroll area, record DevMCP metadata, and update the tracked
+    /// offset.
     pub fn show<R>(
         &mut self,
         scroll_area: egui::ScrollArea,
@@ -312,7 +314,8 @@ impl ScrollAreaState {
         self.show_viewport(scroll_area, ui, id, |ui, _| add_contents(ui))
     }
 
-    /// Show a scroll area with viewport access, record DevMCP metadata, and update the offset.
+    /// Show a scroll area with viewport access, record DevMCP metadata, and
+    /// update the offset.
     pub fn show_viewport<R>(
         &mut self,
         scroll_area: egui::ScrollArea,

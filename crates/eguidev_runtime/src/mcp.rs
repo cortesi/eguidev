@@ -24,7 +24,8 @@ use crate::{
     script_docs::{script_api_response, script_api_tool_result},
 };
 
-/// App MCP server. Automation policy remains in the script and automation modules.
+/// App MCP server. Automation policy remains in the script and automation
+/// modules.
 pub struct AppMcpServer {
     inner: Arc<Inner>,
     runtime: Arc<Runtime>,

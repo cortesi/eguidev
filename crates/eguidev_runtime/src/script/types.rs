@@ -177,7 +177,8 @@ pub struct ScriptImageInfo {
 pub struct FixtureApplication {
     /// Fixture name passed to `eguidev.fixture(...)`.
     pub name: String,
-    /// Validated fixture parameters, including defaults supplied by the fixture spec.
+    /// Validated fixture parameters, including defaults supplied by the fixture
+    /// spec.
     #[serde(default)]
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, WidgetValue>,
@@ -190,7 +191,8 @@ pub(super) struct ScriptValue {
     pub(super) content: Vec<ContentBlock>,
 }
 
-/// Structured result of evaluating a Luau script directly against a `DevMcp` instance.
+/// Structured result of evaluating a Luau script directly against a `DevMcp`
+/// instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptEvalOutcome {
     /// Whether evaluation completed successfully.

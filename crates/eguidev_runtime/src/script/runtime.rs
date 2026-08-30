@@ -2185,7 +2185,8 @@ impl ScriptRuntime {
         self.to_json(pos, result)
     }
 
-    /// Show a highlight on a widget (by target) or a rect with a mandatory color.
+    /// Show a highlight on a widget (by target) or a rect with a mandatory
+    /// color.
     pub(super) async fn show_highlight_widget(
         &self,
         pos: ScriptPosition,

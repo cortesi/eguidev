@@ -330,7 +330,8 @@ struct WidgetEntryInput<'a> {
     focused: bool,
 }
 
-/// Map one egui layer order onto a comparable paint rank, where a larger value paints later.
+/// Map one egui layer order onto a comparable paint rank, where a larger value
+/// paints later.
 fn layer_paint_order(order: egui::Order) -> u8 {
     match order {
         egui::Order::Background => 0,

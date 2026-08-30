@@ -150,7 +150,8 @@ pub struct DumpConfig {
     pub(crate) params: BTreeMap<String, ScriptArgValue>,
     /// Optional viewport selector to dump.
     pub(crate) viewport: Option<String>,
-    /// Whether to wait for a fresh capture before dumping when no fixture is set.
+    /// Whether to wait for a fresh capture before dumping when no fixture is
+    /// set.
     pub(crate) wait_for_initial_capture: bool,
     /// Emit structured JSON instead of text.
     pub(crate) json: bool,
@@ -476,7 +477,8 @@ struct SmokeSuiteArgs {
     /// Emit list output as JSON.
     #[arg(long = "json", action = ArgAction::SetTrue, requires = "list")]
     list_json: bool,
-    /// Filter discovered smoke scripts by display-path glob. Repeat to select more scripts (union).
+    /// Filter discovered smoke scripts by display-path glob. Repeat to select
+    /// more scripts (union).
     #[arg(long = "only", value_name = "GLOB")]
     only: Vec<String>,
     /// Run the selected smoke scripts this many times.

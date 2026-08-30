@@ -40,7 +40,8 @@ pub fn stable_hash8(value: &str) -> String {
 
 use super::*;
 
-/// Inputs retained by an active app session for deterministic failure collection.
+/// Inputs retained by an active app session for deterministic failure
+/// collection.
 #[derive(Clone)]
 pub struct BundleContext {
     /// Root directory for all failure bundles in this smoke run.
@@ -137,7 +138,8 @@ return {
 }
 "#;
 
-/// Internal Luau script used to collect diagnostics after frame artifacts are written.
+/// Internal Luau script used to collect diagnostics after frame artifacts are
+/// written.
 pub const BUNDLE_DIAGNOSTICS_SCRIPT: &str = r#"
 return eguidev.diagnostics()
 "#;
@@ -311,7 +313,8 @@ pub async fn write_failure_bundle(
     Ok(())
 }
 
-/// Collect diagnostics for a bundle without coupling them to tree/screenshot capture.
+/// Collect diagnostics for a bundle without coupling them to tree/screenshot
+/// capture.
 async fn collect_bundle_diagnostics(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     context: &BundleContext,

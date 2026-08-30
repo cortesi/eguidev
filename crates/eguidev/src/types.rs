@@ -108,7 +108,8 @@ impl ViewportSel {
         })
     }
 
-    /// Parse the Luau/tool selector grammar: `root`, a semantic name, or `vp:<hex>`.
+    /// Parse the Luau/tool selector grammar: `root`, a semantic name, or
+    /// `vp:<hex>`.
     pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {
         let selector = selector.as_ref();
         if selector.trim().is_empty() {
@@ -302,7 +303,8 @@ pub struct FixtureSpec {
     pub name: String,
     /// Fixture description.
     pub description: String,
-    /// Declarative conditions that must be satisfied before fixture application.
+    /// Declarative conditions that must be satisfied before fixture
+    /// application.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preconditions: Vec<FixtureTargetSpec>,
     /// Declarative ready conditions for the fixture baseline.
@@ -347,7 +349,8 @@ pub struct DataCondition {
     pub equals: serde_json::Value,
 }
 
-/// Shared declarative condition used by waits, assertions, actions, and fixtures.
+/// Shared declarative condition used by waits, assertions, actions, and
+/// fixtures.
 ///
 /// Every populated field must match. An empty condition means `present = true`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -620,7 +623,8 @@ pub struct FixtureParam {
     pub kind: ParamKind,
     /// Human-readable parameter description.
     pub description: String,
-    /// Optional default. Missing default means the caller must supply the param.
+    /// Optional default. Missing default means the caller must supply the
+    /// param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<WidgetValue>,
     /// Optional exact allowed values.
@@ -1982,7 +1986,8 @@ pub enum WidgetRoleMeta {
     },
     /// Checkbox, optionally carrying a third visual state.
     Checkbox {
-        /// Whether the checkbox is visually indeterminate, when the app tracks it.
+        /// Whether the checkbox is visually indeterminate, when the app tracks
+        /// it.
         indeterminate: Option<bool>,
     },
     /// Text edit with its input configuration.
@@ -2624,11 +2629,13 @@ pub struct WidgetRegistryEntry {
     pub native_id: u64,
     /// Viewport id string.
     pub viewport_id: String,
-    /// Layer id rendered as a stable string (internal use only, e.g. debug overlay).
+    /// Layer id rendered as a stable string (internal use only, e.g. debug
+    /// overlay).
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     pub layer_id: String,
-    /// Paint order of the widget's layer, where a larger value paints later (internal use only).
+    /// Paint order of the widget's layer, where a larger value paints later
+    /// (internal use only).
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     pub layer_order: u8,
@@ -2656,7 +2663,8 @@ pub struct WidgetRegistryEntry {
     pub enabled: bool,
     /// Whether the widget is visible.
     pub visible: bool,
-    /// Whether the widget reported egui focus in the captured frame (may lag keyboard focus).
+    /// Whether the widget reported egui focus in the captured frame (may lag
+    /// keyboard focus).
     pub focused: bool,
 }
 
@@ -2717,7 +2725,8 @@ pub struct WidgetState {
     pub enabled: bool,
     /// Whether the widget is visible.
     pub visible: bool,
-    /// Whether the widget reported egui focus in the captured frame (may lag keyboard focus).
+    /// Whether the widget reported egui focus in the captured frame (may lag
+    /// keyboard focus).
     pub focused: bool,
 }
 

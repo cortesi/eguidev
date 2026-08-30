@@ -31,12 +31,11 @@ struct Args {
 /// Supported maintenance tasks.
 #[derive(Subcommand)]
 enum Task {
-    /// Run formatter and clippy fixes.
-    Tidy,
-    /// Check format, lints, snips, and release compilation without mutating the tree.
-    Check,
-    /// Run tests via nextest.
-    Test,
+    /// Run repository-specific checks not covered by nanocode.
+    Checks,
+    /// Check the eguidev crate for wasm32.
+    #[command(name = "wasm-check")]
+    WasmCheck,
     /// Install this repository's SKILL.md for local coding agents.
     #[command(name = "install-skill")]
     InstallSkill,
@@ -62,7 +61,8 @@ struct SmokeArgs {
     /// Emit list output as JSON.
     #[arg(long, requires = "list")]
     json: bool,
-    /// Filter discovered smoke scripts by display-path glob. Repeat to select more scripts (union).
+    /// Filter discovered smoke scripts by display-path glob. Repeat to select
+    /// more scripts (union).
     #[arg(long = "only", value_name = "GLOB")]
     only: Vec<String>,
     /// Run the selected smoke scripts this many times.
@@ -108,9 +108,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
     match args.command {
-        Task::Tidy => tidy(),
-        Task::Check => check(),
-        Task::Test => test(),
+        Task::Checks => checks(),
+        Task::WasmCheck => wasm_check(),
         Task::InstallSkill => install_skill(),
         Task::Smoke(args) => smoke(&args),
         Task::SmokeOcclusion(args) => smoke_occlusion(&args),
@@ -118,72 +117,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-/// Run formatter and clippy with workspace defaults, then sync doc snippets.
-fn tidy() -> Result<(), Box<dyn Error>> {
-    run_command(
-        "cargo",
-        &[
-            "+nightly",
-            "fmt",
-            "--all",
-            "--",
-            "--config-path",
-            "./rustfmt-nightly.toml",
-        ],
-        "cargo fmt",
-    )?;
-    run_command(
-        "cargo",
-        &[
-            "clippy",
-            "--locked",
-            "-q",
-            "--fix",
-            "--all",
-            "--all-targets",
-            "--all-features",
-            "--allow-dirty",
-            "--tests",
-            "--examples",
-        ],
-        "cargo clippy --locked",
-    )?;
-    sync_doc_snippets()?;
-    Ok(())
-}
-
-/// Check format, clippy, snips, and release compilation without writing.
-fn check() -> Result<(), Box<dyn Error>> {
-    run_command(
-        "cargo",
-        &[
-            "+nightly",
-            "fmt",
-            "--all",
-            "--check",
-            "--",
-            "--config-path",
-            "./rustfmt-nightly.toml",
-        ],
-        "cargo fmt --check",
-    )?;
-    run_command(
-        "cargo",
-        &[
-            "clippy",
-            "--locked",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-        "cargo clippy --locked -D warnings",
-    )?;
-    run_command("snips", &["--check", "--commands", "deny"], "snips --check").map_err(
-        |error| -> Box<dyn Error> {
-            format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
-        },
-    )?;
+/// Run repository-specific checks not covered by nanocode.
+fn checks() -> Result<(), Box<dyn Error>> {
+    if env::var("NANOCODE_MODE").as_deref() == Ok("fix") {
+        sync_doc_snippets()?;
+    } else {
+        run_command("snips", &["--check", "--commands", "deny"], "snips --check").map_err(
+            |error| -> Box<dyn Error> {
+                format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
+            },
+        )?;
+    }
     run_command(
         "cargo",
         &[
@@ -195,6 +139,8 @@ fn check() -> Result<(), Box<dyn Error>> {
         ],
         "cargo check --locked --release",
     )?;
+    check_luau_scripts()?;
+    check_default_eguidev_dependency_surface()?;
     Ok(())
 }
 
@@ -205,30 +151,8 @@ fn sync_doc_snippets() -> Result<(), Box<dyn Error>> {
     })
 }
 
-/// Run the test suite via nextest.
-fn test() -> Result<(), Box<dyn Error>> {
-    run_command(
-        "cargo",
-        &[
-            "nextest",
-            "run",
-            "--locked",
-            "--all",
-            "--features",
-            "edev/test-app",
-        ],
-        "cargo nextest --locked",
-    )?;
-    run_command(
-        "cargo",
-        &["test", "--locked", "-q", "-p", "eguidev_runtime", "--tests"],
-        "cargo test --locked -p eguidev_runtime --tests",
-    )?;
-    run_command(
-        "cargo",
-        &["test", "--locked", "-q", "-p", "eguidev_demo", "--tests"],
-        "cargo test --locked -p eguidev_demo --tests",
-    )?;
+/// Check the eguidev crate for wasm32.
+fn wasm_check() -> Result<(), Box<dyn Error>> {
     run_command(
         "cargo",
         &[
@@ -241,10 +165,7 @@ fn test() -> Result<(), Box<dyn Error>> {
             "wasm32-unknown-unknown",
         ],
         "cargo check --locked -p eguidev --target wasm32-unknown-unknown",
-    )?;
-    check_luau_scripts()?;
-    check_default_eguidev_dependency_surface()?;
-    Ok(())
+    )
 }
 
 /// Install the repository skill into local agent skill directories.
@@ -341,7 +262,8 @@ fn smoke_with_app_command(
     )
 }
 
-/// Run the full smoke suite with the root viewport covered by the test occluder.
+/// Run the full smoke suite with the root viewport covered by the test
+/// occluder.
 fn smoke_occlusion(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
     let mut occlusion_args = args.clone();
     occlusion_args
@@ -353,7 +275,8 @@ fn smoke_occlusion(args: &SmokeArgs) -> Result<(), Box<dyn Error>> {
     smoke_with_app_command(&occlusion_args, Some(&occlusion_demo_command()))
 }
 
-/// Command used by occlusion smoke to launch the demo with a persistent cover viewport.
+/// Command used by occlusion smoke to launch the demo with a persistent cover
+/// viewport.
 fn occlusion_demo_command() -> [&'static str; 10] {
     [
         "cargo",
@@ -392,7 +315,8 @@ fn check_luau_source(path: &Path, source: &str) -> Result<(), Box<dyn Error>> {
         .map_err(|error| format!("Luau check failed for {}:\n{error}", path.display()).into())
 }
 
-/// Enumerate checked-in example scripts that should type-check against the API definitions.
+/// Enumerate checked-in example scripts that should type-check against the API
+/// definitions.
 fn luau_sources() -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let root = workspace_root()?;
     let mut sources = Vec::new();

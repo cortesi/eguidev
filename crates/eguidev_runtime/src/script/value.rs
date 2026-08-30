@@ -59,7 +59,8 @@ pub(super) fn script_return_value_from_json_values(values: Vec<Value>) -> Option
     }
 }
 
-/// Build the public script value payload and MCP image blocks from a JSON return value.
+/// Build the public script value payload and MCP image blocks from a JSON
+/// return value.
 pub(super) fn script_value_from_json(runtime: &ScriptRuntime, value: Value) -> ScriptValue {
     let mut collector = ImageReferenceCollector::default();
     collect_image_refs(&value, &mut collector);

@@ -37,10 +37,11 @@ pub(super) fn widgets_at_point(
 
 /// Return the widget that actually covers one target at a point.
 ///
-/// Two rules keep this from naming a widget that cannot take the click. An enclosing container is
-/// recorded after its contents, so it is the last hit in registry order even though it never
-/// occludes its own descendants; ancestors are therefore transparent. A popup also paints in a
-/// later layer than the panel behind it, whatever the registry order, so paint order ranks first.
+/// Two rules keep this from naming a widget that cannot take the click. An
+/// enclosing container is recorded after its contents, so it is the last hit in
+/// registry order even though it never occludes its own descendants; ancestors
+/// are therefore transparent. A popup also paints in a later layer than the
+/// panel behind it, whatever the registry order, so paint order ranks first.
 pub(super) fn covering_widget_id(
     inner: &Inner,
     viewport_id: egui::ViewportId,
@@ -60,7 +61,8 @@ pub(super) fn covering_widget_id(
     (top.id != target_id).then(|| top.id.clone())
 }
 
-/// Collect every recorded ancestor id of one widget, excluding the widget itself.
+/// Collect every recorded ancestor id of one widget, excluding the widget
+/// itself.
 fn ancestor_ids(widgets: &[WidgetRegistryEntry], target_id: &str) -> HashSet<String> {
     let by_id: HashMap<&str, &WidgetRegistryEntry> = widgets
         .iter()

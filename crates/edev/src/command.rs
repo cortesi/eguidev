@@ -28,7 +28,8 @@ pub async fn run() -> Result<(), EdevError> {
     }
 }
 
-/// Run the long-lived `edev mcp` launcher server over stdio without starting the app eagerly.
+/// Run the long-lived `edev mcp` launcher server over stdio without starting
+/// the app eagerly.
 async fn run_mcp(config: McpConfig) -> Result<(), EdevError> {
     let instance_registry = InstanceRegistry::register(&config.launch)?;
     let mut raw_state = State::new(config.launch, instance_registry);
@@ -171,7 +172,8 @@ fn finish_smoke_run(
     }
 }
 
-/// Finish a record command while preserving smoke failures over recording errors.
+/// Finish a record command while preserving smoke failures over recording
+/// errors.
 fn finish_record_run(
     suite_result: Result<SuiteResult, EdevError>,
     recording_result: Result<recording::RecordingSummary, EdevError>,
@@ -239,7 +241,8 @@ fn required_smoke_launch(config: &SmokeConfig) -> Result<LaunchConfig, EdevError
     })
 }
 
-/// Start native recording, waiting on fresh captures if the window server lags startup.
+/// Start native recording, waiting on fresh captures if the window server lags
+/// startup.
 async fn start_recording_with_retries(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     timeout: Option<Duration>,
@@ -260,7 +263,8 @@ async fn start_recording_with_retries(
     }))
 }
 
-/// Internal script used to synchronize native window probing with a fresh app capture.
+/// Internal script used to synchronize native window probing with a fresh app
+/// capture.
 const WAIT_FOR_CAPTURE_SCRIPT: &str = r#"
 eguidev.root:wait_capture()
 return true
@@ -285,7 +289,8 @@ async fn wait_for_initial_capture_refresh(
     }
 }
 
-/// Internal script used to get the root viewport title for native window matching.
+/// Internal script used to get the root viewport title for native window
+/// matching.
 const ROOT_VIEWPORT_TITLE_SCRIPT: &str = r#"
 eguidev.root:wait_capture()
 local state = eguidev.root:state()
@@ -354,7 +359,8 @@ fn print_smoke_list(config: &SmokeConfig) -> Result<(), EdevError> {
     Ok(())
 }
 
-/// Run one Luau script through `script_eval`, print JSON, and write returned images.
+/// Run one Luau script through `script_eval`, print JSON, and write returned
+/// images.
 async fn run_eval(config: EvalConfig) -> Result<(), EdevError> {
     let source = fs::read_to_string(&config.script)?;
     let session = AppSession::start(
@@ -614,7 +620,8 @@ async fn eval_fixture_apply(
     }
 }
 
-/// Decodes structured content or the first JSON text block with stable domain errors.
+/// Decodes structured content or the first JSON text block with stable domain
+/// errors.
 pub fn decode_tool_result<T: DeserializeOwned>(
     result: &CallToolResult,
     tool_name: &str,
@@ -760,7 +767,8 @@ fn format_widget_value(value: &WidgetValue) -> String {
     }
 }
 
-/// Start the app and resolve its direct client, shutting down on startup failures.
+/// Start the app and resolve its direct client, shutting down on startup
+/// failures.
 pub async fn start_app_client(
     state: &mut State,
     unavailable_message: &str,
@@ -801,7 +809,8 @@ async fn call_script_eval(
     parse_script_eval_outcome(&result)
 }
 
-/// Call the app-side `script_eval` tool and preserve all returned content blocks.
+/// Call the app-side `script_eval` tool and preserve all returned content
+/// blocks.
 pub async fn call_script_eval_result(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     request: ScriptEvalRequest,
@@ -905,7 +914,8 @@ async fn eval_fixture_script(
     }
 }
 
-/// Prefer the runtime's script error text and fall back to a caller-provided message.
+/// Prefer the runtime's script error text and fall back to a caller-provided
+/// message.
 pub fn script_eval_error_message(
     error: Option<&ScriptErrorInfo>,
     fallback_message: &str,

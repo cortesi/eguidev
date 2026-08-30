@@ -329,11 +329,12 @@ pub fn ensure_positive_vec2(value: Vec2, field: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// Resolve a key name to an `egui::Key`, case-insensitively for multi-character names.
+/// Resolve a key name to an `egui::Key`, case-insensitively for multi-character
+/// names.
 ///
 /// Single characters are passed through as-is (case-sensitive: `"a"` ≠ `"A"`).
-/// Multi-character names are matched case-insensitively: `"enter"`, `"Enter"`, `"ENTER"` all
-/// resolve to `egui::Key::Enter`.
+/// Multi-character names are matched case-insensitively: `"enter"`, `"Enter"`,
+/// `"ENTER"` all resolve to `egui::Key::Enter`.
 pub fn resolve_key_name(name: &str) -> Option<egui::Key> {
     // Single characters: pass through directly (case-sensitive for letters).
     if name.len() == 1 {
@@ -479,25 +480,28 @@ const LOWERCASE_KEY_MAP: &[(&str, egui::Key)] = &[
 ///
 /// Format: `[modifier-]...[modifier-]keyname`
 ///
-/// Modifiers (case-insensitive): `ctrl`, `shift`, `alt`, `cmd` (alias: `command`).
-/// The last segment after splitting on `-` is the key name; all preceding segments are modifiers.
+/// Modifiers (case-insensitive): `ctrl`, `shift`, `alt`, `cmd` (alias:
+/// `command`). The last segment after splitting on `-` is the key name; all
+/// preceding segments are modifiers.
 ///
-/// Examples: `"enter"`, `"ctrl-a"`, `"shift-tab"`, `"ctrl-shift-z"`, `"cmd-s"`, `"-"` (minus).
-/// Returns `(key, modifiers, key_name_str)` where `key_name_str` is the raw key name segment
-/// from the combo (preserving original case for single characters).
+/// Examples: `"enter"`, `"ctrl-a"`, `"shift-tab"`, `"ctrl-shift-z"`, `"cmd-s"`,
+/// `"-"` (minus). Returns `(key, modifiers, key_name_str)` where `key_name_str`
+/// is the raw key name segment from the combo (preserving original case for
+/// single characters).
 pub fn parse_key_combo(combo: &str) -> Result<(egui::Key, Modifiers, String), String> {
     if combo.is_empty() {
         return Err("empty key combo".to_string());
     }
 
-    // Split on '-'. The last segment is the key name. But we need to handle edge cases:
+    // Split on '-'. The last segment is the key name. But we need to handle edge
+    // cases:
     // - bare "-" → segments = ["", ""], key is "-"
     // - "ctrl--" → segments = ["ctrl", "", ""], key is "-"
     // - "ctrl-a" → segments = ["ctrl", "a"]
     let segments: Vec<&str> = combo.split('-').collect();
 
-    // Find the key name: it's the last segment, except when the last segment is empty
-    // (meaning the combo ended with '-', so the key is '-' itself).
+    // Find the key name: it's the last segment, except when the last segment is
+    // empty (meaning the combo ended with '-', so the key is '-' itself).
     let (modifier_segments, key_name) = if segments.len() >= 2 && segments.last() == Some(&"") {
         // Ends with '-', so key is the minus character.
         (&segments[..segments.len() - 2], "-")
@@ -580,17 +584,20 @@ pub async fn wait_for_frames(
     Ok(())
 }
 
-/// Generic utility for polling a condition that requires UI interaction or state updates.
+/// Generic utility for polling a condition that requires UI interaction or
+/// state updates.
 ///
-/// This function handles the boilerplate of checking a condition, tracking elapsed time
-/// against a timeout, and efficiently waiting for `egui` frame updates.
+/// This function handles the boilerplate of checking a condition, tracking
+/// elapsed time against a timeout, and efficiently waiting for `egui` frame
+/// updates.
 ///
-/// `condition` should return `Ok((matched, state))` where `state` is some snapshot or
-/// context to return to the caller (e.g., the last seen widget state or viewports).
+/// `condition` should return `Ok((matched, state))` where `state` is some
+/// snapshot or context to return to the caller (e.g., the last seen widget
+/// state or viewports).
 ///
-/// `deadline` is an optional hard cutoff (useful for script timeouts). If the deadline
-/// is exceeded while waiting, `wait_until_condition` will immediately return the last
-/// known state as unmatched.
+/// `deadline` is an optional hard cutoff (useful for script timeouts). If the
+/// deadline is exceeded while waiting, `wait_until_condition` will immediately
+/// return the last known state as unmatched.
 pub async fn wait_until_condition<F, Fut, T, E>(
     inner: &Inner,
     timeout_ms: u64,

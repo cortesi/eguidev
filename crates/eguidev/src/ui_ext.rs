@@ -48,7 +48,8 @@ pub struct ProgressBarOptions {
 
 /// Helper extensions for recording common widgets with explicit ids.
 ///
-/// Prefer these for standard widgets; they auto-populate role/type/value/label metadata.
+/// Prefer these for standard widgets; they auto-populate role/type/value/label
+/// metadata.
 pub trait DevUiExt {
     /// Add a button with an explicit id.
     fn dev_button(
@@ -72,7 +73,8 @@ pub trait DevUiExt {
         text: impl Into<egui::WidgetText>,
     ) -> egui::Response;
 
-    /// Add a hyperlink with an explicit id, using its URL as label and value metadata.
+    /// Add a hyperlink with an explicit id, using its URL as label and value
+    /// metadata.
     fn dev_hyperlink(&mut self, id: impl Into<String>, url: impl ToString) -> egui::Response;
 
     /// Add a hyperlink with an explicit id, label, and URL metadata.
@@ -843,7 +845,8 @@ pub trait DevScrollAreaExt {
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> ScrollAreaOutput<R>;
 
-    /// Show a scroll area with viewport access and record it with DevMCP metadata.
+    /// Show a scroll area with viewport access and record it with DevMCP
+    /// metadata.
     fn dev_show_viewport<R>(
         self,
         ui: &mut egui::Ui,
@@ -880,9 +883,9 @@ impl DevScrollAreaExt for egui::ScrollArea {
 
 /// Consume a queued widget value override for a custom instrumented widget.
 ///
-/// Call this every frame that the custom widget is instrumented. The runtime uses that
-/// call to distinguish wired custom widgets from widgets that publish a settable value but
-/// never consume queued overrides.
+/// Call this every frame that the custom widget is instrumented. The runtime
+/// uses that call to distinguish wired custom widgets from widgets that publish
+/// a settable value but never consume queued overrides.
 pub fn take_widget_value_override(ui: &egui::Ui, id: &str) -> Option<WidgetValue> {
     let inner = active_inner()?;
     let viewport_id = ui.ctx().viewport_id();
@@ -971,7 +974,8 @@ where
     response
 }
 
-/// Record a standard widget with consistent metadata, visibility, and active context lookup.
+/// Record a standard widget with consistent metadata, visibility, and active
+/// context lookup.
 fn record_widget_with_layout(
     ui: &egui::Ui,
     id: String,

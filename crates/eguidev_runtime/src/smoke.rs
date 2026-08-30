@@ -152,7 +152,8 @@ pub enum ScriptStatus {
 pub struct ScriptResult {
     /// One-based round index for repeated suite runs.
     pub round: u32,
-    /// Forward-slash-normalized relative script path, or `<suite>` for suite-level failures.
+    /// Forward-slash-normalized relative script path, or `<suite>` for
+    /// suite-level failures.
     pub path: String,
     /// Final script status.
     pub status: ScriptStatus,
@@ -777,8 +778,8 @@ fn natural_key(value: &str) -> Vec<NaturalChunk<'_>> {
     chunks
 }
 
-/// One natural-order chunk. A number sorts before text, so a numbered script at the suite root
-/// runs before a directory whose name begins with a letter.
+/// One natural-order chunk. A number sorts before text, so a numbered script at
+/// the suite root runs before a directory whose name begins with a letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NaturalChunk<'a> {
     Number(u64, usize),

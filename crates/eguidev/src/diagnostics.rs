@@ -151,7 +151,8 @@ pub struct DiagnosticReceiver {
 }
 
 impl DiagnosticReceiver {
-    /// Wait until the UI-thread provider returns or the caller's timeout expires.
+    /// Wait until the UI-thread provider returns or the caller's timeout
+    /// expires.
     pub fn recv_timeout(self, timeout: Duration) -> DiagnosticResult {
         match self.receiver.recv_timeout(timeout) {
             Ok(result) => result,
@@ -284,7 +285,8 @@ impl DiagnosticRegistry {
         }
     }
 
-    /// Run every queued UI-thread diagnostic provider against the current root context.
+    /// Run every queued UI-thread diagnostic provider against the current root
+    /// context.
     pub fn drain_ui(&self, ctx: &Context) {
         let requests = {
             let mut pending = lock(&self.pending_ui, "pending diagnostic lock");

@@ -205,7 +205,8 @@ fn main() -> MainResult<()> {
 #[derive(Debug, Clone, Copy)]
 /// Parsed configuration for the demo app.
 struct AppConfig {
-    /// Whether the root viewport should stay covered by the smoke-test occluder.
+    /// Whether the root viewport should stay covered by the smoke-test
+    /// occluder.
     force_occluder: bool,
 }
 
@@ -322,7 +323,8 @@ struct DemoState {
     show_occluder: bool,
     /// Whether fixture resets should preserve the test occluder viewport.
     force_occluder: bool,
-    /// Whether the occluder should deliberately reuse the secondary viewport name.
+    /// Whether the occluder should deliberately reuse the secondary viewport
+    /// name.
     duplicate_viewport_names: bool,
     /// Selected row index from the secondary viewport list.
     secondary_selected_row: usize,
@@ -1005,7 +1007,8 @@ impl DemoApp {
         }
     }
 
-    /// Render the viewport-filling scroll area used to exercise the layout gate.
+    /// Render the viewport-filling scroll area used to exercise the layout
+    /// gate.
     ///
     /// The scroll area fills the root viewport, so its rows carry the viewport
     /// clip rect and only the declared content extent can explain a scrolled

@@ -8,9 +8,9 @@ Install a Rust 1.85+ toolchain with the `wasm32-unknown-unknown` target, plus:
 - cargo-nextest (`cargo install cargo-nextest`)
 - snips (`cargo install snips`)
 
-`cargo xtask tidy` applies format and clippy fixes. `cargo xtask check` verifies
+`nanocode tidy` applies format and clippy fixes. `nanocode check` verifies
 format, clippy (`-D warnings`), snips, and a release compilation without
-writing. `cargo xtask test` runs the test lane.
+writing. `nanocode test` runs the test lane.
 
 ## Documentation Comments in `.d.luau`
 
@@ -32,10 +32,10 @@ Code blocks in `README.md` come from real source files through
 [snips](https://github.com/cortesi/snips). An HTML comment above each block names the source file
 and the snippet, and the source file marks that region with `snips-start` and `snips-end` comments.
 
-`cargo xtask tidy` runs `snips` and rewrites every stale block, so edit the source file and not the
+`nanocode tidy` runs `snips` and rewrites every stale block, so edit the source file and not the
 Markdown block. Install the tool with `cargo install snips`.
 
-The README form example comes from `smoketest/10_basic_form.luau`. `cargo xtask test` therefore
+The README form example comes from `smoketest/10_basic_form.luau`. `nanocode test` therefore
 type-checks it, and `cargo xtask smoke` proves that it still passes.
 
 ## Tests
@@ -43,7 +43,7 @@ type-checks it, and `cargo xtask smoke` proves that it still passes.
 Run the test lane from `xtask`:
 
 ```sh
-cargo xtask test
+nanocode test
 ```
 
 Only smoketests launch a real app, so only they put a window on the desktop. Tests in this lane must

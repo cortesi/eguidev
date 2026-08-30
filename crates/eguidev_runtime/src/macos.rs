@@ -106,7 +106,8 @@ pub fn platform_window_states() -> Vec<PlatformViewportState> {
         .collect()
 }
 
-/// Return the AppKit window number for a titled window recorded by the occlusion hook.
+/// Return the AppKit window number for a titled window recorded by the
+/// occlusion hook.
 pub fn window_number_for_title(title: &str) -> Result<u32, String> {
     match recorded_window_number_for_title(title) {
         Ok(window_number) => Ok(window_number),
@@ -229,7 +230,8 @@ fn window_info_string(info: &WindowInfo, key: CFStringRef) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-/// Capture a window directly through Quartz and return an egui-compatible image.
+/// Capture a window directly through Quartz and return an egui-compatible
+/// image.
 pub fn capture_window_image(window_number: u32) -> Result<egui::ColorImage, String> {
     let image_options = kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution;
     let Some(image) = create_image(
@@ -331,7 +333,8 @@ fn presentation_session() -> &'static Mutex<PresentationSession> {
     PRESENTATION_SESSION.get_or_init(|| Mutex::new(PresentationSession::default()))
 }
 
-/// Apply one connection's presentation and return whether a live window needs a frame.
+/// Apply one connection's presentation and return whether a live window needs a
+/// frame.
 pub async fn configure_session(
     session_id: u64,
     presentation: Presentation,
@@ -364,7 +367,8 @@ pub async fn configure_session(
     .await?
 }
 
-/// Remove one connection's presentation and restore the newest remaining request.
+/// Remove one connection's presentation and restore the newest remaining
+/// request.
 pub async fn disconnect_session(session_id: u64) -> Result<(), String> {
     run_on_main(move || {
         let observed_policy = activation_policy();
