@@ -9,6 +9,7 @@ use eguidev::internal::{
     devmcp::RuntimeHooks,
     presentation::Presentation,
     registry::{Inner, viewport_id_to_string},
+    viewports::OutputSnapshot,
 };
 #[cfg(test)]
 use tokio::time::sleep;
@@ -250,6 +251,12 @@ impl Runtime {
         viewport_id: egui::ViewportId,
         output: &FullOutput,
     ) {
+        inner.viewports.record_output_snapshot(
+            viewport_id,
+            OutputSnapshot {
+                cursor_icon: output.platform_output.cursor_icon,
+            },
+        );
         self.egui_diagnostics.record_output(
             viewport_id_to_string(viewport_id),
             inner.frame_count(),

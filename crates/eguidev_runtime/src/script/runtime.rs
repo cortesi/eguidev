@@ -742,6 +742,8 @@ impl ScriptRuntime {
             resolve_viewport_id(&self.server.inner, Some(snapshot.viewport_id.clone())).ok();
         let input = resolved
             .and_then(|viewport_id| self.server.inner.viewports.input_snapshot(viewport_id));
+        let output = resolved
+            .and_then(|viewport_id| self.server.inner.viewports.output_snapshot(viewport_id));
         let frame_count = resolved
             .map(|viewport_id| {
                 self.server
@@ -765,6 +767,7 @@ impl ScriptRuntime {
                 "os_minimized": snapshot.os_minimized,
                 "os_occluded": snapshot.os_occluded,
                 "os_title_visible": snapshot.os_title_visible,
+                "cursor_icon": output.map(|output| format!("{:?}", output.cursor_icon)),
                 "maximized": snapshot.maximized,
                 "fullscreen": snapshot.fullscreen,
                 "frame_count": frame_count,

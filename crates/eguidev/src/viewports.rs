@@ -26,6 +26,11 @@ pub struct InputSnapshot {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct OutputSnapshot {
+    pub cursor_icon: egui::CursorIcon,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct CaptureSnapshot {
     pub fixture_epoch: u64,
     pub frame_count: u64,
@@ -92,6 +97,7 @@ pub struct ViewportState {
     viewport_name_errors: Mutex<HashMap<egui::ViewportId, ViewportNameViolation>>,
     live_viewports: Mutex<Option<HashSet<egui::ViewportId>>>,
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
+    output_snapshot: Mutex<HashMap<egui::ViewportId, OutputSnapshot>>,
     capture_snapshot: Mutex<HashMap<egui::ViewportId, CaptureSnapshot>>,
     frame_health: Mutex<HashMap<egui::ViewportId, FrameHealth>>,
 }
@@ -111,6 +117,7 @@ impl ViewportState {
             viewport_name_errors: Mutex::new(HashMap::new()),
             live_viewports: Mutex::new(None),
             input_snapshot: Mutex::new(HashMap::new()),
+            output_snapshot: Mutex::new(HashMap::new()),
             capture_snapshot: Mutex::new(HashMap::new()),
             frame_health: Mutex::new(HashMap::new()),
         }
@@ -189,6 +196,8 @@ impl ViewportState {
             *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
         };
         lock(&self.input_snapshot, "input snapshot lock")
+            .retain(|viewport_id, _| is_live(viewport_id));
+        lock(&self.output_snapshot, "output snapshot lock")
             .retain(|viewport_id, _| is_live(viewport_id));
         lock(&self.capture_snapshot, "capture snapshot lock")
             .retain(|viewport_id, _| is_live(viewport_id));
@@ -325,6 +334,17 @@ impl ViewportState {
         lock(&self.input_snapshot, "input snapshot lock")
             .get(&viewport_id)
             .cloned()
+    }
+
+    pub fn record_output_snapshot(&self, viewport_id: egui::ViewportId, snapshot: OutputSnapshot) {
+        self.remember_viewport_id(viewport_id);
+        lock(&self.output_snapshot, "output snapshot lock").insert(viewport_id, snapshot);
+    }
+
+    pub fn output_snapshot(&self, viewport_id: egui::ViewportId) -> Option<OutputSnapshot> {
+        lock(&self.output_snapshot, "output snapshot lock")
+            .get(&viewport_id)
+            .copied()
     }
 
     pub fn recorded_frame_count(&self, viewport_id: egui::ViewportId) -> u64 {
@@ -636,6 +656,26 @@ mod tests {
         assert_eq!(health.frames_observed_since(4), 3);
         assert_eq!(state.frames_observed_since(viewport_id, 8), Some(0));
         assert!(health.age() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn record_output_snapshot_keeps_the_latest_cursor() {
+        let state = ViewportState::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        state.record_output_snapshot(
+            viewport_id,
+            OutputSnapshot {
+                cursor_icon: egui::CursorIcon::PointingHand,
+            },
+        );
+
+        assert_eq!(
+            state
+                .output_snapshot(viewport_id)
+                .expect("output snapshot")
+                .cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
     }
 
     #[test]

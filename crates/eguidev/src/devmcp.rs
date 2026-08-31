@@ -890,7 +890,7 @@ mod inactive_tests {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _guard = FrameGuard::new(&devmcp, &ctx);
-            ui.dev_button("inactive.button", "Inactive");
+            let _response = ui.dev_button("inactive.button", "Inactive");
         })
         .drop_without_applying_deltas();
 
@@ -908,16 +908,16 @@ mod inactive_tests {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _outer = FrameGuard::new(&devmcp, &ctx);
-            ui.dev_button("outer.first", "First");
+            let _response = ui.dev_button("outer.first", "First");
             {
                 let _inner = FrameGuard::new(&devmcp, &ctx);
-                ui.dev_button("inner", "Inner");
+                let _response = ui.dev_button("inner", "Inner");
             }
             assert!(
                 instrument::active_inner().is_some(),
                 "parent frame should stay active after the nested guard drops"
             );
-            ui.dev_button("outer.second", "Second");
+            let _response = ui.dev_button("outer.second", "Second");
         })
         .drop_without_applying_deltas();
 
@@ -961,14 +961,14 @@ mod inactive_tests {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _guard = FrameGuard::new(&devmcp, &ctx);
-            ui.dev_button("inside", "Inside");
+            let _response = ui.dev_button("inside", "Inside");
         })
         .drop_without_applying_deltas();
 
         assert!(instrument::active_inner().is_none());
 
         ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.dev_button("ungarded", "Ungarded");
+            let _response = ui.dev_button("ungarded", "Ungarded");
         })
         .drop_without_applying_deltas();
 

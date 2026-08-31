@@ -52,6 +52,7 @@ pub struct ProgressBarOptions {
 /// metadata.
 pub trait DevUiExt {
     /// Add a button with an explicit id.
+    #[must_use = "a button does nothing unless its response is handled"]
     fn dev_button(
         &mut self,
         id: impl Into<String>,
@@ -59,6 +60,7 @@ pub trait DevUiExt {
     ) -> egui::Response;
 
     /// Add a selected-aware button with explicit metadata.
+    #[must_use = "a button does nothing unless its response is handled"]
     fn dev_button_with(
         &mut self,
         id: impl Into<String>,

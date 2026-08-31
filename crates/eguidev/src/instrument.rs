@@ -658,7 +658,7 @@ mod tests {
             ui.dev_separator("separator");
             ui.dev_spinner("spinner");
             let _menu = ui.dev_menu_button("menu", "Actions", |ui| {
-                ui.dev_button("menu.item", "Reset");
+                let _response = ui.dev_button("menu.item", "Reset");
             });
             let _advanced = ui.dev_collapsing("advanced", &mut advanced_open, "Advanced", |ui| {
                 ui.dev_label("advanced.summary", "Shown");
@@ -804,7 +804,7 @@ mod tests {
                 .max_height(40.0)
                 .show(ui, |ui| {
                     ui.add_space(200.0);
-                    ui.dev_button("clipped", "Clipped");
+                    let _response = ui.dev_button("clipped", "Clipped");
                 });
             devmcp.end_frame(ctx, true);
         });
@@ -1026,7 +1026,7 @@ mod tests {
             devmcp.begin_frame(ctx);
             container(ui, "outer", |ui| {
                 container(ui, "inner", |ui| {
-                    ui.dev_button("leaf", "Leaf");
+                    let _response = ui.dev_button("leaf", "Leaf");
                 });
             });
             devmcp.end_frame(ctx, true);
@@ -1172,9 +1172,9 @@ mod tests {
         let raw_input = egui::RawInput::default();
         run_panel(&ctx, raw_input, |ctx, ui| {
             devmcp.begin_frame(ctx);
-            ui.dev_button("enabled_btn", "Enabled");
+            let _response = ui.dev_button("enabled_btn", "Enabled");
             ui.add_enabled_ui(false, |ui| {
-                ui.dev_button("disabled_btn", "Disabled");
+                let _response = ui.dev_button("disabled_btn", "Disabled");
             });
             ui.dev_label("visible_lbl", "Visible");
             egui::ScrollArea::vertical()

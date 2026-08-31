@@ -149,7 +149,8 @@ On macOS, child-viewport screenshots fall back to Quartz window capture after a 
 frame fails to fulfill the normal egui screenshot event. The fallback needs a recorded
 window title match and macOS Screen Recording permission. Root screenshots use the egui event
 path directly. Use `Viewport:native_screenshot()` to include AppKit chrome in a capture. Use
-`ViewportState.os_title_visible` to assert native title visibility.
+`ViewportState.os_title_visible` to assert native title visibility. Use
+`ViewportState.cursor_icon` after `Widget:hover()` to assert cursor feedback.
 
 Run one diagnostic script and keep its return value/images with:
 

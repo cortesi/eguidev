@@ -426,6 +426,9 @@ pub struct ViewportCondition {
     /// Required observed native title visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_title_visible: Option<bool>,
+    /// Required cursor icon requested by the viewport's latest frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_icon: Option<String>,
     /// Required maximized state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
@@ -1459,6 +1462,7 @@ impl ViewportCondition {
             || self.minimized.is_some()
             || self.occluded.is_some()
             || self.os_title_visible.is_some()
+            || self.cursor_icon.is_some()
             || self.maximized.is_some()
             || self.fullscreen.is_some()
             || self.frame_at_least.is_some();
@@ -1473,6 +1477,9 @@ impl ViewportCondition {
         }
         if self.title_contains.as_ref().is_some_and(String::is_empty) {
             return Err("title_contains must not be empty".to_string());
+        }
+        if self.cursor_icon.as_ref().is_some_and(String::is_empty) {
+            return Err("cursor_icon must not be empty".to_string());
         }
         Ok(())
     }

@@ -375,6 +375,7 @@ local function validateViewportCondition(condition: ViewportCondition)
         or condition.minimized ~= nil
         or condition.occluded ~= nil
         or condition.os_title_visible ~= nil
+        or condition.cursor_icon ~= nil
         or condition.maximized ~= nil
         or condition.fullscreen ~= nil
         or condition.frame_at_least ~= nil
@@ -389,6 +390,9 @@ local function validateViewportCondition(condition: ViewportCondition)
     end
     if condition.title_contains == "" then
         fail("invalid_argument", "title_contains must not be empty", "wait")
+    end
+    if condition.cursor_icon == "" then
+        fail("invalid_argument", "cursor_icon must not be empty", "wait")
     end
 end
 
@@ -465,6 +469,7 @@ local function viewportConditionMatches(state: ViewportState?, condition: Viewpo
     if condition.os_title_visible ~= nil and current.os_title_visible ~= condition.os_title_visible then
         return false
     end
+    if condition.cursor_icon ~= nil and current.cursor_icon ~= condition.cursor_icon then return false end
     if condition.maximized ~= nil and current.maximized ~= condition.maximized then return false end
     if condition.fullscreen ~= nil and current.fullscreen ~= condition.fullscreen then return false end
     if condition.frame_at_least ~= nil and current.frame_count < condition.frame_at_least then return false end

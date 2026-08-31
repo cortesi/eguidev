@@ -53,7 +53,9 @@
 //! an explicit string id and auto-populates role, label, and value metadata:
 //!
 //! ```rust,ignore
-//! ui.dev_button("settings.save", "Save");
+//! if ui.dev_button("settings.save", "Save").clicked() {
+//!     save_settings();
+//! }
 //! ui.dev_text_edit("settings.name", &mut name);
 //! ui.dev_checkbox("settings.enabled", &mut enabled, "Enabled");
 //! ui.dev_slider("settings.level", &mut level, 0.0..=100.0);
@@ -250,7 +252,8 @@ pub mod internal {
 
     pub mod viewports {
         pub use crate::viewports::{
-            FrameHealth, InputSnapshot, PlatformViewportState, ViewportSnapshot, ViewportState,
+            FrameHealth, InputSnapshot, OutputSnapshot, PlatformViewportState, ViewportSnapshot,
+            ViewportState,
         };
     }
 

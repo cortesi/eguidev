@@ -260,6 +260,8 @@ export type ViewportState = {
     os_occluded: boolean?,
     --- Real platform title visibility when eguidev can observe it.
     os_title_visible: boolean?,
+    --- Cursor icon requested by the latest viewport frame.
+    cursor_icon: string?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_count: number,
@@ -720,6 +722,7 @@ export type ViewportCondition = {
     minimized: boolean?,
     occluded: boolean?,
     os_title_visible: boolean?,
+    cursor_icon: string?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_at_least: number?,
