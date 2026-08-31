@@ -258,6 +258,8 @@ export type ViewportState = {
     --- automation runs this can differ from `occluded`, which is forced false
     --- so eframe keeps rendering in covered windows.
     os_occluded: boolean?,
+    --- Real platform title visibility when eguidev can observe it.
+    os_title_visible: boolean?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_count: number,
@@ -399,6 +401,9 @@ declare class Viewport
     --- Waits for a fresh screenshot of the viewport.
     --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
     read screenshot: (self: Viewport) -> ImageRef
+    --- Captures the complete native window, including platform chrome.
+    --- This operation is available on macOS and requires Screen Recording permission.
+    read native_screenshot: (self: Viewport) -> ImageRef
     --- Waits for one fresh screenshot. Positions are viewport-local logical
     --- points.
     read sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample }
@@ -714,6 +719,7 @@ export type ViewportCondition = {
     focused: boolean?,
     minimized: boolean?,
     occluded: boolean?,
+    os_title_visible: boolean?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_at_least: number?,

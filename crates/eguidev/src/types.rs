@@ -423,6 +423,9 @@ pub struct ViewportCondition {
     /// Required occlusion state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occluded: Option<bool>,
+    /// Required observed native title visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_title_visible: Option<bool>,
     /// Required maximized state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
@@ -1455,6 +1458,7 @@ impl ViewportCondition {
             || self.focused.is_some()
             || self.minimized.is_some()
             || self.occluded.is_some()
+            || self.os_title_visible.is_some()
             || self.maximized.is_some()
             || self.fullscreen.is_some()
             || self.frame_at_least.is_some();

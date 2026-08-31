@@ -108,6 +108,51 @@ pub(super) async fn capture_screenshot(
     build_screenshot_data(&state)
 }
 
+/// Capture the complete native window, including platform chrome.
+#[cfg(target_os = "macos")]
+pub(super) fn capture_native_screenshot(
+    inner: &Inner,
+    viewport_id: egui::ViewportId,
+) -> Result<String, ToolError> {
+    let snapshot = viewport_snapshot_for(inner, viewport_id).ok_or_else(|| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            "Viewport not ready for a native screenshot",
+        )
+    })?;
+    let title = snapshot.title.as_deref().ok_or_else(|| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            "Viewport has no title to match a native window",
+        )
+    })?;
+    let window_number = window_number_for_title(title).map_err(|error| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!("Could not resolve native window: {error}"),
+        )
+    })?;
+    let image = capture_window_image(window_number).map_err(|error| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!("Could not capture native window: {error}"),
+        )
+    })?;
+    encode_jpeg(&image)
+}
+
+/// Report that native screenshots are not available on this platform.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn capture_native_screenshot(
+    _inner: &Inner,
+    _viewport_id: egui::ViewportId,
+) -> Result<String, ToolError> {
+    Err(ToolError::new(
+        ErrorCode::Unsupported,
+        "Native window screenshots are only available on macOS",
+    ))
+}
+
 async fn capture_screenshot_image(
     inner: &Inner,
     runtime: &Runtime,

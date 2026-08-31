@@ -147,8 +147,9 @@ Use `hex` for exact color equality; `rgba` channels and geometry values are scri
 numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
 On macOS, child-viewport screenshots fall back to Quartz window capture after a fresh child
 frame fails to fulfill the normal egui screenshot event. The fallback needs a recorded
-window title match and macOS Screen Recording permission; root screenshots still use the
-egui event path directly.
+window title match and macOS Screen Recording permission. Root screenshots use the egui event
+path directly. Use `Viewport:native_screenshot()` to include AppKit chrome in a capture. Use
+`ViewportState.os_title_visible` to assert native title visibility.
 
 Run one diagnostic script and keep its return value/images with:
 

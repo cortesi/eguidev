@@ -20,9 +20,9 @@ use super::{
     super::{
         DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode,
         MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError,
-        capture_screenshot, collect_widget_list, interaction_ready, parse_key_combo,
-        resolve_screenshot_viewport, resolve_widget_and_viewport, viewport_snapshot_for,
-        wait_timeout_details, wait_timeout_message,
+        capture_native_screenshot, capture_screenshot, collect_widget_list, interaction_ready,
+        parse_key_combo, resolve_screenshot_viewport, resolve_widget_and_viewport,
+        viewport_snapshot_for, wait_timeout_details, wait_timeout_message,
     },
     parse::{
         map_has_any, map_value, parse_modifiers, parse_optional_bool, parse_optional_f32,
@@ -764,6 +764,7 @@ impl ScriptRuntime {
                 "occluded": snapshot.occluded,
                 "os_minimized": snapshot.os_minimized,
                 "os_occluded": snapshot.os_occluded,
+                "os_title_visible": snapshot.os_title_visible,
                 "maximized": snapshot.maximized,
                 "fullscreen": snapshot.fullscreen,
                 "frame_count": frame_count,
@@ -2084,6 +2085,32 @@ impl ScriptRuntime {
             id: id.clone(),
             data,
             kind: ScriptImageKind::Viewport,
+            viewport_id: viewport_id_to_string(viewport_id_resolved),
+            target: None,
+            rect: None,
+        });
+        Ok(image_ref_json(id))
+    }
+
+    pub(super) async fn native_screenshot(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: String,
+    ) -> ScriptResult<Value> {
+        let viewport_id_resolved =
+            resolve_screenshot_viewport(&self.server.inner, Some(viewport_id))
+                .map_err(|error| self.tool_error(pos, error.into()))?;
+        let id = self.next_image_id();
+        let data = self
+            .await_tool(pos, async {
+                capture_native_screenshot(&self.server.inner, viewport_id_resolved)
+                    .map_err(tmcp::ToolError::from)
+            })
+            .await?;
+        self.store_image(ImageCapture {
+            id: id.clone(),
+            data,
+            kind: ScriptImageKind::NativeViewport,
             viewport_id: viewport_id_to_string(viewport_id_resolved),
             target: None,
             rect: None,

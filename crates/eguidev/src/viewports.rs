@@ -71,6 +71,7 @@ pub struct ViewportSnapshot {
     pub occluded: Option<bool>,
     pub os_minimized: Option<bool>,
     pub os_occluded: Option<bool>,
+    pub os_title_visible: Option<bool>,
     pub maximized: Option<bool>,
     pub fullscreen: Option<bool>,
 }
@@ -81,6 +82,7 @@ pub struct PlatformViewportState {
     pub window_number: Option<u32>,
     pub os_minimized: Option<bool>,
     pub os_occluded: Option<bool>,
+    pub os_title_visible: Option<bool>,
 }
 
 pub struct ViewportState {
@@ -146,9 +148,13 @@ impl ViewportState {
             let ppp = info.native_pixels_per_point.unwrap_or(pixels_per_point);
             let focused = info.focused.unwrap_or(focused);
             lookup.insert(viewport_id_str.clone(), viewport_id);
-            let platform = snapshots
-                .get(&viewport_id_str)
-                .map(|snapshot| (snapshot.os_minimized, snapshot.os_occluded));
+            let platform = snapshots.get(&viewport_id_str).map(|snapshot| {
+                (
+                    snapshot.os_minimized,
+                    snapshot.os_occluded,
+                    snapshot.os_title_visible,
+                )
+            });
             snapshots.insert(
                 viewport_id_str.clone(),
                 ViewportSnapshot {
@@ -163,8 +169,9 @@ impl ViewportState {
                     parent_viewport_id: info.parent.map(viewport_id_to_string),
                     minimized: info.minimized,
                     occluded: info.occluded,
-                    os_minimized: platform.and_then(|(minimized, _)| minimized),
-                    os_occluded: platform.and_then(|(_, occluded)| occluded),
+                    os_minimized: platform.and_then(|(minimized, _, _)| minimized),
+                    os_occluded: platform.and_then(|(_, occluded, _)| occluded),
+                    os_title_visible: platform.and_then(|(_, _, title_visible)| title_visible),
                     maximized: info.maximized,
                     fullscreen: info.fullscreen,
                 },
@@ -210,6 +217,9 @@ impl ViewportState {
             }
             if state.os_occluded.is_some() {
                 snapshot.os_occluded = state.os_occluded;
+            }
+            if state.os_title_visible.is_some() {
+                snapshot.os_title_visible = state.os_title_visible;
             }
         }
     }
@@ -651,6 +661,7 @@ mod tests {
             window_number: Some(12),
             os_minimized: Some(false),
             os_occluded: Some(true),
+            os_title_visible: Some(false),
         }]);
 
         let snapshot = state
@@ -660,6 +671,7 @@ mod tests {
             .expect("root snapshot");
         assert_eq!(snapshot.os_minimized, Some(false));
         assert_eq!(snapshot.os_occluded, Some(true));
+        assert_eq!(snapshot.os_title_visible, Some(false));
     }
 
     #[test]
@@ -693,11 +705,13 @@ mod tests {
             window_number: Some(1),
             os_minimized: Some(true),
             os_occluded: Some(true),
+            os_title_visible: Some(true),
         }]);
 
         for snapshot in state.viewports_snapshot() {
             assert_eq!(snapshot.os_minimized, None, "{snapshot:?}");
             assert_eq!(snapshot.os_occluded, None, "{snapshot:?}");
+            assert_eq!(snapshot.os_title_visible, None, "{snapshot:?}");
         }
     }
 }

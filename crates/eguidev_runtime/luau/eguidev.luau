@@ -66,6 +66,7 @@ type CaptureKernel = {
     viewport_layout_issues: (viewport: any) -> { any },
     widget_screenshot: (widget: any) -> any,
     viewport_screenshot: (viewport: any) -> any,
+    viewport_native_screenshot: (viewport: any) -> any,
     widget_sample_pixels: (widget: any, positions: { Pos }) -> { any },
     widget_sample_grid: (widget: any, nx: number, ny: number) -> { any },
     viewport_sample_pixels: (viewport: any, positions: { Pos }) -> { any },
@@ -373,6 +374,7 @@ local function validateViewportCondition(condition: ViewportCondition)
         or condition.focused ~= nil
         or condition.minimized ~= nil
         or condition.occluded ~= nil
+        or condition.os_title_visible ~= nil
         or condition.maximized ~= nil
         or condition.fullscreen ~= nil
         or condition.frame_at_least ~= nil
@@ -460,6 +462,9 @@ local function viewportConditionMatches(state: ViewportState?, condition: Viewpo
     if condition.focused ~= nil and current.focused ~= condition.focused then return false end
     if condition.minimized ~= nil and current.minimized ~= condition.minimized then return false end
     if condition.occluded ~= nil and current.occluded ~= condition.occluded then return false end
+    if condition.os_title_visible ~= nil and current.os_title_visible ~= condition.os_title_visible then
+        return false
+    end
     if condition.maximized ~= nil and current.maximized ~= condition.maximized then return false end
     if condition.fullscreen ~= nil and current.fullscreen ~= condition.fullscreen then return false end
     if condition.frame_at_least ~= nil and current.frame_count < condition.frame_at_least then return false end
@@ -985,6 +990,10 @@ end
 
 function viewportMethods.screenshot(self: Viewport): ImageRef
     return freezeOwned(kernel.capture.viewport_screenshot(self)) :: ImageRef
+end
+
+function viewportMethods.native_screenshot(self: Viewport): ImageRef
+    return freezeOwned(kernel.capture.viewport_native_screenshot(self)) :: ImageRef
 end
 
 function viewportMethods.sample_pixels(self: Viewport, positions: { Pos }): { PixelSample }

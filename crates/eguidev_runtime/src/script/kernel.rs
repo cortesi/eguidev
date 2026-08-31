@@ -1049,6 +1049,23 @@ impl EguidevModule {
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
+            "viewport_native_screenshot",
+            ModuleBinding::hidden("eguidev.capture"),
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .native_screenshot(pos, viewport.id)
+                        .await
+                        .map_err(host_script_error)?;
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
             "viewport_sample_pixels",
             ModuleBinding::hidden("eguidev.capture"),
             async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
@@ -3043,6 +3060,7 @@ mod tests {
                         "viewport_layout_issues",
                         "viewport_sample_pixels",
                         "viewport_screenshot",
+                        "viewport_native_screenshot",
                         "widget_layout_issues",
                         "widget_sample_grid",
                         "widget_sample_pixels",

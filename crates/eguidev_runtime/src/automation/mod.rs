@@ -67,7 +67,7 @@ mod types;
 mod utils;
 mod wait;
 
-use capture::{capture_screenshot, resolve_screenshot_viewport};
+use capture::{capture_native_screenshot, capture_screenshot, resolve_screenshot_viewport};
 #[cfg(test)]
 use capture::{
     crop_native_capture_to_viewport, screenshot_timeout_message,
@@ -1161,6 +1161,7 @@ mod tests {
             occluded: Some(false),
             os_minimized: None,
             os_occluded: None,
+            os_title_visible: None,
             maximized: Some(false),
             fullscreen: Some(false),
         }

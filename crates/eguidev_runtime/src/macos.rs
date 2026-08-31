@@ -61,6 +61,8 @@ use crate::{
 
 /// `NSWindowOcclusionStateVisible`.
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
+/// `NSWindowTitleVisible`.
+const WINDOW_TITLE_VISIBLE: isize = 0;
 const CG_IMAGE_ALPHA_INFO_MASK: u32 = 0x1f;
 const CG_IMAGE_BYTE_ORDER_MASK: u32 = 0x7000;
 
@@ -284,6 +286,7 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
         window_number: unsafe { window_number(window) },
         os_minimized: Some(unsafe { window_is_minimized(window) }),
         os_occluded: Some(real_state & OCCLUSION_STATE_VISIBLE == 0),
+        os_title_visible: Some(unsafe { window_title_is_visible(window) }),
     };
     let states = WINDOW_STATES.get_or_init(|| Mutex::new(HashMap::new()));
     states
@@ -294,6 +297,11 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
 
 unsafe fn window_is_minimized(window: *mut AnyObject) -> bool {
     unsafe { msg_send![window, isMiniaturized] }
+}
+
+unsafe fn window_title_is_visible(window: *mut AnyObject) -> bool {
+    let visibility: isize = unsafe { msg_send![window, titleVisibility] };
+    visibility == WINDOW_TITLE_VISIBLE
 }
 
 unsafe fn window_number(window: *mut AnyObject) -> Option<u32> {

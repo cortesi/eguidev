@@ -281,6 +281,7 @@ impl From<ScriptEvalOutcome> for CallToolResult {
 
 #[derive(Debug, Clone)]
 pub(super) enum ScriptImageKind {
+    NativeViewport,
     Viewport,
     Widget,
 }
@@ -288,6 +289,7 @@ pub(super) enum ScriptImageKind {
 impl ScriptImageKind {
     pub(super) fn as_str(&self) -> &'static str {
         match self {
+            Self::NativeViewport => "native_viewport",
             Self::Viewport => "viewport",
             Self::Widget => "widget",
         }
