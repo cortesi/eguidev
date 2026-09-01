@@ -167,6 +167,10 @@ declare class Widget
     --- Clicks the widget's interact-rect center. Input is coordinate-based: a
     --- covering widget receives the event. Probe occlusion with Viewport:widgets_at.
     read click: (self: Widget, options: ClickOptions?) -> ()
+    --- Moves the pointer to the widget. Unless settle is false, it then waits
+    --- until the app reports the pointer inside the target with no covering
+    --- widget, and re-issues one missed move. A hover that never arrives
+    --- fails and names the covering widget.
     read hover: (self: Widget, options: HoverOptions?) -> ()
     read focus: (self: Widget, options: ActionOptions?) -> ()
     read type_text: (self: Widget, text: string, options: TypeTextOptions?) -> ()

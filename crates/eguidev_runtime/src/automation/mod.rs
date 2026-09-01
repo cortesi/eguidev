@@ -67,6 +67,7 @@ mod types;
 mod utils;
 mod wait;
 
+use action::HoverConfirm;
 use capture::{capture_native_screenshot, capture_screenshot, resolve_screenshot_viewport};
 #[cfg(test)]
 use capture::{
@@ -1111,11 +1112,19 @@ mod tests {
     }
 
     fn record_test_snapshot(inner: &Arc<Inner>, viewport_id: egui::ViewportId) {
+        record_test_pointer_snapshot(inner, viewport_id, None);
+    }
+
+    fn record_test_pointer_snapshot(
+        inner: &Arc<Inner>,
+        viewport_id: egui::ViewportId,
+        pointer_pos: Option<Pos2>,
+    ) {
         inner.viewports.record_input_snapshot(
             viewport_id,
             InputSnapshot {
                 pixels_per_point: 1.0,
-                pointer_pos: None,
+                pointer_pos,
             },
             inner.fixture_epoch(),
             inner.frame_count() + 1,
@@ -5411,10 +5420,11 @@ return state.scroll_state.offset.y"#
     }
 
     #[tokio::test]
-    async fn action_hover_queues_pointer_move() {
+    async fn action_hover_queues_pointer_move_and_waits_for_arrival() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
         let viewport_id = egui::ViewportId::ROOT;
+        Runtime::ensure_for_inner(&inner);
 
         inner.widgets.clear_registry(viewport_id);
         inner
@@ -5422,20 +5432,73 @@ return state.scroll_state.offset.y"#
             .record_widget(viewport_id, make_entry("hover", 1, WidgetRole::Button));
         inner.widgets.finalize_registry(viewport_id);
 
+        let inner_for_frame = Arc::clone(&inner);
+        let frame = tokio::spawn(async move {
+            sleep(Duration::from_millis(5)).await;
+            let mut raw_input = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            apply_actions(&inner_for_frame, &mut raw_input);
+            let moved = raw_input.events.iter().any(|event| {
+                matches!(event, egui::Event::PointerMoved(pos)
+                    if (pos.x - 5.0).abs() < f32::EPSILON && (pos.y - 5.0).abs() < f32::EPSILON)
+            });
+            record_test_pointer_snapshot(
+                &inner_for_frame,
+                viewport_id,
+                Some(Pos2 { x: 5.0, y: 5.0 }),
+            );
+            moved
+        });
+
         server
-            .action_hover(None, widget_ref_id("hover"), None, Some(0))
+            .action_hover(
+                None,
+                widget_ref_id("hover"),
+                None,
+                Some(0),
+                Some(HoverConfirm {
+                    timeout_ms: Some(500),
+                    poll_interval_ms: Some(1),
+                }),
+            )
             .await
             .expect("action hover");
+        assert!(
+            frame.await.expect("frame task"),
+            "the hover queued one pointer move"
+        );
+    }
 
-        let mut raw_input = egui::RawInput {
-            viewport_id,
-            ..Default::default()
-        };
-        apply_actions(&inner, &mut raw_input);
-        assert!(raw_input.events.iter().any(|event| {
-            matches!(event, egui::Event::PointerMoved(pos)
-                if (pos.x - 5.0).abs() < f32::EPSILON && (pos.y - 5.0).abs() < f32::EPSILON)
-        }));
+    #[tokio::test]
+    async fn action_hover_fails_when_the_pointer_never_arrives() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+        Runtime::ensure_for_inner(&inner);
+
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("hover", 1, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let error = server
+            .action_hover(
+                None,
+                widget_ref_id("hover"),
+                None,
+                Some(0),
+                Some(HoverConfirm {
+                    timeout_ms: Some(20),
+                    poll_interval_ms: Some(1),
+                }),
+            )
+            .await
+            .expect_err("a hover with no pointer snapshot fails");
+        assert_eq!(error.code, "not_actionable");
+        assert!(error.message.contains("did not reach"), "{}", error.message);
     }
 
     #[tokio::test]

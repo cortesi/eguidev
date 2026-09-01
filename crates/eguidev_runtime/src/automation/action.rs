@@ -1,5 +1,10 @@
 //! Typed action request validation and translation.
 
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 use super::*;
 
 pub(super) fn raw_input_action(event: RawInputEvent) -> Result<InputAction, ToolError> {
@@ -316,26 +321,100 @@ impl DevMcpServer {
     }
 
     /// Hover over a widget without clicking.
+    ///
+    /// The pointer move is queued. With `confirm`, the move is then polled
+    /// until the app reports the pointer inside the target and no other
+    /// widget covers that point. One missed move is re-issued from the fresh
+    /// rect. A hover that never arrives fails with the covering widget named,
+    /// instead of leaving a later cursor assertion to spin until the script
+    /// deadline. A script that disables settle skips the confirmation.
     pub(super) async fn action_hover(
         &self,
         viewport_id: Option<String>,
         target: WidgetRef,
         position: Option<Vec2>,
         duration_ms: Option<u64>,
+        confirm: Option<HoverConfirm>,
     ) -> ToolResult<()> {
+        let viewport_name = viewport_id;
         let (widget, viewport_id) =
-            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
-        let pos = if let Some(position) = position {
-            resolve_relative_pos(widget.interact_rect, position)?
-        } else {
-            widget.interact_rect.center()
-        };
+            self.resolve_widget_for_pointer(viewport_name.as_deref(), &target)?;
+        let pos = hover_position(&widget, position)?;
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
+        if let Some(confirm) = confirm {
+            self.confirm_hover(
+                viewport_name.as_deref(),
+                viewport_id,
+                &target,
+                &widget,
+                position,
+                confirm,
+            )
+            .await?;
+        }
         let duration_ms = duration_ms.unwrap_or(0);
         if duration_ms > 0 {
             let frames = frames_for_duration(duration_ms);
             wait_for_frames(&self.inner, frames, Instant::now(), duration_ms).await?;
+        }
+        Ok(())
+    }
+
+    /// Poll until the queued hover reaches its target, re-issuing the move
+    /// once from the fresh rect.
+    async fn confirm_hover(
+        &self,
+        viewport_name: Option<&str>,
+        viewport_id: egui::ViewportId,
+        target: &WidgetRef,
+        widget: &WidgetRegistryEntry,
+        position: Option<Vec2>,
+        confirm: HoverConfirm,
+    ) -> ToolResult<()> {
+        let (timeout_ms, poll_interval_ms) =
+            super::wait::parameters(confirm.timeout_ms, confirm.poll_interval_ms);
+        let target_id = widget.id.clone();
+        let reissued = AtomicBool::new(false);
+        let last_pos = Mutex::new(hover_position(widget, position)?);
+        let (arrived, coverer, _, _) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(viewport_id),
+            None,
+            || async {
+                self.inner.request_repaint_all();
+                let fresh = resolve_widget(&self.inner, viewport_name, target)?;
+                let pos = hover_position(&fresh, position)?;
+                *last_pos.lock().expect("hover position lock") = pos;
+                let coverer =
+                    super::query::covering_widget_id(&self.inner, viewport_id, pos, &target_id);
+                let pointer_inside = self
+                    .inner
+                    .viewports
+                    .input_snapshot(viewport_id)
+                    .and_then(|snapshot| snapshot.pointer_pos)
+                    .is_some_and(|pointer| point_in_rect(pointer, fresh.interact_rect));
+                let arrived = coverer.is_none() && pointer_inside;
+                if !arrived && !reissued.swap(true, Ordering::Relaxed) {
+                    self.inner
+                        .queue_action(viewport_id, InputAction::PointerMove { pos });
+                }
+                Ok::<_, ToolError>((arrived, coverer))
+            },
+        )
+        .await?;
+        if !arrived {
+            let pos = *last_pos.lock().expect("hover position lock");
+            log_pointer_cover(&self.inner, viewport_id, pos, &target_id);
+            let detail =
+                coverer.map_or_else(String::new, |coverer| format!(" and {coverer:?} covers it"));
+            return Err(ToolError::new(
+                ErrorCode::NotActionable,
+                format!("pointer did not reach {target_id:?} within {timeout_ms} ms{detail}"),
+            )
+            .into());
         }
         Ok(())
     }
@@ -630,6 +709,24 @@ impl DevMcpServer {
         }
 
         Ok(())
+    }
+}
+
+/// Wait policy for confirming that a hover reached its target.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct HoverConfirm {
+    /// Wait budget, or the default wait timeout.
+    pub(super) timeout_ms: Option<u64>,
+    /// Poll interval, or the default poll interval.
+    pub(super) poll_interval_ms: Option<u64>,
+}
+
+/// Resolve the pointer position for a hover: a normalized offset when given,
+/// else the center of the interaction rect.
+fn hover_position(widget: &WidgetRegistryEntry, position: Option<Vec2>) -> Result<Pos2, ToolError> {
+    match position {
+        Some(position) => resolve_relative_pos(widget.interact_rect, position),
+        None => Ok(widget.interact_rect.center()),
     }
 }
 

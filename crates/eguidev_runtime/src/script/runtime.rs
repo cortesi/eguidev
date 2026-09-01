@@ -18,7 +18,7 @@ use tokio::{task::spawn_blocking, time::timeout};
 
 use super::{
     super::{
-        DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode,
+        DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode, HoverConfirm,
         MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError,
         capture_native_screenshot, capture_screenshot, collect_widget_list, interaction_ready,
         parse_key_combo, resolve_screenshot_viewport, resolve_widget_and_viewport,
@@ -1140,6 +1140,13 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let duration_ms = parse_optional_u64(options, "duration_ms")
             .map_err(|error| self.type_error(pos, error.message))?;
+        let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
+        let confirm = self
+            .action_settle_enabled(pos, options)?
+            .then_some(HoverConfirm {
+                timeout_ms,
+                poll_interval_ms,
+            });
         self.await_tool(
             pos,
             self.server.action_hover(
@@ -1147,6 +1154,7 @@ impl ScriptRuntime {
                 target,
                 position,
                 duration_ms,
+                confirm,
             ),
         )
         .await?;
