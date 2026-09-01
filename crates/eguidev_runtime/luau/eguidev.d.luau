@@ -184,8 +184,11 @@ declare class Widget
     --- Offset is clamped to `[0, max_offset]`. Other roles inject a pointer scroll.
     read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
-    --- Times out when the widget is disabled. The same `interaction_ready`
-    --- predicate governs this poll, `actionable` waits, and pointer admission.
+    --- Unless settle is false, waits until each scrolled area reports the
+    --- requested offset on two consecutive captures, then until the target
+    --- rect stops moving and the widget is interaction-ready. Times out when
+    --- the widget is disabled. The same `interaction_ready` predicate governs
+    --- this poll, `actionable` waits, and pointer admission.
     read scroll_into_view: (self: Widget, options: ActionOptions?) -> ()
 
     read text_measure: (self: Widget) -> TextMeasure

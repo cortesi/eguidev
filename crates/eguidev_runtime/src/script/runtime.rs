@@ -44,8 +44,8 @@ use crate::{
     runtime::Runtime,
     screenshots::ScreenshotKind,
     types::{
-        Modifiers, RawInputEvent, Rect, ResizeOptions, Vec2, WidgetRef, WidgetRegistryEntry,
-        WidgetState, WidgetValue,
+        Modifiers, RawInputEvent, Rect, ResizeOptions, RoleState, Vec2, WidgetRef,
+        WidgetRegistryEntry, WidgetState, WidgetValue,
     },
     viewports::ViewportSnapshot,
 };
@@ -1387,20 +1387,59 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
-        self.await_tool(
-            pos,
-            self.server
-                .action_scroll_into_view(Some(action_viewport_id.clone()), target.clone()),
-        )
-        .await?;
+        let applied = self
+            .await_tool(
+                pos,
+                self.server
+                    .action_scroll_into_view(Some(action_viewport_id.clone()), target.clone()),
+            )
+            .await?;
         let settle_enabled = self.action_settle_enabled(pos, options)?;
         self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
             .await?;
         if settle_enabled {
-            // Requesting the offsets only queues them. An animated scroll area
-            // needs the target polled to the interaction-ready predicate, or
-            // the next click fails on the call that just returned.
+            // Requesting the offsets only queues them. Each scrolled area is
+            // polled until it reports the requested offset on two consecutive
+            // captures, then the target is polled until its rect stops moving
+            // and it is interaction-ready. Otherwise the next click fails on
+            // the call that just returned.
             let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
+            for scroll in applied {
+                let requested = scroll.offset;
+                let mut previous: Option<Vec2> = None;
+                self.await_tool(
+                    pos,
+                    self.server.wait_for_widget_state(
+                        Some(action_viewport_id.clone()),
+                        WidgetRef {
+                            id: scroll.widget_id,
+                            viewport_id: None,
+                        },
+                        timeout_ms,
+                        poll_interval_ms,
+                        "to reach the requested offset after scroll_into_view",
+                        move |widget| {
+                            let Some(current) = widget
+                                .and_then(|widget| widget.role_state.as_ref())
+                                .and_then(RoleState::scroll_state)
+                                .map(|scroll| scroll.offset)
+                            else {
+                                previous = None;
+                                return false;
+                            };
+                            let reached = (current.x - requested.x).abs()
+                                <= SCROLL_STABILITY_TOLERANCE
+                                && (current.y - requested.y).abs() <= SCROLL_STABILITY_TOLERANCE;
+                            let stable = previous
+                                .is_some_and(|prior| prior.x == current.x && prior.y == current.y);
+                            previous = Some(current);
+                            reached && stable
+                        },
+                    ),
+                )
+                .await?;
+            }
+            let mut previous_rect: Option<Rect> = None;
             self.await_tool(
                 pos,
                 self.server.wait_for_widget_state(
@@ -1409,7 +1448,15 @@ impl ScriptRuntime {
                     timeout_ms,
                     poll_interval_ms,
                     "to become interaction-ready after scroll_into_view",
-                    |widget| widget.is_some_and(interaction_ready),
+                    move |widget| {
+                        let Some(widget) = widget else {
+                            previous_rect = None;
+                            return false;
+                        };
+                        let stable = previous_rect == Some(widget.interact_rect);
+                        previous_rect = Some(widget.interact_rect);
+                        stable && interaction_ready(widget)
+                    },
                 ),
             )
             .await?;

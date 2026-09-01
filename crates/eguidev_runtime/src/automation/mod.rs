@@ -3778,6 +3778,57 @@ return { first = catalog[1].name, count = #catalog }"#
     }
 
     #[tokio::test]
+    async fn scroll_into_view_reports_each_scrolled_area() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.record_widget(
+            viewport_id,
+            make_scroll_entry(
+                "scroll",
+                1,
+                Vec2 { x: 0.0, y: 0.0 },
+                Vec2 { x: 0.0, y: 400.0 },
+            ),
+        );
+        let mut row = make_entry("row", 2, WidgetRole::Button);
+        row.parent_id = Some("scroll".to_string());
+        row.rect = Rect {
+            min: Pos2 { x: 0.0, y: 300.0 },
+            max: Pos2 { x: 100.0, y: 320.0 },
+        };
+        row.interact_rect = row.rect;
+        inner.widgets.record_widget(viewport_id, row);
+        let mut plain = make_entry("plain", 3, WidgetRole::Button);
+        plain.parent_id = None;
+        inner.widgets.record_widget(viewport_id, plain);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let applied = server
+            .action_scroll_into_view(None, widget_ref_id("row"))
+            .await
+            .expect("scroll into view");
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert_eq!(applied[0].widget_id, "scroll");
+        assert!(applied[0].offset.y > 0.0, "{applied:?}");
+        assert!(
+            inner.take_scroll_override(viewport_id, 1).is_some(),
+            "the scroll area received one override"
+        );
+
+        let applied = server
+            .action_scroll_into_view(None, widget_ref_id("plain"))
+            .await
+            .expect("scroll into view");
+        assert!(
+            applied.is_empty(),
+            "a target with no scroll ancestor scrolls nothing"
+        );
+    }
+
+    #[tokio::test]
     async fn shared_scroll_ready_condition_waits_for_stable_scroll_state() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));

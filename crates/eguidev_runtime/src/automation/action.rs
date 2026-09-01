@@ -679,11 +679,16 @@ impl DevMcpServer {
     }
 
     /// Scroll ancestor scroll areas so the target widget becomes visible.
+    /// Scroll every enclosing scroll area so that the target is revealed.
+    ///
+    /// Returns each scroll area that received an override with the offset it
+    /// was asked to reach, so the caller can wait for exactly those areas to
+    /// settle and leave a target with no scroll ancestor untouched.
     pub(super) async fn action_scroll_into_view(
         &self,
         viewport_id: Option<String>,
         target: WidgetRef,
-    ) -> ToolResult<()> {
+    ) -> ToolResult<Vec<AppliedScroll>> {
         let (widget, viewport_id) =
             resolve_widget_and_viewport(&self.inner, viewport_id.as_deref(), &target)?;
         let widgets = self.inner.widgets.widget_list(viewport_id);
@@ -693,6 +698,7 @@ impl DevMcpServer {
             .collect();
         let mut target_widget = widget;
         let mut parent_id = target_widget.parent_id.clone();
+        let mut applied = Vec::new();
 
         while let Some(parent_key) = parent_id {
             let Some(parent) = by_id.get(parent_key.as_str()) else {
@@ -703,13 +709,26 @@ impl DevMcpServer {
             {
                 self.inner
                     .set_scroll_override(viewport_id, parent.native_id, offset.into());
+                applied.push(AppliedScroll {
+                    widget_id: parent.id.clone(),
+                    offset,
+                });
             }
             target_widget = (*parent).clone();
             parent_id = parent.parent_id.clone();
         }
 
-        Ok(())
+        Ok(applied)
     }
+}
+
+/// One scroll area that `scroll_into_view` moved, with the requested offset.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct AppliedScroll {
+    /// Canonical id of the scroll area.
+    pub(super) widget_id: String,
+    /// Offset the override asked the area to reach.
+    pub(super) offset: Vec2,
 }
 
 /// Wait policy for confirming that a hover reached its target.
