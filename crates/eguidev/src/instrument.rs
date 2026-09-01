@@ -11,7 +11,9 @@ use egui::scroll_area::{ScrollAreaOutput, State};
 
 use crate::{
     registry::Inner,
-    types::{WidgetLayout, WidgetRoleMeta, WidgetValue},
+    types::{
+        WidgetFont, WidgetLayout, WidgetRoleMeta, WidgetTextLayout, WidgetTextLine, WidgetValue,
+    },
     ui_ext::DevScrollAreaExt,
     widget_registry::{WidgetMeta, record_rect_meta, record_widget},
 };
@@ -371,7 +373,42 @@ pub fn capture_layout(ui: &egui::Ui, response: &egui::Response) -> WidgetLayout 
         overflow,
         available_rect: available_rect.into(),
         visible_fraction: sanitize_f32(visible_fraction(response.rect, clip_rect)),
+        text: None,
     }
+}
+
+/// Capture layout metadata plus the exact galley that a text widget painted.
+pub fn capture_layout_with_galley(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    galley: &egui::Galley,
+) -> WidgetLayout {
+    let mut layout = capture_layout(ui, response);
+    let mut fonts = Vec::new();
+    for section in &galley.job.sections {
+        let font = WidgetFont {
+            family: section.format.font_id.family.to_string(),
+            size: section.format.font_id.size,
+        };
+        if !fonts.contains(&font) {
+            fonts.push(font);
+        }
+    }
+    let lines = galley
+        .rows
+        .iter()
+        .map(|row| WidgetTextLine {
+            text: row.row.glyphs.iter().map(|glyph| glyph.chr).collect(),
+            width: row.row.size.x,
+        })
+        .collect();
+    layout.text = Some(WidgetTextLayout {
+        fonts,
+        lines,
+        line_height: galley.rows.first().map_or(0.0, |row| row.row.size.y),
+        elided: galley.elided,
+    });
+    layout
 }
 
 #[cfg(test)]
@@ -435,7 +472,10 @@ fn visible_fraction(rect: egui::Rect, clip_rect: egui::Rect) -> f32 {
 mod tests {
     use std::{any::Any, sync::Arc};
 
-    use egui::{Color32, ColorImage, Context, TextureOptions};
+    use egui::{
+        Color32, ColorImage, Context, FontId, FontSelection, Label, RichText, TextWrapMode,
+        TextureOptions, WidgetText,
+    };
 
     use super::*;
     use crate::{
@@ -824,6 +864,28 @@ mod tests {
         assert!(layout.clipped);
         assert!(layout.overflow);
         assert!(layout.visible_fraction < 1.0);
+    }
+
+    #[test]
+    fn layout_metadata_captures_the_painted_galley() {
+        let ctx = Context::default();
+        let mut captured = None;
+        run_panel(&ctx, egui::RawInput::default(), |_ctx, ui| {
+            let galley = WidgetText::from(
+                RichText::new("wide monospace text wraps").font(FontId::monospace(20.0)),
+            )
+            .into_galley(ui, Some(TextWrapMode::Wrap), 80.0, FontSelection::Default);
+            let response = ui.add(Label::new(Arc::clone(&galley)));
+            captured = Some(capture_layout_with_galley(ui, &response, &galley));
+        });
+
+        let text = captured
+            .and_then(|layout| layout.text)
+            .expect("captured text layout");
+        assert!(text.lines.len() > 1);
+        assert_eq!(text.fonts.len(), 1);
+        assert_eq!(text.fonts[0].family, "Monospace");
+        assert!((text.fonts[0].size - 20.0).abs() < f32::EPSILON);
     }
 
     #[test]

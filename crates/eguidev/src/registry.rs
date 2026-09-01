@@ -477,6 +477,8 @@ impl Inner {
         action: InputAction,
     ) {
         self.actions
+            .record_pointer_queued(viewport_id, self.frame_count(), &action);
+        self.actions
             .queue_action_with_timing(viewport_id, timing, action);
         self.request_repaint_of(viewport_id);
     }

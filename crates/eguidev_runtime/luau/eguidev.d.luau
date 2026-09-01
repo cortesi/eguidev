@@ -124,6 +124,15 @@ export type WidgetLayout = {
     available_rect: Rect,
     --- Fraction of the widget's area that is visible after clipping (0..1).
     visible_fraction: number,
+    --- Exact text layout when the widget published its painted galley.
+    text: WidgetTextLayout?,
+}
+
+export type WidgetTextLayout = {
+    fonts: { { family: string, size: number } },
+    lines: { { text: string, width: number } },
+    line_height: number,
+    elided: boolean,
 }
 
 export type ScrollAreaMeta = {
@@ -872,7 +881,8 @@ export type Eguidev = {
     --- Reads one application-defined provider and throws `diagnostic_failed`
     --- if that provider fails.
     diagnostic: (name: string) -> any,
-    --- Reads all application-defined providers and records failures by name.
+    --- Reads all application-defined providers and the built-in input trace.
+    --- Provider failures are recorded by name.
     diagnostics: () -> DiagnosticsSnapshot,
 }
 

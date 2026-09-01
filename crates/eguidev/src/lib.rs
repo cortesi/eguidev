@@ -170,17 +170,18 @@ pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
     instrument::{
-        ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, name_viewport,
-        publish_rect_container, publish_rect_meta, track_response, track_widget,
-        track_widget_with_meta,
+        ContainerGuard, ScrollAreaState, begin_container, capture_layout,
+        capture_layout_with_galley, container, name_viewport, publish_rect_container,
+        publish_rect_meta, track_response, track_widget, track_widget_with_meta,
     },
     types::{
         ActionOptions, DragOptions, FixtureCall, FixtureError, FixtureParam, FixtureParams,
         FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, ParamKind, PointerButton,
         Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState, ScrollAlign,
         ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
-        ViewportSelParseError, WaitOptions, WidgetCondition, WidgetLayout, WidgetRange, WidgetRef,
-        WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+        ViewportSelParseError, WaitOptions, WidgetCondition, WidgetFont, WidgetLayout, WidgetRange,
+        WidgetRef, WidgetRole, WidgetRoleMeta, WidgetState, WidgetTextLayout, WidgetTextLine,
+        WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -241,8 +242,9 @@ pub mod internal {
             FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, Modifiers, ParamKind,
             PointerButton, Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState,
             ScrollAlign, ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
-            ViewportSelParseError, WaitOptions, WidgetCondition, WidgetLayout, WidgetRange,
-            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+            ViewportSelParseError, WaitOptions, WidgetCondition, WidgetFont, WidgetLayout,
+            WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState,
+            WidgetTextLayout, WidgetTextLine, WidgetValue,
         };
     }
 

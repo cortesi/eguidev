@@ -112,20 +112,24 @@ local shots = {}
 local errors = {}
 for _, viewport in ipairs(eguidev.viewports()) do
     local state = viewport:state()
+    local name: string? = nil
+    if state ~= nil then
+        name = state.name
+    end
     local ok, image = pcall(function()
         return viewport:screenshot()
     end)
     if ok then
         table.insert(shots, {
             viewport_id = viewport.id,
-            name = state.name,
+            name = name,
             image = image,
         })
     else
         table.insert(errors, {
             kind = "screenshot",
             viewport_id = viewport.id,
-            name = state.name,
+            name = name,
             message = tostring(image),
         })
     end
@@ -549,4 +553,15 @@ pub fn pretty_json(value: &impl Serialize) -> Result<String, EdevError> {
     })?;
     text.push('\n');
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BUNDLE_COLLECTION_SCRIPT;
+
+    #[test]
+    fn bundle_collection_script_satisfies_the_runtime_type_contract() {
+        eguidev_runtime::check_script_source("failure_bundle.luau", BUNDLE_COLLECTION_SCRIPT)
+            .expect("bundle collection script should type-check");
+    }
 }

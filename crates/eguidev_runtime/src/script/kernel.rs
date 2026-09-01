@@ -3208,6 +3208,10 @@ return eguidev.diagnostics()"#,
             outcome.value,
             Some(json!({
                 "values": {
+                    "eguidev.input": {
+                        "positions": {},
+                        "events": [],
+                    },
                     "ready": {
                         "ready": true,
                         "count": 2,
@@ -3283,7 +3287,12 @@ end)
         assert_eq!(
             outcome.value,
             Some(json!({
-                "values": {},
+                "values": {
+                    "eguidev.input": {
+                        "positions": {},
+                        "events": [],
+                    },
+                },
                 "errors": {
                     "broken": {
                         "code": "broken",

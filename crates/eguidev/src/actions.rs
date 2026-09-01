@@ -1,10 +1,14 @@
 //! Input actions for injecting into egui.
 #![allow(missing_docs)]
 
-use std::{array, collections::HashMap, sync::Mutex};
+use std::{
+    array,
+    collections::{HashMap, VecDeque},
+    sync::Mutex,
+};
 
 use crate::{
-    registry::lock,
+    registry::{lock, viewport_id_to_string},
     types::{Modifiers, Pos2, Vec2},
 };
 
@@ -84,6 +88,13 @@ impl InputAction {
             }
         }
     }
+
+    fn pointer_pos(&self) -> Option<Pos2> {
+        match self {
+            Self::PointerMove { pos } | Self::PointerButton { pos, .. } => Some(*pos),
+            Self::Key { .. } | Self::Text { .. } | Self::Paste { .. } | Self::Scroll { .. } => None,
+        }
+    }
 }
 
 /// Frames an action can be staged ahead of the next drain.
@@ -147,7 +158,36 @@ pub struct ActionQueue {
     commands: Mutex<HashMap<egui::ViewportId, Vec<egui::ViewportCommand>>>,
     stats: Mutex<HashMap<egui::ViewportId, ActionQueueStats>>,
     last_promotion_frame: Mutex<HashMap<egui::ViewportId, u64>>,
+    pointer_state: Mutex<PointerState>,
 }
+
+/// Recent synthetic-pointer state retained for input delivery and failure
+/// diagnostics.
+#[derive(Default)]
+struct PointerState {
+    /// Last position that the input hook consumed for each viewport.
+    positions: HashMap<egui::ViewportId, Pos2>,
+    /// Last frame that consumed a pointer action for each viewport.
+    consumed_frames: HashMap<egui::ViewportId, u64>,
+    /// Bounded event history serialized into failure diagnostics.
+    trace: VecDeque<PointerTraceEvent>,
+}
+
+/// One pointer transition in the automation input path.
+#[derive(serde::Serialize)]
+struct PointerTraceEvent {
+    /// Canonical viewport id.
+    viewport_id: String,
+    /// Queue, input-hook consumption, or app-reported position.
+    phase: &'static str,
+    /// Global Eguidev frame counter at this transition.
+    frame: u64,
+    /// Pointer position at this transition.
+    pos: Pos2,
+}
+
+/// Maximum recent pointer transitions kept for a failure bundle.
+const POINTER_TRACE_LIMIT: usize = 256;
 
 impl Default for ActionQueue {
     fn default() -> Self {
@@ -162,6 +202,7 @@ impl ActionQueue {
             commands: Mutex::new(HashMap::new()),
             stats: Mutex::new(HashMap::new()),
             last_promotion_frame: Mutex::new(HashMap::new()),
+            pointer_state: Mutex::new(PointerState::default()),
         }
     }
 
@@ -194,6 +235,7 @@ impl ActionQueue {
         drop(last_promotion);
         let current = self.take_staged_actions(ActionTiming::Immediate, viewport_id);
         self.record_drain(viewport_id, current.len(), frame);
+        self.record_pointer_actions(viewport_id, frame, "consumed", &current);
         current
     }
 
@@ -209,6 +251,7 @@ impl ActionQueue {
         lock(&self.commands, "commands lock").clear();
         lock(&self.stats, "action stats lock").clear();
         lock(&self.last_promotion_frame, "action promotion frame lock").clear();
+        *lock(&self.pointer_state, "pointer state lock") = PointerState::default();
     }
 
     pub fn stats(&self, viewport_id: egui::ViewportId) -> ActionQueueStats {
@@ -249,6 +292,59 @@ impl ActionQueue {
         pending_count(&self.commands, "commands lock", viewport_id)
     }
 
+    /// Record one pointer action when the runtime queues it.
+    pub(crate) fn record_pointer_queued(
+        &self,
+        viewport_id: egui::ViewportId,
+        frame: u64,
+        action: &InputAction,
+    ) {
+        let Some(pos) = action.pointer_pos() else {
+            return;
+        };
+        let mut state = lock(&self.pointer_state, "pointer state lock");
+        push_pointer_trace(&mut state.trace, viewport_id, "queued", frame, pos);
+    }
+
+    /// Return the synthetic pointer position that must survive native input.
+    pub(crate) fn pointer_pos(&self, viewport_id: egui::ViewportId) -> Option<Pos2> {
+        lock(&self.pointer_state, "pointer state lock")
+            .positions
+            .get(&viewport_id)
+            .copied()
+    }
+
+    /// Record the pointer position that the app reported after one pass.
+    pub(crate) fn record_pointer_report(
+        &self,
+        viewport_id: egui::ViewportId,
+        frame: u64,
+        pos: Option<Pos2>,
+    ) {
+        let Some(pos) = pos else {
+            return;
+        };
+        let mut state = lock(&self.pointer_state, "pointer state lock");
+        let recent = state
+            .consumed_frames
+            .get(&viewport_id)
+            .is_some_and(|consumed| frame <= consumed.saturating_add(4));
+        if recent {
+            push_pointer_trace(&mut state.trace, viewport_id, "reported", frame, pos);
+        }
+    }
+
+    /// Return recent pointer delivery evidence for failure diagnostics.
+    pub fn pointer_trace(&self) -> serde_json::Value {
+        let state = lock(&self.pointer_state, "pointer state lock");
+        serde_json::json!({
+            "positions": state.positions.iter().map(|(viewport_id, pos)| {
+                (viewport_id_to_string(*viewport_id), *pos)
+            }).collect::<HashMap<_, _>>(),
+            "events": state.trace,
+        })
+    }
+
     fn take_staged_actions(
         &self,
         timing: ActionTiming,
@@ -286,6 +382,48 @@ impl ActionQueue {
         stats.drained_actions += count as u64;
         stats.last_drain_frame = Some(frame);
     }
+
+    /// Retain consumed pointer state and its bounded trace.
+    fn record_pointer_actions(
+        &self,
+        viewport_id: egui::ViewportId,
+        frame: u64,
+        phase: &'static str,
+        actions: &[InputAction],
+    ) {
+        let positions = actions
+            .iter()
+            .filter_map(InputAction::pointer_pos)
+            .collect::<Vec<_>>();
+        let Some(last) = positions.last().copied() else {
+            return;
+        };
+        let mut state = lock(&self.pointer_state, "pointer state lock");
+        state.positions.insert(viewport_id, last);
+        state.consumed_frames.insert(viewport_id, frame);
+        for pos in positions {
+            push_pointer_trace(&mut state.trace, viewport_id, phase, frame, pos);
+        }
+    }
+}
+
+/// Append one bounded pointer trace event.
+fn push_pointer_trace(
+    trace: &mut VecDeque<PointerTraceEvent>,
+    viewport_id: egui::ViewportId,
+    phase: &'static str,
+    frame: u64,
+    pos: Pos2,
+) {
+    if trace.len() == POINTER_TRACE_LIMIT {
+        trace.pop_front();
+    }
+    trace.push_back(PointerTraceEvent {
+        viewport_id: viewport_id_to_string(viewport_id),
+        phase,
+        frame,
+        pos,
+    });
 }
 
 fn queue_to_map<T>(

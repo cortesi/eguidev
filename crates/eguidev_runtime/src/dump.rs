@@ -599,6 +599,7 @@ mod tests {
             overflow: true,
             available_rect: rect(0.0, 0.0, 50.0, 20.0),
             visible_fraction: 0.5,
+            text: None,
         });
         let dump = TreeDump {
             viewports: vec![ViewportDump {

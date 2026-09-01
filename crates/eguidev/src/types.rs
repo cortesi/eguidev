@@ -1856,6 +1856,41 @@ pub struct WidgetLayout {
     pub available_rect: Rect,
     /// Visible fraction of the widget within the clip rect.
     pub visible_fraction: f32,
+    /// Exact text layout painted by the widget, when the caller supplies its
+    /// galley.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<WidgetTextLayout>,
+}
+
+/// Captured text layout from the galley that a widget painted.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetTextLayout {
+    /// Fonts used by the galley's layout sections.
+    pub fonts: Vec<WidgetFont>,
+    /// Painted lines in visual order.
+    pub lines: Vec<WidgetTextLine>,
+    /// Height of the first painted line.
+    pub line_height: f32,
+    /// Whether egui removed text because of its row limit.
+    pub elided: bool,
+}
+
+/// One font used by a captured galley.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetFont {
+    /// Egui font family name.
+    pub family: String,
+    /// Font size in logical points.
+    pub size: f32,
+}
+
+/// One painted line from a captured galley.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetTextLine {
+    /// Text on this line.
+    pub text: String,
+    /// Painted line width in logical points.
+    pub width: f32,
 }
 
 /// Scroll metadata captured for a scroll area.

@@ -2460,6 +2460,10 @@ impl ScriptRuntime {
                 }
             }
         }
+        values.insert(
+            "eguidev.input".to_string(),
+            self.server.inner.actions.pointer_trace(),
+        );
         self.to_json(
             pos,
             serde_json::json!({

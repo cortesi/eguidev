@@ -527,6 +527,13 @@ impl DevMcp {
         inner
             .viewports
             .capture_input_snapshot(ctx, fixture_epoch, next_frame);
+        let pointer_pos = inner
+            .viewports
+            .input_snapshot(viewport_id)
+            .and_then(|snapshot| snapshot.pointer_pos);
+        inner
+            .actions
+            .record_pointer_report(viewport_id, next_frame, pointer_pos);
         if viewport_id == egui::ViewportId::ROOT {
             inner.idle.update_ui(ctx, next_frame);
         }
@@ -573,6 +580,9 @@ impl DevMcp {
         let mut current_modifiers = base_modifiers;
         let mut modifiers_changed = false;
         let mut force_focus = false;
+        let pointer_moved = actions
+            .iter()
+            .any(|action| matches!(action, InputAction::PointerMove { .. }));
         for action in &actions {
             if let InputAction::Key {
                 pressed, modifiers, ..
@@ -597,6 +607,9 @@ impl DevMcp {
         }
         for action in actions {
             action.apply(raw_input);
+        }
+        if !pointer_moved && let Some(pos) = inner.actions.pointer_pos(viewport_id) {
+            raw_input.events.push(egui::Event::PointerMoved(pos.into()));
         }
         if modifiers_changed {
             raw_input
@@ -667,7 +680,7 @@ mod inactive_tests {
     use egui::{Context, Plugin};
 
     use super::*;
-    use crate::{actions::InputAction, instrument, registry::Inner, ui_ext::DevUiExt};
+    use crate::{actions::InputAction, instrument, registry::Inner, types::Pos2, ui_ext::DevUiExt};
 
     #[derive(Default)]
     struct CountingRuntimeHooks {
@@ -755,6 +768,44 @@ mod inactive_tests {
             raw_input.events,
             vec![egui::Event::Text("event".to_string())],
             "plugin should inject queued actions for the pass's viewport"
+        );
+    }
+
+    #[test]
+    fn input_hook_plugin_retains_the_synthetic_pointer_position() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let pos = Pos2 { x: 12.0, y: 34.0 };
+        inner.queue_action(viewport_id, InputAction::PointerMove { pos });
+        let devmcp =
+            DevMcp::new().activate_runtime(inner, Arc::new(CountingRuntimeHooks::default()));
+        let mut plugin = AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        };
+        let ctx = Context::default();
+        let mut first = egui::RawInput {
+            viewport_id,
+            ..Default::default()
+        };
+        plugin.input_hook(&ctx, &mut first);
+        assert_eq!(
+            first.events,
+            vec![egui::Event::PointerMoved(egui::pos2(12.0, 34.0))]
+        );
+
+        let mut next = egui::RawInput {
+            viewport_id,
+            events: vec![egui::Event::PointerGone],
+            ..Default::default()
+        };
+        plugin.input_hook(&ctx, &mut next);
+        assert_eq!(
+            next.events,
+            vec![
+                egui::Event::PointerGone,
+                egui::Event::PointerMoved(egui::pos2(12.0, 34.0)),
+            ]
         );
     }
 

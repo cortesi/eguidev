@@ -1453,6 +1453,7 @@ mod tests {
             overflow: false,
             available_rect: widget.rect,
             visible_fraction: 0.25,
+            text: None,
         });
 
         let samples = sample_widget_grid(&image, 1.0, &widget, Some("root"), 1, 2).expect("grid");
@@ -4206,6 +4207,7 @@ return state.scroll_state.offset.y"#
             overflow: false,
             available_rect: rect,
             visible_fraction,
+            text: None,
         };
 
         // No layout metadata means nothing is known to clip the widget.
@@ -4284,6 +4286,7 @@ return state.scroll_state.offset.y"#
             overflow: false,
             available_rect: rect,
             visible_fraction: 0.0,
+            text: None,
         });
         inner.widgets.record_widget(viewport_id, entry);
         inner.widgets.finalize_registry(viewport_id);
