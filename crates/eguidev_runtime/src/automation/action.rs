@@ -361,8 +361,9 @@ impl DevMcpServer {
         Ok(())
     }
 
-    /// Poll until the queued hover reaches its target, re-issuing the move
-    /// once from the fresh rect.
+    /// Poll until the queued hover reaches its target. The move is issued
+    /// again once, and again each time the target rect moves, so a widget
+    /// that settles after the first move still receives the pointer.
     async fn confirm_hover(
         &self,
         viewport_name: Option<&str>,
@@ -377,6 +378,7 @@ impl DevMcpServer {
         let target_id = widget.id.clone();
         let reissued = AtomicBool::new(false);
         let last_pos = Mutex::new(hover_position(widget, position)?);
+        let issued_pos = Mutex::new(hover_position(widget, position)?);
         let (arrived, coverer, _, _) = wait_until_condition(
             &self.inner,
             timeout_ms,
@@ -397,9 +399,15 @@ impl DevMcpServer {
                     .and_then(|snapshot| snapshot.pointer_pos)
                     .is_some_and(|pointer| point_in_rect(pointer, fresh.interact_rect));
                 let arrived = coverer.is_none() && pointer_inside;
-                if !arrived && !reissued.swap(true, Ordering::Relaxed) {
-                    self.inner
-                        .queue_action(viewport_id, InputAction::PointerMove { pos });
+                if !arrived {
+                    let mut issued = issued_pos.lock().expect("hover issue lock");
+                    let moved = (issued.x - pos.x).abs() > f32::EPSILON
+                        || (issued.y - pos.y).abs() > f32::EPSILON;
+                    if moved || !reissued.swap(true, Ordering::Relaxed) {
+                        *issued = pos;
+                        self.inner
+                            .queue_action(viewport_id, InputAction::PointerMove { pos });
+                    }
                 }
                 Ok::<_, ToolError>((arrived, coverer))
             },
