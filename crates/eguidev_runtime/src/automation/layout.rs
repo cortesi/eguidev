@@ -221,11 +221,18 @@ impl<'a> LayoutAnalysis<'a> {
                 continue;
             }
             let measurement = measure_text(ctx, widget)?;
-            let (desired_width, actual_width) = widget.layout.as_ref().map_or_else(
-                || (measurement.desired_size.x, measurement.actual_size.x),
-                |layout| (layout.desired_size.x, layout.actual_size.x),
+            let (desired, actual) = widget.layout.as_ref().map_or_else(
+                || (measurement.desired_size, measurement.actual_size),
+                |layout| (layout.desired_size, layout.actual_size),
             );
-            if desired_width > actual_width + RECT_EPSILON && measurement.lines.len() <= 1 {
+            let (desired_width, actual_width) = (desired.x, actual.x);
+            // A widget taller than its intrinsic line wrapped its text, so a
+            // narrower width did not cut it off.
+            let wrapped = actual.y > desired.y + RECT_EPSILON;
+            if desired_width > actual_width + RECT_EPSILON
+                && !wrapped
+                && measurement.lines.len() <= 1
+            {
                 issues.push(LayoutIssue {
                     kind: LayoutIssueKind::TextTruncation,
                     widgets: vec![widget.id.clone()],
