@@ -532,8 +532,8 @@ impl Inner {
         lock(&self.frame_fixture_epochs, "frame fixture epochs lock").remove(&viewport_id)
     }
 
-    /// Count a completed egui pass. Multi-pass frames increment this more than
-    /// once.
+    /// Count one settled automation frame. Discarded layout passes do not
+    /// publish automation state or increment this count.
     pub fn advance_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }

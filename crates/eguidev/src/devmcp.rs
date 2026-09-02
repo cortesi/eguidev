@@ -519,6 +519,9 @@ impl DevMcp {
 
     fn finish_frame(&self, inner: &Arc<Inner>, ctx: &Context) {
         let viewport_id = ctx.viewport_id();
+        if ctx.will_discard() {
+            return;
+        }
         inner.widgets.finalize_registry(viewport_id);
         let next_frame = inner.frame_count() + 1;
         let fixture_epoch = inner
@@ -841,6 +844,39 @@ mod inactive_tests {
             1,
             "automation plugin should forward completed output"
         );
+    }
+
+    #[test]
+    fn frame_guard_publishes_only_the_settled_multipass_registry() {
+        let inner = Arc::new(Inner::new());
+        let hooks = Arc::new(CountingRuntimeHooks::default());
+        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
+        let devmcp = DevMcp::new().activate_runtime(Arc::clone(&inner), runtime_hooks);
+        let ctx = Context::default();
+        let pass = AtomicUsize::new(0);
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let pass_context = ui.ctx().clone();
+            let _guard = FrameGuard::new(&devmcp, &pass_context);
+            if pass.fetch_add(1, AtomicOrdering::Relaxed) == 0 {
+                let _response = ui.dev_button("discarded", "Discarded");
+                ui.ctx().request_discard("test sizing pass");
+            } else {
+                let _response = ui.dev_button("settled", "Settled");
+            }
+        })
+        .drop_without_applying_deltas();
+
+        let widgets = inner.widgets.widget_list(egui::ViewportId::ROOT);
+        assert_eq!(
+            widgets
+                .iter()
+                .map(|widget| widget.id.as_str())
+                .collect::<Vec<_>>(),
+            ["settled"]
+        );
+        assert_eq!(inner.frame_count(), 1);
+        assert_eq!(hooks.frame_end_calls.load(AtomicOrdering::Relaxed), 1);
     }
 
     #[test]
