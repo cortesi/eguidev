@@ -2430,6 +2430,7 @@ name = "ruau-script-api"
 version = "0.1.0"
 dependencies = [
  "ruau-declaration",
+ "ruau-syntax",
  "schemars",
  "serde",
 ]
