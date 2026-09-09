@@ -217,6 +217,11 @@ impl<'a> LayoutAnalysis<'a> {
             .iter()
             .filter(|widget| {
                 !rect_contains_rect(viewport_rect, widget.rect)
+                    // A widget that covers the viewport is the background, not
+                    // content that fell off the screen. The structural root is
+                    // the usual one, and reporting it makes every consumer
+                    // special-case its own root.
+                    && !rect_contains_rect(widget.rect, viewport_rect)
                     && !self.has_nested_clip_region(widget)
                     && !self.within_ancestor_scroll_extent(widget)
             })
@@ -244,19 +249,25 @@ impl<'a> LayoutAnalysis<'a> {
             };
             let desired_width = layout.desired_size.x;
             let actual_width = layout.actual_size.x;
-            let truncated = text.elided
-                || (text.lines.len() <= 1 && desired_width > actual_width + RECT_EPSILON);
-            if truncated {
-                issues.push(LayoutIssue {
-                    kind: LayoutIssueKind::TextTruncation,
-                    widgets: vec![widget.id.clone()],
-                    message: format!(
-                        "Text truncated (needs {:.1}px, has {:.1}px)",
-                        desired_width, actual_width
-                    ),
-                    rect: Some(widget.rect),
-                });
+            let overflows = text.lines.len() <= 1 && desired_width > actual_width + RECT_EPSILON;
+            if !text.elided && !overflows {
+                continue;
             }
+            // Name the reason. An elided galley can report equal widths, which
+            // reads as a false positive when the message only prints them.
+            let message = if overflows {
+                format!("Text truncated: needs {desired_width:.1}px, has {actual_width:.1}px")
+            } else {
+                format!(
+                    "Text elided at {actual_width:.1}px: the painted text does not fit its width"
+                )
+            };
+            issues.push(LayoutIssue {
+                kind: LayoutIssueKind::TextTruncation,
+                widgets: vec![widget.id.clone()],
+                message,
+                rect: Some(widget.rect),
+            });
         }
         issues
     }
@@ -746,6 +757,55 @@ mod tests {
         let registry = vec![styled, hidden];
         let analysis = LayoutAnalysis::new(&registry, None);
         assert!(analysis.text_truncation(&registry).is_empty());
+    }
+
+    #[test]
+    fn a_widget_covering_the_viewport_is_not_offscreen() {
+        // The structural root covers the whole viewport. Reporting it makes
+        // every consumer special-case its own root.
+        let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
+        let root = entry(
+            "root",
+            WidgetRole::Unknown,
+            rect(-1.0, -1.0, 101.0, 101.0),
+            true,
+        );
+
+        let registry = vec![root.clone()];
+        let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
+
+        assert!(analysis.offscreen(slice::from_ref(&root)).is_empty());
+    }
+
+    #[test]
+    fn text_elision_is_reported_apart_from_width_overflow() {
+        // An elided galley can report equal widths. A message that only prints
+        // them reads as a false positive.
+        let bounds = rect(0.0, 0.0, 45.0, 20.0);
+        let mut label = entry("label", WidgetRole::Label, bounds, true);
+        label.value = Some(WidgetValue::Text("Hello".to_string()));
+        label.layout = Some(WidgetLayout {
+            desired_size: egui::vec2(45.0, 20.0).into(),
+            actual_size: egui::vec2(45.0, 20.0).into(),
+            text: Some(captured_text(&["Hello"], true)),
+            ..layout(bounds, bounds)
+        });
+
+        let registry = vec![label];
+        let analysis = LayoutAnalysis::new(&registry, None);
+        let issues = analysis.text_truncation(&registry);
+
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].message.contains("elided"),
+            "an elided galley should say so: {}",
+            issues[0].message
+        );
+        assert!(
+            !issues[0].message.contains("needs"),
+            "equal widths must not read as an overflow: {}",
+            issues[0].message
+        );
     }
 
     #[test]
