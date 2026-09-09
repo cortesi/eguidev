@@ -1176,13 +1176,13 @@ impl EguidevModule {
         builder.async_function(
             "viewport_screenshot",
             ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let target = serde_json::json!({ "viewport_id": viewport.id });
+                    let target = serde_json::json!({ "viewport_id": args.receiver.id });
                     let value = runtime
-                        .screenshot(pos, Some(&target))
+                        .screenshot(pos, Some(&target), Some(&args.value))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1194,12 +1194,12 @@ impl EguidevModule {
         builder.async_function(
             "viewport_native_screenshot",
             ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .native_screenshot(pos, viewport.id)
+                        .native_screenshot(pos, args.receiver.id, Some(&args.value))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1614,12 +1614,12 @@ impl EguidevModule {
         builder.async_function(
             "widget_screenshot",
             ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, receiver: WidgetReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .screenshot(pos, Some(&receiver.value))
+                        .screenshot(pos, Some(&args.receiver.value), Some(&args.value))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())

@@ -68,7 +68,10 @@ mod utils;
 mod wait;
 
 use action::HoverConfirm;
-use capture::{capture_native_screenshot, capture_screenshot, resolve_screenshot_viewport};
+use capture::{
+    ScreenshotFormat, ScreenshotOptions, capture_native_screenshot, capture_screenshot,
+    resolve_screenshot_viewport,
+};
 #[cfg(test)]
 use capture::{
     crop_native_capture_to_viewport, screenshot_timeout_message,

@@ -1,6 +1,68 @@
 //! Capture metadata shared by screenshot and sampling operations.
 
+use std::ops::Range;
+
+use image::codecs::png::PngEncoder;
+
 use super::*;
+
+/// Encoding that a screenshot request selects.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum ScreenshotFormat {
+    /// Lossy encoding. It keeps a capture small.
+    #[default]
+    Jpeg,
+    /// Lossless encoding. It keeps every rendered pixel exact.
+    Png,
+}
+
+impl ScreenshotFormat {
+    /// Return the MCP media type of this encoding.
+    pub(super) fn media_type(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+        }
+    }
+
+    /// Parse one script-supplied format word.
+    pub(super) fn parse(word: &str) -> Option<Self> {
+        match word {
+            "jpeg" => Some(Self::Jpeg),
+            "png" => Some(Self::Png),
+            _ => None,
+        }
+    }
+}
+
+/// Encoding options for one screenshot.
+///
+/// The default keeps the established JPEG encoding and the 1,600 pixel long
+/// edge, so a call that passes no options is unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ScreenshotOptions {
+    /// Selected encoding.
+    pub(super) format: ScreenshotFormat,
+    /// Largest long edge in pixels. Zero keeps the captured size.
+    pub(super) max_dimension: u32,
+}
+
+impl Default for ScreenshotOptions {
+    fn default() -> Self {
+        Self {
+            format: ScreenshotFormat::default(),
+            max_dimension: DEFAULT_MAX_SCREENSHOT_DIMENSION,
+        }
+    }
+}
+
+/// One encoded capture and the media type that describes it.
+pub(super) struct EncodedImage {
+    /// Base64 image payload.
+    pub(super) data: String,
+    /// MCP media type, such as `image/png`.
+    pub(super) media_type: &'static str,
+}
 
 pub(super) fn capture_pixels_per_point(inner: &Inner, viewport_id: egui::ViewportId) -> f32 {
     inner
@@ -103,9 +165,10 @@ pub(super) async fn capture_screenshot(
     runtime: &Runtime,
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
-) -> Result<String, ToolError> {
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
     let state = capture_screenshot_state(inner, runtime, viewport_id, kind).await?;
-    build_screenshot_data(&state)
+    build_screenshot_data(&state, options)
 }
 
 /// Capture the complete native window, including platform chrome.
@@ -113,7 +176,8 @@ pub(super) async fn capture_screenshot(
 pub(super) fn capture_native_screenshot(
     inner: &Inner,
     viewport_id: egui::ViewportId,
-) -> Result<String, ToolError> {
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
     let snapshot = viewport_snapshot_for(inner, viewport_id).ok_or_else(|| {
         ToolError::new(
             ErrorCode::NotActionable,
@@ -138,7 +202,7 @@ pub(super) fn capture_native_screenshot(
             format!("Could not capture native window: {error}"),
         )
     })?;
-    encode_jpeg(&image)
+    encode_screenshot(&image, options)
 }
 
 /// Report that native screenshots are not available on this platform.
@@ -146,7 +210,8 @@ pub(super) fn capture_native_screenshot(
 pub(super) fn capture_native_screenshot(
     _inner: &Inner,
     _viewport_id: egui::ViewportId,
-) -> Result<String, ToolError> {
+    _options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
     Err(ToolError::new(
         ErrorCode::Unsupported,
         "Native window screenshots are only available on macOS",
@@ -430,9 +495,12 @@ pub(super) fn should_try_native_screenshot_fallback(
     native_fallback_applies(viewport_id) && current_frame > start_frame
 }
 
-fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
+fn build_screenshot_data(
+    state: &ScreenshotState,
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
     let image = build_screenshot_image(state)?;
-    encode_jpeg(&image)
+    encode_screenshot(&image, options)
 }
 
 fn build_screenshot_image(state: &ScreenshotState) -> Result<Arc<egui::ColorImage>, ToolError> {
@@ -641,22 +709,33 @@ fn screenshot_request_details_with_frames(
 
 const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1600;
 
+/// Reduce an image so its long edge fits `max_dimension`.
+///
+/// The reduction averages every source pixel that a destination pixel covers.
+/// A point sample would alias rendered text, and a screenshot reduced to a
+/// thumbnail must stay readable.
 fn scale_screenshot_image(image: &egui::ColorImage, max_dimension: u32) -> egui::ColorImage {
     let width = image.width();
     let height = image.height();
     let long_edge = width.max(height) as u32;
-    if long_edge <= max_dimension {
+    if long_edge <= max_dimension || max_dimension == 0 {
         return image.clone();
     }
-    let scale = max_dimension as f32 / long_edge as f32;
-    let new_width = ((width as f32) * scale).round().max(1.0) as usize;
-    let new_height = ((height as f32) * scale).round().max(1.0) as usize;
+    let scale = f64::from(max_dimension) / f64::from(long_edge);
+    let new_width = (((width as f64) * scale).round() as usize).max(1);
+    let new_height = (((height as f64) * scale).round() as usize).max(1);
     let mut pixels = Vec::with_capacity(new_width * new_height);
     for y in 0..new_height {
+        let y0 = y * height / new_height;
+        let y1 = (((y + 1) * height).div_ceil(new_height))
+            .min(height)
+            .max(y0 + 1);
         for x in 0..new_width {
-            let source_x = x * width / new_width;
-            let source_y = y * height / new_height;
-            pixels.push(image.pixels[source_y * width + source_x]);
+            let x0 = x * width / new_width;
+            let x1 = (((x + 1) * width).div_ceil(new_width))
+                .min(width)
+                .max(x0 + 1);
+            pixels.push(average_pixel(image, x0..x1, y0..y1));
         }
     }
     egui::ColorImage {
@@ -666,9 +745,72 @@ fn scale_screenshot_image(image: &egui::ColorImage, max_dimension: u32) -> egui:
     }
 }
 
-fn encode_jpeg(image: &egui::ColorImage) -> Result<String, ToolError> {
-    const JPEG_QUALITY: u8 = 80;
-    let image = scale_screenshot_image(image, DEFAULT_MAX_SCREENSHOT_DIMENSION);
+/// Average one source rectangle into a single destination pixel.
+fn average_pixel(image: &egui::ColorImage, xs: Range<usize>, ys: Range<usize>) -> egui::Color32 {
+    let mut totals = [0u32; 4];
+    let mut count = 0u32;
+    for y in ys {
+        for x in xs.clone() {
+            let Some(pixel) = image.pixels.get(y * image.width() + x) else {
+                continue;
+            };
+            let [r, g, b, a] = pixel.to_array();
+            totals[0] += u32::from(r);
+            totals[1] += u32::from(g);
+            totals[2] += u32::from(b);
+            totals[3] += u32::from(a);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return egui::Color32::TRANSPARENT;
+    }
+    egui::Color32::from_rgba_premultiplied(
+        (totals[0] / count) as u8,
+        (totals[1] / count) as u8,
+        (totals[2] / count) as u8,
+        (totals[3] / count) as u8,
+    )
+}
+
+/// Encode a captured image under the requested options.
+fn encode_screenshot(
+    image: &egui::ColorImage,
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
+    let image = scale_screenshot_image(image, options.max_dimension);
+    match options.format {
+        ScreenshotFormat::Jpeg => encode_jpeg(&image),
+        ScreenshotFormat::Png => encode_png(&image),
+    }
+}
+
+/// Encode one image as PNG, which keeps every rendered pixel exact.
+fn encode_png(image: &egui::ColorImage) -> Result<EncodedImage, ToolError> {
+    let width = image.size[0] as u32;
+    let height = image.size[1] as u32;
+    let mut bytes = Vec::with_capacity(image.pixels.len() * 4);
+    for pixel in &image.pixels {
+        bytes.extend_from_slice(&pixel.to_array());
+    }
+    let mut png_data = Vec::new();
+    let encoder = PngEncoder::new(&mut png_data);
+    image::ImageEncoder::write_image(
+        encoder,
+        &bytes,
+        width,
+        height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|error| ToolError::new(ErrorCode::Internal, format!("PNG encode failed: {error}")))?;
+    Ok(EncodedImage {
+        data: STANDARD.encode(png_data),
+        media_type: ScreenshotFormat::Png.media_type(),
+    })
+}
+
+fn encode_jpeg(image: &egui::ColorImage) -> Result<EncodedImage, ToolError> {
+    const JPEG_QUALITY: u8 = 88;
     let width = image.size[0] as u32;
     let height = image.size[1] as u32;
     let capacity = width
@@ -699,7 +841,10 @@ fn encode_jpeg(image: &egui::ColorImage) -> Result<String, ToolError> {
         image::ExtendedColorType::Rgb8,
     )
     .map_err(|error| ToolError::new(ErrorCode::Internal, format!("JPEG encode failed: {error}")))?;
-    Ok(STANDARD.encode(jpeg_data))
+    Ok(EncodedImage {
+        data: STANDARD.encode(jpeg_data),
+        media_type: ScreenshotFormat::Jpeg.media_type(),
+    })
 }
 
 fn crop_image(
@@ -743,13 +888,35 @@ fn crop_image(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_MAX_SCREENSHOT_DIMENSION, scale_screenshot_image};
+    use super::{
+        DEFAULT_MAX_SCREENSHOT_DIMENSION, ScreenshotFormat, ScreenshotOptions, encode_screenshot,
+        scale_screenshot_image,
+    };
 
     fn solid_image(width: usize, height: usize) -> egui::ColorImage {
         egui::ColorImage {
             size: [width, height],
             source_size: egui::Vec2::new(width as f32, height as f32),
             pixels: vec![egui::Color32::WHITE; width * height],
+        }
+    }
+
+    /// Build an image whose left half is black and right half is white.
+    fn split_image(width: usize, height: usize) -> egui::ColorImage {
+        let mut pixels = Vec::with_capacity(width * height);
+        for _ in 0..height {
+            for x in 0..width {
+                pixels.push(if x < width / 2 {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::WHITE
+                });
+            }
+        }
+        egui::ColorImage {
+            size: [width, height],
+            source_size: egui::Vec2::new(width as f32, height as f32),
+            pixels,
         }
     }
 
@@ -765,5 +932,58 @@ mod tests {
         let image = solid_image(3200, 1800);
         let scaled = scale_screenshot_image(&image, 1600);
         assert_eq!(scaled.size, [1600, 900]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_keeps_the_captured_size_when_the_cap_is_zero() {
+        let image = solid_image(3200, 1800);
+        let scaled = scale_screenshot_image(&image, 0);
+        assert_eq!(scaled.size, [3200, 1800]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_averages_the_source_pixels() {
+        // A point sample would return pure black or pure white. An area
+        // average returns the midpoint, which keeps reduced text readable.
+        let image = split_image(8, 2);
+        let scaled = scale_screenshot_image(&image, 1);
+        assert_eq!(scaled.size, [1, 1]);
+        let [red, green, blue, _] = scaled.pixels[0].to_array();
+        assert!((120..=136).contains(&red), "unexpected red {red}");
+        assert_eq!([red, green, blue], [red; 3]);
+    }
+
+    #[test]
+    fn encode_screenshot_reports_the_selected_media_type() {
+        let image = solid_image(4, 4);
+        let jpeg = encode_screenshot(&image, ScreenshotOptions::default()).expect("jpeg");
+        assert_eq!(jpeg.media_type, "image/jpeg");
+        let png = encode_screenshot(
+            &image,
+            ScreenshotOptions {
+                format: ScreenshotFormat::Png,
+                max_dimension: 0,
+            },
+        )
+        .expect("png");
+        assert_eq!(png.media_type, "image/png");
+        assert_ne!(jpeg.data, png.data);
+    }
+
+    #[test]
+    fn screenshot_format_parses_only_supported_words() {
+        assert_eq!(
+            ScreenshotFormat::parse("jpeg"),
+            Some(ScreenshotFormat::Jpeg)
+        );
+        assert_eq!(ScreenshotFormat::parse("png"), Some(ScreenshotFormat::Png));
+        assert_eq!(ScreenshotFormat::parse("webp"), None);
+    }
+
+    #[test]
+    fn default_screenshot_options_keep_the_established_encoding() {
+        let options = ScreenshotOptions::default();
+        assert_eq!(options.format, ScreenshotFormat::Jpeg);
+        assert_eq!(options.max_dimension, DEFAULT_MAX_SCREENSHOT_DIMENSION);
     }
 }

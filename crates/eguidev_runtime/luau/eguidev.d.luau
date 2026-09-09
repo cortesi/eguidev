@@ -203,8 +203,7 @@ declare class Widget
     read text_measure: (self: Widget) -> TextMeasure
     read layout_issues: (self: Widget) -> { LayoutIssue }
     --- Waits for a fresh screenshot and crops it to the widget.
-    --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
-    read screenshot: (self: Widget) -> ImageRef
+    read screenshot: (self: Widget, options: ScreenshotOptions?) -> ImageRef
     --- Waits for one fresh screenshot. Positions are logical offsets from the
     --- widget rectangle's minimum point.
     read sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample }
@@ -417,11 +416,10 @@ declare class Viewport
     --- Dismisses evaluation-scoped entries without returning them.
     read clear_egui_diagnostics: (self: Viewport) -> ()
     --- Waits for a fresh screenshot of the viewport.
-    --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
-    read screenshot: (self: Viewport) -> ImageRef
+    read screenshot: (self: Viewport, options: ScreenshotOptions?) -> ImageRef
     --- Captures the complete native window, including platform chrome.
     --- This operation is available on macOS and requires Screen Recording permission.
-    read native_screenshot: (self: Viewport) -> ImageRef
+    read native_screenshot: (self: Viewport, options: ScreenshotOptions?) -> ImageRef
     --- Waits for one fresh screenshot. Positions are viewport-local logical
     --- points.
     read sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample }
@@ -515,6 +513,20 @@ export type ScrollToOptions = {
     settle: boolean?,
     offset: Vec?,
     align: "top" | "center" | "bottom"?,
+}
+
+--- Encoding for one capture. Omitting the table keeps lossy JPEG at a 1600
+--- pixel long edge, which is small enough to return through a tool call.
+--- Raise `max_dimension` to the captured pixel size to stop the reduction and
+--- keep a large window as legible as a small one. Reduction averages the
+--- source pixels, so a thumbnail keeps its text readable.
+--- Every returned image travels in one response. `png` is exact but can be
+--- more than ten times larger on gradients, so reserve it for small captures
+--- and keep `jpeg` for full viewports.
+export type ScreenshotOptions = {
+    format: ("jpeg" | "png")?,
+    --- Largest long edge in pixels. Zero keeps the captured size.
+    max_dimension: number?,
 }
 
 export type KeyOptions = {

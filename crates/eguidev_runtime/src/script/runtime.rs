@@ -19,10 +19,11 @@ use tokio::{task::spawn_blocking, time::timeout};
 use super::{
     super::{
         DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode, HoverConfirm,
-        MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError,
-        capture_native_screenshot, capture_screenshot, collect_widget_list, interaction_ready,
-        parse_key_combo, resolve_screenshot_viewport, resolve_widget_and_viewport,
-        viewport_snapshot_for, wait_timeout_details, wait_timeout_message,
+        MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE,
+        ScreenshotFormat, ScreenshotOptions, ToolError, capture_native_screenshot,
+        capture_screenshot, collect_widget_list, interaction_ready, parse_key_combo,
+        resolve_screenshot_viewport, resolve_widget_and_viewport, viewport_snapshot_for,
+        wait_timeout_details, wait_timeout_message,
     },
     parse::{
         map_has_any, map_value, parse_modifiers, parse_optional_bool, parse_optional_f32,
@@ -2054,11 +2055,52 @@ impl ScriptRuntime {
         }
     }
 
+    /// Read the optional screenshot encoding options.
+    ///
+    /// An absent table keeps the established JPEG encoding and the 1,600 pixel
+    /// long edge, so every current script is unaffected.
+    fn screenshot_options(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Value>,
+    ) -> ScriptResult<ScreenshotOptions> {
+        let mut resolved = ScreenshotOptions::default();
+        let Some(options) = options else {
+            return Ok(resolved);
+        };
+        if options.is_null() {
+            return Ok(resolved);
+        }
+        let map = options
+            .as_object()
+            .ok_or_else(|| self.type_error(pos, "screenshot options must be a table"))?;
+        if let Some(format) = map.get("format") {
+            let word = format
+                .as_str()
+                .ok_or_else(|| self.type_error(pos, "screenshot format must be a string"))?;
+            resolved.format = ScreenshotFormat::parse(word).ok_or_else(|| {
+                self.type_error(pos, format!("unknown screenshot format `{word}`"))
+            })?;
+        }
+        if let Some(max_dimension) = map.get("max_dimension") {
+            let value = max_dimension
+                .as_f64()
+                .ok_or_else(|| self.type_error(pos, "max_dimension must be a number"))?;
+            if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) {
+                return Err(self.type_error(pos, "max_dimension must be a non-negative integer"));
+            }
+            resolved.max_dimension = value.round() as u32;
+        }
+        Ok(resolved)
+    }
+
     pub(super) async fn screenshot(
         &self,
         pos: ScriptPosition,
         target: Option<&Value>,
+        options: Option<&Value>,
     ) -> ScriptResult<Value> {
+        let options = self.screenshot_options(pos, options)?;
         let mut viewport_id = None;
         let mut widget_target: Option<WidgetRef> = None;
         if let Some(target) = target {
@@ -2099,7 +2141,7 @@ impl ScriptRuntime {
                 .input_snapshot(viewport_id_resolved)
                 .map(|snapshot| snapshot.pixels_per_point)
                 .unwrap_or(1.0);
-            let data = self
+            let encoded = self
                 .await_tool(pos, async {
                     capture_screenshot(
                         &self.server.inner,
@@ -2109,6 +2151,7 @@ impl ScriptRuntime {
                             rect: widget.interact_rect,
                             pixels_per_point,
                         },
+                        options,
                     )
                     .await
                     .map_err(tmcp::ToolError::from)
@@ -2116,7 +2159,8 @@ impl ScriptRuntime {
                 .await?;
             self.store_image(ImageCapture {
                 id: id.clone(),
-                data,
+                data: encoded.data,
+                media_type: encoded.media_type,
                 kind: ScriptImageKind::Widget,
                 viewport_id: viewport_id_to_string(viewport_id_resolved),
                 target: Some(target),
@@ -2127,13 +2171,14 @@ impl ScriptRuntime {
 
         let viewport_id_resolved = resolve_screenshot_viewport(&self.server.inner, viewport_id)
             .map_err(|error| self.tool_error(pos, error.into()))?;
-        let data = self
+        let encoded = self
             .await_tool(pos, async {
                 capture_screenshot(
                     &self.server.inner,
                     &self.server.runtime,
                     viewport_id_resolved,
                     ScreenshotKind::Viewport,
+                    options,
                 )
                 .await
                 .map_err(tmcp::ToolError::from)
@@ -2141,7 +2186,8 @@ impl ScriptRuntime {
             .await?;
         self.store_image(ImageCapture {
             id: id.clone(),
-            data,
+            data: encoded.data,
+            media_type: encoded.media_type,
             kind: ScriptImageKind::Viewport,
             viewport_id: viewport_id_to_string(viewport_id_resolved),
             target: None,
@@ -2154,20 +2200,23 @@ impl ScriptRuntime {
         &self,
         pos: ScriptPosition,
         viewport_id: String,
+        options: Option<&Value>,
     ) -> ScriptResult<Value> {
+        let options = self.screenshot_options(pos, options)?;
         let viewport_id_resolved =
             resolve_screenshot_viewport(&self.server.inner, Some(viewport_id))
                 .map_err(|error| self.tool_error(pos, error.into()))?;
         let id = self.next_image_id();
-        let data = self
+        let encoded = self
             .await_tool(pos, async {
-                capture_native_screenshot(&self.server.inner, viewport_id_resolved)
+                capture_native_screenshot(&self.server.inner, viewport_id_resolved, options)
                     .map_err(tmcp::ToolError::from)
             })
             .await?;
         self.store_image(ImageCapture {
             id: id.clone(),
-            data,
+            data: encoded.data,
+            media_type: encoded.media_type,
             kind: ScriptImageKind::NativeViewport,
             viewport_id: viewport_id_to_string(viewport_id_resolved),
             target: None,

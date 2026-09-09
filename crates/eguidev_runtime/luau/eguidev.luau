@@ -64,9 +64,9 @@ type CaptureKernel = {
     widget_text_measure: (widget: any) -> any,
     widget_layout_issues: (widget: any) -> { any },
     viewport_layout_issues: (viewport: any) -> { any },
-    widget_screenshot: (widget: any) -> any,
-    viewport_screenshot: (viewport: any) -> any,
-    viewport_native_screenshot: (viewport: any) -> any,
+    widget_screenshot: (widget: any, options: any) -> any,
+    viewport_screenshot: (viewport: any, options: any) -> any,
+    viewport_native_screenshot: (viewport: any, options: any) -> any,
     widget_sample_pixels: (widget: any, positions: { Pos }) -> { any },
     widget_sample_grid: (widget: any, nx: number, ny: number) -> { any },
     viewport_sample_pixels: (viewport: any, positions: { Pos }) -> { any },
@@ -815,8 +815,9 @@ function widgetMethods.layout_issues(self: Widget): { LayoutIssue }
     return freezeOwned(kernel.capture.widget_layout_issues(scopedWidgetTarget(self))) :: { LayoutIssue }
 end
 
-function widgetMethods.screenshot(self: Widget): ImageRef
-    return freezeOwned(kernel.capture.widget_screenshot(scopedWidgetTarget(self))) :: ImageRef
+function widgetMethods.screenshot(self: Widget, options: ScreenshotOptions?): ImageRef
+    return freezeOwned(kernel.capture.widget_screenshot(scopedWidgetTarget(self), options or {}))
+        :: ImageRef
 end
 
 function widgetMethods.sample_pixels(self: Widget, positions: { Pos }): { PixelSample }
@@ -993,12 +994,12 @@ function viewportMethods.layout_issues(self: Viewport): { LayoutIssue }
     return freezeOwned(kernel.capture.viewport_layout_issues(self)) :: { LayoutIssue }
 end
 
-function viewportMethods.screenshot(self: Viewport): ImageRef
-    return freezeOwned(kernel.capture.viewport_screenshot(self)) :: ImageRef
+function viewportMethods.screenshot(self: Viewport, options: ScreenshotOptions?): ImageRef
+    return freezeOwned(kernel.capture.viewport_screenshot(self, options or {})) :: ImageRef
 end
 
-function viewportMethods.native_screenshot(self: Viewport): ImageRef
-    return freezeOwned(kernel.capture.viewport_native_screenshot(self)) :: ImageRef
+function viewportMethods.native_screenshot(self: Viewport, options: ScreenshotOptions?): ImageRef
+    return freezeOwned(kernel.capture.viewport_native_screenshot(self, options or {})) :: ImageRef
 end
 
 function viewportMethods.sample_pixels(self: Viewport, positions: { Pos }): { PixelSample }

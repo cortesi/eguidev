@@ -102,7 +102,7 @@ fn build_image_blocks(runtime: &ScriptRuntime, collector: &ImageReferenceCollect
             rect: image.rect.and_then(|rect| serde_json::to_value(rect).ok()),
             metadata: None,
         });
-        blocks.push(ContentBlock::image(image.data.clone(), "image/jpeg"));
+        blocks.push(ContentBlock::image(image.data.clone(), image.media_type));
     }
     ImageBlocks { infos, blocks }
 }

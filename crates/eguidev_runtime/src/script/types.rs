@@ -310,6 +310,8 @@ impl ScriptImageKind {
 pub(super) struct ImageCapture {
     pub(super) id: String,
     pub(super) data: String,
+    /// MCP media type of the encoded payload.
+    pub(super) media_type: &'static str,
     pub(super) kind: ScriptImageKind,
     pub(super) viewport_id: String,
     pub(super) target: Option<WidgetRef>,
