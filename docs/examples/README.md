@@ -71,7 +71,7 @@ Checked-in smoke coverage now has two layers:
   `edev smoke --bundle-dir PATH` to choose the directory. Each failed script gets a deterministic
   directory with `meta.json`, `failure.txt`, full tree dumps, diagnostics, viewport screenshots,
   app stderr, and captured app stdout. Repeated runs include the round in the bundle directory and
-  `meta.json`.
+  `meta.json`. The bundle also retains the failed script plus configured Luau modules.
 - `edev smoke smoketest/*.luau` or `edev smoke path/to/ad_hoc_probe.luau` runs explicit scripts in
   the order provided, so you can use normal shell expansion or quick one-off probes outside the
   configured suite.

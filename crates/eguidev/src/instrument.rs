@@ -248,9 +248,9 @@ pub fn container<R>(
     let Some(inner) = inner else {
         return output.inner;
     };
-    // Register the container widget after content, so its rect covers all children.
-    // At this point the container has been popped, so the container's own parent_id
-    // is correctly set to the enclosing scope.
+    // Register the container widget after content, so its rect covers all
+    // children. At this point the container has been popped, so the
+    // container's own parent_id is correctly set to the enclosing scope.
     swallow_panic("container", || {
         record_widget(
             &inner.widgets,

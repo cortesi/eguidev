@@ -493,8 +493,8 @@ pub fn parse_key_combo(combo: &str) -> Result<(egui::Key, Modifiers, String), St
         return Err("empty key combo".to_string());
     }
 
-    // Split on '-'. The last segment is the key name. But we need to handle edge
-    // cases:
+    // Split on '-'. The last segment is the key name. But we need to handle
+    // edge cases:
     // - bare "-" → segments = ["", ""], key is "-"
     // - "ctrl--" → segments = ["ctrl", "", ""], key is "-"
     // - "ctrl-a" → segments = ["ctrl", "a"]

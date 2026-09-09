@@ -2921,7 +2921,8 @@ mod tests {
 
     #[test]
     fn diff_ignores_the_int_float_round_trip_a_capture_takes_through_luau() {
-        // Luau has one number type, so a captured Float(42.0) returns as Int(42).
+        // Luau has one number type, so a captured Float(42.0) returns as
+        // Int(42).
         let before = state(Some(WidgetValue::Int(42)));
         let after = state(Some(WidgetValue::Float(42.0)));
         assert!(changed_widget_fields(&before, &after, 0.5).is_empty());

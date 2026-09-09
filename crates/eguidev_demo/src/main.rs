@@ -1023,8 +1023,9 @@ impl DemoApp {
             "gate.scroll",
             |ui| {
                 if offenders {
-                    // Publish the intersecting pair at the top of the content so
-                    // it is on screen at the origin offset.
+                    // Publish the intersecting pair at the top of the content
+                    // so it is on screen at the origin
+                    // offset.
                     let (overlap_rect, _) =
                         ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
                     Self::publish_gate_overlap(ui, overlap_rect);
@@ -1032,8 +1033,9 @@ impl DemoApp {
                 for row in 0..GATE_ROW_COUNT {
                     ui.dev_label(format!("gate.row.{row}"), format!("Gate row {row}"));
                 }
-                // A painter-published marker inside the scroll content carries no
-                // layout of its own and must inherit the scroll clip region.
+                // A painter-published marker inside the scroll content carries
+                // no layout of its own and must inherit the
+                // scroll clip region.
                 let (marker_rect, _) =
                     ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
                 ui.painter()
@@ -1479,8 +1481,8 @@ impl App for DemoApp {
                 ui.ctx().request_repaint();
             }
             if s.root_surface == RootSurface::LayoutGate {
-                // No panel margin, so the scroll area fills the viewport and its
-                // rows carry the viewport clip rect.
+                // No panel margin, so the scroll area fills the viewport and
+                // its rows carry the viewport clip rect.
                 egui::Frame::NONE.show(ui, |ui| Self::render_layout_gate(&mut s, ui));
                 return;
             }

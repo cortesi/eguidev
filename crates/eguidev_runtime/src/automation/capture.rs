@@ -169,9 +169,9 @@ async fn capture_screenshot_state(
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
 ) -> Result<ScreenshotState, ToolError> {
-    // Best-effort wake-up before sending the screenshot command. Some idle windows
-    // won't produce a frame until a command is queued, so only treat this as
-    // fatal if context capture is not ready yet.
+    // Best-effort wake-up before sending the screenshot command. Some idle
+    // windows won't produce a frame until a command is queued, so only
+    // treat this as fatal if context capture is not ready yet.
     let event_loop_ready = ensure_event_loop_active(inner, runtime, viewport_id).await;
     let has_snapshot = inner.viewports.has_viewport_snapshot(viewport_id);
     if !inner.has_context() {
@@ -304,9 +304,10 @@ async fn await_screenshot(
                 .map(|snapshot| snapshot.frame_count)
                 .unwrap_or(0);
             if should_try_native_screenshot_fallback(viewport_id, current_frame, start_frame) {
-                // A native capture can disagree with the recorded viewport while
-                // a resize settles, so keep retrying against fresh frames until
-                // the screenshot deadline instead of failing the first attempt.
+                // A native capture can disagree with the recorded viewport
+                // while a resize settles, so keep retrying
+                // against fresh frames until the screenshot
+                // deadline instead of failing the first attempt.
                 match native_screenshot_fallback(inner, viewport_id, kind) {
                     Ok(state) => break ScreenshotWaitOutcome::NativeCapture(state),
                     Err(error) => runtime.log_screenshot(

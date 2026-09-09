@@ -1,9 +1,17 @@
-use std::{error::Error, fmt, sync::LazyLock};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, LazyLock},
+};
 
-use ruau::typecheck::{
-    Checker, Config, DiagnosticCategory, Mode,
-    builtins::{DefinitionModule, Environment},
-    types::Arena,
+use ruau::{
+    source::{ModuleId, ModuleName, RootSource, SourceProvider},
+    typecheck::{
+        Checker, Config, DiagnosticCategory, GraphChecker, Mode, Severity,
+        builtins::{DefinitionModule, Environment},
+        config::EmptyResolver,
+        types::Arena,
+    },
 };
 
 const PUBLIC_DECLARATION: &str = include_str!("../../luau/eguidev.d.luau");
@@ -11,7 +19,17 @@ const PUBLIC_DECLARATION: &str = include_str!("../../luau/eguidev.d.luau");
 const PRIVATE_LIBRARY: &str = include_str!("../../luau/eguidev.luau");
 
 static CHECKER_BASE: LazyLock<Result<Checker, CheckFailure>> = LazyLock::new(|| {
-    checker_with_definitions(&[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)])
+    checker_with_definitions(
+        &[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)],
+        false,
+    )
+});
+
+static GRAPH_CHECKER_BASE: LazyLock<Result<Checker, CheckFailure>> = LazyLock::new(|| {
+    checker_with_definitions(
+        &[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)],
+        true,
+    )
 });
 
 /// One strict-check failure with a source-relative primary location.
@@ -76,12 +94,81 @@ pub fn check_source(source_name: &str, source: &str) -> Result<(), CheckFailure>
     })
 }
 
+/// Check one root and its statically required modules against the public API.
+pub(super) fn check_source_graph(
+    source_name: &str,
+    source: &str,
+    modules: Arc<dyn SourceProvider>,
+) -> Result<(), CheckFailure> {
+    let root_id = ModuleId::canonicalized(source_name);
+    let root_name = ModuleName::from(source_name);
+    let rooted = RootSource::new(root_id.clone(), source)
+        .with_display_name(source_name)
+        .with_root_requester(root_id)
+        .with_delegate(modules);
+    let resolver = EmptyResolver;
+    let mut checker = GraphChecker::with_checker(&rooted, &resolver, fresh_graph_checker()?);
+    checker.set_source_mode_override(Some(Mode::Strict));
+    let graph = checker
+        .check_graph_blocking(root_name)
+        .map_err(|error| CheckFailure {
+            error_type: "internal",
+            message: format!("source graph exceeded its limits: {error}"),
+            line: None,
+            column: None,
+            diagnostics: vec![error.to_string()],
+        })?;
+    if !graph.diagnostics().has_errors() {
+        return Ok(());
+    }
+    let records = graph
+        .diagnostics()
+        .records()
+        .filter(|record| record.diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    let first = records.first();
+    let location = first.map(|record| record.diagnostic.primary_location.begin);
+    let diagnostics = records
+        .iter()
+        .map(|record| {
+            let begin = record.diagnostic.primary_location.begin;
+            if begin.is_missing() {
+                format!("{}: {}", record.display_name, record.diagnostic.message)
+            } else {
+                format!(
+                    "{}:{}:{}: {}",
+                    record.display_name, begin.line, begin.column, record.diagnostic.message
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    Err(CheckFailure {
+        error_type: if records
+            .iter()
+            .any(|record| record.diagnostic.category == DiagnosticCategory::Parse)
+        {
+            "parse"
+        } else {
+            "typecheck"
+        },
+        message: diagnostics.join("; "),
+        line: location
+            .filter(|location| !location.is_missing())
+            .map(|location| location.line as usize),
+        column: location
+            .filter(|location| !location.is_missing())
+            .map(|location| location.column as usize),
+        diagnostics,
+    })
+}
+
 /// Build the shared declaration environment before the first script needs it.
 ///
 /// Lowering the declaration costs tens of milliseconds and is otherwise paid by
 /// whichever script checks first, which is the first call an agent makes.
 pub fn warm_checker_baseline() {
     let _baseline = LazyLock::force(&CHECKER_BASE);
+    let _graph_baseline = LazyLock::force(&GRAPH_CHECKER_BASE);
 }
 
 /// Clone a fresh checker from the prepared Eguidev declaration environment.
@@ -92,17 +179,32 @@ fn fresh_checker() -> Result<Checker, CheckFailure> {
     }
 }
 
-fn checker_with_definitions(definitions: &[DefinitionModule]) -> Result<Checker, CheckFailure> {
+fn fresh_graph_checker() -> Result<Checker, CheckFailure> {
+    match &*GRAPH_CHECKER_BASE {
+        Ok(checker) => Ok(checker.clone()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn checker_with_definitions(
+    definitions: &[DefinitionModule],
+    allow_require: bool,
+) -> Result<Checker, CheckFailure> {
     let mut arena = Arena::new();
-    let builtins = Environment::standard_with_definition_modules(&mut arena, definitions)
-        .map_err(|error| CheckFailure {
+    let builtins = Environment::standard_with_definition_modules(&mut arena, definitions).map_err(
+        |error| CheckFailure {
             error_type: "internal",
             message: error.to_string(),
             line: None,
             column: None,
             diagnostics: vec![error.to_string()],
-        })?
-        .without_globals(["require", "loadstring", "getfenv", "setfenv"]);
+        },
+    )?;
+    let builtins = if allow_require {
+        builtins.without_globals(["loadstring", "getfenv", "setfenv"])
+    } else {
+        builtins.without_globals(["require", "loadstring", "getfenv", "setfenv"])
+    };
     Ok(Checker::with_builtins(arena, builtins))
 }
 

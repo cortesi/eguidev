@@ -598,7 +598,8 @@ mod tests {
     fn scrolled_row_in_viewport_filling_scroll_area_is_not_offscreen() {
         let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
         let scroll = viewport_filling_scroll(viewport_rect, 200.0, 500.0);
-        // The row scrolled above the viewport but stays inside the content extent.
+        // The row scrolled above the viewport but stays inside the content
+        // extent.
         let mut row = entry(
             "row",
             WidgetRole::Label,
@@ -617,7 +618,8 @@ mod tests {
     fn published_rect_inside_a_scroll_area_is_not_offscreen() {
         let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
         let scroll = viewport_filling_scroll(viewport_rect, 200.0, 500.0);
-        // A published rect carries no layout, so it inherits the scroll clip rect.
+        // A published rect carries no layout, so it inherits the scroll clip
+        // rect.
         let mut marker = entry(
             "marker",
             WidgetRole::Unknown,
@@ -654,8 +656,8 @@ mod tests {
     #[test]
     fn widget_off_a_non_scrollable_axis_is_offscreen() {
         let viewport_rect = rect(0.0, 0.0, 100.0, 100.0);
-        // The content is only as wide as the viewport, so horizontal escape is a
-        // defect.
+        // The content is only as wide as the viewport, so horizontal escape is
+        // a defect.
         let scroll = viewport_filling_scroll(viewport_rect, 0.0, 500.0);
         let mut wide = entry(
             "wide",
@@ -688,7 +690,8 @@ mod tests {
 
         let registry = vec![scroll, row.clone()];
         let scope = vec![row];
-        // The scope holds the row alone; the analysis still sees the scroll area.
+        // The scope holds the row alone; the analysis still sees the scroll
+        // area.
         let analysis = LayoutAnalysis::new(&registry, Some(viewport_rect));
         assert!(analysis.offscreen(&scope).is_empty());
 

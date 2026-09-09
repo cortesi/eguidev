@@ -83,7 +83,7 @@ use results::*;
 pub use script::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
     ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
-    ScriptTiming,
+    ScriptModules, ScriptTiming,
 };
 use types::{OverlayDebugModeName, OverlayDebugOptionsInput};
 pub use utils::ensure_automation_ready;
@@ -852,19 +852,22 @@ impl DevMcpServer {
         options: Option<ScriptEvalOptions>,
     ) -> ToolResult<CallToolResult> {
         let timeout_ms = timeout_ms.unwrap_or(script::DEFAULT_SCRIPT_TIMEOUT_MS);
-        let options = options.unwrap_or_default();
-        let source_name = options
-            .source_name
-            .unwrap_or_else(|| "script.luau".to_string());
+        let ScriptEvalOptions {
+            source_name,
+            args,
+            modules,
+        } = options.unwrap_or_default();
+        let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
         let inner = Arc::clone(&self.inner);
         let runtime = Arc::clone(&self.runtime);
-        let eval = script::run_script_eval(
+        let eval = script::run_script_eval_with_modules(
             inner,
             runtime,
             script,
             timeout_ms,
             source_name,
-            options.args,
+            args,
+            modules,
         )
         .await;
         Ok(eval.to_tool_result())
@@ -1604,6 +1607,7 @@ return {
                         ("ratio".to_string(), ScriptArgValue::Float(1.5)),
                         ("enabled".to_string(), ScriptArgValue::Bool(true)),
                     ]),
+                    ..ScriptEvalOptions::default()
                 }),
             )
             .await
@@ -1614,6 +1618,97 @@ return {
         assert_eq!(json["value"]["count"], 4);
         assert_eq!(json["value"]["ratio"], 1.5);
         assert_eq!(json["value"]["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn script_eval_checks_and_runs_named_module_sources() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "local helper = require('helpers/math')\nreturn helper.double(21)".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("probe.luau".to_string()),
+                    modules: ScriptModules::from([(
+                        "helpers/math.luau".to_string(),
+                        "local helper = {}\nfunction helper.double(value: number): number\n    return value * 2\nend\nreturn helper".to_string(),
+                    )]),
+                    ..ScriptEvalOptions::default()
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], 42);
+    }
+
+    #[tokio::test]
+    async fn script_eval_reports_module_type_errors_at_the_module_source() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "return require('helpers/broken')".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("probe.luau".to_string()),
+                    modules: ScriptModules::from([(
+                        "helpers/broken.luau".to_string(),
+                        "local value: string = 42\nreturn value".to_string(),
+                    )]),
+                    ..ScriptEvalOptions::default()
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["type"], "typecheck");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains("helpers/broken.luau:1:"),
+            "{json:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn script_eval_keeps_module_names_in_runtime_backtraces() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "local helper = require('helpers/runtime')\nreturn helper.fail()".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("probe.luau".to_string()),
+                    modules: ScriptModules::from([(
+                        "helpers/runtime.luau".to_string(),
+                        "local helper = {}\nfunction helper.fail()\n    error('helper boom')\nend\nreturn helper".to_string(),
+                    )]),
+                    ..ScriptEvalOptions::default()
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], false);
+        assert!(
+            json["error"]["backtrace"]
+                .as_array()
+                .expect("backtrace")
+                .iter()
+                .any(|line| line
+                    .as_str()
+                    .is_some_and(|line| line.contains("helpers/runtime"))),
+            "{json:#}"
+        );
     }
 
     #[tokio::test]
@@ -2422,6 +2517,7 @@ return viewport:widgets({ id_prefix = "missing" }),
                 Some(ScriptEvalOptions {
                     source_name: Some("integral-float.luau".to_string()),
                     args: ScriptArgs::from([("unit".to_string(), ScriptArgValue::Float(1.0))]),
+                    ..ScriptEvalOptions::default()
                 }),
             )
             .await
@@ -5034,8 +5130,8 @@ return state.scroll_state.offset.y"#
         let position = Pos2 { x: 20.0, y: 20.0 };
 
         inner.widgets.clear_registry(viewport_id);
-        // A container is recorded after its contents, so it is the last hit at any
-        // point inside it.
+        // A container is recorded after its contents, so it is the last hit at
+        // any point inside it.
         inner.widgets.record_widget(
             viewport_id,
             make_entry_with_rect(
@@ -5099,8 +5195,8 @@ return state.scroll_state.offset.y"#
         let position = Pos2 { x: 20.0, y: 20.0 };
 
         inner.widgets.clear_registry(viewport_id);
-        // A menu item paints in a later layer, and the panel behind it is recorded
-        // afterwards.
+        // A menu item paints in a later layer, and the panel behind it is
+        // recorded afterwards.
         let mut menu_item =
             make_entry_with_rect("menu.item", 1, WidgetRole::Button, item, Some("menu"));
         menu_item.layer_order = 2;

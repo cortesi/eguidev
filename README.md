@@ -40,9 +40,10 @@ local status = eguidev.widget("basic.status")
 assert(status ~= nil, "submit should update status")
 ```
 
-Scripts are strict Luau. eguidev checks each script before it runs, and the
-sandbox has no filesystem, network, or module imports. eguidev adds one global,
-`eguidev`. You can run the same script in three ways:
+Scripts are strict Luau. eguidev checks each script before it runs. The sandbox
+has no filesystem or network access and can import only the named modules that
+the caller supplies. eguidev adds one global, `eguidev`. You can run the same
+script in three ways:
 
 - **`edev eval script.luau`** runs one script and prints its structured result.
 - **`edev smoke`** runs your full suite against one live app.
@@ -87,10 +88,31 @@ behavior instead of app internals. No script depends on another script.
 `edev smoke` ignores return values: assertions decide pass or fail, and
 `eguidev.log(...)` adds evidence to the result.
 
+Set `[smoke] module_dir` when smoke and eval scripts share checked Luau source.
+Every `.luau` file below that directory becomes a named module. Its path below
+the directory is the `require` name, with or without the `.luau` suffix. Both
+commands use the same setting, so a script can run alone through `edev eval`:
+
+```toml
+[smoke]
+suite_dir = "smoketest/specs"
+module_dir = "smoketest/modules"
+```
+
+```luau
+local layout = require("layout")
+layout.assert_strict("project sheet")
+```
+
+Edev checks the root and all reachable modules before execution. Type errors
+and runtime backtraces name the module file. Failure bundles retain the root
+script and the complete module tree used for the failed evaluation.
+
 Use these flags while you write a suite:
 
 - `--list [--json]` shows the selected scripts and does not launch the app.
 - `--only GLOB` narrows the run. `--fail-fast` stops at the first failure.
+- `--module-dir DIR` overrides the shared Luau module directory.
 - `--repeat N` and `--until-fail N` find intermittent failures across rounds.
 - `--bundle` writes a failure bundle for each failure. A bundle holds the tree
   dump, diagnostics, screenshots, script logs, and app output.

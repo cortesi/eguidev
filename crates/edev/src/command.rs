@@ -396,6 +396,7 @@ async fn run_dump_script(
             options: Some(ScriptEvalOptions {
                 source_name: Some("@edev_dump.luau".to_string()),
                 args: dump_script_args(config),
+                ..ScriptEvalOptions::default()
             }),
         },
     )
@@ -471,6 +472,7 @@ pub async fn run_eval_script(
     config: &EvalConfig,
     source: String,
 ) -> Result<(), EdevError> {
+    let modules = load_script_modules(config.module_dir.as_deref())?;
     let result = call_script_eval_result(
         &client,
         ScriptEvalRequest {
@@ -479,6 +481,7 @@ pub async fn run_eval_script(
             options: Some(ScriptEvalOptions {
                 source_name: Some(config.script.display().to_string()),
                 args: config.args.clone(),
+                modules,
             }),
         },
     )
@@ -604,6 +607,7 @@ async fn eval_fixture_apply(
             options: Some(ScriptEvalOptions {
                 source_name: Some("@edev_fixture_apply.luau".to_string()),
                 args,
+                ..ScriptEvalOptions::default()
             }),
         },
     )

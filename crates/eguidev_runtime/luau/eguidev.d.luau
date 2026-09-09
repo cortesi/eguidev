@@ -30,8 +30,8 @@
 --   settle.
 -- - Return `ImageRef` values from `screenshot()` when you want image blocks in
 --   the MCP response.
--- - The sandbox has no filesystem access, no network access, and no module
---   imports.
+-- - The sandbox has no filesystem or network access. It can import only named
+--   modules that the caller supplies.
 
 export type Pos = {
     x: number,

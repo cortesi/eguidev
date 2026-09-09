@@ -421,6 +421,9 @@ pub mod eguidev_runtime {
         #[serde(default)]
         /// Optional JSON object exposed to the script as the global `args` table.
         pub args: ScriptArgs,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        /// Named Luau modules available to this script and its dependencies.
+        pub modules: ScriptModules,
     }
 
     /// Structured result of evaluating a Luau script directly against a `DevMcp`
@@ -499,6 +502,13 @@ pub mod eguidev_runtime {
         /// One-based column number when available.
         pub column: Option<usize>,
     }
+
+    /// Named Luau module sources available through `require` during one evaluation.
+    ///
+    /// Keys are portable module paths relative to the caller-selected module root.
+    /// A `.luau` suffix is optional for `require`; retaining it here keeps source
+    /// names useful in diagnostics and failure bundles.
+    pub type ScriptModules = std::collections::BTreeMap<String, String>;
 
     /// Timing information for a script evaluation.
     pub struct ScriptTiming {

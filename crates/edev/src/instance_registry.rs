@@ -407,8 +407,8 @@ fn is_process_alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
-    // The launcher is a same-user process, so BSD info remains available throughout
-    // its life.
+    // The launcher is a same-user process, so BSD info remains available
+    // throughout its life.
     pidinfo::<BSDInfo>(pid, 0).is_ok_and(|info| info.pbi_status != libc::SZOMB)
 }
 

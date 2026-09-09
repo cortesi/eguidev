@@ -444,6 +444,7 @@ pub fn run_suite(devmcp: &DevMcp, handle: &Handle, config: &SuiteConfig) -> Suit
             ScriptEvalOptions {
                 source_name: Some(request.path),
                 args: request.args,
+                ..ScriptEvalOptions::default()
             },
         )))
     })

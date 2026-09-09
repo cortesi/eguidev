@@ -3,12 +3,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
+    ffi::OsStr,
     fmt::Display,
-    fs,
+    fs::{self, DirEntry},
     future::{Future, pending},
     io as std_io,
     net::{Ipv4Addr, TcpListener},
-    path::{Path, PathBuf},
+    path::{MAIN_SEPARATOR, Path, PathBuf},
     pin::Pin,
     process::ExitStatus,
     sync::{Arc, Mutex},
@@ -24,7 +25,7 @@ use eguidev::{
 };
 use eguidev_runtime::{
     ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
-    ScriptEvalRequest, script_definitions,
+    ScriptEvalRequest, ScriptModules, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, discover_suite_scripts, run_suite_with},
 };
 use instance_registry::{
@@ -79,7 +80,8 @@ use config::{
     SmokeConfig,
 };
 use failure_bundle::{
-    BundleContext, image_extension, pretty_json, safe_file_component, write_failure_bundle,
+    BundleContext, FailureBundleScript, image_extension, pretty_json, safe_file_component,
+    write_failure_bundle,
 };
 use fixture_projection::{FIXTURE_APPLY_SCRIPT, FIXTURE_LIST_SCRIPT, parse_fixture_list};
 use session::AppSession;
@@ -107,6 +109,47 @@ const RESTART_MAX_ATTEMPTS: usize = 3;
 const RECORD_WINDOW_DISCOVERY_ATTEMPTS: usize = 3;
 /// Checked-in projection used by the dump command.
 const DUMP_SCRIPT: &str = include_str!("../luau/dump.luau");
+
+/// Load one deterministic Luau module tree for `edev smoke` and `edev eval`.
+fn load_script_modules(module_dir: Option<&Path>) -> Result<ScriptModules, EdevError> {
+    let Some(module_dir) = module_dir else {
+        return Ok(ScriptModules::default());
+    };
+    if !module_dir.is_dir() {
+        return Err(EdevError::InvalidArgs(format!(
+            "module directory is not an existing directory: {}",
+            module_dir.display()
+        )));
+    }
+    let mut pending = vec![module_dir.to_path_buf()];
+    let mut modules = ScriptModules::default();
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(DirEntry::file_name);
+        for entry in entries.into_iter().rev() {
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() || path.extension().and_then(OsStr::to_str) != Some("luau") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(module_dir)
+                .expect("walked module stays below its root");
+            let name = relative.to_str().ok_or_else(|| {
+                EdevError::InvalidArgs(format!(
+                    "module path is not valid UTF-8: {}",
+                    path.display()
+                ))
+            })?;
+            modules.insert(name.replace(MAIN_SEPARATOR, "/"), fs::read_to_string(path)?);
+        }
+    }
+    Ok(modules)
+}
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the edev launcher.
@@ -1475,17 +1518,20 @@ async fn run_smoke_suite(
     config: &SmokeConfig,
     bundle_context: Option<BundleContext>,
 ) -> Result<SuiteResult, EdevError> {
+    let modules = load_script_modules(config.module_dir.as_deref())?;
     Ok(run_suite_with(
         &config.suite,
         |request: ScriptRunRequest| {
             let script_path = request.path.clone();
             let script_args = request.args.clone();
+            let script_source = request.source.clone();
             let payload = script_eval_request_value(ScriptEvalRequest {
                 script: request.source,
                 timeout_ms: request.timeout_ms,
                 options: Some(ScriptEvalOptions {
                     source_name: Some(script_path.clone()),
                     args: request.args,
+                    modules: modules.clone(),
                 }),
             });
             let result = block_in_place(|| {
@@ -1511,9 +1557,13 @@ async fn run_smoke_suite(
                     Handle::current().block_on(write_failure_bundle(
                         &client,
                         context,
-                        &script_path,
-                        bundle_round,
-                        &script_args,
+                        FailureBundleScript {
+                            path: &script_path,
+                            round: bundle_round,
+                            args: &script_args,
+                            source: &script_source,
+                            modules: &modules,
+                        },
                         &outcome,
                     ))
                 });
@@ -2095,12 +2145,24 @@ mod tests {
             ScriptArgValue::String("Sky".to_string()),
         )]);
 
-        let meta = bundle_meta(&context, "nested/fail.luau", Some(2), &args, &outcome)
-            .expect("bundle meta");
+        let modules = ScriptModules::from([(
+            "layout.luau".to_string(),
+            "return { strict = true }".to_string(),
+        )]);
+        let meta = bundle_meta(
+            &context,
+            "nested/fail.luau",
+            Some(2),
+            &args,
+            &modules,
+            &outcome,
+        )
+        .expect("bundle meta");
         let meta: serde_json::Value = serde_json::from_str(&meta).expect("meta json");
         assert_eq!(meta["script"]["path"], "nested/fail.luau");
         assert_eq!(meta["script"]["round"], 2);
         assert_eq!(meta["script"]["args"]["name"], "Sky");
+        assert_eq!(meta["modules"][0], "layout.luau");
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
         assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
         assert_eq!(meta["failure"]["details"]["widget"], "basic.status");
@@ -2131,6 +2193,13 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let (app, _handle) = make_recording_eval_app(Arc::clone(&requests)).await;
         let tempdir = test_tempdir();
+        let module_dir = tempdir.path().join("modules");
+        fs::create_dir_all(module_dir.join("shared")).expect("create modules");
+        fs::write(
+            module_dir.join("shared/value.luau"),
+            "return { value = 42 }",
+        )
+        .expect("write module");
         let config = EvalConfig {
             launch: test_config(tempdir.path().to_path_buf()),
             script: tempdir.path().join("probe.luau"),
@@ -2140,6 +2209,7 @@ mod tests {
                 "name".to_string(),
                 ScriptArgValue::String("Sky".to_string()),
             )]),
+            module_dir: Some(module_dir),
         };
 
         run_eval_script(
@@ -2159,6 +2229,16 @@ mod tests {
             request.options.as_ref().expect("options").args.get("name"),
             Some(&ScriptArgValue::String("Sky".to_string()))
         );
+        assert_eq!(
+            request
+                .options
+                .as_ref()
+                .expect("options")
+                .modules
+                .get("shared/value.luau")
+                .map(String::as_str),
+            Some("return { value = 42 }")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2169,6 +2249,10 @@ mod tests {
         let suite_dir = tempdir.path().join("suite");
         fs::create_dir_all(&suite_dir).expect("create suite");
         fs::write(suite_dir.join("10_fail.luau"), "assert(false, \"boom\")").expect("write script");
+        let module_dir = tempdir.path().join("modules");
+        fs::create_dir_all(&module_dir).expect("create modules");
+        fs::write(module_dir.join("layout.luau"), "return { strict = true }")
+            .expect("write module");
         let bundle_dir = tempdir.path().join("bundles");
         let stderr_buffer = Arc::new(Mutex::new(b"app stderr\n".to_vec()));
         let stdout_buffer = Arc::new(Mutex::new(b"app stdout\n".to_vec()));
@@ -2199,6 +2283,7 @@ mod tests {
             list: false,
             list_json: false,
             bundle_dir: Some(bundle_dir.clone()),
+            module_dir: Some(module_dir),
         };
 
         let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context.clone()))
@@ -2226,6 +2311,14 @@ mod tests {
                 .unwrap_or_default()
         );
         assert!(script_dir.join("failure.txt").is_file());
+        assert_eq!(
+            fs::read_to_string(script_dir.join("script.luau")).expect("script source"),
+            "assert(false, \"boom\")"
+        );
+        assert_eq!(
+            fs::read_to_string(script_dir.join("modules/layout.luau")).expect("module source"),
+            "return { strict = true }"
+        );
         assert!(script_dir.join("tree.json").is_file());
         assert!(script_dir.join("tree.txt").is_file());
         assert!(script_dir.join("diagnostics.json").is_file());
@@ -2290,6 +2383,7 @@ mod tests {
             list: false,
             list_json: false,
             bundle_dir: Some(bundle_dir.clone()),
+            module_dir: None,
         };
 
         let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
@@ -2359,6 +2453,7 @@ mod tests {
             list: false,
             list_json: false,
             bundle_dir: Some(bundle_root),
+            module_dir: None,
         };
 
         let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))

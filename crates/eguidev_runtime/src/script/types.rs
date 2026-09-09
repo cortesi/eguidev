@@ -56,6 +56,13 @@ impl<'de> Deserialize<'de> for ScriptArgValue {
 /// Deterministic map of script args exposed to Luau as the global `args` table.
 pub type ScriptArgs = BTreeMap<String, ScriptArgValue>;
 
+/// Named Luau module sources available through `require` during one evaluation.
+///
+/// Keys are portable module paths relative to the caller-selected module root.
+/// A `.luau` suffix is optional for `require`; retaining it here keeps source
+/// names useful in diagnostics and failure bundles.
+pub type ScriptModules = BTreeMap<String, String>;
+
 /// Options for evaluating a Luau script.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct ScriptEvalOptions {
@@ -64,6 +71,9 @@ pub struct ScriptEvalOptions {
     /// Optional JSON object exposed to the script as the global `args` table.
     #[serde(default)]
     pub args: ScriptArgs,
+    /// Named Luau modules available to this script and its dependencies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: ScriptModules,
 }
 
 /// Request payload for the `script_eval` MCP tool.
@@ -331,11 +341,12 @@ mod tests {
     use super::{ScriptArgValue, ScriptEvalOptions};
 
     #[test]
-    fn script_eval_options_default_args_to_empty_map() {
+    fn script_eval_options_default_maps_to_empty() {
         let options: ScriptEvalOptions =
             serde_json::from_value(json!({ "source_name": "test.luau" })).expect("options");
         assert_eq!(options.source_name.as_deref(), Some("test.luau"));
         assert!(options.args.is_empty());
+        assert!(options.modules.is_empty());
     }
 
     #[test]
