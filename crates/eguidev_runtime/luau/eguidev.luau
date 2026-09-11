@@ -334,6 +334,7 @@ end
 local function validateWidgetCondition(condition: WidgetCondition)
     local hasStateField = condition.actionable ~= nil
         or condition.visible ~= nil
+        or condition.covered ~= nil
         or condition.enabled ~= nil
         or condition.focused ~= nil
         or condition.selected ~= nil
@@ -407,11 +408,12 @@ local function widgetConditionMatches(state: WidgetState?, condition: WidgetCond
     local current = state :: WidgetState
     if condition.actionable == true then
         local visibleFraction = if current.layout ~= nil then current.layout.visible_fraction else 1
-        if not current.visible or not current.enabled or visibleFraction <= 0 then
+        if not current.visible or not current.enabled or visibleFraction <= 0 or current.covered then
             return false
         end
     end
     if condition.visible ~= nil and current.visible ~= condition.visible then return false end
+    if condition.covered ~= nil and current.covered ~= condition.covered then return false end
     if condition.enabled ~= nil and current.enabled ~= condition.enabled then return false end
     if condition.focused ~= nil and current.focused ~= condition.focused then return false end
     if condition.selected ~= nil and current.selected ~= condition.selected then return false end
@@ -446,7 +448,8 @@ end
 
 local function widgetConditionDescription(condition: WidgetCondition): string
     if condition.actionable == true then
-        return "interaction-ready condition; call scroll_into_view() before wait({ actionable = true })"
+        return "interaction-ready and uncovered condition; call scroll_into_view() first for "
+            .. "clipping, or close the overlay that covers the widget"
     end
     return "condition"
 end

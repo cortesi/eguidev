@@ -79,7 +79,13 @@ impl DevMcpServer {
         target: &WidgetRef,
     ) -> ToolResult<(WidgetRegistryEntry, egui::ViewportId)> {
         let (widget, viewport_id) = resolve_widget_and_viewport(&self.inner, viewport_id, target)?;
+        if pointer_ready(&widget) {
+            return Ok((widget, viewport_id));
+        }
         if let Some(error) = invisible_interaction_error(&self.inner, &widget, viewport_id) {
+            return Err(error.into());
+        }
+        if let Some(error) = covered_interaction_error(&self.inner, &widget, viewport_id) {
             return Err(error.into());
         }
         Ok((widget, viewport_id))

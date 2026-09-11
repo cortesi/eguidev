@@ -52,9 +52,15 @@ identity used by waits, dumps, diffs, observations, and errors.
 ## Conditions, fixtures, and actions
 
 `WidgetCondition` and `ViewportCondition` are the shared readiness language. Widget waits accept a
-condition or a strict Luau predicate. Absence is `{ present = false }`; actionable readiness is
-`{ actionable = true }`. `Widget:expect(...)` extends the same condition with relations,
-hierarchy, text-fit, and paint checks.
+condition or a strict Luau predicate. Absence is `{ present = false }`. Actionable readiness is
+`{ actionable = true }`, which also requires the widget to be uncovered by another egui layer.
+`Widget:expect(...)` extends the same condition with relations, hierarchy, text-fit, and paint
+checks.
+
+`WidgetState.covered` reports whether another egui layer sits over the widget's action point, such
+as a floating card or a modal backdrop. Pointer admission and `{ actionable = true }` both require
+`covered = false`. `scroll_into_view()`'s readiness poll does not, since scrolling cannot uncover a
+widget under a fixed overlay.
 
 Fixture registration stores precondition and ready `FixtureTargetSpec` values. A fixture without
 preconditions is a baseline that is safe to invoke independently. A fixture with preconditions is

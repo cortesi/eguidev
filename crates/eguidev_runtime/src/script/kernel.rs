@@ -3140,7 +3140,7 @@ mod tests {
         runtime::{self, Runtime},
         types::{
             FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, WidgetRegistryEntry,
-            WidgetRole, WidgetValue,
+            WidgetRole, WidgetRoleMeta, WidgetValue,
         },
     };
 
@@ -4146,6 +4146,192 @@ return {
         );
     }
 
+    /// Render a background button under an interactable `Area` at
+    /// `Order::Middle`, and a second button inside the area, into `inner`'s
+    /// registry. An area needs one prior frame before egui treats it as
+    /// interactable, and this frame shows the area before the background
+    /// button so a single repeat already reaches steady-state coverage.
+    fn render_covered_scene(inner: &Arc<Inner>) {
+        use crate::widget_registry::{WidgetMeta, record_widget};
+
+        let viewport_id = egui::ViewportId::ROOT;
+        let ctx = egui::Context::default();
+        let raw_input = || egui::RawInput {
+            viewport_id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            inner.widgets.clear_registry(viewport_id);
+            let output = ctx.run_ui(raw_input(), |ui| {
+                let card = egui::Area::new(egui::Id::new("floating.card"))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_size(egui::vec2(200.0, 200.0));
+                        ui.button("Approve")
+                    });
+                record_widget(
+                    &inner.widgets,
+                    "card.approve".to_string(),
+                    &card.inner,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+
+                let background = ui.button("Hidden approve");
+                record_widget(
+                    &inner.widgets,
+                    "background.approve".to_string(),
+                    &background,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Hidden approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            });
+            output.drop_without_applying_deltas();
+            inner.widgets.finalize_registry(viewport_id);
+        }
+    }
+
+    #[test]
+    fn covered_widget_state_reports_coverage_by_the_floating_card() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local background = eguidev.widget("background.approve"):state()
+local card = eguidev.widget("card.approve"):state()
+assert(background ~= nil and card ~= nil)
+return { background_covered = background.covered, card_covered = card.covered }"#
+                .to_string(),
+            1_000,
+            "covered-state.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({ "background_covered": true, "card_covered": false }))
+        );
+    }
+
+    /// `Widget:click()` waits for `{ actionable = true }` before it queues the
+    /// low-level click, exactly as it already does for an invisible or
+    /// disabled widget, so a permanently covered widget times out here rather
+    /// than reaching the covering card. The direct `not_actionable` reason
+    /// `covered` is asserted at the tool layer by
+    /// `action_click_rejects_covered_widget` in `automation::mod`, which calls
+    /// the click tool without this settling wait.
+    #[test]
+    fn covered_widget_click_times_out_instead_of_reaching_the_card() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("background.approve"):click({ timeout_ms = 60, poll_interval_ms = 5 })"#
+                .to_string(),
+            1_000,
+            "covered-click.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("covered click timeout");
+        assert_eq!(error.error_type, "timeout");
+    }
+
+    #[test]
+    fn covered_widget_fails_the_actionable_wait() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("background.approve"):wait(
+    { actionable = true },
+    { timeout_ms = 60, poll_interval_ms = 5 }
+)"#
+            .to_string(),
+            1_000,
+            "covered-actionable-wait.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("actionable wait timeout");
+        assert_eq!(error.error_type, "timeout");
+    }
+
+    // `scroll_into_view()`'s settle-enabled interaction-ready poll is tested
+    // in `automation::mod::covered_widget_scroll_into_view_still_settles`,
+    // which drives real frames: `settle_after_action` needs an advancing
+    // frame count that this blocking, single-shot harness cannot provide.
+
+    #[test]
+    fn uncovered_widget_inside_the_card_clicks_normally() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("card.approve"):click({ settle = false })"#.to_string(),
+            1_000,
+            "card-click.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+    }
+
+    #[test]
+    fn covered_query_filter_and_expect_condition_select_the_right_widget() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local covered = eguidev.root:widgets({ covered = true })
+local uncovered = eguidev.root:widgets({ covered = false })
+eguidev.widget("card.approve"):expect({ covered = false })
+return {
+    covered_count = #covered,
+    covered_first = covered[1].id,
+    uncovered_count = #uncovered,
+    uncovered_first = uncovered[1].id,
+}"#
+            .to_string(),
+            1_000,
+            "covered-filter.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        let value = outcome.value.expect("script value");
+        assert_eq!(value["covered_count"], 1);
+        assert_eq!(value["covered_first"], "background.approve");
+        assert_eq!(value["uncovered_count"], 1);
+        assert_eq!(value["uncovered_first"], "card.approve");
+    }
+
     #[test]
     fn click_settle_shares_one_timeout_budget() {
         let inner = Arc::new(Inner::new());
@@ -4380,6 +4566,7 @@ return { id = ready.widget.id, viewport = widget.__viewport_id }
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         }
     }
 }

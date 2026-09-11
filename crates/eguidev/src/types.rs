@@ -364,6 +364,10 @@ pub struct WidgetCondition {
     /// Required visibility state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    /// Required coverage state: whether another egui layer covers the
+    /// widget's action point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered: Option<bool>,
     /// Required enabled state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -1408,6 +1412,7 @@ impl WidgetCondition {
     pub fn validate(&self) -> Result<(), String> {
         let has_state_field = self.actionable.is_some()
             || self.visible.is_some()
+            || self.covered.is_some()
             || self.enabled.is_some()
             || self.focused.is_some()
             || self.selected.is_some()
@@ -2623,6 +2628,7 @@ mod tests {
                 enabled: true,
                 visible: true,
                 focused: false,
+                covered: false,
             }
         }
 
@@ -2712,6 +2718,11 @@ pub struct WidgetRegistryEntry {
     /// Whether the widget reported egui focus in the captured frame (may lag
     /// keyboard focus).
     pub focused: bool,
+    /// Whether another egui layer covers the widget's action point (the
+    /// center of `interact_rect`), so a pointer action here would route to
+    /// that layer instead. `false` when no layer, or only the widget's own
+    /// layer, sits at that point.
+    pub covered: bool,
 }
 
 /// Live widget snapshot exposed to scripting surfaces.
@@ -2774,6 +2785,9 @@ pub struct WidgetState {
     /// Whether the widget reported egui focus in the captured frame (may lag
     /// keyboard focus).
     pub focused: bool,
+    /// Whether another egui layer covers the widget's action point. See
+    /// [`WidgetState::covered`].
+    pub covered: bool,
 }
 
 impl WidgetRegistryEntry {
@@ -2848,6 +2862,7 @@ impl From<&WidgetRegistryEntry> for WidgetState {
             enabled: entry.enabled,
             visible: entry.visible,
             focused: entry.focused,
+            covered: entry.covered,
         }
     }
 }

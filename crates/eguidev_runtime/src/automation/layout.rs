@@ -519,6 +519,7 @@ mod tests {
             enabled: true,
             visible,
             focused: false,
+            covered: false,
         }
     }
 

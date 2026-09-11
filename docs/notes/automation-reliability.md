@@ -43,6 +43,12 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - Pointer actions fail fast with `invisible_interaction` when the target widget is hidden or fully
   clipped. Scripts should wait for `{ actionable = true }` or call `scroll_into_view()` before
   interacting with content that may be outside the viewport.
+- Pointer actions also fail fast with `not_actionable` and reason `covered`. This happens when
+  another egui layer sits over the target's action point, such as a floating card or a modal
+  backdrop. `eguidev` computes `covered` from `ctx.layer_id_at` at record time and publishes it on
+  `WidgetState`. A click never silently reaches the covering layer instead of the intended widget.
+  `scroll_into_view()` ignores coverage, because scrolling cannot uncover a widget under a fixed
+  overlay. `{ actionable = true }` and pointer admission both require the widget to be uncovered.
 
 6. Fixture reset contract and boundary cleanup
 - Fixture apply boundaries clear transient DevMCP state (queued input/commands, queued widget

@@ -173,13 +173,17 @@ declare class Widget
     read parent: (self: Widget) -> Widget?
     read children: (self: Widget) -> { Widget }
 
-    --- Clicks the widget's interact-rect center. Input is coordinate-based: a
-    --- covering widget receives the event. Probe occlusion with Viewport:widgets_at.
+    --- Clicks the widget's interact-rect center. Fails with `not_actionable`
+    --- and reason `covered` when another egui layer covers that point, such
+    --- as a floating card drawn above the widget. Probe occlusion with
+    --- `state().covered` or Viewport:widgets_at.
     read click: (self: Widget, options: ClickOptions?) -> ()
-    --- Moves the pointer to the widget. Unless settle is false, it then waits
-    --- until the app reports the pointer inside the target with no covering
-    --- widget, and re-issues one missed move. A hover that never arrives
-    --- fails and names the covering widget.
+    --- Moves the pointer to the widget. Fails immediately with the same
+    --- `covered` reason as click when another egui layer covers the target.
+    --- Otherwise, unless settle is false, it then waits until the app reports
+    --- the pointer inside the target with no covering widget, and re-issues
+    --- one missed move. A hover that never arrives fails and names the
+    --- covering widget.
     read hover: (self: Widget, options: HoverOptions?) -> ()
     read focus: (self: Widget, options: ActionOptions?) -> ()
     read type_text: (self: Widget, text: string, options: TypeTextOptions?) -> ()
@@ -195,9 +199,12 @@ declare class Widget
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
     --- Unless settle is false, waits until each scrolled area reports the
     --- requested offset on two consecutive captures, then until the target
-    --- rect stops moving and the widget is interaction-ready. Times out when
-    --- the widget is disabled. The same `interaction_ready` predicate governs
-    --- this poll, `actionable` waits, and pointer admission.
+    --- rect stops moving and the widget is interaction-ready (visible,
+    --- enabled, and not clipped away). Times out when the widget is disabled.
+    --- This poll ignores coverage: scrolling cannot uncover a widget under a
+    --- fixed overlay, so a script can scroll a covered widget into view to
+    --- read it. `actionable` waits and pointer admission use a stricter
+    --- predicate that also requires the widget to be uncovered.
     read scroll_into_view: (self: Widget, options: ActionOptions?) -> ()
 
     read text_measure: (self: Widget) -> TextMeasure
@@ -255,6 +262,11 @@ export type WidgetState = {
     enabled: boolean,
     visible: boolean,
     focused: boolean,
+    --- True when another egui layer covers this widget's action point (the
+    --- center of interact_rect), such as a floating card drawn above it. A
+    --- pointer action on a covered widget fails with `not_actionable` and
+    --- reason `covered` instead of silently reaching the covering layer.
+    covered: boolean,
 }
 
 export type ViewportState = {
@@ -306,6 +318,7 @@ export type WidgetDump = {
     enabled: boolean,
     visible: boolean,
     focused: boolean,
+    covered: boolean,
     selected: boolean?,
     interact_rect: Rect?,
     layout: WidgetLayout?,
@@ -466,6 +479,7 @@ export type WidgetFilter = {
     enabled: boolean?,
     focused: boolean?,
     selected: boolean?,
+    covered: boolean?,
 }
 
 export type WidgetQuery = WidgetFilter & {
@@ -721,10 +735,13 @@ export type ScrollAtCondition = {
 --- `present = false` cannot appear with a state field.
 export type WidgetCondition = {
     present: boolean?,
-    --- Requires presence, visibility, enabled state, and a positive visible
-    --- fraction.
+    --- Requires presence, visibility, enabled state, a positive visible
+    --- fraction, and that no other egui layer covers the widget.
     actionable: boolean?,
     visible: boolean?,
+    --- Whether another egui layer must (true) or must not (false) cover the
+    --- widget's action point.
+    covered: boolean?,
     enabled: boolean?,
     focused: boolean?,
     selected: boolean?,

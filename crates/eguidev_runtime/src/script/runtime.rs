@@ -1005,6 +1005,8 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let selected = parse_optional_bool(options, "selected")
             .map_err(|error| self.type_error(pos, error.message))?;
+        let covered = parse_optional_bool(options, "covered")
+            .map_err(|error| self.type_error(pos, error.message))?;
         let widgets = collect_widget_list(
             &self.server.inner,
             viewport_id,
@@ -1017,6 +1019,7 @@ impl ScriptRuntime {
             enabled,
             focused,
             selected,
+            covered,
         )
         .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_list_json(pos, &widgets)
@@ -2821,6 +2824,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         })
     }
 

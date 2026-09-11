@@ -731,6 +731,7 @@ pub fn collect_widget_list(
     enabled: Option<bool>,
     focused: Option<bool>,
     selected: Option<bool>,
+    covered: Option<bool>,
 ) -> ToolResult<Vec<WidgetRegistryEntry>> {
     ensure_automation_ready(inner)?;
     let viewport_id = resolve_viewport_id(inner, viewport_id)?;
@@ -750,6 +751,9 @@ pub fn collect_widget_list(
     }
     if let Some(selected) = selected {
         widgets.retain(|entry| entry.selected() == Some(selected));
+    }
+    if let Some(covered) = covered {
+        widgets.retain(|entry| entry.covered == covered);
     }
     if let Some(role) = role {
         widgets.retain(|entry| entry.role == role);
@@ -782,19 +786,35 @@ fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
         .map_or(1.0, |layout| layout.visible_fraction)
 }
 
-/// Whether a widget exists in a state that can accept an interaction.
+/// Whether a widget exists in a state that could accept an interaction, apart
+/// from coverage by another layer.
 ///
-/// This one predicate governs pointer admission, the Luau `actionable`
-/// condition, and the poll that `scroll_into_view` runs. Keeping them identical
-/// means a wait that passes cannot be followed by a click that fails for the
-/// same reason.
+/// This predicate alone governs the poll that `scroll_into_view` runs.
+/// Scrolling cannot uncover a widget sitting under a fixed overlay, so a poll
+/// that also required [`WidgetRegistryEntry::covered`] to be false would spin
+/// until timeout for a script that scrolls such a widget into view only to
+/// read it. Pointer admission and the Luau `actionable` condition require
+/// [`pointer_ready`] instead, which adds the coverage check.
 pub fn interaction_ready(widget: &WidgetRegistryEntry) -> bool {
     widget.visible && widget.enabled && widget_visible_fraction(widget) > 0.0
+}
+
+/// Whether a widget can accept a pointer action right now.
+///
+/// This adds the coverage check to [`interaction_ready`]: a widget under
+/// another egui layer would route a pointer event to that layer instead, so
+/// pointer admission and the Luau `actionable` condition both require this.
+pub fn pointer_ready(widget: &WidgetRegistryEntry) -> bool {
+    interaction_ready(widget) && !widget.covered
 }
 
 /// Remedy named by the invisible-interaction error and by its `hint` detail.
 pub const INTERACTION_READY_HINT: &str =
     "call wait({ actionable = true }) after scroll_into_view(), or check clipping";
+
+/// Remedy named by the covered-widget error and by its `hint` detail.
+pub const COVERED_HINT: &str =
+    "close or fold the overlay that covers this widget before interacting with it";
 
 fn invisible_interaction_error(
     inner: &Inner,
@@ -823,6 +843,39 @@ fn invisible_interaction_error(
         .with_details(json!({
             "reason": "invisible_interaction",
             "hint": INTERACTION_READY_HINT,
+            "widget": WidgetState::from(widget),
+            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
+                json!({
+                    "id": viewport_id_to_string(viewport_id),
+                })
+            }),
+            "layout": widget.layout.clone(),
+        })),
+    )
+}
+
+/// Error returned when a pointer action targets a widget that
+/// [`interaction_ready`] admits but another egui layer covers.
+fn covered_interaction_error(
+    inner: &Inner,
+    widget: &WidgetRegistryEntry,
+    viewport_id: egui::ViewportId,
+) -> Option<ToolError> {
+    if !widget.covered {
+        return None;
+    }
+    let viewport = viewport_snapshot_for(inner, viewport_id);
+    Some(
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!(
+                "Cannot interact with widget {:?}: another layer covers it; {COVERED_HINT}",
+                widget.id
+            ),
+        )
+        .with_details(json!({
+            "reason": "covered",
+            "hint": COVERED_HINT,
             "widget": WidgetState::from(widget),
             "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
                 json!({
@@ -1025,6 +1078,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("widget list")
     }
@@ -1074,6 +1128,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         }
     }
 
@@ -4331,6 +4386,30 @@ return state.scroll_state.offset.y"#
     }
 
     #[test]
+    fn pointer_ready_also_requires_the_widget_to_be_uncovered() {
+        let plain = make_entry("plain", 1, WidgetRole::Button);
+        assert!(interaction_ready(&plain));
+        assert!(pointer_ready(&plain));
+
+        let mut covered = make_entry("covered", 1, WidgetRole::Button);
+        covered.covered = true;
+        // A covered widget still satisfies interaction_ready: it is visible,
+        // enabled, and unclipped. scroll_into_view's poll must keep accepting
+        // it, since scrolling cannot uncover a widget under a fixed overlay.
+        assert!(interaction_ready(&covered));
+        assert!(
+            !pointer_ready(&covered),
+            "a covered widget must not admit a pointer action"
+        );
+
+        let mut hidden_and_covered = make_entry("hidden_and_covered", 1, WidgetRole::Button);
+        hidden_and_covered.visible = false;
+        hidden_and_covered.covered = true;
+        assert!(!interaction_ready(&hidden_and_covered));
+        assert!(!pointer_ready(&hidden_and_covered));
+    }
+
+    #[test]
     fn settle_root_fresh_frame_requires_root_capture() {
         let inner = Arc::new(Inner::new());
         inner.advance_frame();
@@ -4405,6 +4484,129 @@ return state.scroll_state.offset.y"#
             .expect("details");
         assert_eq!(details["reason"], "invisible_interaction");
         assert_eq!(details["layout"]["visible_fraction"], 0.0);
+    }
+
+    #[tokio::test]
+    async fn action_click_rejects_covered_widget() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("covered", 1, WidgetRole::Button);
+        entry.covered = true;
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let error = server
+            .action_click(None, widget_ref_id("covered"), None, None, None)
+            .await
+            .expect_err("a covered widget should not be clicked");
+
+        assert_eq!(error.code, ErrorCode::NotActionable.as_str());
+        assert!(error.message.contains("covers it"), "{}", error.message);
+        let details = error
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .expect("details");
+        assert_eq!(details["reason"], "covered");
+        assert!(
+            details["hint"]
+                .as_str()
+                .is_some_and(|hint| !hint.is_empty()),
+            "{details:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn covered_widget_scroll_into_view_still_settles() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+        let ctx = egui::Context::default();
+        let raw_input = || egui::RawInput {
+            viewport_id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+
+        // An area needs one prior frame before egui treats it as
+        // interactable, and the card renders before the background button so
+        // a single repeat already reaches steady-state coverage.
+        for _ in 0..2 {
+            inner.widgets.clear_registry(viewport_id);
+            discard_output(ctx.run_ui(raw_input(), |ui| {
+                let card = egui::Area::new(egui::Id::new("floating.card"))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_size(egui::vec2(200.0, 200.0));
+                        ui.button("Approve")
+                    });
+                record_widget(
+                    &inner.widgets,
+                    "card.approve".to_string(),
+                    &card.inner,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+
+                let background = ui.button("Hidden approve");
+                record_widget(
+                    &inner.widgets,
+                    "background.approve".to_string(),
+                    &background,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Hidden approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            }));
+            inner.widgets.finalize_registry(viewport_id);
+        }
+        capture_test_frame(&inner, &ctx);
+
+        let covered = resolve_widget(&inner, None, &widget_ref_id("background.approve"))
+            .expect("widget lookup")
+            .covered;
+        assert!(covered, "the background button should sit under the card");
+
+        // scroll_into_view's settle step needs an advancing frame count to
+        // observe its queued action as processed, so pump frames on the
+        // unchanged scene while the script awaits settling.
+        let inner_for_pump = Arc::clone(&inner);
+        let ctx_for_pump = ctx.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_millis(2)).await;
+                capture_test_frame(&inner_for_pump, &ctx_for_pump);
+            }
+        });
+
+        let result = server
+            .script_eval(
+                r#"eguidev.widget("background.approve"):scroll_into_view(
+    { timeout_ms = 1000, poll_interval_ms = 5 }
+)"#
+                .to_string(),
+                Some(TEST_SCRIPT_DEADLINE_MS),
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true, "{json:?}");
     }
 
     #[tokio::test]
@@ -5264,6 +5466,10 @@ return state.scroll_state.offset.y"#
         selected.role_state = Some(RoleState::Button { selected: true });
         inner.widgets.record_widget(viewport_id, selected);
 
+        let mut covered = make_entry("covered", 5, WidgetRole::Button);
+        covered.covered = true;
+        inner.widgets.record_widget(viewport_id, covered);
+
         inner.widgets.finalize_registry(viewport_id);
 
         let focused_only = collect_widget_list(
@@ -5277,6 +5483,7 @@ return state.scroll_state.offset.y"#
             None,
             None,
             Some(true),
+            None,
             None,
         )
         .expect("focused filter");
@@ -5297,6 +5504,7 @@ return state.scroll_state.offset.y"#
             None,
             None,
             Some(false),
+            None,
             None,
             None,
             None,
@@ -5322,6 +5530,7 @@ return state.scroll_state.offset.y"#
             Some(true),
             None,
             None,
+            None,
         )
         .expect("enabled filter");
         let enabled_ids: Vec<_> = enabled_only.iter().map(|entry| entry.id.as_str()).collect();
@@ -5341,6 +5550,7 @@ return state.scroll_state.offset.y"#
             None,
             None,
             Some(true),
+            None,
         )
         .expect("selected filter");
         assert_eq!(
@@ -5351,10 +5561,34 @@ return state.scroll_state.offset.y"#
             vec!["selected"]
         );
 
+        let covered_only = collect_widget_list(
+            &inner,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+        )
+        .expect("covered filter");
+        assert_eq!(
+            covered_only
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["covered"]
+        );
+
         let all = collect_widget_list(
             &inner,
             None,
             Some(true),
+            None,
             None,
             None,
             None,
