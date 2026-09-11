@@ -22,6 +22,7 @@ pub mod eguidev_runtime {
         //! Smoketest suite runner for Luau scripts against a live DevMCP app.
 
         /// Result of a single script execution.
+        #[derive(Clone, Debug, PartialEq)]
         pub struct ScriptResult {
             /// One-based round index for repeated suite runs.
             pub round: u32,
@@ -45,6 +46,7 @@ pub mod eguidev_runtime {
         }
 
         /// Input passed to a caller-supplied per-script smoke executor.
+        #[derive(Clone, Debug, PartialEq)]
         pub struct ScriptRunRequest {
             /// Forward-slash-normalized relative script path used for diagnostics.
             pub path: String,
@@ -59,6 +61,7 @@ pub mod eguidev_runtime {
         }
 
         /// Outcome for an individual smoketest script.
+        #[derive(Clone, Debug, Eq, PartialEq)]
         pub enum ScriptStatus {
             /// Script completed successfully.
             Pass,
@@ -69,6 +72,7 @@ pub mod eguidev_runtime {
         }
 
         /// Configuration for a smoketest suite run.
+        #[derive(Clone, Debug, PartialEq)]
         pub struct SuiteConfig {
             /// Directory containing `.luau` test scripts.
             pub suite_dir: std::path::PathBuf,
@@ -93,6 +97,7 @@ pub mod eguidev_runtime {
         }
 
         /// Result of running a full suite.
+        #[derive(Clone, Debug, PartialEq)]
         pub struct SuiteResult {
             /// Per-script results in execution order.
             pub results: Vec<ScriptResult>,
@@ -105,6 +110,7 @@ pub mod eguidev_runtime {
         }
 
         /// Runtime summary for one repeated suite round.
+        #[derive(Clone, Debug, Eq, PartialEq)]
         pub struct SuiteRoundResult {
             /// One-based round index.
             pub round: u32,
@@ -113,6 +119,7 @@ pub mod eguidev_runtime {
         }
 
         /// Repetition behavior for one smoke suite invocation.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub enum SuiteRunMode {
             /// Run the selected scripts this many times. Values below 1 are treated as
             /// one round.
@@ -123,6 +130,7 @@ pub mod eguidev_runtime {
         }
 
         /// Discovered smoke script metadata for list mode.
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
         pub struct SuiteScriptInfo {
             /// Forward-slash-normalized display path.
             pub path: String,
@@ -150,77 +158,12 @@ pub mod eguidev_runtime {
             F: FnMut(ScriptRunRequest) -> Result<crate::ScriptEvalOutcome, String>, {
         }
 
-        impl Clone for ScriptResult {
-            fn clone(&self) -> ScriptResult {}
-        }
-
-        impl Debug for ScriptResult {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl PartialEq for ScriptResult {
-            fn eq(&self, other: &ScriptResult) -> bool {}
-        }
-
-        impl Clone for ScriptRunRequest {
-            fn clone(&self) -> ScriptRunRequest {}
-        }
-
-        impl Debug for ScriptRunRequest {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl PartialEq for ScriptRunRequest {
-            fn eq(&self, other: &ScriptRunRequest) -> bool {}
-        }
-
-        impl Clone for ScriptStatus {
-            fn clone(&self) -> ScriptStatus {}
-        }
-
-        impl Debug for ScriptStatus {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl Eq for ScriptStatus {
-            #[doc(hidden)]
-            fn assert_fields_are_eq(&self) {}
-        }
-
-        impl PartialEq for ScriptStatus {
-            fn eq(&self, other: &ScriptStatus) -> bool {}
-        }
-
-        impl Clone for SuiteConfig {
-            fn clone(&self) -> SuiteConfig {}
-        }
-
-        impl Debug for SuiteConfig {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl PartialEq for SuiteConfig {
-            fn eq(&self, other: &SuiteConfig) -> bool {}
-        }
-
         impl SuiteConfig {
             /// Apply suite-level egui diagnostic policy to one script outcome.
             pub fn apply_egui_diagnostic_policy(&self, outcome: &mut ScriptEvalOutcome) {}
 
             /// Maximum number of rounds this suite can run.
             pub fn round_limit(&self) -> u32 {}
-        }
-
-        impl Clone for SuiteResult {
-            fn clone(&self) -> SuiteResult {}
-        }
-
-        impl Debug for SuiteResult {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl PartialEq for SuiteResult {
-            fn eq(&self, other: &SuiteResult) -> bool {}
         }
 
         impl SuiteResult {
@@ -240,40 +183,6 @@ pub mod eguidev_runtime {
             pub fn success(&self) -> bool {}
         }
 
-        impl Clone for SuiteRoundResult {
-            fn clone(&self) -> SuiteRoundResult {}
-        }
-
-        impl Debug for SuiteRoundResult {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl Eq for SuiteRoundResult {
-            #[doc(hidden)]
-            fn assert_fields_are_eq(&self) {}
-        }
-
-        impl PartialEq for SuiteRoundResult {
-            fn eq(&self, other: &SuiteRoundResult) -> bool {}
-        }
-
-        impl Clone for SuiteRunMode {
-            fn clone(&self) -> SuiteRunMode {}
-        }
-
-        impl Debug for SuiteRunMode {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl Eq for SuiteRunMode {
-            #[doc(hidden)]
-            fn assert_fields_are_eq(&self) {}
-        }
-
-        impl PartialEq for SuiteRunMode {
-            fn eq(&self, other: &SuiteRunMode) -> bool {}
-        }
-
         impl SuiteRunMode {
             /// Return the maximum number of rounds this mode can run.
             pub fn round_limit(self) -> u32 {}
@@ -281,37 +190,11 @@ pub mod eguidev_runtime {
             /// Run the selected scripts once.
             pub const ONCE: Self = _;
         }
-
-        impl Clone for SuiteScriptInfo {
-            fn clone(&self) -> SuiteScriptInfo {}
-        }
-
-        impl Debug for SuiteScriptInfo {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-        }
-
-        impl Eq for SuiteScriptInfo {
-            #[doc(hidden)]
-            fn assert_fields_are_eq(&self) {}
-        }
-
-        impl PartialEq for SuiteScriptInfo {
-            fn eq(&self, other: &SuiteScriptInfo) -> bool {}
-        }
-
-        impl Serialize for SuiteScriptInfo {
-            fn serialize<__S>(
-                &self,
-                __serializer: __S,
-            ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-            where
-                __S: _serde::Serializer, {
-            }
-        }
     }
 
     pub use eguidev::DevMcp;
     /// One egui identity diagnostic from a completed viewport pass.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct EguiDiagnostic {
         /// Stable diagnostic kind.
         pub kind: EguiDiagnosticKind,
@@ -329,6 +212,7 @@ pub mod eguidev_runtime {
     }
 
     /// Diagnostics retained for one script evaluation.
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct EguiDiagnosticBatch {
         /// Retained diagnostics in journal sequence order.
         pub entries: Vec<EguiDiagnostic>,
@@ -338,6 +222,7 @@ pub mod eguidev_runtime {
 
     #[serde(rename_all = "snake_case")]
     /// Kind of identity warning emitted by egui.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub enum EguiDiagnosticKind {
         /// One egui ID was used for different rectangles in one pass.
         IdClash,
@@ -347,12 +232,14 @@ pub mod eguidev_runtime {
 
     #[serde(rename_all = "snake_case")]
     /// Severity assigned to an egui diagnostic.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub enum EguiDiagnosticSeverity {
         /// The diagnostic reports suspicious identity behavior.
         Warning,
     }
 
     /// Fixture applied during a script evaluation.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct FixtureApplication {
         /// Fixture name passed to `eguidev.fixture(...)`.
         pub name: String,
@@ -366,6 +253,7 @@ pub mod eguidev_runtime {
     pub use eguidev::Rect;
     #[serde(untagged)]
     /// Scalar value that can be injected into the global Luau `args` table.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub enum ScriptArgValue {
         /// String-valued script arg.
         String(String),
@@ -381,6 +269,7 @@ pub mod eguidev_runtime {
     pub type ScriptArgs = std::collections::BTreeMap<String, ScriptArgValue>;
 
     /// Assertion outcome recorded during script execution.
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub struct ScriptAssertion {
         /// Whether the assertion passed.
         pub passed: bool,
@@ -391,9 +280,11 @@ pub mod eguidev_runtime {
     }
 
     /// One strict-check failure with a source-relative primary location.
+    #[derive(Clone, Debug, Display, Eq, Error, PartialEq)]
     pub struct ScriptCheckError {}
 
     /// Error details reported by the script runtime.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct ScriptErrorInfo {
         #[serde(rename = "type")]
         /// Broad error category such as `parse`, `runtime`, or `assertion`.
@@ -415,6 +306,7 @@ pub mod eguidev_runtime {
     }
 
     /// Options for evaluating a Luau script.
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct ScriptEvalOptions {
         /// Optional source name used in diagnostics and error messages.
         pub source_name: Option<String>,
@@ -428,6 +320,7 @@ pub mod eguidev_runtime {
 
     /// Structured result of evaluating a Luau script directly against a `DevMcp`
     /// instance.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct ScriptEvalOutcome {
         /// Whether evaluation completed successfully.
         pub success: bool,
@@ -461,6 +354,7 @@ pub mod eguidev_runtime {
     }
 
     /// Request payload for the `script_eval` MCP tool.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct ScriptEvalRequest {
         /// Luau source code to execute.
         pub script: String,
@@ -473,6 +367,7 @@ pub mod eguidev_runtime {
     }
 
     /// Metadata for an image captured during script execution.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct ScriptImageInfo {
         /// Stable image identifier assigned by the runtime.
         pub id: String,
@@ -495,6 +390,7 @@ pub mod eguidev_runtime {
     }
 
     /// Source location reported for a script error.
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub struct ScriptLocation {
         /// One-based line number.
         pub line: usize,
@@ -511,6 +407,7 @@ pub mod eguidev_runtime {
     pub type ScriptModules = std::collections::BTreeMap<String, String>;
 
     /// Timing information for a script evaluation.
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub struct ScriptTiming {
         /// Time spent compiling the script in milliseconds.
         pub compile_ms: u64,
@@ -555,57 +452,6 @@ pub mod eguidev_runtime {
     /// Return the checked-in Luau definitions that describe the scripting API.
     pub fn script_definitions() -> &'static str {}
 
-    impl Clone for EguiDiagnostic {
-        fn clone(&self) -> EguiDiagnostic {}
-    }
-
-    impl Debug for EguiDiagnostic {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for EguiDiagnostic {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for EguiDiagnostic {
-        fn eq(&self, other: &EguiDiagnostic) -> bool {}
-    }
-
-    impl Serialize for EguiDiagnostic {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for EguiDiagnostic {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for EguiDiagnosticBatch {
-        fn clone(&self) -> EguiDiagnosticBatch {}
-    }
-
-    impl Debug for EguiDiagnosticBatch {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for EguiDiagnosticBatch {
-        fn default() -> EguiDiagnosticBatch {}
-    }
-
     impl EguiDiagnosticBatch {
         /// Return whether the batch contains no retained or dropped diagnostics.
         pub fn is_empty(&self) -> bool {}
@@ -621,38 +467,18 @@ pub mod eguidev_runtime {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for EguiDiagnosticBatch {
-        fn eq(&self, other: &EguiDiagnosticBatch) -> bool {}
+    impl From<ScriptEvalOutcome> for tmcp::schema::CallToolResult {
+        fn from(outcome: ScriptEvalOutcome) -> Self {}
     }
 
-    impl Serialize for EguiDiagnosticBatch {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
+    impl JsonSchema for EguiDiagnostic {
+        fn inline_schema() -> bool {}
 
-    impl<'de> Deserialize<'de> for EguiDiagnosticBatch {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
 
-    impl Clone for EguiDiagnosticKind {
-        fn clone(&self) -> EguiDiagnosticKind {}
-    }
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
-    impl Debug for EguiDiagnosticKind {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for EguiDiagnosticKind {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
     impl JsonSchema for EguiDiagnosticKind {
@@ -665,40 +491,6 @@ pub mod eguidev_runtime {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for EguiDiagnosticKind {
-        fn eq(&self, other: &EguiDiagnosticKind) -> bool {}
-    }
-
-    impl Serialize for EguiDiagnosticKind {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for EguiDiagnosticKind {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for EguiDiagnosticSeverity {
-        fn clone(&self) -> EguiDiagnosticSeverity {}
-    }
-
-    impl Debug for EguiDiagnosticSeverity {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for EguiDiagnosticSeverity {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
     impl JsonSchema for EguiDiagnosticSeverity {
         fn inline_schema() -> bool {}
 
@@ -707,64 +499,6 @@ pub mod eguidev_runtime {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for EguiDiagnosticSeverity {
-        fn eq(&self, other: &EguiDiagnosticSeverity) -> bool {}
-    }
-
-    impl Serialize for EguiDiagnosticSeverity {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for EguiDiagnosticSeverity {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureApplication {
-        fn clone(&self) -> FixtureApplication {}
-    }
-
-    impl Debug for FixtureApplication {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl PartialEq for FixtureApplication {
-        fn eq(&self, other: &FixtureApplication) -> bool {}
-    }
-
-    impl Serialize for FixtureApplication {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureApplication {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptArgValue {
-        fn clone(&self) -> ScriptArgValue {}
-    }
-
-    impl Debug for ScriptArgValue {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
     }
 
     impl JsonSchema for ScriptArgValue {
@@ -777,123 +511,6 @@ pub mod eguidev_runtime {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for ScriptArgValue {
-        fn eq(&self, other: &ScriptArgValue) -> bool {}
-    }
-
-    impl Serialize for ScriptArgValue {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptArgValue {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptAssertion {
-        fn clone(&self) -> ScriptAssertion {}
-    }
-
-    impl Debug for ScriptAssertion {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ScriptAssertion {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl PartialEq for ScriptAssertion {
-        fn eq(&self, other: &ScriptAssertion) -> bool {}
-    }
-
-    impl Serialize for ScriptAssertion {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptAssertion {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptCheckError {
-        fn clone(&self) -> CheckFailure {}
-    }
-
-    impl Debug for ScriptCheckError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Display for ScriptCheckError {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ScriptCheckError {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl PartialEq for ScriptCheckError {
-        fn eq(&self, other: &CheckFailure) -> bool {}
-    }
-
-    impl Clone for ScriptErrorInfo {
-        fn clone(&self) -> ScriptErrorInfo {}
-    }
-
-    impl Debug for ScriptErrorInfo {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl PartialEq for ScriptErrorInfo {
-        fn eq(&self, other: &ScriptErrorInfo) -> bool {}
-    }
-
-    impl Serialize for ScriptErrorInfo {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptErrorInfo {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptEvalOptions {
-        fn clone(&self) -> ScriptEvalOptions {}
-    }
-
-    impl Debug for ScriptEvalOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for ScriptEvalOptions {
-        fn default() -> ScriptEvalOptions {}
-    }
-
     impl JsonSchema for ScriptEvalOptions {
         fn inline_schema() -> bool {}
 
@@ -904,64 +521,6 @@ pub mod eguidev_runtime {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for ScriptEvalOptions {
-        fn eq(&self, other: &ScriptEvalOptions) -> bool {}
-    }
-
-    impl Serialize for ScriptEvalOptions {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptEvalOptions {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptEvalOutcome {
-        fn clone(&self) -> ScriptEvalOutcome {}
-    }
-
-    impl Debug for ScriptEvalOutcome {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl From<ScriptEvalOutcome> for tmcp::schema::CallToolResult {
-        fn from(outcome: ScriptEvalOutcome) -> Self {}
-    }
-
-    impl Serialize for ScriptEvalOutcome {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptEvalOutcome {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptEvalRequest {
-        fn clone(&self) -> ScriptEvalRequest {}
-    }
-
-    impl Debug for ScriptEvalRequest {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
     impl JsonSchema for ScriptEvalRequest {
         fn inline_schema() -> bool {}
 
@@ -970,123 +529,5 @@ pub mod eguidev_runtime {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ScriptEvalRequest {
-        fn eq(&self, other: &ScriptEvalRequest) -> bool {}
-    }
-
-    impl Serialize for ScriptEvalRequest {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptEvalRequest {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptImageInfo {
-        fn clone(&self) -> ScriptImageInfo {}
-    }
-
-    impl Debug for ScriptImageInfo {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl PartialEq for ScriptImageInfo {
-        fn eq(&self, other: &ScriptImageInfo) -> bool {}
-    }
-
-    impl Serialize for ScriptImageInfo {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptImageInfo {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptLocation {
-        fn clone(&self) -> ScriptLocation {}
-    }
-
-    impl Debug for ScriptLocation {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ScriptLocation {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl PartialEq for ScriptLocation {
-        fn eq(&self, other: &ScriptLocation) -> bool {}
-    }
-
-    impl Serialize for ScriptLocation {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptLocation {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScriptTiming {
-        fn clone(&self) -> ScriptTiming {}
-    }
-
-    impl Debug for ScriptTiming {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ScriptTiming {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl PartialEq for ScriptTiming {
-        fn eq(&self, other: &ScriptTiming) -> bool {}
-    }
-
-    impl Serialize for ScriptTiming {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScriptTiming {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
     }
 }

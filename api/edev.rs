@@ -4,6 +4,7 @@ pub mod edev {
     //! Script-first MCP launcher for eguidev.
 
     /// Errors returned by the edev launcher.
+    #[derive(Debug, Display, Error)]
     pub enum EdevError {
         #[error("invalid arguments: {0}")]
         /// Argument parsing error.
@@ -39,21 +40,6 @@ pub mod edev {
 
     /// Run the Eguidev launcher on stdio.
     pub async fn run() -> Result<(), EdevError> {}
-
-    impl Debug for EdevError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Display for EdevError {
-        fn fmt(&self, __formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {}
-    }
-
-    impl Error for EdevError {
-        fn source(
-            &self,
-        ) -> ::core::option::Option<&(dyn ::thiserror::__private19::Error + 'static)> {
-        }
-    }
 
     impl From<Error> for EdevError {
         fn from(source: McpError) -> Self {}

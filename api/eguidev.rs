@@ -154,8 +154,10 @@ pub mod eguidev {
     #[doc(hidden)]
     pub mod internal {
         pub mod actions {
+            #[derive(Default)]
             pub struct ActionQueue {}
 
+            #[derive(Clone, Copy, Debug, Default, Serialize)]
             pub struct ActionQueueStats {
                 pub queued_actions: u64,
                 pub drained_actions: u64,
@@ -166,6 +168,7 @@ pub mod eguidev {
             ///
             /// Each drain delivers the immediate stage and moves every later stage one
             /// step closer, so a sequence that must span frames stages one step per frame.
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub enum ActionTiming {
                 /// Deliver at the next drain.
                 Immediate,
@@ -177,6 +180,7 @@ pub mod eguidev {
                 AfterThreeFrames,
             }
 
+            #[derive(Clone, Debug)]
             pub enum InputAction {
                 PointerMove {
                     pos: crate::types::Pos2,
@@ -251,63 +255,13 @@ pub mod eguidev {
                 pub fn stats(&self, viewport_id: egui::ViewportId) -> ActionQueueStats {}
             }
 
-            impl Default for ActionQueue {
-                fn default() -> Self {}
-            }
-
-            impl Clone for ActionQueueStats {
-                fn clone(&self) -> ActionQueueStats {}
-            }
-
-            impl Debug for ActionQueueStats {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for ActionQueueStats {
-                fn default() -> ActionQueueStats {}
-            }
-
-            impl Serialize for ActionQueueStats {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl Clone for ActionTiming {
-                fn clone(&self) -> ActionTiming {}
-            }
-
-            impl Debug for ActionTiming {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ActionTiming {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for ActionTiming {
-                fn eq(&self, other: &ActionTiming) -> bool {}
-            }
-
-            impl Clone for InputAction {
-                fn clone(&self) -> InputAction {}
-            }
-
-            impl Debug for InputAction {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl InputAction {
                 pub fn apply(self, raw_input: &mut egui::RawInput) {}
             }
         }
 
         pub mod devmcp {
+            #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
             pub struct AutomationOptions {
                 pub keep_alive: bool,
                 pub animations: bool,
@@ -328,27 +282,6 @@ pub mod eguidev {
 
                 fn on_raw_input(&self, _inner: &Inner, _events: &[egui::Event]) {}
             }
-
-            impl Clone for AutomationOptions {
-                fn clone(&self) -> AutomationOptions {}
-            }
-
-            impl Debug for AutomationOptions {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for AutomationOptions {
-                fn default() -> Self {}
-            }
-
-            impl Eq for AutomationOptions {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for AutomationOptions {
-                fn eq(&self, other: &AutomationOptions) -> bool {}
-            }
         }
 
         pub mod diagnostics {
@@ -361,19 +294,8 @@ pub mod eguidev {
             }
 
             /// Registry of named app diagnostic providers.
+            #[derive(Clone, Debug, Default)]
             pub struct DiagnosticRegistry {}
-
-            impl Clone for DiagnosticRegistry {
-                fn clone(&self) -> DiagnosticRegistry {}
-            }
-
-            impl Debug for DiagnosticRegistry {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for DiagnosticRegistry {
-                fn default() -> DiagnosticRegistry {}
-            }
 
             impl DiagnosticRegistry {
                 /// Create an empty diagnostic registry.
@@ -392,6 +314,7 @@ pub mod eguidev {
         }
 
         pub mod error {
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub enum ErrorCode {
                 InvalidArgument,
                 NotFound,
@@ -405,39 +328,11 @@ pub mod eguidev {
                 Internal,
             }
 
+            #[derive(Clone, Debug, Display, Error)]
             pub struct ToolError {}
-
-            impl Clone for ErrorCode {
-                fn clone(&self) -> ErrorCode {}
-            }
-
-            impl Debug for ErrorCode {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ErrorCode {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
 
             impl ErrorCode {
                 pub fn as_str(self) -> &'static str {}
-            }
-
-            impl PartialEq for ErrorCode {
-                fn eq(&self, other: &ErrorCode) -> bool {}
-            }
-
-            impl Clone for ToolError {
-                fn clone(&self) -> ToolError {}
-            }
-
-            impl Debug for ToolError {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Display for ToolError {
-                fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {}
             }
 
             impl ToolError {
@@ -464,6 +359,7 @@ pub mod eguidev {
             }
 
             /// Configured fixture handler.
+            #[derive(Clone)]
             pub enum FixtureHandler {
                 /// Runtime-thread handler.
                 Runtime(
@@ -489,17 +385,15 @@ pub mod eguidev {
                     >,
                 ),
             }
-
-            impl Clone for FixtureHandler {
-                fn clone(&self) -> FixtureHandler {}
-            }
         }
 
         pub mod idle {
             /// Registry for the optional app idle provider.
+            #[derive(Clone, Debug, Default)]
             pub struct IdleRegistry {}
 
             /// Most recent app idle state from either a runtime or UI-thread provider.
+            #[derive(Clone, Debug, Eq, PartialEq)]
             pub struct IdleStatus {
                 /// Whether the app reports itself idle.
                 pub idle: bool,
@@ -507,18 +401,6 @@ pub mod eguidev {
                 pub detail: String,
                 /// Root frame count that produced this status, for UI-thread providers.
                 pub frame: Option<u64>,
-            }
-
-            impl Clone for IdleRegistry {
-                fn clone(&self) -> IdleRegistry {}
-            }
-
-            impl Debug for IdleRegistry {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for IdleRegistry {
-                fn default() -> IdleRegistry {}
             }
 
             impl IdleRegistry {
@@ -534,26 +416,10 @@ pub mod eguidev {
                 /// Run the UI-thread provider at root frame end and cache its result.
                 pub fn update_ui(&self, ctx: &Context, frame: u64) {}
             }
-
-            impl Clone for IdleStatus {
-                fn clone(&self) -> IdleStatus {}
-            }
-
-            impl Debug for IdleStatus {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for IdleStatus {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for IdleStatus {
-                fn eq(&self, other: &IdleStatus) -> bool {}
-            }
         }
 
         pub mod overlay {
+            #[derive(Clone, Debug, Default)]
             pub struct OverlayDebugConfig {
                 pub enabled: bool,
                 pub mode: OverlayDebugMode,
@@ -561,6 +427,7 @@ pub mod eguidev {
                 pub options: OverlayDebugOptions,
             }
 
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub enum OverlayDebugMode {
                 Bounds,
                 Margins,
@@ -571,6 +438,7 @@ pub mod eguidev {
                 Containers,
             }
 
+            #[derive(Clone, Debug, Default)]
             pub struct OverlayDebugOptions {
                 pub show_labels: bool,
                 pub show_sizes: bool,
@@ -580,12 +448,14 @@ pub mod eguidev {
                 pub overlap_color: egui::Color32,
             }
 
+            #[derive(Clone, Debug)]
             pub struct OverlayEntry {
                 pub rect: egui::Rect,
                 pub color: egui::Color32,
                 pub stroke_width: f32,
             }
 
+            #[derive(Default)]
             pub struct OverlayManager {}
 
             pub fn parse_color(value: &str) -> Option<egui::Color32> {}
@@ -597,59 +467,6 @@ pub mod eguidev {
             }
 
             pub fn rect_size(rect: crate::types::Rect) -> crate::types::Vec2 {}
-
-            impl Clone for OverlayDebugConfig {
-                fn clone(&self) -> OverlayDebugConfig {}
-            }
-
-            impl Debug for OverlayDebugConfig {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for OverlayDebugConfig {
-                fn default() -> Self {}
-            }
-
-            impl Clone for OverlayDebugMode {
-                fn clone(&self) -> OverlayDebugMode {}
-            }
-
-            impl Debug for OverlayDebugMode {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for OverlayDebugMode {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for OverlayDebugMode {
-                fn eq(&self, other: &OverlayDebugMode) -> bool {}
-            }
-
-            impl Clone for OverlayDebugOptions {
-                fn clone(&self) -> OverlayDebugOptions {}
-            }
-
-            impl Debug for OverlayDebugOptions {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for OverlayDebugOptions {
-                fn default() -> Self {}
-            }
-
-            impl Clone for OverlayEntry {
-                fn clone(&self) -> OverlayEntry {}
-            }
-
-            impl Debug for OverlayEntry {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for OverlayManager {
-                fn default() -> Self {}
-            }
 
             impl OverlayManager {
                 pub fn clear_overlays(&self) {}
@@ -679,6 +496,7 @@ pub mod eguidev {
         pub mod presentation {
             #[serde(rename_all = "lowercase")]
             /// Presentation requested for one automation connection or launcher.
+            #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
             pub enum Presentation {
                 #[default]
                 /// Keep the app out of the foreground while automation is connected.
@@ -688,6 +506,7 @@ pub mod eguidev {
             }
 
             /// Serializable macOS presentation diagnostics reported by the runtime.
+            #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
             pub struct PresentationStatus {
                 /// Presentation requested when the automation connection was initialized.
                 pub requested_presentation: Presentation,
@@ -704,99 +523,20 @@ pub mod eguidev {
             /// Private experimental MCP capability used to negotiate app presentation.
             pub const EXPERIMENTAL_PRESENTATION_CAPABILITY: &str = "eguidev.presentation";
 
-            impl Clone for Presentation {
-                fn clone(&self) -> Presentation {}
-            }
-
-            impl Debug for Presentation {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for Presentation {
-                fn default() -> Presentation {}
-            }
-
-            impl Eq for Presentation {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for Presentation {
-                fn eq(&self, other: &Presentation) -> bool {}
-            }
-
             impl Presentation {
                 /// Return the wire spelling used in the initialize capability and status
                 /// payload.
                 pub const fn as_str(self) -> &'static str {}
             }
 
-            impl Serialize for Presentation {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for Presentation {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for PresentationStatus {
-                fn clone(&self) -> PresentationStatus {}
-            }
-
-            impl Debug for PresentationStatus {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for PresentationStatus {
-                fn default() -> PresentationStatus {}
-            }
-
-            impl Eq for PresentationStatus {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for PresentationStatus {
-                fn eq(&self, other: &PresentationStatus) -> bool {}
-            }
-
             impl PresentationStatus {
                 /// Build the initial status before the runtime health payload is available.
                 pub const fn requested(requested_presentation: Presentation) -> Self {}
             }
-
-            impl Serialize for PresentationStatus {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for PresentationStatus {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
         }
 
         pub mod registry {
+            #[derive(Debug, Default)]
             pub struct Inner {
                 pub actions: crate::actions::ActionQueue,
                 pub viewports: crate::viewports::ViewportState,
@@ -815,14 +555,6 @@ pub mod eguidev {
             }
 
             pub fn viewport_id_to_string(viewport_id: egui::ViewportId) -> String {}
-
-            impl Debug for Inner {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for Inner {
-                fn default() -> Self {}
-            }
 
             impl Inner {
                 /// Count one settled automation frame. Discarded layout passes do not
@@ -989,6 +721,7 @@ pub mod eguidev {
 
         pub mod types {
             /// Controls shared by high-level actions.
+            #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
             pub struct ActionOptions {
                 #[serde(flatten)]
                 /// Wait controls used before and after the action.
@@ -999,6 +732,7 @@ pub mod eguidev {
             }
 
             /// Options for a drag action.
+            #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
             pub struct DragOptions {
                 #[serde(flatten)]
                 /// Shared action controls.
@@ -1009,6 +743,7 @@ pub mod eguidev {
             }
 
             /// Fixture call passed to a registered handler.
+            #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
             pub struct FixtureCall {
                 /// Fixture name.
                 pub name: String,
@@ -1028,6 +763,7 @@ pub mod eguidev {
             /// - `timeout`: a UI-thread handler did not run before the deadline.
             /// - `panic`: the handler panicked, and `message` carries the payload.
             /// - `internal`: the handler was dropped without returning a result.
+            #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
             pub struct FixtureError {
                 /// Stable machine-readable error code.
                 pub code: String,
@@ -1039,6 +775,7 @@ pub mod eguidev {
             }
 
             /// One typed fixture parameter in a fixture catalog entry.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct FixtureParam {
                 /// Parameter name.
                 pub name: String,
@@ -1062,9 +799,11 @@ pub mod eguidev {
             }
 
             /// Validated fixture params passed to a handler.
+            #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
             pub struct FixtureParams(_);
 
             /// Successful fixture handler response.
+            #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
             pub struct FixtureResponse {
                 #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
                 /// Handler-returned values exposed to scripts and CLI output.
@@ -1078,6 +817,7 @@ pub mod eguidev {
             pub type FixtureResult = Result<FixtureResponse, FixtureError>;
 
             /// Fixture metadata advertised by an app.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct FixtureSpec {
                 /// Fixture name.
                 pub name: String,
@@ -1099,6 +839,7 @@ pub mod eguidev {
             }
 
             /// One widget target and condition in a fixture readiness contract.
+            #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
             pub struct FixtureTargetSpec {
                 /// Widget id to resolve from the registry.
                 pub widget_id: String,
@@ -1110,6 +851,7 @@ pub mod eguidev {
             }
 
             /// Keyboard modifier state.
+            #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
             pub struct Modifiers {
                 #[serde(default)]
                 /// Ctrl key pressed.
@@ -1127,6 +869,7 @@ pub mod eguidev {
 
             #[serde(rename_all = "snake_case")]
             /// Supported scalar kinds for fixture parameters.
+            #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
             pub enum ParamKind {
                 /// Boolean fixture parameter.
                 Bool,
@@ -1140,6 +883,7 @@ pub mod eguidev {
 
             #[serde(rename_all = "snake_case")]
             /// Pointer button used by clicks and raw pointer events.
+            #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
             pub enum PointerButton {
                 /// Primary pointer button.
                 Primary,
@@ -1150,6 +894,7 @@ pub mod eguidev {
             }
 
             /// A logical point in egui coordinates.
+            #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
             pub struct Pos2 {
                 /// X coordinate in points.
                 pub x: f32,
@@ -1159,6 +904,7 @@ pub mod eguidev {
 
             #[serde(rename_all = "snake_case")]
             /// Press or release action used by raw input events.
+            #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
             pub enum RawInputAction {
                 /// Press the key or pointer button.
                 Press,
@@ -1168,6 +914,7 @@ pub mod eguidev {
 
             #[serde(tag = "type", rename_all = "snake_case")]
             /// One raw input event. Raw input queues exactly one event and does not settle.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub enum RawInputEvent {
                 /// Move the pointer to an absolute egui position.
                 PointerMove {
@@ -1212,6 +959,7 @@ pub mod eguidev {
             }
 
             /// Axis-aligned rectangle in egui coordinates.
+            #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
             pub struct Rect {
                 /// Minimum point.
                 pub min: Pos2,
@@ -1220,6 +968,7 @@ pub mod eguidev {
             }
 
             /// One resize command applied atomically before settlement.
+            #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
             pub struct ResizeOptions {
                 #[serde(flatten)]
                 /// Shared action controls.
@@ -1243,6 +992,7 @@ pub mod eguidev {
 
             #[serde(rename_all = "snake_case")]
             /// Role-specific widget metadata kept on internal registry entries.
+            #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
             pub enum RoleState {
                 /// Scroll area metadata.
                 ScrollArea {
@@ -1289,6 +1039,7 @@ pub mod eguidev {
 
             #[serde(rename_all = "snake_case")]
             /// Coarse alignment used by scroll-to actions.
+            #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
             pub enum ScrollAlign {
                 /// Align to the top.
                 Top,
@@ -1299,6 +1050,7 @@ pub mod eguidev {
             }
 
             /// Scroll metadata captured for a scroll area.
+            #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
             pub struct ScrollAreaMeta {
                 /// Current scroll offset.
                 pub offset: Vec2,
@@ -1311,6 +1063,7 @@ pub mod eguidev {
             }
 
             /// A 2D vector in egui coordinates.
+            #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
             pub struct Vec2 {
                 /// X component in points.
                 pub x: f32,
@@ -1319,6 +1072,7 @@ pub mod eguidev {
             }
 
             /// Shared declarative condition for viewport waits and assertions.
+            #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
             pub struct ViewportCondition {
                 #[serde(default, skip_serializing_if = "Option::is_none")]
                 /// Whether the viewport must be present or absent.
@@ -1359,6 +1113,7 @@ pub mod eguidev {
             }
 
             /// Error returned when a semantic viewport name is reserved or invalid.
+            #[derive(Clone, Debug, Deserialize, Display, Eq, Error, PartialEq, Serialize)]
             pub struct ViewportNameError {
                 /// Stable machine-readable error code.
                 pub code: String,
@@ -1367,9 +1122,11 @@ pub mod eguidev {
             }
 
             /// Explicit selector for a viewport.
+            #[derive(Clone, Debug, Eq, PartialEq)]
             pub struct ViewportSel {}
 
             /// Error returned when parsing a viewport selector string fails.
+            #[derive(Clone, Debug, Deserialize, Display, Eq, Error, PartialEq, Serialize)]
             pub struct ViewportSelParseError {
                 /// Stable machine-readable error code.
                 pub code: String,
@@ -1378,6 +1135,7 @@ pub mod eguidev {
             }
 
             /// Timeout and polling controls shared by waits and high-level actions.
+            #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
             pub struct WaitOptions {
                 #[serde(default, skip_serializing_if = "Option::is_none")]
                 /// Optional operation timeout in milliseconds.
@@ -1391,6 +1149,7 @@ pub mod eguidev {
             /// fixtures.
             ///
             /// Every populated field must match. An empty condition means `present = true`.
+            #[derive(Clone, Debug, Default, Deserialize, Display, PartialEq, Serialize)]
             pub struct WidgetCondition {
                 #[serde(default, skip_serializing_if = "Option::is_none")]
                 /// Whether the widget must be present or absent.
@@ -1401,6 +1160,10 @@ pub mod eguidev {
                 #[serde(default, skip_serializing_if = "Option::is_none")]
                 /// Required visibility state.
                 pub visible: Option<bool>,
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                /// Required coverage state: whether another egui layer covers the
+                /// widget's action point.
+                pub covered: Option<bool>,
                 #[serde(default, skip_serializing_if = "Option::is_none")]
                 /// Required enabled state.
                 pub enabled: Option<bool>,
@@ -1437,6 +1200,7 @@ pub mod eguidev {
             }
 
             /// One font used by a captured galley.
+            #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
             pub struct WidgetFont {
                 /// Egui font family name.
                 pub family: String,
@@ -1445,6 +1209,7 @@ pub mod eguidev {
             }
 
             /// Layout metadata captured for a widget when available.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct WidgetLayout {
                 /// Desired size of the widget before layout constraints.
                 pub desired_size: Vec2,
@@ -1471,6 +1236,7 @@ pub mod eguidev {
             /// The bounds are `f64` even though `DevUiExt` sliders and drag values take
             /// `f32` or `i32`. Scripts see one numeric type, so every recorded range widens
             /// to the type that carries all of them without loss.
+            #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
             pub struct WidgetRange {
                 /// Minimum allowed value.
                 pub min: f64,
@@ -1483,6 +1249,7 @@ pub mod eguidev {
             /// Matching rules:
             /// - `id` is the canonical widget selector.
             /// - `viewport_id` acts as an additional selector to narrow matches.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct WidgetRef {
                 /// Canonical widget id.
                 ///
@@ -1496,6 +1263,7 @@ pub mod eguidev {
             }
 
             /// Widget registry entry captured per frame.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct WidgetRegistryEntry {
                 /// Canonical widget id.
                 pub id: String,
@@ -1546,10 +1314,16 @@ pub mod eguidev {
                 /// Whether the widget reported egui focus in the captured frame (may lag
                 /// keyboard focus).
                 pub focused: bool,
+                /// Whether another egui layer covers the widget's action point (the
+                /// center of `interact_rect`), so a pointer action here would route to
+                /// that layer instead. `false` when no layer, or only the widget's own
+                /// layer, sits at that point.
+                pub covered: bool,
             }
 
             #[serde(rename_all = "snake_case")]
             /// Widget role taxonomy for automation and scripting filters.
+            #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
             pub enum WidgetRole {
                 Button,
                 Link,
@@ -1584,6 +1358,7 @@ pub mod eguidev {
             /// only for roles that carry no metadata at all, such as a label or a
             /// separator; a button with no known selection state is
             /// `Button { selected: None }`, never `Plain(WidgetRole::Button)`.
+            #[derive(Clone, Debug, Default, PartialEq)]
             pub enum WidgetRoleMeta {
                 /// A role that carries no role-specific metadata.
                 Plain(WidgetRole),
@@ -1636,6 +1411,7 @@ pub mod eguidev {
             /// `(viewport_id, id)` is the one widget identity across handles, states,
             /// dumps, deltas, waits, and error details, so a state that a wait returns
             /// names its own widget without a second lookup.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct WidgetState {
                 /// Canonical widget id.
                 pub id: String,
@@ -1690,9 +1466,13 @@ pub mod eguidev {
                 /// Whether the widget reported egui focus in the captured frame (may lag
                 /// keyboard focus).
                 pub focused: bool,
+                /// Whether another egui layer covers the widget's action point. See
+                /// [`WidgetState::covered`].
+                pub covered: bool,
             }
 
             /// Captured text layout from the galley that a widget painted.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct WidgetTextLayout {
                 /// Fonts used by the galley's layout sections.
                 pub fonts: Vec<WidgetFont>,
@@ -1705,6 +1485,7 @@ pub mod eguidev {
             }
 
             /// One painted line from a captured galley.
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct WidgetTextLine {
                 /// Text on this line.
                 pub text: String,
@@ -1713,6 +1494,7 @@ pub mod eguidev {
             }
 
             /// Captured widget value for stateful controls.
+            #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
             pub enum WidgetValue {
                 /// Boolean value from checkboxes/toggles.
                 Bool(bool),
@@ -1731,59 +1513,11 @@ pub mod eguidev {
                 fn schema_name() -> Cow<'static, str> {}
             }
 
-            impl Clone for WidgetRole {
-                fn clone(&self) -> WidgetRole {}
-            }
-
-            impl Debug for WidgetRole {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for WidgetRole {
-                fn default() -> WidgetRole {}
-            }
-
-            impl Eq for WidgetRole {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl PartialEq for WidgetRole {
-                fn eq(&self, other: &WidgetRole) -> bool {}
-            }
-
-            impl Serialize for WidgetRole {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetRole {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
             #[doc(hidden)]
             impl JsonSchema for WidgetValue {
                 fn json_schema(_generator: &mut SchemaGenerator) -> Schema {}
 
                 fn schema_name() -> Cow<'static, str> {}
-            }
-
-            impl Clone for WidgetValue {
-                fn clone(&self) -> WidgetValue {}
-            }
-
-            impl Debug for WidgetValue {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl From<&str> for WidgetValue {
@@ -1806,171 +1540,9 @@ pub mod eguidev {
                 fn from(value: i64) -> Self {}
             }
 
-            impl PartialEq for WidgetValue {
-                fn eq(&self, other: &WidgetValue) -> bool {}
-            }
-
-            impl Serialize for WidgetValue {
-                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-                where
-                    S: Serializer, {
-                }
-            }
-
             impl WidgetValue {
                 /// String representation matching Luau `tostring()` semantics.
                 pub fn to_text(&self) -> String {}
-            }
-
-            impl<'de> Deserialize<'de> for WidgetValue {
-                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-                where
-                    D: Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ActionOptions {
-                fn clone(&self) -> ActionOptions {}
-            }
-
-            impl Debug for ActionOptions {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for ActionOptions {
-                fn default() -> ActionOptions {}
-            }
-
-            impl Eq for ActionOptions {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl JsonSchema for ActionOptions {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for ActionOptions {
-                fn eq(&self, other: &ActionOptions) -> bool {}
-            }
-
-            impl Serialize for ActionOptions {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ActionOptions {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for DragOptions {
-                fn clone(&self) -> DragOptions {}
-            }
-
-            impl Debug for DragOptions {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for DragOptions {
-                fn default() -> DragOptions {}
-            }
-
-            impl JsonSchema for DragOptions {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for DragOptions {
-                fn eq(&self, other: &DragOptions) -> bool {}
-            }
-
-            impl Serialize for DragOptions {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for DragOptions {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureCall {
-                fn clone(&self) -> FixtureCall {}
-            }
-
-            impl Debug for FixtureCall {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl JsonSchema for FixtureCall {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for FixtureCall {
-                fn eq(&self, other: &FixtureCall) -> bool {}
-            }
-
-            impl Serialize for FixtureCall {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for FixtureCall {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureError {
-                fn clone(&self) -> FixtureError {}
-            }
-
-            impl Debug for FixtureError {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl FixtureError {
@@ -1989,37 +1561,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for FixtureError {
-                fn eq(&self, other: &FixtureError) -> bool {}
-            }
-
-            impl Serialize for FixtureError {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for FixtureError {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureParam {
-                fn clone(&self) -> FixtureParam {}
-            }
-
-            impl Debug for FixtureParam {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl FixtureParam {
@@ -2059,37 +1600,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Serialize for FixtureParam {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for FixtureParam {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureParams {
-                fn clone(&self) -> FixtureParams {}
-            }
-
-            impl Debug for FixtureParams {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for FixtureParams {
-                fn default() -> FixtureParams {}
-            }
-
             impl FixtureParams {
                 /// Consume this wrapper into the validated param map.
                 pub fn into_map(self) -> BTreeMap<String, WidgetValue> {}
@@ -2123,41 +1633,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for FixtureParams {
-                fn eq(&self, other: &FixtureParams) -> bool {}
-            }
-
-            impl Serialize for FixtureParams {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for FixtureParams {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureResponse {
-                fn clone(&self) -> FixtureResponse {}
-            }
-
-            impl Debug for FixtureResponse {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for FixtureResponse {
-                fn default() -> FixtureResponse {}
-            }
-
             impl FixtureResponse {
                 /// Add a handler-returned dynamic ready.
                 pub fn ready(self, ready: FixtureTargetSpec) -> Self {}
@@ -2178,37 +1653,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for FixtureResponse {
-                fn eq(&self, other: &FixtureResponse) -> bool {}
-            }
-
-            impl Serialize for FixtureResponse {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for FixtureResponse {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureSpec {
-                fn clone(&self) -> FixtureSpec {}
-            }
-
-            impl Debug for FixtureSpec {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl FixtureSpec {
@@ -2366,33 +1810,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Serialize for FixtureSpec {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for FixtureSpec {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for FixtureTargetSpec {
-                fn clone(&self) -> FixtureTargetSpec {}
-            }
-
-            impl Debug for FixtureTargetSpec {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl FixtureTargetSpec {
                 /// Create a fixture target with an explicit shared condition.
                 pub fn new(widget_id: impl Into<String>, condition: WidgetCondition) -> Self {}
@@ -2445,39 +1862,37 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for FixtureTargetSpec {
-                fn eq(&self, other: &FixtureTargetSpec) -> bool {}
+            impl From<&WidgetRegistryEntry> for WidgetState {
+                fn from(entry: &WidgetRegistryEntry) -> Self {}
             }
 
-            impl Serialize for FixtureTargetSpec {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
+            impl JsonSchema for WidgetRegistryEntry {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl<'de> Deserialize<'de> for FixtureTargetSpec {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
+            impl WidgetRegistryEntry {
+                /// Selected-on projection used by widget state, dumps, and list filters.
+                pub fn selected(&self) -> Option<bool> {}
             }
 
-            impl Clone for Modifiers {
-                fn clone(&self) -> Modifiers {}
+            impl From<&WidgetRegistryEntry> for WidgetState {
+                fn from(entry: &WidgetRegistryEntry) -> Self {}
             }
 
-            impl Debug for Modifiers {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
+            impl JsonSchema for WidgetState {
+                fn inline_schema() -> bool {}
 
-            impl Default for Modifiers {
-                fn default() -> Modifiers {}
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
             impl From<Modifiers> for Modifiers {
@@ -2498,125 +1913,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Serialize for Modifiers {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for Modifiers {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ParamKind {
-                fn clone(&self) -> ParamKind {}
-            }
-
-            impl Debug for ParamKind {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ParamKind {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl JsonSchema for ParamKind {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for ParamKind {
-                fn eq(&self, other: &ParamKind) -> bool {}
-            }
-
-            impl Serialize for ParamKind {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ParamKind {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for PointerButton {
-                fn clone(&self) -> PointerButton {}
-            }
-
-            impl Debug for PointerButton {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for PointerButton {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl JsonSchema for PointerButton {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for PointerButton {
-                fn eq(&self, other: &PointerButton) -> bool {}
-            }
-
-            impl Serialize for PointerButton {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for PointerButton {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for Pos2 {
-                fn clone(&self) -> Pos2 {}
-            }
-
-            impl Debug for Pos2 {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl From<Pos2> for Pos2 {
                 fn from(pos: egui::Pos2) -> Self {}
             }
@@ -2633,120 +1929,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for Pos2 {
-                fn eq(&self, other: &Pos2) -> bool {}
-            }
-
-            impl Serialize for Pos2 {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for Pos2 {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for RawInputAction {
-                fn clone(&self) -> RawInputAction {}
-            }
-
-            impl Debug for RawInputAction {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for RawInputAction {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl JsonSchema for RawInputAction {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for RawInputAction {
-                fn eq(&self, other: &RawInputAction) -> bool {}
-            }
-
-            impl Serialize for RawInputAction {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for RawInputAction {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for RawInputEvent {
-                fn clone(&self) -> RawInputEvent {}
-            }
-
-            impl Debug for RawInputEvent {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl JsonSchema for RawInputEvent {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl Serialize for RawInputEvent {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for RawInputEvent {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for Rect {
-                fn clone(&self) -> Rect {}
-            }
-
-            impl Debug for Rect {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl From<Rect> for Rect {
@@ -2767,44 +1949,119 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for Rect {
-                fn eq(&self, other: &Rect) -> bool {}
-            }
-
             impl Rect {
                 /// Return the center point of the rectangle in egui coordinates.
                 pub fn center(self) -> Pos2 {}
             }
 
-            impl Serialize for Rect {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
+            impl From<Vec2> for Vec2 {
+                fn from(vec: EguiVec2) -> Self {}
             }
 
-            impl<'de> Deserialize<'de> for Rect {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
+            impl From<Vec2> for egui::Vec2 {
+                fn from(vec: Vec2) -> Self {}
             }
 
-            impl Clone for ResizeOptions {
-                fn clone(&self) -> ResizeOptions {}
+            impl JsonSchema for Vec2 {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Debug for ResizeOptions {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
+            impl From<ViewportId> for ViewportSel {
+                fn from(value: egui::ViewportId) -> Self {}
             }
 
-            impl Default for ResizeOptions {
-                fn default() -> ResizeOptions {}
+            impl ViewportSel {
+                /// Parse the Luau/tool selector grammar: `root`, a semantic name, or
+                /// `vp:<hex>`.
+                pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {}
+
+                /// Return the canonical string selector used in fixtures and scripts.
+                pub fn to_selector_string(&self) -> String {}
+
+                /// Select a concrete egui viewport id.
+                pub fn id(id: egui::ViewportId) -> Self {}
+
+                /// Select a semantic viewport name.
+                pub fn name(name: impl Into<String>) -> Result<Self, ViewportNameError> {}
+
+                /// Select the root viewport.
+                pub fn root() -> Self {}
+            }
+
+            impl JsonSchema for ActionOptions {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+            }
+
+            impl JsonSchema for DragOptions {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+            }
+
+            impl JsonSchema for FixtureCall {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+            }
+
+            impl JsonSchema for ParamKind {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+            }
+
+            impl JsonSchema for PointerButton {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+            }
+
+            impl JsonSchema for RawInputAction {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+            }
+
+            impl JsonSchema for RawInputEvent {
+                fn inline_schema() -> bool {}
+
+                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
             impl JsonSchema for ResizeOptions {
@@ -2817,37 +2074,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for ResizeOptions {
-                fn eq(&self, other: &ResizeOptions) -> bool {}
-            }
-
-            impl Serialize for ResizeOptions {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ResizeOptions {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for RoleState {
-                fn clone(&self) -> RoleState {}
-            }
-
-            impl Debug for RoleState {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl JsonSchema for RoleState {
                 fn inline_schema() -> bool {}
 
@@ -2856,10 +2082,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for RoleState {
-                fn eq(&self, other: &RoleState) -> bool {}
             }
 
             impl RoleState {
@@ -2882,38 +2104,6 @@ pub mod eguidev {
                 pub fn text_edit(&self) -> Option<(bool, bool)> {}
             }
 
-            impl Serialize for RoleState {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for RoleState {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ScrollAlign {
-                fn clone(&self) -> ScrollAlign {}
-            }
-
-            impl Debug for ScrollAlign {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ScrollAlign {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
             impl JsonSchema for ScrollAlign {
                 fn inline_schema() -> bool {}
 
@@ -2922,37 +2112,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for ScrollAlign {
-                fn eq(&self, other: &ScrollAlign) -> bool {}
-            }
-
-            impl Serialize for ScrollAlign {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ScrollAlign {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ScrollAreaMeta {
-                fn clone(&self) -> ScrollAreaMeta {}
-            }
-
-            impl Debug for ScrollAreaMeta {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl JsonSchema for ScrollAreaMeta {
@@ -2970,86 +2129,6 @@ pub mod eguidev {
                 pub fn new(offset: Vec2, viewport_size: Vec2, content_size: Vec2) -> Self {}
             }
 
-            impl Serialize for ScrollAreaMeta {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ScrollAreaMeta {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for Vec2 {
-                fn clone(&self) -> Vec2 {}
-            }
-
-            impl Debug for Vec2 {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl From<Vec2> for Vec2 {
-                fn from(vec: EguiVec2) -> Self {}
-            }
-
-            impl From<Vec2> for egui::Vec2 {
-                fn from(vec: Vec2) -> Self {}
-            }
-
-            impl JsonSchema for Vec2 {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for Vec2 {
-                fn eq(&self, other: &Vec2) -> bool {}
-            }
-
-            impl Serialize for Vec2 {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for Vec2 {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ViewportCondition {
-                fn clone(&self) -> ViewportCondition {}
-            }
-
-            impl Debug for ViewportCondition {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for ViewportCondition {
-                fn default() -> ViewportCondition {}
-            }
-
             impl JsonSchema for ViewportCondition {
                 fn inline_schema() -> bool {}
 
@@ -3060,49 +2139,9 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for ViewportCondition {
-                fn eq(&self, other: &ViewportCondition) -> bool {}
-            }
-
-            impl Serialize for ViewportCondition {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
             impl ViewportCondition {
                 /// Validate combinations and string conditions.
                 pub fn validate(&self) -> Result<(), String> {}
-            }
-
-            impl<'de> Deserialize<'de> for ViewportCondition {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ViewportNameError {
-                fn clone(&self) -> ViewportNameError {}
-            }
-
-            impl Debug for ViewportNameError {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Display for ViewportNameError {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ViewportNameError {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
             }
 
             impl JsonSchema for ViewportNameError {
@@ -3115,85 +2154,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for ViewportNameError {
-                fn eq(&self, other: &ViewportNameError) -> bool {}
-            }
-
-            impl Serialize for ViewportNameError {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ViewportNameError {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for ViewportSel {
-                fn clone(&self) -> ViewportSel {}
-            }
-
-            impl Debug for ViewportSel {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ViewportSel {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
-            impl From<ViewportId> for ViewportSel {
-                fn from(value: egui::ViewportId) -> Self {}
-            }
-
-            impl PartialEq for ViewportSel {
-                fn eq(&self, other: &ViewportSel) -> bool {}
-            }
-
-            impl ViewportSel {
-                /// Parse the Luau/tool selector grammar: `root`, a semantic name, or
-                /// `vp:<hex>`.
-                pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {}
-
-                /// Return the canonical string selector used in fixtures and scripts.
-                pub fn to_selector_string(&self) -> String {}
-
-                /// Select a concrete egui viewport id.
-                pub fn id(id: egui::ViewportId) -> Self {}
-
-                /// Select a semantic viewport name.
-                pub fn name(name: impl Into<String>) -> Result<Self, ViewportNameError> {}
-
-                /// Select the root viewport.
-                pub fn root() -> Self {}
-            }
-
-            impl Clone for ViewportSelParseError {
-                fn clone(&self) -> ViewportSelParseError {}
-            }
-
-            impl Debug for ViewportSelParseError {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Display for ViewportSelParseError {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Eq for ViewportSelParseError {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
-            }
-
             impl JsonSchema for ViewportSelParseError {
                 fn inline_schema() -> bool {}
 
@@ -3202,46 +2162,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for ViewportSelParseError {
-                fn eq(&self, other: &ViewportSelParseError) -> bool {}
-            }
-
-            impl Serialize for ViewportSelParseError {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ViewportSelParseError {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WaitOptions {
-                fn clone(&self) -> WaitOptions {}
-            }
-
-            impl Debug for WaitOptions {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for WaitOptions {
-                fn default() -> WaitOptions {}
-            }
-
-            impl Eq for WaitOptions {
-                #[doc(hidden)]
-                fn assert_fields_are_eq(&self) {}
             }
 
             impl JsonSchema for WaitOptions {
@@ -3254,45 +2174,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for WaitOptions {
-                fn eq(&self, other: &WaitOptions) -> bool {}
-            }
-
-            impl Serialize for WaitOptions {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WaitOptions {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetCondition {
-                fn clone(&self) -> WidgetCondition {}
-            }
-
-            impl Debug for WidgetCondition {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for WidgetCondition {
-                fn default() -> WidgetCondition {}
-            }
-
-            impl Display for WidgetCondition {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl JsonSchema for WidgetCondition {
                 fn inline_schema() -> bool {}
 
@@ -3301,20 +2182,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for WidgetCondition {
-                fn eq(&self, other: &WidgetCondition) -> bool {}
-            }
-
-            impl Serialize for WidgetCondition {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
             }
 
             impl WidgetCondition {
@@ -3347,23 +2214,6 @@ pub mod eguidev {
                 pub fn validate(&self) -> Result<(), String> {}
             }
 
-            impl<'de> Deserialize<'de> for WidgetCondition {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetFont {
-                fn clone(&self) -> WidgetFont {}
-            }
-
-            impl Debug for WidgetFont {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl JsonSchema for WidgetFont {
                 fn inline_schema() -> bool {}
 
@@ -3372,37 +2222,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl PartialEq for WidgetFont {
-                fn eq(&self, other: &WidgetFont) -> bool {}
-            }
-
-            impl Serialize for WidgetFont {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetFont {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetLayout {
-                fn clone(&self) -> WidgetLayout {}
-            }
-
-            impl Debug for WidgetLayout {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl JsonSchema for WidgetLayout {
@@ -3415,33 +2234,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Serialize for WidgetLayout {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetLayout {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetRange {
-                fn clone(&self) -> WidgetRange {}
-            }
-
-            impl Debug for WidgetRange {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl JsonSchema for WidgetRange {
                 fn inline_schema() -> bool {}
 
@@ -3452,40 +2244,9 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl PartialEq for WidgetRange {
-                fn eq(&self, other: &WidgetRange) -> bool {}
-            }
-
-            impl Serialize for WidgetRange {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
             impl WidgetRange {
                 /// Check whether the range contains the provided value.
                 pub fn contains(self, value: f64) -> bool {}
-            }
-
-            impl<'de> Deserialize<'de> for WidgetRange {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetRef {
-                fn clone(&self) -> WidgetRef {}
-            }
-
-            impl Debug for WidgetRef {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl JsonSchema for WidgetRef {
@@ -3498,142 +2259,6 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Serialize for WidgetRef {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetRef {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetRegistryEntry {
-                fn clone(&self) -> WidgetRegistryEntry {}
-            }
-
-            impl Debug for WidgetRegistryEntry {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl From<&WidgetRegistryEntry> for WidgetState {
-                fn from(entry: &WidgetRegistryEntry) -> Self {}
-            }
-
-            impl JsonSchema for WidgetRegistryEntry {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl Serialize for WidgetRegistryEntry {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl WidgetRegistryEntry {
-                /// Selected-on projection used by widget state, dumps, and list filters.
-                pub fn selected(&self) -> Option<bool> {}
-            }
-
-            impl<'de> Deserialize<'de> for WidgetRegistryEntry {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetRoleMeta {
-                fn clone(&self) -> WidgetRoleMeta {}
-            }
-
-            impl Debug for WidgetRoleMeta {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for WidgetRoleMeta {
-                /// The unknown role, which carries no metadata.
-                fn default() -> Self {}
-            }
-
-            impl PartialEq for WidgetRoleMeta {
-                fn eq(&self, other: &WidgetRoleMeta) -> bool {}
-            }
-
-            impl WidgetRoleMeta {
-                /// Project the flat taxonomy entry that scripts filter on.
-                pub fn role(&self) -> WidgetRole {}
-            }
-
-            impl Clone for WidgetState {
-                fn clone(&self) -> WidgetState {}
-            }
-
-            impl Debug for WidgetState {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl From<&WidgetRegistryEntry> for WidgetState {
-                fn from(entry: &WidgetRegistryEntry) -> Self {}
-            }
-
-            impl JsonSchema for WidgetState {
-                fn inline_schema() -> bool {}
-
-                fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-                fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-                fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl Serialize for WidgetState {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetState {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetTextLayout {
-                fn clone(&self) -> WidgetTextLayout {}
-            }
-
-            impl Debug for WidgetTextLayout {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
             impl JsonSchema for WidgetTextLayout {
                 fn inline_schema() -> bool {}
 
@@ -3642,33 +2267,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl Serialize for WidgetTextLayout {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetTextLayout {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Clone for WidgetTextLine {
-                fn clone(&self) -> WidgetTextLine {}
-            }
-
-            impl Debug for WidgetTextLine {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl JsonSchema for WidgetTextLine {
@@ -3681,23 +2279,9 @@ pub mod eguidev {
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
             }
 
-            impl Serialize for WidgetTextLine {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for WidgetTextLine {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
+            impl WidgetRoleMeta {
+                /// Project the flat taxonomy entry that scripts filter on.
+                pub fn role(&self) -> WidgetRole {}
             }
         }
 
@@ -3707,21 +2291,25 @@ pub mod eguidev {
         }
 
         pub mod viewports {
+            #[derive(Clone, Copy, Debug)]
             pub struct FrameHealth {
                 pub viewport_id: egui::ViewportId,
                 pub frame_count: u64,
                 pub last_completed: std::time::Instant,
             }
 
+            #[derive(Clone, Debug)]
             pub struct InputSnapshot {
                 pub pixels_per_point: f32,
                 pub pointer_pos: Option<crate::types::Pos2>,
             }
 
+            #[derive(Clone, Copy, Debug)]
             pub struct OutputSnapshot {
                 pub cursor_icon: egui::CursorIcon,
             }
 
+            #[derive(Clone, Debug, Default)]
             pub struct PlatformViewportState {
                 pub title: Option<String>,
                 pub window_number: Option<u32>,
@@ -3730,6 +2318,7 @@ pub mod eguidev {
                 pub os_title_visible: Option<bool>,
             }
 
+            #[derive(Clone, Debug, Deserialize, Serialize)]
             pub struct ViewportSnapshot {
                 pub viewport_id: String,
                 pub name: Option<String>,
@@ -3749,56 +2338,13 @@ pub mod eguidev {
                 pub fullscreen: Option<bool>,
             }
 
+            #[derive(Default)]
             pub struct ViewportState {}
-
-            impl Clone for FrameHealth {
-                fn clone(&self) -> FrameHealth {}
-            }
-
-            impl Debug for FrameHealth {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
 
             impl FrameHealth {
                 pub fn age(&self) -> Duration {}
 
                 pub fn frames_observed_since(&self, start_frame: u64) -> u64 {}
-            }
-
-            impl Clone for InputSnapshot {
-                fn clone(&self) -> InputSnapshot {}
-            }
-
-            impl Debug for InputSnapshot {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Clone for OutputSnapshot {
-                fn clone(&self) -> OutputSnapshot {}
-            }
-
-            impl Debug for OutputSnapshot {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Clone for PlatformViewportState {
-                fn clone(&self) -> PlatformViewportState {}
-            }
-
-            impl Debug for PlatformViewportState {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for PlatformViewportState {
-                fn default() -> PlatformViewportState {}
-            }
-
-            impl Clone for ViewportSnapshot {
-                fn clone(&self) -> ViewportSnapshot {}
-            }
-
-            impl Debug for ViewportSnapshot {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
             }
 
             impl JsonSchema for ViewportSnapshot {
@@ -3809,29 +2355,6 @@ pub mod eguidev {
                 fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
                 fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-            }
-
-            impl Serialize for ViewportSnapshot {
-                fn serialize<__S>(
-                    &self,
-                    __serializer: __S,
-                ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-                where
-                    __S: _serde::Serializer, {
-                }
-            }
-
-            impl<'de> Deserialize<'de> for ViewportSnapshot {
-                fn deserialize<__D>(
-                    __deserializer: __D,
-                ) -> _serde::__private229::Result<Self, __D::Error>
-                where
-                    __D: _serde::Deserializer<'de>, {
-                }
-            }
-
-            impl Default for ViewportState {
-                fn default() -> Self {}
             }
 
             impl ViewportState {
@@ -3920,6 +2443,7 @@ pub mod eguidev {
 
         pub mod widget_registry {
             /// Metadata for a widget used during tracking and layout analysis.
+            #[derive(Clone, Debug, Default)]
             pub struct WidgetMeta {
                 /// Role taxonomy entry with the metadata that the role requires.
                 pub role: crate::types::WidgetRoleMeta,
@@ -3949,6 +2473,7 @@ pub mod eguidev {
                 pub interact_rect: Option<egui::Rect>,
             }
 
+            #[derive(Default)]
             pub struct WidgetRegistry {}
 
             pub fn record_widget(
@@ -3959,25 +2484,9 @@ pub mod eguidev {
             ) {
             }
 
-            impl Clone for WidgetMeta {
-                fn clone(&self) -> WidgetMeta {}
-            }
-
-            impl Debug for WidgetMeta {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-            }
-
-            impl Default for WidgetMeta {
-                fn default() -> WidgetMeta {}
-            }
-
             impl WidgetMeta {
                 /// Attach structured app-domain data from any serializable value.
                 pub fn with_data<T: Serialize>(self, data: T) -> Self {}
-            }
-
-            impl Default for WidgetRegistry {
-                fn default() -> Self {}
             }
 
             impl WidgetRegistry {
@@ -4038,6 +2547,7 @@ pub mod eguidev {
     }
 
     /// Controls shared by high-level actions.
+    #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
     pub struct ActionOptions {
         #[serde(flatten)]
         /// Wait controls used before and after the action.
@@ -4047,18 +2557,21 @@ pub mod eguidev {
         pub settle: Option<bool>,
     }
 
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
     pub struct AutomationOptions {
         pub keep_alive: bool,
         pub animations: bool,
     }
 
     /// Options for selected-aware buttons.
+    #[derive(Clone, Copy, Debug, Default)]
     pub struct ButtonOptions {
         /// Whether the button is in a selected/toggled state.
         pub selected: bool,
     }
 
     /// Options for third-state checkboxes.
+    #[derive(Clone, Copy, Debug, Default)]
     pub struct CheckboxOptions {
         /// Whether the checkbox should render as indeterminate.
         pub indeterminate: bool,
@@ -4071,6 +2584,7 @@ pub mod eguidev {
     ///
     /// `Clone` is a cheap shared handle: configuration, the shutdown handler,
     /// fixtures, diagnostics, and idle providers are observed by every clone.
+    #[derive(Clone, Debug, Default)]
     pub struct DevMcp {}
 
     #[error("{message}")]
@@ -4084,6 +2598,7 @@ pub mod eguidev {
     /// - `duplicate_idle_provider`: an idle provider is already registered.
     /// - `duplicate_diagnostic`: that diagnostic name is already registered.
     /// - `empty_diagnostic_name`: the diagnostic name was blank.
+    #[derive(Clone, Debug, Deserialize, Display, Error, PartialEq, Serialize)]
     pub struct DevMcpConfigError {
         /// Stable machine-readable error code.
         pub code: String,
@@ -4103,6 +2618,7 @@ pub mod eguidev {
     /// - `panic`: the provider panicked, and `message` carries the payload.
     /// - `internal`: the provider was dropped without returning a result.
     /// - `pending_ui`: the provider needs a UI frame that has not run yet.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct DiagnosticError {
         /// Stable machine-readable error code.
         pub code: String,
@@ -4117,6 +2633,7 @@ pub mod eguidev {
     pub type DiagnosticResult = Result<serde_json::Value, DiagnosticError>;
 
     /// Options for a drag action.
+    #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct DragOptions {
         #[serde(flatten)]
         /// Shared action controls.
@@ -4127,6 +2644,7 @@ pub mod eguidev {
     }
 
     /// Fixture call passed to a registered handler.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct FixtureCall {
         /// Fixture name.
         pub name: String,
@@ -4146,6 +2664,7 @@ pub mod eguidev {
     /// - `timeout`: a UI-thread handler did not run before the deadline.
     /// - `panic`: the handler panicked, and `message` carries the payload.
     /// - `internal`: the handler was dropped without returning a result.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct FixtureError {
         /// Stable machine-readable error code.
         pub code: String,
@@ -4157,6 +2676,7 @@ pub mod eguidev {
     }
 
     /// One typed fixture parameter in a fixture catalog entry.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct FixtureParam {
         /// Parameter name.
         pub name: String,
@@ -4180,9 +2700,11 @@ pub mod eguidev {
     }
 
     /// Validated fixture params passed to a handler.
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct FixtureParams(_);
 
     /// Successful fixture handler response.
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct FixtureResponse {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         /// Handler-returned values exposed to scripts and CLI output.
@@ -4196,6 +2718,7 @@ pub mod eguidev {
     pub type FixtureResult = Result<FixtureResponse, FixtureError>;
 
     /// Fixture metadata advertised by an app.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct FixtureSpec {
         /// Fixture name.
         pub name: String,
@@ -4217,6 +2740,7 @@ pub mod eguidev {
     }
 
     /// One widget target and condition in a fixture readiness contract.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct FixtureTargetSpec {
         /// Widget id to resolve from the registry.
         pub widget_id: String,
@@ -4233,6 +2757,7 @@ pub mod eguidev {
 
     #[serde(rename_all = "snake_case")]
     /// Supported scalar kinds for fixture parameters.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub enum ParamKind {
         /// Boolean fixture parameter.
         Bool,
@@ -4246,6 +2771,7 @@ pub mod eguidev {
 
     #[serde(rename_all = "snake_case")]
     /// Pointer button used by clicks and raw pointer events.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub enum PointerButton {
         /// Primary pointer button.
         Primary,
@@ -4256,6 +2782,7 @@ pub mod eguidev {
     }
 
     /// A logical point in egui coordinates.
+    #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
     pub struct Pos2 {
         /// X coordinate in points.
         pub x: f32,
@@ -4264,6 +2791,7 @@ pub mod eguidev {
     }
 
     /// Options for progress bars.
+    #[derive(Clone, Debug, Default)]
     pub struct ProgressBarOptions {
         /// Optional overlay text rendered inside the bar.
         pub text: Option<String>,
@@ -4273,6 +2801,7 @@ pub mod eguidev {
 
     #[serde(rename_all = "snake_case")]
     /// Press or release action used by raw input events.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub enum RawInputAction {
         /// Press the key or pointer button.
         Press,
@@ -4282,6 +2811,7 @@ pub mod eguidev {
 
     #[serde(tag = "type", rename_all = "snake_case")]
     /// One raw input event. Raw input queues exactly one event and does not settle.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub enum RawInputEvent {
         /// Move the pointer to an absolute egui position.
         PointerMove {
@@ -4326,6 +2856,7 @@ pub mod eguidev {
     }
 
     /// Axis-aligned rectangle in egui coordinates.
+    #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
     pub struct Rect {
         /// Minimum point.
         pub min: Pos2,
@@ -4334,6 +2865,7 @@ pub mod eguidev {
     }
 
     /// One resize command applied atomically before settlement.
+    #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct ResizeOptions {
         #[serde(flatten)]
         /// Shared action controls.
@@ -4357,6 +2889,7 @@ pub mod eguidev {
 
     #[serde(rename_all = "snake_case")]
     /// Role-specific widget metadata kept on internal registry entries.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub enum RoleState {
         /// Scroll area metadata.
         ScrollArea {
@@ -4403,6 +2936,7 @@ pub mod eguidev {
 
     #[serde(rename_all = "snake_case")]
     /// Coarse alignment used by scroll-to actions.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub enum ScrollAlign {
         /// Align to the top.
         Top,
@@ -4413,6 +2947,7 @@ pub mod eguidev {
     }
 
     /// Scroll metadata captured for a scroll area.
+    #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
     pub struct ScrollAreaMeta {
         /// Current scroll offset.
         pub offset: Vec2,
@@ -4425,9 +2960,11 @@ pub mod eguidev {
     }
 
     /// Scroll area state tracker with one-shot offset jumps.
+    #[derive(Clone, Debug, Default)]
     pub struct ScrollAreaState {}
 
     /// Options for text-edit widgets.
+    #[derive(Clone, Copy, Debug, Default)]
     pub struct TextEditOptions {
         /// Whether the edit is multiline.
         pub multiline: bool,
@@ -4439,6 +2976,7 @@ pub mod eguidev {
     }
 
     /// A 2D vector in egui coordinates.
+    #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
     pub struct Vec2 {
         /// X component in points.
         pub x: f32,
@@ -4447,6 +2985,7 @@ pub mod eguidev {
     }
 
     /// Shared declarative condition for viewport waits and assertions.
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
     pub struct ViewportCondition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         /// Whether the viewport must be present or absent.
@@ -4487,6 +3026,7 @@ pub mod eguidev {
     }
 
     /// Error returned when a semantic viewport name is reserved or invalid.
+    #[derive(Clone, Debug, Deserialize, Display, Eq, Error, PartialEq, Serialize)]
     pub struct ViewportNameError {
         /// Stable machine-readable error code.
         pub code: String,
@@ -4495,9 +3035,11 @@ pub mod eguidev {
     }
 
     /// Explicit selector for a viewport.
+    #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct ViewportSel {}
 
     /// Error returned when parsing a viewport selector string fails.
+    #[derive(Clone, Debug, Deserialize, Display, Eq, Error, PartialEq, Serialize)]
     pub struct ViewportSelParseError {
         /// Stable machine-readable error code.
         pub code: String,
@@ -4506,6 +3048,7 @@ pub mod eguidev {
     }
 
     /// Timeout and polling controls shared by waits and high-level actions.
+    #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
     pub struct WaitOptions {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         /// Optional operation timeout in milliseconds.
@@ -4519,6 +3062,7 @@ pub mod eguidev {
     /// fixtures.
     ///
     /// Every populated field must match. An empty condition means `present = true`.
+    #[derive(Clone, Debug, Default, Deserialize, Display, PartialEq, Serialize)]
     pub struct WidgetCondition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         /// Whether the widget must be present or absent.
@@ -4529,6 +3073,10 @@ pub mod eguidev {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         /// Required visibility state.
         pub visible: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Required coverage state: whether another egui layer covers the
+        /// widget's action point.
+        pub covered: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         /// Required enabled state.
         pub enabled: Option<bool>,
@@ -4565,6 +3113,7 @@ pub mod eguidev {
     }
 
     /// One font used by a captured galley.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub struct WidgetFont {
         /// Egui font family name.
         pub family: String,
@@ -4573,6 +3122,7 @@ pub mod eguidev {
     }
 
     /// Layout metadata captured for a widget when available.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct WidgetLayout {
         /// Desired size of the widget before layout constraints.
         pub desired_size: Vec2,
@@ -4595,6 +3145,7 @@ pub mod eguidev {
     }
 
     /// Metadata for a widget used during tracking and layout analysis.
+    #[derive(Clone, Debug, Default)]
     pub struct WidgetMeta {
         /// Role taxonomy entry with the metadata that the role requires.
         pub role: crate::types::WidgetRoleMeta,
@@ -4629,6 +3180,7 @@ pub mod eguidev {
     /// The bounds are `f64` even though `DevUiExt` sliders and drag values take
     /// `f32` or `i32`. Scripts see one numeric type, so every recorded range widens
     /// to the type that carries all of them without loss.
+    #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
     pub struct WidgetRange {
         /// Minimum allowed value.
         pub min: f64,
@@ -4641,6 +3193,7 @@ pub mod eguidev {
     /// Matching rules:
     /// - `id` is the canonical widget selector.
     /// - `viewport_id` acts as an additional selector to narrow matches.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct WidgetRef {
         /// Canonical widget id.
         ///
@@ -4655,6 +3208,7 @@ pub mod eguidev {
 
     #[serde(rename_all = "snake_case")]
     /// Widget role taxonomy for automation and scripting filters.
+    #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
     pub enum WidgetRole {
         Button,
         Link,
@@ -4689,6 +3243,7 @@ pub mod eguidev {
     /// only for roles that carry no metadata at all, such as a label or a
     /// separator; a button with no known selection state is
     /// `Button { selected: None }`, never `Plain(WidgetRole::Button)`.
+    #[derive(Clone, Debug, Default, PartialEq)]
     pub enum WidgetRoleMeta {
         /// A role that carries no role-specific metadata.
         Plain(WidgetRole),
@@ -4741,6 +3296,7 @@ pub mod eguidev {
     /// `(viewport_id, id)` is the one widget identity across handles, states,
     /// dumps, deltas, waits, and error details, so a state that a wait returns
     /// names its own widget without a second lookup.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct WidgetState {
         /// Canonical widget id.
         pub id: String,
@@ -4795,9 +3351,13 @@ pub mod eguidev {
         /// Whether the widget reported egui focus in the captured frame (may lag
         /// keyboard focus).
         pub focused: bool,
+        /// Whether another egui layer covers the widget's action point. See
+        /// [`WidgetState::covered`].
+        pub covered: bool,
     }
 
     /// Captured text layout from the galley that a widget painted.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct WidgetTextLayout {
         /// Fonts used by the galley's layout sections.
         pub fonts: Vec<WidgetFont>,
@@ -4810,6 +3370,7 @@ pub mod eguidev {
     }
 
     /// One painted line from a captured galley.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct WidgetTextLine {
         /// Text on this line.
         pub text: String,
@@ -4818,6 +3379,7 @@ pub mod eguidev {
     }
 
     /// Captured widget value for stateful controls.
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     pub enum WidgetValue {
         /// Boolean value from checkboxes/toggles.
         Bool(bool),
@@ -5209,57 +3771,11 @@ pub mod eguidev {
         fn schema_name() -> Cow<'static, str> {}
     }
 
-    impl Clone for WidgetRole {
-        fn clone(&self) -> WidgetRole {}
-    }
-
-    impl Debug for WidgetRole {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for WidgetRole {
-        fn default() -> WidgetRole {}
-    }
-
-    impl Eq for WidgetRole {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl PartialEq for WidgetRole {
-        fn eq(&self, other: &WidgetRole) -> bool {}
-    }
-
-    impl Serialize for WidgetRole {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetRole {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
     #[doc(hidden)]
     impl JsonSchema for WidgetValue {
         fn json_schema(_generator: &mut SchemaGenerator) -> Schema {}
 
         fn schema_name() -> Cow<'static, str> {}
-    }
-
-    impl Clone for WidgetValue {
-        fn clone(&self) -> WidgetValue {}
-    }
-
-    impl Debug for WidgetValue {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
     }
 
     impl From<&str> for WidgetValue {
@@ -5282,132 +3798,9 @@ pub mod eguidev {
         fn from(value: i64) -> Self {}
     }
 
-    impl PartialEq for WidgetValue {
-        fn eq(&self, other: &WidgetValue) -> bool {}
-    }
-
-    impl Serialize for WidgetValue {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer, {
-        }
-    }
-
     impl WidgetValue {
         /// String representation matching Luau `tostring()` semantics.
         pub fn to_text(&self) -> String {}
-    }
-
-    impl<'de> Deserialize<'de> for WidgetValue {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ActionOptions {
-        fn clone(&self) -> ActionOptions {}
-    }
-
-    impl Debug for ActionOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for ActionOptions {
-        fn default() -> ActionOptions {}
-    }
-
-    impl Eq for ActionOptions {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for ActionOptions {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ActionOptions {
-        fn eq(&self, other: &ActionOptions) -> bool {}
-    }
-
-    impl Serialize for ActionOptions {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ActionOptions {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for AutomationOptions {
-        fn clone(&self) -> AutomationOptions {}
-    }
-
-    impl Debug for AutomationOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for AutomationOptions {
-        fn default() -> Self {}
-    }
-
-    impl Eq for AutomationOptions {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl PartialEq for AutomationOptions {
-        fn eq(&self, other: &AutomationOptions) -> bool {}
-    }
-
-    impl Clone for ButtonOptions {
-        fn clone(&self) -> ButtonOptions {}
-    }
-
-    impl Debug for ButtonOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for ButtonOptions {
-        fn default() -> ButtonOptions {}
-    }
-
-    impl Clone for CheckboxOptions {
-        fn clone(&self) -> CheckboxOptions {}
-    }
-
-    impl Debug for CheckboxOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for CheckboxOptions {
-        fn default() -> CheckboxOptions {}
-    }
-
-    impl Clone for DevMcp {
-        fn clone(&self) -> DevMcp {}
-    }
-
-    impl Debug for DevMcp {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for DevMcp {
-        fn default() -> DevMcp {}
     }
 
     impl DevMcp {
@@ -5513,47 +3906,6 @@ pub mod eguidev {
         pub fn is_enabled(&self) -> bool {}
     }
 
-    impl Clone for DevMcpConfigError {
-        fn clone(&self) -> DevMcpConfigError {}
-    }
-
-    impl Debug for DevMcpConfigError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Display for DevMcpConfigError {
-        fn fmt(&self, __formatter: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {}
-    }
-
-    impl PartialEq for DevMcpConfigError {
-        fn eq(&self, other: &DevMcpConfigError) -> bool {}
-    }
-
-    impl Serialize for DevMcpConfigError {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for DevMcpConfigError {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for DiagnosticError {
-        fn clone(&self) -> DiagnosticError {}
-    }
-
-    impl Debug for DiagnosticError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
     impl DiagnosticError {
         /// Attach structured error details.
         pub fn with_details(self, details: Value) -> Self {}
@@ -5562,115 +3914,17 @@ pub mod eguidev {
         pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {}
     }
 
-    impl PartialEq for DiagnosticError {
-        fn eq(&self, other: &DiagnosticError) -> bool {}
+    impl Drop for ContainerGuard {
+        fn drop(&mut self) {}
     }
 
-    impl Serialize for DiagnosticError {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
+    impl Drop for FrameGuard<'_> {
+        fn drop(&mut self) {}
     }
 
-    impl<'de> Deserialize<'de> for DiagnosticError {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for DragOptions {
-        fn clone(&self) -> DragOptions {}
-    }
-
-    impl Debug for DragOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for DragOptions {
-        fn default() -> DragOptions {}
-    }
-
-    impl JsonSchema for DragOptions {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for DragOptions {
-        fn eq(&self, other: &DragOptions) -> bool {}
-    }
-
-    impl Serialize for DragOptions {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for DragOptions {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureCall {
-        fn clone(&self) -> FixtureCall {}
-    }
-
-    impl Debug for FixtureCall {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for FixtureCall {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for FixtureCall {
-        fn eq(&self, other: &FixtureCall) -> bool {}
-    }
-
-    impl Serialize for FixtureCall {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureCall {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureError {
-        fn clone(&self) -> FixtureError {}
-    }
-
-    impl Debug for FixtureError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
+    impl<'a> FrameGuard<'a> {
+        /// Create a new frame guard for the provided DevMcp.
+        pub fn new(devmcp: &'a DevMcp, ctx: &'a Context) -> Self {}
     }
 
     impl FixtureError {
@@ -5689,35 +3943,6 @@ pub mod eguidev {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for FixtureError {
-        fn eq(&self, other: &FixtureError) -> bool {}
-    }
-
-    impl Serialize for FixtureError {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureError {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureParam {
-        fn clone(&self) -> FixtureParam {}
-    }
-
-    impl Debug for FixtureParam {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
     }
 
     impl FixtureParam {
@@ -5757,35 +3982,6 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl Serialize for FixtureParam {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureParam {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureParams {
-        fn clone(&self) -> FixtureParams {}
-    }
-
-    impl Debug for FixtureParams {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for FixtureParams {
-        fn default() -> FixtureParams {}
-    }
-
     impl FixtureParams {
         /// Consume this wrapper into the validated param map.
         pub fn into_map(self) -> BTreeMap<String, WidgetValue> {}
@@ -5819,39 +4015,6 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for FixtureParams {
-        fn eq(&self, other: &FixtureParams) -> bool {}
-    }
-
-    impl Serialize for FixtureParams {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureParams {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureResponse {
-        fn clone(&self) -> FixtureResponse {}
-    }
-
-    impl Debug for FixtureResponse {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for FixtureResponse {
-        fn default() -> FixtureResponse {}
-    }
-
     impl FixtureResponse {
         /// Add a handler-returned dynamic ready.
         pub fn ready(self, ready: FixtureTargetSpec) -> Self {}
@@ -5871,35 +4034,6 @@ pub mod eguidev {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for FixtureResponse {
-        fn eq(&self, other: &FixtureResponse) -> bool {}
-    }
-
-    impl Serialize for FixtureResponse {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureResponse {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureSpec {
-        fn clone(&self) -> FixtureSpec {}
-    }
-
-    impl Debug for FixtureSpec {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
     }
 
     impl FixtureSpec {
@@ -6046,31 +4180,6 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl Serialize for FixtureSpec {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureSpec {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for FixtureTargetSpec {
-        fn clone(&self) -> FixtureTargetSpec {}
-    }
-
-    impl Debug for FixtureTargetSpec {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
     impl FixtureTargetSpec {
         /// Create a fixture target with an explicit shared condition.
         pub fn new(widget_id: impl Into<String>, condition: WidgetCondition) -> Self {}
@@ -6123,41 +4232,11 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for FixtureTargetSpec {
-        fn eq(&self, other: &FixtureTargetSpec) -> bool {}
+    impl From<&WidgetRegistryEntry> for WidgetState {
+        fn from(entry: &WidgetRegistryEntry) -> Self {}
     }
 
-    impl Serialize for FixtureTargetSpec {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for FixtureTargetSpec {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ParamKind {
-        fn clone(&self) -> ParamKind {}
-    }
-
-    impl Debug for ParamKind {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ParamKind {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for ParamKind {
+    impl JsonSchema for WidgetState {
         fn inline_schema() -> bool {}
 
         fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
@@ -6165,79 +4244,6 @@ pub mod eguidev {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ParamKind {
-        fn eq(&self, other: &ParamKind) -> bool {}
-    }
-
-    impl Serialize for ParamKind {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ParamKind {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for PointerButton {
-        fn clone(&self) -> PointerButton {}
-    }
-
-    impl Debug for PointerButton {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for PointerButton {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for PointerButton {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for PointerButton {
-        fn eq(&self, other: &PointerButton) -> bool {}
-    }
-
-    impl Serialize for PointerButton {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for PointerButton {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for Pos2 {
-        fn clone(&self) -> Pos2 {}
-    }
-
-    impl Debug for Pos2 {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
     }
 
     impl From<Pos2> for Pos2 {
@@ -6258,126 +4264,6 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for Pos2 {
-        fn eq(&self, other: &Pos2) -> bool {}
-    }
-
-    impl Serialize for Pos2 {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for Pos2 {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ProgressBarOptions {
-        fn clone(&self) -> ProgressBarOptions {}
-    }
-
-    impl Debug for ProgressBarOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for ProgressBarOptions {
-        fn default() -> ProgressBarOptions {}
-    }
-
-    impl Clone for RawInputAction {
-        fn clone(&self) -> RawInputAction {}
-    }
-
-    impl Debug for RawInputAction {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for RawInputAction {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for RawInputAction {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for RawInputAction {
-        fn eq(&self, other: &RawInputAction) -> bool {}
-    }
-
-    impl Serialize for RawInputAction {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for RawInputAction {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for RawInputEvent {
-        fn clone(&self) -> RawInputEvent {}
-    }
-
-    impl Debug for RawInputEvent {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for RawInputEvent {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl Serialize for RawInputEvent {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for RawInputEvent {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for Rect {
-        fn clone(&self) -> Rect {}
-    }
-
-    impl Debug for Rect {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
     impl From<Rect> for Rect {
         fn from(rect: EguiRect) -> Self {}
     }
@@ -6396,42 +4282,119 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for Rect {
-        fn eq(&self, other: &Rect) -> bool {}
-    }
-
     impl Rect {
         /// Return the center point of the rectangle in egui coordinates.
         pub fn center(self) -> Pos2 {}
     }
 
-    impl Serialize for Rect {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
+    impl From<Vec2> for Vec2 {
+        fn from(vec: EguiVec2) -> Self {}
     }
 
-    impl<'de> Deserialize<'de> for Rect {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
+    impl From<Vec2> for egui::Vec2 {
+        fn from(vec: Vec2) -> Self {}
     }
 
-    impl Clone for ResizeOptions {
-        fn clone(&self) -> ResizeOptions {}
+    impl JsonSchema for Vec2 {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl Debug for ResizeOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
+    impl From<ViewportId> for ViewportSel {
+        fn from(value: egui::ViewportId) -> Self {}
     }
 
-    impl Default for ResizeOptions {
-        fn default() -> ResizeOptions {}
+    impl ViewportSel {
+        /// Parse the Luau/tool selector grammar: `root`, a semantic name, or
+        /// `vp:<hex>`.
+        pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {}
+
+        /// Return the canonical string selector used in fixtures and scripts.
+        pub fn to_selector_string(&self) -> String {}
+
+        /// Select a concrete egui viewport id.
+        pub fn id(id: egui::ViewportId) -> Self {}
+
+        /// Select a semantic viewport name.
+        pub fn name(name: impl Into<String>) -> Result<Self, ViewportNameError> {}
+
+        /// Select the root viewport.
+        pub fn root() -> Self {}
+    }
+
+    impl JsonSchema for ActionOptions {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for DragOptions {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for FixtureCall {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for ParamKind {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for PointerButton {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for RawInputAction {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for RawInputEvent {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
     impl JsonSchema for ResizeOptions {
@@ -6444,35 +4407,6 @@ pub mod eguidev {
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl PartialEq for ResizeOptions {
-        fn eq(&self, other: &ResizeOptions) -> bool {}
-    }
-
-    impl Serialize for ResizeOptions {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ResizeOptions {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for RoleState {
-        fn clone(&self) -> RoleState {}
-    }
-
-    impl Debug for RoleState {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
     impl JsonSchema for RoleState {
         fn inline_schema() -> bool {}
 
@@ -6481,10 +4415,6 @@ pub mod eguidev {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for RoleState {
-        fn eq(&self, other: &RoleState) -> bool {}
     }
 
     impl RoleState {
@@ -6507,36 +4437,6 @@ pub mod eguidev {
         pub fn text_edit(&self) -> Option<(bool, bool)> {}
     }
 
-    impl Serialize for RoleState {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for RoleState {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScrollAlign {
-        fn clone(&self) -> ScrollAlign {}
-    }
-
-    impl Debug for ScrollAlign {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ScrollAlign {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
     impl JsonSchema for ScrollAlign {
         fn inline_schema() -> bool {}
 
@@ -6545,35 +4445,6 @@ pub mod eguidev {
         fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
 
         fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ScrollAlign {
-        fn eq(&self, other: &ScrollAlign) -> bool {}
-    }
-
-    impl Serialize for ScrollAlign {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ScrollAlign {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ScrollAreaMeta {
-        fn clone(&self) -> ScrollAreaMeta {}
-    }
-
-    impl Debug for ScrollAreaMeta {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
     }
 
     impl JsonSchema for ScrollAreaMeta {
@@ -6591,33 +4462,150 @@ pub mod eguidev {
         pub fn new(offset: Vec2, viewport_size: Vec2, content_size: Vec2) -> Self {}
     }
 
-    impl Serialize for ScrollAreaMeta {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
+    impl JsonSchema for ViewportCondition {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl<'de> Deserialize<'de> for ScrollAreaMeta {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
+    impl ViewportCondition {
+        /// Validate combinations and string conditions.
+        pub fn validate(&self) -> Result<(), String> {}
     }
 
-    impl Clone for ScrollAreaState {
-        fn clone(&self) -> ScrollAreaState {}
+    impl JsonSchema for ViewportNameError {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl Debug for ScrollAreaState {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
+    impl JsonSchema for ViewportSelParseError {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
-    impl Default for ScrollAreaState {
-        fn default() -> Self {}
+    impl JsonSchema for WaitOptions {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for WidgetCondition {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl WidgetCondition {
+        /// Require a widget-data value at an RFC 6901 pointer.
+        pub fn data(pointer: impl Into<String>, equals: impl Into<serde_json::Value>) -> Self {}
+
+        /// Require an exact widget label.
+        pub fn label(label: impl Into<String>) -> Self {}
+
+        /// Require an exact widget value.
+        pub fn value(value: WidgetValue) -> Self {}
+
+        /// Require stable scroll metadata at the requested offset.
+        pub fn scroll_at(offset: impl Into<Vec2>, tolerance: f32) -> Self {}
+
+        /// Require stable, initialized scroll metadata.
+        pub fn scroll_ready() -> Self {}
+
+        /// Require the widget to exist and be visible.
+        pub fn visible() -> Self {}
+
+        /// Require the widget to exist.
+        pub fn present() -> Self {}
+
+        /// Validate combinations and nested condition values.
+        pub fn validate(&self) -> Result<(), String> {}
+    }
+
+    impl JsonSchema for WidgetFont {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for WidgetLayout {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for WidgetRange {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl WidgetRange {
+        /// Check whether the range contains the provided value.
+        pub fn contains(self, value: f64) -> bool {}
+    }
+
+    impl JsonSchema for WidgetRef {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for WidgetTextLayout {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+    }
+
+    impl JsonSchema for WidgetTextLine {
+        fn inline_schema() -> bool {}
+
+        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
+
+        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
+
+        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
     }
 
     impl ScrollAreaState {
@@ -6657,680 +4645,13 @@ pub mod eguidev {
         pub fn offset(&self) -> egui::Vec2 {}
     }
 
-    impl Clone for TextEditOptions {
-        fn clone(&self) -> TextEditOptions {}
-    }
-
-    impl Debug for TextEditOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for TextEditOptions {
-        fn default() -> TextEditOptions {}
-    }
-
-    impl Clone for Vec2 {
-        fn clone(&self) -> Vec2 {}
-    }
-
-    impl Debug for Vec2 {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl From<Vec2> for Vec2 {
-        fn from(vec: EguiVec2) -> Self {}
-    }
-
-    impl From<Vec2> for egui::Vec2 {
-        fn from(vec: Vec2) -> Self {}
-    }
-
-    impl JsonSchema for Vec2 {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for Vec2 {
-        fn eq(&self, other: &Vec2) -> bool {}
-    }
-
-    impl Serialize for Vec2 {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for Vec2 {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ViewportCondition {
-        fn clone(&self) -> ViewportCondition {}
-    }
-
-    impl Debug for ViewportCondition {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for ViewportCondition {
-        fn default() -> ViewportCondition {}
-    }
-
-    impl JsonSchema for ViewportCondition {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ViewportCondition {
-        fn eq(&self, other: &ViewportCondition) -> bool {}
-    }
-
-    impl Serialize for ViewportCondition {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl ViewportCondition {
-        /// Validate combinations and string conditions.
-        pub fn validate(&self) -> Result<(), String> {}
-    }
-
-    impl<'de> Deserialize<'de> for ViewportCondition {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ViewportNameError {
-        fn clone(&self) -> ViewportNameError {}
-    }
-
-    impl Debug for ViewportNameError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Display for ViewportNameError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ViewportNameError {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for ViewportNameError {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ViewportNameError {
-        fn eq(&self, other: &ViewportNameError) -> bool {}
-    }
-
-    impl Serialize for ViewportNameError {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ViewportNameError {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for ViewportSel {
-        fn clone(&self) -> ViewportSel {}
-    }
-
-    impl Debug for ViewportSel {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ViewportSel {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl From<ViewportId> for ViewportSel {
-        fn from(value: egui::ViewportId) -> Self {}
-    }
-
-    impl PartialEq for ViewportSel {
-        fn eq(&self, other: &ViewportSel) -> bool {}
-    }
-
-    impl ViewportSel {
-        /// Parse the Luau/tool selector grammar: `root`, a semantic name, or
-        /// `vp:<hex>`.
-        pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {}
-
-        /// Return the canonical string selector used in fixtures and scripts.
-        pub fn to_selector_string(&self) -> String {}
-
-        /// Select a concrete egui viewport id.
-        pub fn id(id: egui::ViewportId) -> Self {}
-
-        /// Select a semantic viewport name.
-        pub fn name(name: impl Into<String>) -> Result<Self, ViewportNameError> {}
-
-        /// Select the root viewport.
-        pub fn root() -> Self {}
-    }
-
-    impl Clone for ViewportSelParseError {
-        fn clone(&self) -> ViewportSelParseError {}
-    }
-
-    impl Debug for ViewportSelParseError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Display for ViewportSelParseError {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Eq for ViewportSelParseError {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for ViewportSelParseError {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for ViewportSelParseError {
-        fn eq(&self, other: &ViewportSelParseError) -> bool {}
-    }
-
-    impl Serialize for ViewportSelParseError {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for ViewportSelParseError {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WaitOptions {
-        fn clone(&self) -> WaitOptions {}
-    }
-
-    impl Debug for WaitOptions {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for WaitOptions {
-        fn default() -> WaitOptions {}
-    }
-
-    impl Eq for WaitOptions {
-        #[doc(hidden)]
-        fn assert_fields_are_eq(&self) {}
-    }
-
-    impl JsonSchema for WaitOptions {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for WaitOptions {
-        fn eq(&self, other: &WaitOptions) -> bool {}
-    }
-
-    impl Serialize for WaitOptions {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WaitOptions {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetCondition {
-        fn clone(&self) -> WidgetCondition {}
-    }
-
-    impl Debug for WidgetCondition {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for WidgetCondition {
-        fn default() -> WidgetCondition {}
-    }
-
-    impl Display for WidgetCondition {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetCondition {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for WidgetCondition {
-        fn eq(&self, other: &WidgetCondition) -> bool {}
-    }
-
-    impl Serialize for WidgetCondition {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl WidgetCondition {
-        /// Require a widget-data value at an RFC 6901 pointer.
-        pub fn data(pointer: impl Into<String>, equals: impl Into<serde_json::Value>) -> Self {}
-
-        /// Require an exact widget label.
-        pub fn label(label: impl Into<String>) -> Self {}
-
-        /// Require an exact widget value.
-        pub fn value(value: WidgetValue) -> Self {}
-
-        /// Require stable scroll metadata at the requested offset.
-        pub fn scroll_at(offset: impl Into<Vec2>, tolerance: f32) -> Self {}
-
-        /// Require stable, initialized scroll metadata.
-        pub fn scroll_ready() -> Self {}
-
-        /// Require the widget to exist and be visible.
-        pub fn visible() -> Self {}
-
-        /// Require the widget to exist.
-        pub fn present() -> Self {}
-
-        /// Validate combinations and nested condition values.
-        pub fn validate(&self) -> Result<(), String> {}
-    }
-
-    impl<'de> Deserialize<'de> for WidgetCondition {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetFont {
-        fn clone(&self) -> WidgetFont {}
-    }
-
-    impl Debug for WidgetFont {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetFont {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for WidgetFont {
-        fn eq(&self, other: &WidgetFont) -> bool {}
-    }
-
-    impl Serialize for WidgetFont {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetFont {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetLayout {
-        fn clone(&self) -> WidgetLayout {}
-    }
-
-    impl Debug for WidgetLayout {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetLayout {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl Serialize for WidgetLayout {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetLayout {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetMeta {
-        fn clone(&self) -> WidgetMeta {}
-    }
-
-    impl Debug for WidgetMeta {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for WidgetMeta {
-        fn default() -> WidgetMeta {}
-    }
-
     impl WidgetMeta {
         /// Attach structured app-domain data from any serializable value.
         pub fn with_data<T: Serialize>(self, data: T) -> Self {}
     }
 
-    impl Clone for WidgetRange {
-        fn clone(&self) -> WidgetRange {}
-    }
-
-    impl Debug for WidgetRange {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetRange {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl PartialEq for WidgetRange {
-        fn eq(&self, other: &WidgetRange) -> bool {}
-    }
-
-    impl Serialize for WidgetRange {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl WidgetRange {
-        /// Check whether the range contains the provided value.
-        pub fn contains(self, value: f64) -> bool {}
-    }
-
-    impl<'de> Deserialize<'de> for WidgetRange {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetRef {
-        fn clone(&self) -> WidgetRef {}
-    }
-
-    impl Debug for WidgetRef {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetRef {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl Serialize for WidgetRef {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetRef {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetRoleMeta {
-        fn clone(&self) -> WidgetRoleMeta {}
-    }
-
-    impl Debug for WidgetRoleMeta {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl Default for WidgetRoleMeta {
-        /// The unknown role, which carries no metadata.
-        fn default() -> Self {}
-    }
-
-    impl PartialEq for WidgetRoleMeta {
-        fn eq(&self, other: &WidgetRoleMeta) -> bool {}
-    }
-
     impl WidgetRoleMeta {
         /// Project the flat taxonomy entry that scripts filter on.
         pub fn role(&self) -> WidgetRole {}
-    }
-
-    impl Clone for WidgetState {
-        fn clone(&self) -> WidgetState {}
-    }
-
-    impl Debug for WidgetState {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl From<&WidgetRegistryEntry> for WidgetState {
-        fn from(entry: &WidgetRegistryEntry) -> Self {}
-    }
-
-    impl JsonSchema for WidgetState {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl Serialize for WidgetState {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetState {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetTextLayout {
-        fn clone(&self) -> WidgetTextLayout {}
-    }
-
-    impl Debug for WidgetTextLayout {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetTextLayout {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl Serialize for WidgetTextLayout {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetTextLayout {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Clone for WidgetTextLine {
-        fn clone(&self) -> WidgetTextLine {}
-    }
-
-    impl Debug for WidgetTextLine {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {}
-    }
-
-    impl JsonSchema for WidgetTextLine {
-        fn inline_schema() -> bool {}
-
-        fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {}
-
-        fn schema_id() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-
-        fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {}
-    }
-
-    impl Serialize for WidgetTextLine {
-        fn serialize<__S>(
-            &self,
-            __serializer: __S,
-        ) -> _serde::__private229::Result<__S::Ok, __S::Error>
-        where
-            __S: _serde::Serializer, {
-        }
-    }
-
-    impl<'de> Deserialize<'de> for WidgetTextLine {
-        fn deserialize<__D>(__deserializer: __D) -> _serde::__private229::Result<Self, __D::Error>
-        where
-            __D: _serde::Deserializer<'de>, {
-        }
-    }
-
-    impl Drop for ContainerGuard {
-        fn drop(&mut self) {}
-    }
-
-    impl Drop for FrameGuard<'_> {
-        fn drop(&mut self) {}
-    }
-
-    impl<'a> FrameGuard<'a> {
-        /// Create a new frame guard for the provided DevMcp.
-        pub fn new(devmcp: &'a DevMcp, ctx: &'a Context) -> Self {}
     }
 }

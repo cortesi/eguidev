@@ -2399,6 +2399,7 @@ dependencies = [
  "libc",
  "ruau-bytecode",
  "ruau-declaration",
+ "ruau-highlight",
  "ruau-source",
  "ruau-syntax",
  "ruau-typecheck",
@@ -2420,6 +2421,13 @@ dependencies = [
 
 [[package]]
 name = "ruau-declaration"
+version = "0.1.0"
+dependencies = [
+ "ruau-syntax",
+]
+
+[[package]]
+name = "ruau-highlight"
 version = "0.1.0"
 dependencies = [
  "ruau-syntax",

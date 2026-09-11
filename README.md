@@ -186,7 +186,21 @@ let devmcp = eguidev_runtime::attach(devmcp);
 usual `cargo run` therefore starts a usual app, with no server and no change to
 presentation.
 
-**3. Configure the launcher.** Install the CLI with `cargo install edev`. Then
+**3. Keep the focus** where the developer put it, before the event loop starts.
+
+```rust
+eguidev_runtime::enable_background_launch_guard();
+```
+
+On macOS an app takes the focus when it opens its first window. The guard hands
+each activation that no mouse click caused back to the application that was
+frontmost, so an automated run does not interrupt the developer. Call it in
+`main`, before `run_native`: the guard must watch every activation from the
+start, and `attach` can run later, inside the app builder. The guard applies
+only to a run that Edev started, and only while the session presentation is
+`background`.
+
+**4. Configure the launcher.** Install the CLI with `cargo install edev`. Then
 put a `.edev.toml` file in your project root:
 
 ```toml
@@ -198,8 +212,8 @@ suite_dir = "smoketest"
 ```
 
 On macOS, the default `background` presentation continues to render covered
-windows. It adds no Dock item and does not take the focus. Set
-`presentation = "foreground"` for manual sessions. See
+windows. It adds no Dock item, and with the guard from step 3 it keeps the
+focus where it was. Set `presentation = "foreground"` for manual sessions. See
 [`examples/edev.toml`](./examples/edev.toml) for a commented reference of every
 option.
 
