@@ -21,7 +21,7 @@ use crate::{
     fixtures::{FixtureExecution, FixtureManager},
     idle::IdleRegistry,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
-    types::{FixtureCall, WidgetValue},
+    types::{FixtureCall, Modifiers, WidgetValue},
     viewports::{FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
 };
@@ -183,29 +183,33 @@ impl Inner {
                 .retain(|key, _| key.viewport_id != viewport_id);
             self.overlays.clear_viewport_overlays(viewport_id);
             self.overlays.clear_overlay_debug_config(viewport_id);
-        } else {
-            self.actions.clear_all();
-            lock(&self.widget_value_updates, "widget value update lock").clear();
-            lock(&self.widget_value_consumers, "widget value consumers lock").clear();
-            lock(&self.scroll_overrides, "scroll overrides lock").clear();
-            self.overlays.clear_transient_state();
+            // Context clones share memory: direct popup/focus mutations cannot
+            // select a viewport. Escape runs in the target's next input pass.
+            for pressed in [true, false] {
+                self.queue_action(
+                    viewport_id,
+                    InputAction::Key {
+                        key: egui::Key::Escape,
+                        pressed,
+                        modifiers: Modifiers::default(),
+                    },
+                );
+            }
+            return;
         }
+        self.actions.clear_all();
+        lock(&self.widget_value_updates, "widget value update lock").clear();
+        lock(&self.widget_value_consumers, "widget value consumers lock").clear();
+        lock(&self.scroll_overrides, "scroll overrides lock").clear();
+        self.overlays.clear_transient_state();
         let contexts = {
             let contexts = lock(&self.contexts, "contexts lock");
-            contexts
-                .iter()
-                .filter(|(stored_viewport_id, _)| {
-                    viewport_id.is_none_or(|viewport_id| viewport_id == **stored_viewport_id)
-                })
-                .map(|(_, ctx)| ctx.clone())
-                .collect::<Vec<_>>()
+            contexts.values().cloned().collect::<Vec<_>>()
         };
         for ctx in &contexts {
             egui::Popup::close_all(ctx);
             ctx.memory_mut(|memory| memory.stop_text_input());
         }
-        // egui's popup close operation affects all viewports sharing a Context,
-        // even when Eguidev's transient automation state is scoped above.
         self.request_repaint_all();
     }
 
@@ -688,7 +692,7 @@ mod tests {
     fn global_overlay_resets_repaint_all_viewports() {
         let secondary = egui::ViewportId::from_hash_of("secondary");
         let operations: [fn(&Inner); 2] = [Inner::clear_overlays, |inner| {
-            inner.dismiss_transient_ui(Some(egui::ViewportId::ROOT))
+            inner.dismiss_transient_ui(None)
         }];
         for operation in operations {
             let inner = new_test_inner();
@@ -786,9 +790,9 @@ mod tests {
 
         inner.dismiss_transient_ui(Some(root));
 
-        assert!(!inner.actions.has_pending_actions(root));
+        assert_eq!(inner.actions.pending_action_count(root), 2);
         assert!(!inner.actions.has_pending_commands(root));
-        assert_eq!(inner.actions.stats(root).queued_actions, 0);
+        assert_eq!(inner.actions.stats(root).queued_actions, 2);
         assert_eq!(inner.actions.stats(root).last_drain_frame, None);
         assert!(inner.actions.pointer_pos(root).is_none());
         assert_eq!(inner.actions.pending_action_count(secondary), 1);

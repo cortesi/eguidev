@@ -328,6 +328,8 @@ struct DemoState {
     duplicate_viewport_names: bool,
     /// Selected row index from the secondary viewport list.
     secondary_selected_row: usize,
+    /// Editable text for the secondary viewport's focus demo.
+    secondary_text: String,
     /// Accumulated drag offset for the secondary viewport drag region.
     secondary_drag_offset: egui::Vec2,
     /// Scroll state for the secondary viewport list.
@@ -406,6 +408,7 @@ impl DemoState {
             force_occluder,
             duplicate_viewport_names: false,
             secondary_selected_row: 0,
+            secondary_text: String::new(),
             secondary_drag_offset: egui::Vec2::ZERO,
             secondary_scroll_state: ScrollAreaState::default(),
             secondary_unwired_value: 0,
@@ -455,6 +458,7 @@ impl DemoState {
         self.show_occluder = self.force_occluder;
         self.duplicate_viewport_names = false;
         self.secondary_selected_row = 0;
+        self.secondary_text.clear();
         self.secondary_drag_offset = egui::Vec2::ZERO;
         self.secondary_scroll_state.reset();
         self.secondary_unwired_value = 0;
@@ -1230,7 +1234,12 @@ impl DemoApp {
                 _ => "Secondary viewport",
             };
             ui.heading(title);
-            ui.label("Scroll and drag inside this viewport.");
+            ui.horizontal(|ui| {
+                ui.dev_text_edit("viewports.dismiss.input", &mut s.secondary_text);
+                ui.dev_menu_button("viewports.dismiss.menu", "Actions", |ui| {
+                    ui.dev_label("viewports.dismiss.menu.open", "Secondary menu");
+                });
+            });
 
             let _output = s.secondary_scroll_state.show(
                 egui::ScrollArea::vertical()

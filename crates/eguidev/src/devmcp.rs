@@ -775,6 +775,107 @@ mod inactive_tests {
     }
 
     #[test]
+    fn popup_dismissal_delivers_escape_only_to_its_viewport() {
+        let inner = Arc::new(Inner::new());
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let ctx = Context::default();
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        inner.capture_context(secondary, &ctx);
+        let devmcp = DevMcp::new().activate_runtime(
+            Arc::clone(&inner),
+            Arc::new(CountingRuntimeHooks::default()),
+        );
+        let mut plugin = AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        };
+
+        inner.dismiss_transient_ui(Some(secondary));
+
+        let mut root_input = egui::RawInput::default();
+        plugin.input_hook(&ctx, &mut root_input);
+        assert!(root_input.events.is_empty());
+
+        let mut secondary_input = egui::RawInput {
+            viewport_id: secondary,
+            ..Default::default()
+        };
+        plugin.input_hook(&ctx, &mut secondary_input);
+        let mut expected = [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .collect::<Vec<_>>();
+        expected.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        assert_eq!(secondary_input.events, expected);
+        assert!(!inner.actions.has_pending_actions(secondary));
+    }
+
+    #[test]
+    fn popup_dismissal_preserves_other_viewport_popup_and_focus() {
+        let inner = Arc::new(Inner::new());
+        let devmcp = DevMcp::new().activate_runtime(
+            Arc::clone(&inner),
+            Arc::new(CountingRuntimeHooks::default()),
+        );
+        let ctx = Context::default();
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let input = |viewport_id| {
+            let mut raw = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            raw.viewports.insert(secondary, Default::default());
+            raw
+        };
+        // Install the plugin before opening either viewport's transient UI.
+        ctx.run_ui(input(root), |ui| {
+            let _guard = FrameGuard::new(&devmcp, ui.ctx());
+        })
+        .drop_without_applying_deltas();
+        let render = |viewport_id, open| {
+            let mut state = (false, false);
+            ctx.run_ui(input(viewport_id), |ui| {
+                let pass_context = ui.ctx().clone();
+                let _guard = FrameGuard::new(&devmcp, &pass_context);
+                let edit_id = egui::Id::new((viewport_id, "edit"));
+                let popup_id = egui::Id::new((viewport_id, "popup"));
+                let mut text = String::new();
+                let edit = ui.add(egui::TextEdit::singleline(&mut text).id(edit_id));
+                let anchor = ui.button("Open");
+                if open {
+                    egui::Popup::open_id(ui.ctx(), popup_id);
+                    edit.request_focus();
+                }
+                egui::Popup::new(popup_id, ui.ctx().clone(), &anchor, anchor.layer_id)
+                    .open_memory(None)
+                    .show(|ui| {
+                        ui.label("Popup");
+                    });
+                state = (
+                    egui::Popup::is_id_open(ui.ctx(), popup_id),
+                    ui.ctx().memory(|memory| memory.has_focus(edit_id)),
+                );
+            })
+            .drop_without_applying_deltas();
+            state
+        };
+        assert_eq!(render(root, true), (true, true));
+        assert_eq!(render(secondary, true), (true, true));
+
+        inner.dismiss_transient_ui(Some(root));
+
+        assert_eq!(render(root, false), (false, false));
+        assert_eq!(render(secondary, false), (true, true));
+    }
+
+    #[test]
     fn input_hook_plugin_retains_the_synthetic_pointer_position() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;

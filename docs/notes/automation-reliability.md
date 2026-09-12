@@ -54,10 +54,12 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - Fixture apply boundaries clear transient DevMCP state (queued input/commands, queued widget
   value updates, value-override consumer tracking, scroll overrides, and overlay debug artifacts)
   to avoid cross-run leakage.
-- The same cleanup closes egui popups/menus and stops active text input on captured
-  contexts. `Viewport:dismiss_popups()` clears queued input, overrides, and visual aids
-  only in its viewport. The egui popup and focus operations use a shared context and
-  can affect other viewports.
+- The same cleanup closes egui popups/menus on captured contexts. It stops text input
+  in each context's active viewport; shared contexts can retain focus in other
+  viewports. `Viewport:dismiss_popups()` clears queued input, overrides, and visual aids
+  only in its viewport, then sends Escape there to dismiss popups and release text
+  focus. App code can also receive this Escape, for example to close a modal or
+  cancel a drag. Fixture-wide cleanup does not inject Escape.
 - Fixtures without preconditions are baseline-reset by contract: they are independently invokable,
   isolated from prior app state, and safe to apply in any order. Fixtures with preconditions are
   transitions and require the caller to establish their declared entry state first.

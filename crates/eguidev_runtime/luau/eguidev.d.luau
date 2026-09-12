@@ -417,8 +417,8 @@ declare class Viewport
     read widgets_at: (self: Viewport, position: Pos) -> { Widget }
 
     --- Clears this viewport's queued input, overrides, and visual aids.
-    --- Popup and focus dismissal uses egui's shared context and can affect
-    --- other viewports.
+    --- Sends Escape in this viewport to dismiss popups and release text focus.
+    --- App code can also receive Escape, for example to close a modal.
     read dismiss_popups: (self: Viewport, options: ActionOptions?) -> ()
     read key: (self: Viewport, key: string, options: KeyOptions?) -> ()
     read paste: (self: Viewport, text: string, options: ActionOptions?) -> ()
