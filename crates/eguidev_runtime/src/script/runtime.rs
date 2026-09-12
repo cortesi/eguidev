@@ -2092,10 +2092,14 @@ impl ScriptRuntime {
             let value = max_dimension
                 .as_f64()
                 .ok_or_else(|| self.type_error(pos, "max_dimension must be a number"))?;
-            if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) {
+            if !value.is_finite()
+                || value < 0.0
+                || value > f64::from(u32::MAX)
+                || value.fract() != 0.0
+            {
                 return Err(self.type_error(pos, "max_dimension must be a non-negative integer"));
             }
-            resolved.max_dimension = value.round() as u32;
+            resolved.max_dimension = value as u32;
         }
         Ok(resolved)
     }
@@ -2911,6 +2915,24 @@ mod tests {
             timeout_ms,
         ));
         (runtime, script)
+    }
+
+    #[test]
+    fn screenshot_dimensions_require_whole_pixels() {
+        let (_runtime, script) = script_runtime(1_000);
+        let pos = ScriptPosition::default();
+        for value in [0.4, 1.5, 1600.5] {
+            let error = script
+                .screenshot_options(pos, Some(&json!({ "max_dimension": value })))
+                .expect_err("fractional dimensions must be rejected");
+            assert!(error.message.contains("non-negative integer"));
+        }
+        for value in [0_u32, 1, 1600, u32::MAX] {
+            let options = script
+                .screenshot_options(pos, Some(&json!({ "max_dimension": value })))
+                .expect("whole pixel dimension");
+            assert_eq!(options.max_dimension, value);
+        }
     }
 
     #[test]

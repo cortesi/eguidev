@@ -548,7 +548,7 @@ export type ScrollToOptions = {
 --- and keep `jpeg` for full viewports.
 export type ScreenshotOptions = {
     format: ("jpeg" | "png")?,
-    --- Largest long edge in pixels. Zero keeps the captured size.
+    --- Largest long edge in whole pixels. Zero keeps the captured size.
     max_dimension: number?,
 }
 
