@@ -809,7 +809,7 @@ fn encode_png(image: &egui::ColorImage) -> Result<EncodedImage, ToolError> {
     let height = image.size[1] as u32;
     let mut bytes = Vec::with_capacity(image.pixels.len() * 4);
     for pixel in &image.pixels {
-        bytes.extend_from_slice(&pixel.to_array());
+        bytes.extend_from_slice(&pixel.to_srgba_unmultiplied());
     }
     let mut png_data = Vec::new();
     let encoder = PngEncoder::new(&mut png_data);
@@ -838,16 +838,14 @@ fn encode_jpeg(image: &egui::ColorImage) -> Result<EncodedImage, ToolError> {
     let mut bytes = Vec::with_capacity(capacity);
     for pixel in &image.pixels {
         let [r, g, b, a] = pixel.to_array();
-        if a == 255 {
-            bytes.extend_from_slice(&[r, g, b]);
-        } else {
-            let alpha = u16::from(a);
-            let inv = 255_u16.saturating_sub(alpha);
-            let r = ((u16::from(r) * alpha) + 255 * inv) / 255;
-            let g = ((u16::from(g) * alpha) + 255 * inv) / 255;
-            let b = ((u16::from(b) * alpha) + 255 * inv) / 255;
-            bytes.extend_from_slice(&[r as u8, g as u8, b as u8]);
-        }
+        // Color32 channels already include alpha in gamma space. Add the
+        // white matte once, retaining the captured color convention.
+        let white = 255 - a;
+        bytes.extend_from_slice(&[
+            r.saturating_add(white),
+            g.saturating_add(white),
+            b.saturating_add(white),
+        ]);
     }
     let mut jpeg_data = Vec::new();
     let encoder = JpegEncoder::new_with_quality(&mut jpeg_data, JPEG_QUALITY);
@@ -907,6 +905,8 @@ fn crop_image(
 #[cfg(test)]
 mod tests {
     use std::{future::poll_fn, sync::Arc, task::Poll};
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     use super::{
         DEFAULT_MAX_SCREENSHOT_DIMENSION, ScreenshotFormat, ScreenshotOptions, await_screenshot,
@@ -1062,6 +1062,74 @@ mod tests {
         .expect("png");
         assert_eq!(png.media_type, "image/png");
         assert_ne!(jpeg.data, png.data);
+    }
+
+    #[test]
+    fn png_screenshots_preserve_translucent_colors() {
+        for (color, expected) in [
+            (egui::Color32::TRANSPARENT, [0, 0, 0, 0]),
+            (
+                egui::Color32::from_rgba_premultiplied(64, 32, 16, 128),
+                [128, 64, 32, 128],
+            ),
+            (egui::Color32::from_rgb(12, 34, 56), [12, 34, 56, 255]),
+        ] {
+            let mut image = solid_image(16, 16);
+            image.pixels.fill(color);
+            let encoded = encode_screenshot(
+                &image,
+                ScreenshotOptions {
+                    format: ScreenshotFormat::Png,
+                    max_dimension: 0,
+                },
+            )
+            .expect("encode PNG");
+            let bytes = STANDARD.decode(encoded.data).expect("decode base64");
+            let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .expect("decode PNG")
+                .to_rgba8();
+            assert_eq!(decoded.dimensions(), (16, 16));
+            assert!(
+                decoded.pixels().all(|pixel| pixel.0 == expected),
+                "PNG must use straight alpha for {color:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn jpeg_screenshots_composite_translucent_colors_once() {
+        for (color, expected) in [
+            (egui::Color32::TRANSPARENT, [255_u8, 255, 255]),
+            (
+                egui::Color32::from_rgba_premultiplied(64, 32, 16, 128),
+                [191, 159, 143],
+            ),
+            (egui::Color32::from_rgb(12, 34, 56), [12, 34, 56]),
+        ] {
+            let mut image = solid_image(16, 16);
+            image.pixels.fill(color);
+            let encoded = encode_screenshot(
+                &image,
+                ScreenshotOptions {
+                    format: ScreenshotFormat::Jpeg,
+                    max_dimension: 0,
+                },
+            )
+            .expect("encode JPEG");
+            let bytes = STANDARD.decode(encoded.data).expect("decode base64");
+            let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+                .expect("decode JPEG")
+                .to_rgb8();
+            assert_eq!(decoded.dimensions(), (16, 16));
+            for pixel in decoded.pixels() {
+                for (actual, expected) in pixel.0.into_iter().zip(expected) {
+                    assert!(
+                        actual.abs_diff(expected) <= 3,
+                        "JPEG white composite for {color:?}: expected {expected}, got {actual}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
