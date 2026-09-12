@@ -648,7 +648,7 @@ fn script_timeout_ms(
     suite_deadline: Option<Instant>,
 ) -> Option<u64> {
     let remaining =
-        suite_deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()));
+        suite_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
     match (script_timeout, remaining) {
         (Some(script), Some(remain)) => Some(duration_to_millis(script.min(remain))),
         (Some(script), None) => Some(duration_to_millis(script)),
@@ -907,7 +907,7 @@ mod tests {
     use super::{
         ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, SuiteRunMode,
         collect_suite_paths, collect_suite_scripts, discover_suite_scripts, normalize_path,
-        run_suite, run_suite_with,
+        run_suite, run_suite_with, script_timeout_ms,
     };
     use crate::{
         DevMcp, EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
@@ -1422,6 +1422,14 @@ return true
         assert_eq!(result.skipped(), 1);
 
         drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn expired_suite_deadline_does_not_restore_script_timeout() {
+        let deadline = Instant::now();
+        for script_timeout in [None, Some(Duration::from_secs(60))] {
+            assert_eq!(script_timeout_ms(script_timeout, Some(deadline)), Some(0));
+        }
     }
 
     #[test]
