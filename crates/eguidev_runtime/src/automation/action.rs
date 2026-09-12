@@ -9,18 +9,24 @@ use super::*;
 
 pub(super) fn raw_input_action(event: RawInputEvent) -> Result<InputAction, ToolError> {
     Ok(match event {
-        RawInputEvent::PointerMove { position } => InputAction::PointerMove { pos: position },
+        RawInputEvent::PointerMove { position } => {
+            ensure_finite_coordinates(position.x, position.y, "Pointer position")?;
+            InputAction::PointerMove { pos: position }
+        }
         RawInputEvent::PointerButton {
             position,
             button,
             action,
             modifiers,
-        } => InputAction::PointerButton {
-            pos: position,
-            button: egui_pointer_button(button),
-            pressed: action == RawInputAction::Press,
-            modifiers: modifiers.unwrap_or_default(),
-        },
+        } => {
+            ensure_finite_coordinates(position.x, position.y, "Pointer position")?;
+            InputAction::PointerButton {
+                pos: position,
+                button: egui_pointer_button(button),
+                pressed: action == RawInputAction::Press,
+                modifiers: modifiers.unwrap_or_default(),
+            }
+        }
         RawInputEvent::Key {
             key,
             action,
@@ -33,11 +39,25 @@ pub(super) fn raw_input_action(event: RawInputEvent) -> Result<InputAction, Tool
             modifiers: modifiers.unwrap_or_default(),
         },
         RawInputEvent::Text { text } => InputAction::Text { text },
-        RawInputEvent::Scroll { delta, modifiers } => InputAction::Scroll {
-            delta,
-            modifiers: modifiers.unwrap_or_default(),
-        },
+        RawInputEvent::Scroll { delta, modifiers } => {
+            ensure_finite_coordinates(delta.x, delta.y, "Scroll delta")?;
+            InputAction::Scroll {
+                delta,
+                modifiers: modifiers.unwrap_or_default(),
+            }
+        }
     })
+}
+
+/// Reject nonfinite coordinates before admitting a raw event to the queue.
+fn ensure_finite_coordinates(x: f32, y: f32, field: &str) -> Result<(), ToolError> {
+    if !x.is_finite() || !y.is_finite() {
+        return Err(ToolError::new(
+            ErrorCode::InvalidArgument,
+            format!("{field} must be finite"),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn resize_commands(

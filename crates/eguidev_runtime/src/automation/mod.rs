@@ -4716,6 +4716,38 @@ return state.scroll_state.offset.y"#
     }
 
     #[tokio::test]
+    async fn raw_input_rejects_numeric_overflow_without_queuing() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        inner.queue_action(
+            egui::ViewportId::ROOT,
+            InputAction::Text {
+                text: "preserved".to_string(),
+            },
+        );
+        for value in [1e100, -1e100] {
+            for event in [
+                json!({ "type": "pointer_move", "position": { "x": value, "y": 0 } }),
+                json!({ "type": "pointer_button", "position": { "x": 0, "y": value }, "button": "primary", "action": "press" }),
+                json!({ "type": "scroll", "delta": { "x": value, "y": 0 } }),
+            ] {
+                // Raw input is deserialized directly, bypassing parse_f32.
+                let event = serde_json::from_value::<RawInputEvent>(event).expect("raw event");
+                let error = server
+                    .input(None, event)
+                    .await
+                    .expect_err("invalid coordinates");
+                assert_eq!(error.code, ErrorCode::InvalidArgument.as_str());
+                assert!(error.message.contains("finite"));
+            }
+        }
+        let queued = inner
+            .actions
+            .drain_actions(egui::ViewportId::ROOT, inner.frame_count());
+        assert!(matches!(queued.as_slice(), [InputAction::Text { text }] if text == "preserved"));
+    }
+
+    #[tokio::test]
     async fn viewport_resize_rejects_invalid_sizes_atomically() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(inner);

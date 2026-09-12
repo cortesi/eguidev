@@ -8,17 +8,13 @@ use crate::types::{
 };
 
 pub(super) fn parse_f32(value: &Value) -> Result<f32, ScriptErrorInfo> {
-    value
+    let value = value
         .as_f64()
-        .map(|value| value as f32)
-        .ok_or_else(|| ScriptErrorInfo {
-            error_type: "type_error".to_string(),
-            message: "expected number".to_string(),
-            location: None,
-            backtrace: None,
-            code: None,
-            details: None,
-        })
+        .ok_or_else(|| type_error("expected number"))? as f32;
+    if !value.is_finite() {
+        return Err(type_error("number must be finite and within f32 range"));
+    }
+    Ok(value)
 }
 
 pub(super) fn parse_pos2(value: &Value) -> Result<Pos2, ScriptErrorInfo> {
@@ -287,7 +283,38 @@ fn type_error(message: impl Into<String>) -> ScriptErrorInfo {
 mod tests {
     use serde_json::json;
 
-    use super::parse_widget_ref;
+    use super::{parse_f32, parse_pos2, parse_rect, parse_vec2, parse_widget_ref};
+
+    #[test]
+    fn numeric_parsing_rejects_values_outside_f32_range() {
+        for value in [1e100, -1e100] {
+            let error = parse_f32(&json!(value)).expect_err("number overflows f32");
+            assert_eq!(error.error_type, "type_error");
+            assert!(error.message.contains("finite"));
+            assert!(parse_pos2(&json!({ "x": value, "y": 0 })).is_err());
+            assert!(parse_vec2(&json!({ "x": 0, "y": value })).is_err());
+            assert!(
+                parse_rect(&json!({
+                    "min": { "x": 0, "y": 0 }, "max": { "x": value, "y": 10 },
+                }))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_parsing_accepts_finite_f32_limits() {
+        for value in [f32::MIN, -1.5, 0.0, f32::MIN_POSITIVE, f32::MAX] {
+            assert_eq!(
+                parse_f32(&json!(f64::from(value))).expect("finite number"),
+                value
+            );
+        }
+        assert_eq!(
+            parse_f32(&json!("1")).expect_err("string").message,
+            "expected number"
+        );
+    }
 
     #[test]
     fn parse_widget_ref_reads_hidden_viewport_id() {
