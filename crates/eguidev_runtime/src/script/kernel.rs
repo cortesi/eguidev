@@ -4175,6 +4175,43 @@ end)
     }
 
     #[test]
+    fn viewport_wait_and_expect_handle_absence() {
+        let inner = Arc::new(Inner::new());
+        let absent = ViewportId::from_hash_of("absent.viewport.wait");
+        inner.viewports.update_viewports(&Context::default());
+        inner.viewports.remember_viewport_id(absent);
+        assert!(!inner.viewports.is_live_viewport(absent));
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let script = r#"
+assert(viewport:state() == nil)
+assert(viewport:wait({ present = false }) == nil)
+assert(viewport:wait(function(current) return current == nil end) == nil)
+assert(viewport:expect({ present = false }) == nil)
+local ok, error = pcall(function()
+    viewport:wait({ present = true }, { timeout_ms = 1, poll_interval_ms = 1 })
+end)
+assert(not ok, "waiting for presence must time out")
+assert((error :: Error).code == "timeout", "absence must preserve the timeout error")
+return true
+"#;
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            format!(
+                "local viewport = eguidev.viewport(\"{}\")\n{script}",
+                viewport_id_to_string(absent)
+            ),
+            1_000,
+            "absent-viewport-wait.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(outcome.value, Some(json!(true)));
+        assert_eq!(outcome.assertions.len(), 1);
+        assert!(outcome.assertions[0].passed);
+    }
+
+    #[test]
     fn capture_snapshots_are_immutable() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;

@@ -2027,10 +2027,11 @@ impl ScriptRuntime {
                 {
                     return Err(self.script_timeout_error(pos));
                 }
-                let viewport = viewport
-                    .ok_or_else(|| self.runtime_error(pos, "Viewport not ready for wait"))?;
                 if matched {
-                    self.viewport_state_json(pos, &viewport)
+                    match viewport {
+                        Some(viewport) => self.viewport_state_json(pos, &viewport),
+                        None => Ok(Value::Null),
+                    }
                 } else {
                     Err(self.tool_error(
                         pos,
@@ -2047,7 +2048,7 @@ impl ScriptRuntime {
                             "viewport",
                             elapsed_ms,
                             None,
-                            Some(&viewport),
+                            viewport.as_ref(),
                             None,
                             None,
                             &observation,
