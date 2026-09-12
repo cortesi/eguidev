@@ -14,7 +14,7 @@ use eguidev::AutomationOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tmcp::ToolResult;
-use tokio::{task::spawn_blocking, time::timeout};
+use tokio::time::timeout;
 
 use super::{
     super::{
@@ -2539,14 +2539,27 @@ impl ScriptRuntime {
                     )
                 })?;
                 let remaining = remaining.unwrap_or(Duration::from_secs(24 * 60 * 60));
-                spawn_blocking(move || receiver.recv_timeout(remaining))
-                    .await
-                    .map_err(|error| {
-                        eguidev::DiagnosticError::new(
-                            "internal",
-                            format!("diagnostic wait task failed: {error}"),
-                        )
-                    })?
+                let (_, response, _, _) =
+                    super::super::utils::wait_until_condition(
+                        &self.server.inner,
+                        remaining.as_millis() as u64,
+                        DEFAULT_POLL_INTERVAL_MS,
+                        Some(egui::ViewportId::ROOT),
+                        self.deadline,
+                        move || {
+                            let response = receiver.try_recv();
+                            async move {
+                                Ok::<_, eguidev::DiagnosticError>((response.is_some(), response))
+                            }
+                        },
+                    )
+                    .await?;
+                response.unwrap_or_else(|| {
+                    Err(eguidev::DiagnosticError::new(
+                        "timeout",
+                        format!("diagnostic provider {name:?} timed out"),
+                    ))
+                })
             }
         }
     }
@@ -2784,7 +2797,14 @@ fn image_ref_json(id: String) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        future::poll_fn,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
 
     use serde_json::json;
     use tokio::task::yield_now;
@@ -2796,7 +2816,7 @@ mod tests {
         EguiDiagnosticBatch, EguiDiagnosticKind,
         automation::script::types::ScriptPosition,
         registry::Inner,
-        runtime::Runtime,
+        runtime::{Runtime, attach_for_tests},
         types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue},
     };
 
@@ -2880,6 +2900,66 @@ mod tests {
     #[test]
     fn script_runtime_is_send_sync() {
         assert_send_sync::<ScriptRuntime>();
+    }
+
+    /// Build a UI provider whose invocation is observable without running an
+    /// app.
+    fn queued_diagnostic_script(timeout_ms: u64) -> (ScriptRuntime, Arc<AtomicBool>) {
+        let called = Arc::new(AtomicBool::new(false));
+        let recorded = Arc::clone(&called);
+        let devmcp = attach_for_tests(
+            eguidev::DevMcp::new()
+                .diagnostic_ui("queued", move |_ctx| {
+                    recorded.store(true, Ordering::SeqCst);
+                    Ok(json!(true))
+                })
+                .expect("provider"),
+        );
+        let inner = devmcp.inner_arc().expect("attached runtime");
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let script = ScriptRuntime::new(inner, runtime, "queued.luau".to_string(), timeout_ms);
+        (script, called)
+    }
+
+    #[tokio::test]
+    async fn cancelled_ui_diagnostic_future_does_not_run_the_provider_later() {
+        let (script, called) = queued_diagnostic_script(5_000);
+        let mut diagnostic = Box::pin(script.run_diagnostic(ScriptPosition::default(), "queued"));
+        poll_fn(|cx| {
+            assert!(diagnostic.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(diagnostic);
+
+        script
+            .server
+            .inner
+            .diagnostics
+            .drain_ui(&egui::Context::default());
+
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "cancelled diagnostic must not call the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_ui_diagnostic_future_preserves_error_and_cancels_request() {
+        let (script, called) = queued_diagnostic_script(1_000);
+        let error = script
+            .run_diagnostic(ScriptPosition::default(), "queued")
+            .await
+            .expect_err("UI did not drain the request");
+        assert_eq!(error.code, "timeout");
+        assert_eq!(error.message, "diagnostic provider \"queued\" timed out");
+
+        script
+            .server
+            .inner
+            .diagnostics
+            .drain_ui(&egui::Context::default());
+        assert!(!called.load(Ordering::SeqCst));
     }
 
     #[test]

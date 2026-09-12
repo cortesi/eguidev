@@ -20,10 +20,7 @@ use serde_json::{Value, json};
 use tmcp::ToolResult;
 #[cfg(test)]
 use tmcp::schema::CallToolResult;
-use tokio::{
-    task::spawn_blocking,
-    time::{sleep, timeout},
-};
+use tokio::time::{sleep, timeout};
 
 #[cfg(target_os = "macos")]
 use crate::macos::{capture_window_image, window_number_for_title};

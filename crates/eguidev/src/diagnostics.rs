@@ -8,7 +8,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, RecvTimeoutError},
+        mpsc::{self, RecvTimeoutError, TryRecvError},
     },
     time::Duration,
 };
@@ -144,6 +144,8 @@ struct UiDiagnosticRequest {
 }
 
 /// Pending UI-thread diagnostic result.
+///
+/// Dropping the receiver cancels a request that is still queued.
 pub struct DiagnosticReceiver {
     name: String,
     receiver: mpsc::Receiver<DiagnosticResult>,
@@ -156,18 +158,28 @@ impl DiagnosticReceiver {
     pub fn recv_timeout(self, timeout: Duration) -> DiagnosticResult {
         match self.receiver.recv_timeout(timeout) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => {
-                self.cancelled.store(true, Ordering::Release);
-                Err(DiagnosticError::new(
-                    "timeout",
-                    format!("diagnostic provider {:?} timed out", self.name),
-                ))
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                self.cancelled.store(true, Ordering::Release);
-                Err(DiagnosticError::disconnected(&self.name))
-            }
+            Err(RecvTimeoutError::Timeout) => Err(DiagnosticError::new(
+                "timeout",
+                format!("diagnostic provider {:?} timed out", self.name),
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(DiagnosticError::disconnected(&self.name)),
         }
+    }
+
+    /// Return the result without blocking, or `None` while the request is
+    /// pending.
+    pub fn try_recv(&self) -> Option<DiagnosticResult> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(DiagnosticError::disconnected(&self.name))),
+        }
+    }
+}
+
+impl Drop for DiagnosticReceiver {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -405,13 +417,20 @@ mod tests {
         let DiagnosticExecution::Queued(receiver) = registry.start("ui") else {
             panic!("ui provider should queue");
         };
+        assert!(receiver.try_recv().is_none());
         registry.drain_ui(&egui::Context::default());
 
         let value = receiver
-            .recv_timeout(Duration::from_millis(10))
+            .try_recv()
+            .expect("completed request")
             .expect("ui result");
         assert_eq!(value, json!({ "pixels_per_point": 1.0 }));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let error = receiver
+            .try_recv()
+            .expect("closed channel")
+            .expect_err("result already taken");
+        assert_eq!(error.code, "internal");
     }
 
     #[test]
@@ -436,6 +455,34 @@ mod tests {
 
         registry.drain_ui(&egui::Context::default());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn dropped_ui_diagnostic_cancels_only_its_request() {
+        let registry = DiagnosticRegistry::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded = Arc::clone(&calls);
+        registry
+            .insert_ui("ui".to_string(), move |_ctx| {
+                recorded.fetch_add(1, Ordering::SeqCst);
+                Ok(json!(true))
+            })
+            .expect("provider");
+        let abandoned = registry.start("ui");
+        let DiagnosticExecution::Queued(retained) = registry.start("ui") else {
+            panic!("expected queued diagnostic");
+        };
+        drop(abandoned);
+
+        registry.drain_ui(&egui::Context::default());
+
+        assert_eq!(
+            retained
+                .recv_timeout(Duration::ZERO)
+                .expect("retained result"),
+            json!(true)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
