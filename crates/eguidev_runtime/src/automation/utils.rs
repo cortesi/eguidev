@@ -530,7 +530,7 @@ pub fn parse_key_combo(combo: &str) -> Result<(egui::Key, Modifiers, String), St
 }
 
 pub fn printable_key_text(key: &str) -> Option<String> {
-    if key == "Space" {
+    if key.eq_ignore_ascii_case("space") {
         return Some(" ".to_string());
     }
     let mut chars = key.chars();

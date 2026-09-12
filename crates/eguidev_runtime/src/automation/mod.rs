@@ -5781,22 +5781,38 @@ return state.scroll_state.offset.y"#
         let server = DevMcpServer::new(Arc::clone(&inner));
         let viewport_id = egui::ViewportId::ROOT;
 
-        server
-            .action_key(None, egui::Key::A, Modifiers::default(), "a", None)
-            .await
-            .expect("action key");
+        for (combo, expected) in [
+            ("a", Some("a")),
+            ("A", Some("A")),
+            ("Space", Some(" ")),
+            ("space", Some(" ")),
+            ("SPACE", Some(" ")),
+            ("shift-space", Some(" ")),
+            ("ctrl-space", None),
+            ("alt-space", None),
+            ("cmd-space", None),
+        ] {
+            let (key, modifiers, name) = parse_key_combo(combo).expect("key combo");
+            server
+                .action_key(None, key, modifiers, &name, None)
+                .await
+                .expect("action key");
 
-        let mut raw_input = egui::RawInput {
-            viewport_id,
-            ..Default::default()
-        };
-        apply_actions(&inner, &mut raw_input);
-        assert!(
-            raw_input
+            let mut raw_input = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            apply_actions(&inner, &mut raw_input);
+            let text = raw_input
                 .events
                 .iter()
-                .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
-        );
+                .filter_map(|event| match event {
+                    egui::Event::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(text, expected.into_iter().collect::<Vec<_>>(), "{combo}");
+        }
     }
 
     #[tokio::test]

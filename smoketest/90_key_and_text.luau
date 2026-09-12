@@ -36,6 +36,17 @@ eguidev.widget("basic.name"):wait( function(widget)
     return widget ~= nil and widget.value == "Fresh"
 end)
 
+-- Named printable keys accept the same casing as the key parser.
+local name = eguidev.widget("basic.name")
+for _, key in ipairs({ "space", "Space", "SPACE", "shift-space" }) do
+    name:type_text("left", { clear = true })
+    vp:key(key, { target = name })
+    vp:key("r", { target = name })
+    name:wait(function(widget)
+        return widget ~= nil and widget.value == "left r"
+    end)
+end
+
 -- type_text with enter (should trigger Enter key event)
 eguidev.widget("basic.name"):type_text("WithEnter", { clear = true, enter = true })
 eguidev.widget("basic.input.key_event"):wait( function(widget)
