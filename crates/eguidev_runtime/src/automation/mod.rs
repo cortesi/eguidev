@@ -1348,6 +1348,8 @@ mod tests {
             .await
             .expect_err("modifiers rejected on scroll area");
         assert!(error.to_string().contains("modifiers"), "{error}");
+        assert!(!inner.actions.has_pending_actions(viewport_id));
+        assert!(inner.take_scroll_override(viewport_id, 1).is_none());
 
         server
             .action_scroll(None, target, Vec2 { x: 0.0, y: -1000.0 }, None)
@@ -1357,6 +1359,39 @@ mod tests {
             .take_scroll_override(viewport_id, 1)
             .expect("override");
         assert!((offset.y - 40.0).abs() < f32::EPSILON, "{offset:?}");
+    }
+
+    #[tokio::test]
+    async fn script_eval_scroll_area_accepts_action_options() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let mut area = make_entry("scroller", 1, WidgetRole::ScrollArea);
+        area.role_state = Some(RoleState::ScrollArea {
+            offset: Vec2 { x: 0.0, y: 0.0 },
+            viewport_size: Vec2 { x: 100.0, y: 40.0 },
+            content_size: Vec2 { x: 100.0, y: 80.0 },
+        });
+        inner.widgets.record_widget(viewport_id, area);
+        inner.widgets.finalize_registry(viewport_id);
+        let server = DevMcpServer::new(Arc::clone(&inner));
+
+        let result = server
+            .script_eval(
+                r#"eguidev.widget("scroller"):scroll({ x = 0, y = -10 }, {
+                settle = false, timeout_ms = 1000, poll_interval_ms = 1,
+            })"#
+                .to_string(),
+                Some(TEST_SCRIPT_DEADLINE_MS),
+                None,
+            )
+            .await
+            .expect("script eval");
+        let result = parse_script_eval_json(&result);
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(
+            inner.take_scroll_override(viewport_id, 1),
+            Some(egui::vec2(0.0, 10.0))
+        );
     }
 
     #[test]

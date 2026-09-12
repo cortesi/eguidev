@@ -588,19 +588,18 @@ impl DevMcpServer {
     ) -> ToolResult<()> {
         let (widget, viewport_id) =
             self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
+        if widget.role == WidgetRole::ScrollArea && modifiers.is_some() {
+            return Err(ToolError::new(
+                ErrorCode::InvalidArgument,
+                "modifiers are not applied when scrolling a scroll area",
+            )
+            .into());
+        }
         let pos = widget.interact_rect.center();
         log_pointer_cover(&self.inner, viewport_id, pos, &widget.id);
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
-        let mut applied_override = false;
         if widget.role == WidgetRole::ScrollArea {
-            if modifiers.is_some() {
-                return Err(ToolError::new(
-                    ErrorCode::InvalidArgument,
-                    "modifiers are not applied when scrolling a scroll area",
-                )
-                .into());
-            }
             let scroll = widget.role_state.as_ref().and_then(RoleState::scroll_state);
             let current = scroll
                 .map(|scroll| scroll.offset.into())
@@ -614,9 +613,7 @@ impl DevMcpServer {
             target.y = target.y.clamp(0.0, max_offset.y);
             self.inner
                 .set_scroll_override(viewport_id, widget.native_id, target);
-            applied_override = true;
-        }
-        if !applied_override {
+        } else {
             self.inner.queue_action(
                 viewport_id,
                 InputAction::Scroll {

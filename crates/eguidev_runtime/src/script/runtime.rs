@@ -797,8 +797,10 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
     ) -> Result<Option<Modifiers>, ScriptErrorInfo> {
         match options {
-            Some(map) => Ok(Some(parse_modifiers(Some(map))?)),
-            None => Ok(None),
+            Some(map) if map_has_any(map, &["ctrl", "shift", "alt", "command"]) => {
+                Ok(Some(parse_modifiers(Some(map))?))
+            }
+            _ => Ok(None),
         }
     }
 
