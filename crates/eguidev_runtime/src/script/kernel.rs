@@ -1306,12 +1306,12 @@ impl EguidevModule {
         builder.async_function(
             "viewport_clear_debug_overlay",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, _: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .clear_debug_overlay(pos)
+                        .clear_debug_overlay(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1738,12 +1738,12 @@ impl EguidevModule {
         builder.async_function(
             "widget_clear_debug_overlay",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, _: WidgetReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, widget: WidgetReceiver| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .clear_debug_overlay(pos)
+                        .clear_widget_debug_overlay(pos, widget.widget_ref())
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -3906,7 +3906,7 @@ return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
         );
     }
 
-    fn run_highlight_script(script: &str) -> (Arc<Inner>, ViewportId) {
+    fn run_overlay_script(script: &str) -> (Arc<Inner>, ViewportId) {
         let inner = Arc::new(Inner::new());
         let secondary = ViewportId::from_hash_of("highlight.secondary");
         for viewport_id in [ViewportId::ROOT, secondary] {
@@ -3935,7 +3935,7 @@ return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
         (inner, secondary)
     }
 
-    fn painted_highlight_colors(inner: &Inner, viewport_id: ViewportId) -> Vec<Color32> {
+    fn painted_overlay_colors(inner: &Inner, viewport_id: ViewportId) -> Vec<Color32> {
         let ctx = Context::default();
         let mut input = RawInput {
             viewport_id,
@@ -3963,7 +3963,7 @@ return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
 
     #[test]
     fn rectangle_highlights_stay_in_their_viewport() {
-        let (inner, secondary) = run_highlight_script(
+        let (inner, secondary) = run_overlay_script(
             r##"
 local rect = { min = { x = 10, y = 10 }, max = { x = 50, y = 50 } }
 eguidev.root:show_highlight(rect, "#ff0000")
@@ -3971,36 +3971,36 @@ eguidev.viewport(secondary_id):show_highlight(rect, "#0000ff")
 "##,
         );
         assert_eq!(
-            painted_highlight_colors(&inner, ViewportId::ROOT),
+            painted_overlay_colors(&inner, ViewportId::ROOT),
             vec![Color32::RED]
         );
         assert_eq!(
-            painted_highlight_colors(&inner, secondary),
+            painted_overlay_colors(&inner, secondary),
             vec![Color32::BLUE]
         );
     }
 
     #[test]
     fn widget_highlights_stay_in_their_viewport() {
-        let (inner, secondary) = run_highlight_script(
+        let (inner, secondary) = run_overlay_script(
             r##"
 eguidev.root:widget("shared"):show_highlight("#ff0000")
 eguidev.viewport(secondary_id):widget("shared"):show_highlight("#0000ff")
 "##,
         );
         assert_eq!(
-            painted_highlight_colors(&inner, ViewportId::ROOT),
+            painted_overlay_colors(&inner, ViewportId::ROOT),
             vec![Color32::RED]
         );
         assert_eq!(
-            painted_highlight_colors(&inner, secondary),
+            painted_overlay_colors(&inner, secondary),
             vec![Color32::BLUE]
         );
     }
 
     #[test]
     fn clearing_viewport_highlights_preserves_other_viewports() {
-        let (inner, secondary) = run_highlight_script(
+        let (inner, secondary) = run_overlay_script(
             r##"
 local rect = { min = { x = 10, y = 10 }, max = { x = 50, y = 50 } }
 eguidev.root:show_highlight(rect, "#ff0000")
@@ -4010,15 +4010,15 @@ secondary:clear_highlights()
 "##,
         );
         assert_eq!(
-            painted_highlight_colors(&inner, ViewportId::ROOT),
+            painted_overlay_colors(&inner, ViewportId::ROOT),
             vec![Color32::RED]
         );
-        assert!(painted_highlight_colors(&inner, secondary).is_empty());
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
     }
 
     #[test]
     fn clearing_widget_highlight_preserves_other_viewports() {
-        let (inner, secondary) = run_highlight_script(
+        let (inner, secondary) = run_overlay_script(
             r##"
 eguidev.root:widget("shared"):show_highlight("#ff0000")
 local secondary = eguidev.viewport(secondary_id):widget("shared")
@@ -4027,10 +4027,126 @@ secondary:clear_highlight()
 "##,
         );
         assert_eq!(
-            painted_highlight_colors(&inner, ViewportId::ROOT),
+            painted_overlay_colors(&inner, ViewportId::ROOT),
             vec![Color32::RED]
         );
-        assert!(painted_highlight_colors(&inner, secondary).is_empty());
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn viewport_debug_overlays_stay_in_their_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+eguidev.viewport(secondary_id):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn widget_debug_overlays_stay_in_their_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+eguidev.viewport(secondary_id):widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn clearing_viewport_debug_overlay_preserves_other_viewports() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+eguidev.viewport(secondary_id):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+eguidev.root:clear_debug_overlay()
+"##,
+        );
+        assert!(painted_overlay_colors(&inner, ViewportId::ROOT).is_empty());
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn clearing_widget_debug_overlay_preserves_other_viewports() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+local widget = eguidev.viewport(secondary_id):widget("shared")
+widget:show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+widget:clear_debug_overlay()
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn missing_debug_scope_does_not_expand_to_the_whole_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.viewport(secondary_id):widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+"##,
+        );
+        inner.widgets.clear_registry(secondary);
+        let mut other = make_entry("other", 2, WidgetRole::Button);
+        other.viewport_id = viewport_id_to_string(secondary);
+        inner.widgets.record_widget(secondary, other);
+        inner.widgets.finalize_registry(secondary);
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn missing_scoped_widget_can_clear_its_viewport_debug_overlay() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+local viewport = eguidev.viewport(secondary_id)
+viewport:show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+viewport:widget("missing"):clear_debug_overlay()
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, egui::ViewportId::ROOT),
+            [egui::Color32::RED]
+        );
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn missing_widget_debug_clear_preserves_other_overlays() {
+        let (inner, _) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+local ok = pcall(function() eguidev.widget("missing"):clear_debug_overlay() end)
+assert(not ok, "an unscoped missing widget must not clear root")
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
     }
 
     #[test]

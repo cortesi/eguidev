@@ -25,5 +25,5 @@ end)
 root:clear_highlights()
 secondary:clear_highlights()
 eguidev.fixture("basic.default")
-assert(ok, message)
+assert(ok, tostring(message))
 return true

@@ -221,7 +221,10 @@ declare class Widget
     --- Visual aids persist until cleared. These methods do not wait or settle.
     read show_highlight: (self: Widget, color: string) -> HighlightResult
     read clear_highlight: (self: Widget) -> ()
+    --- Replaces this widget's viewport debug overlay with its subtree. If the
+    --- widget disappears, the overlay draws nothing until it returns.
     read show_debug_overlay: (self: Widget, options: DebugOverlayOptions?) -> ()
+    --- Clears the debug overlay in this widget's viewport.
     read clear_debug_overlay: (self: Widget) -> ()
 end
 
@@ -446,7 +449,10 @@ declare class Viewport
     ) -> HighlightResult
     --- Clears this viewport's rectangle and widget highlights.
     read clear_highlights: (self: Viewport) -> ()
+    --- Replaces this viewport's debug overlay. Each viewport has an independent
+    --- configuration that persists until cleared or a fixture resets it.
     read show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> ()
+    --- Clears only this viewport's debug overlay.
     read clear_debug_overlay: (self: Viewport) -> ()
 end
 

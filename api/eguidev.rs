@@ -469,6 +469,8 @@ pub mod eguidev {
             pub fn rect_size(rect: crate::types::Rect) -> crate::types::Vec2 {}
 
             impl OverlayManager {
+                pub fn clear_overlay_debug_config(&self, viewport_id: ViewportId) {}
+
                 pub fn clear_overlays(&self) {}
 
                 pub fn clear_transient_state(&self) {}
@@ -477,7 +479,7 @@ pub mod eguidev {
 
                 pub fn new() -> Self {}
 
-                pub fn overlay_debug_config(&self) -> OverlayDebugConfig {}
+                pub fn overlay_debug_config(&self, viewport_id: ViewportId) -> OverlayDebugConfig {}
 
                 pub fn paint_overlays(
                     &self,
@@ -497,7 +499,12 @@ pub mod eguidev {
                 ) {
                 }
 
-                pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {}
+                pub fn set_overlay_debug_config(
+                    &self,
+                    viewport_id: ViewportId,
+                    config: OverlayDebugConfig,
+                ) {
+                }
             }
         }
 
@@ -594,6 +601,8 @@ pub mod eguidev {
 
                 pub fn clear_all(&self) {}
 
+                pub fn clear_overlay_debug_config(&self, viewport_id: egui::ViewportId) {}
+
                 pub fn clear_overlays(&self) {}
 
                 pub fn clear_viewport_overlays(&self, viewport_id: egui::ViewportId) {}
@@ -686,7 +695,12 @@ pub mod eguidev {
                 ) {
                 }
 
-                pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {}
+                pub fn set_overlay_debug_config(
+                    &self,
+                    viewport_id: egui::ViewportId,
+                    config: OverlayDebugConfig,
+                ) {
+                }
 
                 pub fn set_runtime_hooks(&self, hooks: Arc<dyn RuntimeHooks>) {}
 

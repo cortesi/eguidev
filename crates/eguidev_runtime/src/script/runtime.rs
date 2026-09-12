@@ -2425,10 +2425,30 @@ impl ScriptRuntime {
         self.to_json(pos, ())
     }
 
-    pub(super) async fn clear_debug_overlay(&self, pos: ScriptPosition) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.clear_debug_overlay())
+    pub(super) async fn clear_debug_overlay(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: Option<String>,
+    ) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.clear_debug_overlay(viewport_id))
             .await?;
         self.to_json(pos, ())
+    }
+
+    pub(super) async fn clear_widget_debug_overlay(
+        &self,
+        pos: ScriptPosition,
+        target: WidgetRef,
+    ) -> ScriptResult<Value> {
+        let viewport_id = match target.viewport_id.as_ref() {
+            Some(viewport_id) => viewport_id.clone(),
+            None => {
+                resolve_widget(&self.server.inner, None, &target)
+                    .map_err(|error| self.tool_error(pos, error.into()))?
+                    .viewport_id
+            }
+        };
+        self.clear_debug_overlay(pos, Some(viewport_id)).await
     }
 
     pub(super) async fn viewport_resize(

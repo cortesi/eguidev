@@ -3155,7 +3155,13 @@ return eguidev.widget("status"):wait({ visible = true })"#
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], true);
 
-        let config = inner.overlays.overlay_debug_config();
+        assert!(
+            !inner
+                .overlays
+                .overlay_debug_config(egui::ViewportId::ROOT)
+                .enabled
+        );
+        let config = inner.overlays.overlay_debug_config(secondary);
         let scope = config.scope.expect("widget-scoped overlay");
         assert_eq!(scope.id, "overlay");
         assert_eq!(
@@ -4172,10 +4178,16 @@ return state.scroll_state.offset.y"#
             WidgetValue::Text("queued".to_string()),
         );
         inner.set_scroll_override(viewport_id, 7, egui::vec2(1.0, 2.0));
-        inner.set_overlay_debug_config(OverlayDebugConfig {
-            enabled: true,
-            ..Default::default()
-        });
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        for viewport_id in [viewport_id, secondary] {
+            inner.set_overlay_debug_config(
+                viewport_id,
+                OverlayDebugConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+        }
 
         let inner_for_frame = Arc::clone(&inner);
         let runtime_for_frame = Runtime::ensure_for_inner(&inner);
@@ -4202,7 +4214,13 @@ return state.scroll_state.offset.y"#
                 .is_none()
         );
         assert!(inner.take_scroll_override(viewport_id, 7).is_none());
-        assert!(!inner.overlays.overlay_debug_config().enabled);
+        assert!(!inner.overlays.overlay_debug_config(secondary).enabled);
+        assert!(
+            !inner
+                .overlays
+                .overlay_debug_config(egui::ViewportId::ROOT)
+                .enabled
+        );
     }
 
     #[tokio::test]
@@ -6985,15 +7003,20 @@ return state.scroll_state.offset.y"#
             .show_debug_overlay(None, Some(OverlayDebugModeName::Bounds), None, None)
             .await
             .expect("show debug overlay");
-        let config = inner.overlays.overlay_debug_config();
+        let config = inner.overlays.overlay_debug_config(egui::ViewportId::ROOT);
         assert!(config.enabled);
         assert_eq!(config.mode, OverlayDebugMode::Bounds);
 
         server
-            .clear_debug_overlay()
+            .clear_debug_overlay(None)
             .await
             .expect("hide debug overlay");
-        assert!(!inner.overlays.overlay_debug_config().enabled);
+        assert!(
+            !inner
+                .overlays
+                .overlay_debug_config(egui::ViewportId::ROOT)
+                .enabled
+        );
     }
 
     /// Verify that injecting Enter via action_key causes a singleline TextEdit

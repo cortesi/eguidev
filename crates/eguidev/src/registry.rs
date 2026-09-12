@@ -421,24 +421,33 @@ impl Inner {
         )
     }
 
-    pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
-        self.overlays.set_overlay_debug_config(config);
-        self.request_repaint();
+    pub fn set_overlay_debug_config(
+        &self,
+        viewport_id: egui::ViewportId,
+        config: OverlayDebugConfig,
+    ) {
+        self.overlays.set_overlay_debug_config(viewport_id, config);
+        self.request_repaint_of(viewport_id);
+    }
+
+    pub fn clear_overlay_debug_config(&self, viewport_id: egui::ViewportId) {
+        self.overlays.clear_overlay_debug_config(viewport_id);
+        self.request_repaint_of(viewport_id);
     }
 
     pub fn set_overlay(&self, viewport_id: egui::ViewportId, key: String, overlay: OverlayEntry) {
         self.overlays.set_overlay(viewport_id, key, overlay);
-        self.request_repaint();
+        self.request_repaint_of(viewport_id);
     }
 
     pub fn remove_overlay(&self, viewport_id: egui::ViewportId, key: &str) {
         self.overlays.remove_overlay(viewport_id, key);
-        self.request_repaint();
+        self.request_repaint_of(viewport_id);
     }
 
     pub fn clear_viewport_overlays(&self, viewport_id: egui::ViewportId) {
         self.overlays.clear_viewport_overlays(viewport_id);
-        self.request_repaint();
+        self.request_repaint_of(viewport_id);
     }
 
     pub fn clear_overlays(&self) {
@@ -614,6 +623,54 @@ mod tests {
                 .expect("repaint callback"),
             viewport_id
         );
+    }
+
+    #[test]
+    fn overlay_changes_repaint_their_viewport() {
+        let viewport_id = egui::ViewportId::from_hash_of("secondary");
+        let operations: [fn(&Inner, egui::ViewportId); 5] = [
+            |inner, viewport_id| {
+                inner.set_overlay(
+                    viewport_id,
+                    "test".into(),
+                    OverlayEntry {
+                        rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(10.0, 10.0)),
+                        color: egui::Color32::RED,
+                        stroke_width: 1.0,
+                    },
+                )
+            },
+            |inner, viewport_id| inner.remove_overlay(viewport_id, "test"),
+            Inner::clear_viewport_overlays,
+            |inner, viewport_id| {
+                inner.set_overlay_debug_config(
+                    viewport_id,
+                    OverlayDebugConfig {
+                        enabled: true,
+                        ..Default::default()
+                    },
+                )
+            },
+            Inner::clear_overlay_debug_config,
+        ];
+        for operation in operations {
+            let inner = new_test_inner();
+            let ctx = Context::default();
+            inner.capture_context(viewport_id, &ctx);
+            let (sender, receiver) = mpsc::channel();
+            ctx.set_request_repaint_callback(move |info| {
+                sender
+                    .send(info.viewport_id)
+                    .expect("notify repaint callback");
+            });
+            operation(&inner, viewport_id);
+            assert_eq!(
+                receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("overlay repaint"),
+                viewport_id
+            );
+        }
     }
 
     #[test]

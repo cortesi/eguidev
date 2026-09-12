@@ -89,14 +89,27 @@ impl DevMcpServer {
         Ok(())
     }
 
-    /// Enable the persistent debug overlay with a fresh configuration.
+    /// Replace the selected viewport's persistent debug overlay configuration.
     pub(super) async fn show_debug_overlay(
         &self,
-        _viewport_id: Option<String>,
+        viewport_id: Option<String>,
         mode: Option<OverlayDebugModeName>,
         scope: Option<WidgetRef>,
         options: Option<OverlayDebugOptionsInput>,
     ) -> ToolResult<()> {
+        let (viewport_id, scope) = if let Some(scope) = scope {
+            let (widget, viewport_id) =
+                resolve_widget_and_viewport(&self.inner, viewport_id.as_deref(), &scope)?;
+            (
+                viewport_id,
+                Some(WidgetRef {
+                    id: widget.id,
+                    viewport_id: Some(widget.viewport_id),
+                }),
+            )
+        } else {
+            (resolve_viewport_id(&self.inner, viewport_id)?, None)
+        };
         let mut config = OverlayDebugConfig {
             enabled: true,
             mode: mode.map(Into::into).unwrap_or(OverlayDebugMode::Bounds),
@@ -106,14 +119,14 @@ impl DevMcpServer {
         if let Some(input) = options {
             apply_overlay_debug_options(&mut config.options, input)?;
         }
-        self.inner.set_overlay_debug_config(config);
+        self.inner.set_overlay_debug_config(viewport_id, config);
         Ok(())
     }
 
-    /// Disable the persistent debug overlay.
-    pub(super) async fn clear_debug_overlay(&self) -> ToolResult<()> {
-        let config = OverlayDebugConfig::default();
-        self.inner.set_overlay_debug_config(config);
+    /// Clear the selected viewport's persistent debug overlay.
+    pub(super) async fn clear_debug_overlay(&self, viewport_id: Option<String>) -> ToolResult<()> {
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+        self.inner.clear_overlay_debug_config(viewport_id);
         Ok(())
     }
 }
