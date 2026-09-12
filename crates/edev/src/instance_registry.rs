@@ -403,7 +403,7 @@ fn remove_file_if_exists(path: &Path) -> Result<(), io::Error> {
 
 #[cfg(target_os = "macos")]
 /// Return true when a process with the provided pid appears alive.
-fn is_process_alive(pid: u32) -> bool {
+pub fn is_process_alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
