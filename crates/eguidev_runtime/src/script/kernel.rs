@@ -4135,6 +4135,29 @@ viewport:widget("missing"):clear_debug_overlay()
     }
 
     #[test]
+    fn dismiss_popups_preserves_other_viewport_overlays() {
+        for show_method in ["show_highlight", "show_debug_overlay"] {
+            let options = if show_method == "show_highlight" {
+                "\"#0000ff\""
+            } else {
+                "{ show_labels = false, bounds_color = \"#0000ff\" }"
+            };
+            let script = format!(
+                r#"
+eguidev.viewport(secondary_id):widget("shared"):{show_method}({options})
+eguidev.root:dismiss_popups({{ settle = false }})
+"#
+            );
+            let (inner, secondary) = run_overlay_script(&script);
+            assert_eq!(
+                painted_overlay_colors(&inner, secondary),
+                [egui::Color32::BLUE],
+                "{show_method}"
+            );
+        }
+    }
+
+    #[test]
     fn missing_widget_debug_clear_preserves_other_overlays() {
         let (inner, _) = run_overlay_script(
             r##"

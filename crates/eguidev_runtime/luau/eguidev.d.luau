@@ -416,6 +416,9 @@ declare class Viewport
     --- Uses viewport-local logical points and returns topmost widgets first.
     read widgets_at: (self: Viewport, position: Pos) -> { Widget }
 
+    --- Clears this viewport's queued input, overrides, and visual aids.
+    --- Popup and focus dismissal uses egui's shared context and can affect
+    --- other viewports.
     read dismiss_popups: (self: Viewport, options: ActionOptions?) -> ()
     read key: (self: Viewport, key: string, options: KeyOptions?) -> ()
     read paste: (self: Viewport, text: string, options: ActionOptions?) -> ()

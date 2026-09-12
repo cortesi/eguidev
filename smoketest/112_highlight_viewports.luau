@@ -20,6 +20,11 @@ local ok, message = pcall(function()
     root:clear_highlights()
     assert(root:sample_pixels({ sample })[1].hex == root_before, "root highlight remains")
     assert(secondary:sample_pixels({ sample })[1].hex == "#0000ffff", "root clear removed secondary highlight")
+
+    root:show_highlight(rect, "#ff0000")
+    root:dismiss_popups()
+    assert(root:sample_pixels({ sample })[1].hex == root_before, "root dismissal left its highlight")
+    assert(secondary:sample_pixels({ sample })[1].hex == "#0000ffff", "root dismissal removed secondary highlight")
 end)
 
 root:clear_highlights()

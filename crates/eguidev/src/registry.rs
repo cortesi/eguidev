@@ -173,11 +173,23 @@ impl Inner {
     }
 
     pub fn dismiss_transient_ui(&self, viewport_id: Option<egui::ViewportId>) {
-        self.actions.clear_all();
-        lock(&self.widget_value_updates, "widget value update lock").clear();
-        lock(&self.widget_value_consumers, "widget value consumers lock").clear();
-        lock(&self.scroll_overrides, "scroll overrides lock").clear();
-        self.overlays.clear_transient_state();
+        if let Some(viewport_id) = viewport_id {
+            self.actions.clear_viewport(viewport_id);
+            lock(&self.widget_value_updates, "widget value update lock")
+                .retain(|key, _| key.viewport_id != viewport_id);
+            lock(&self.widget_value_consumers, "widget value consumers lock")
+                .retain(|key| key.viewport_id != viewport_id);
+            lock(&self.scroll_overrides, "scroll overrides lock")
+                .retain(|key, _| key.viewport_id != viewport_id);
+            self.overlays.clear_viewport_overlays(viewport_id);
+            self.overlays.clear_overlay_debug_config(viewport_id);
+        } else {
+            self.actions.clear_all();
+            lock(&self.widget_value_updates, "widget value update lock").clear();
+            lock(&self.widget_value_consumers, "widget value consumers lock").clear();
+            lock(&self.scroll_overrides, "scroll overrides lock").clear();
+            self.overlays.clear_transient_state();
+        }
         let contexts = {
             let contexts = lock(&self.contexts, "contexts lock");
             contexts
@@ -192,8 +204,8 @@ impl Inner {
             egui::Popup::close_all(ctx);
             ctx.memory_mut(|memory| memory.stop_text_input());
         }
-        // The transient overlay state above is global, even when popup and
-        // text-input dismissal is scoped to one viewport.
+        // egui's popup close operation affects all viewports sharing a Context,
+        // even when Eguidev's transient automation state is scoped above.
         self.request_repaint_all();
     }
 
@@ -597,6 +609,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::types::Pos2;
 
     #[test]
     fn request_repaint_targets_viewport_without_holding_contexts_lock() {
@@ -740,6 +753,106 @@ mod tests {
             .expired_widget_value_update_error(viewport_id, Some("custom.value"))
             .expect("unwired widget should fault after reset");
         assert_eq!(error.code(), ErrorCode::InstrumentationFault);
+    }
+
+    #[test]
+    fn dismiss_transient_ui_preserves_other_viewport_state() {
+        let inner = new_test_inner();
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let pos = Pos2 { x: 5.0, y: 6.0 };
+        for viewport_id in [root, secondary] {
+            inner.queue_action(viewport_id, InputAction::PointerMove { pos });
+            assert_eq!(inner.actions.drain_actions(viewport_id, 1).len(), 1);
+            inner.queue_action_with_timing(
+                viewport_id,
+                ActionTiming::AfterTwoFrames,
+                InputAction::Text {
+                    text: "pending".to_string(),
+                },
+            );
+            inner.queue_command(viewport_id, egui::ViewportCommand::Title("pending".into()));
+            inner.mark_widget_value_consumer(viewport_id, "field");
+            inner.queue_widget_value_update(viewport_id, "field".into(), WidgetValue::Int(7));
+            inner.set_scroll_override(viewport_id, 1, egui::vec2(3.0, 4.0));
+            inner.set_overlay_debug_config(
+                viewport_id,
+                OverlayDebugConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        inner.dismiss_transient_ui(Some(root));
+
+        assert!(!inner.actions.has_pending_actions(root));
+        assert!(!inner.actions.has_pending_commands(root));
+        assert_eq!(inner.actions.stats(root).queued_actions, 0);
+        assert_eq!(inner.actions.stats(root).last_drain_frame, None);
+        assert!(inner.actions.pointer_pos(root).is_none());
+        assert_eq!(inner.actions.pending_action_count(secondary), 1);
+        assert_eq!(inner.actions.pending_command_count(secondary), 1);
+        assert_eq!(inner.actions.stats(secondary).queued_actions, 2);
+        assert_eq!(inner.actions.stats(secondary).last_drain_frame, Some(1));
+        assert_eq!(inner.actions.pointer_pos(secondary), Some(pos));
+        // Reports only enter the trace when recent consumed pointer state
+        // remains. The cleared viewport must not leave either kind of trace.
+        for viewport_id in [root, secondary] {
+            inner
+                .actions
+                .record_pointer_report(viewport_id, 2, Some(pos));
+        }
+        let trace = inner.actions.pointer_trace();
+        let events = trace["events"].as_array().expect("pointer events");
+        assert!(!events.is_empty());
+        assert!(
+            events
+                .iter()
+                .all(|event| event["viewport_id"] == viewport_id_to_string(secondary))
+        );
+
+        assert!(inner.take_widget_value_update(root, "field").is_none());
+        assert!(matches!(
+            inner.take_widget_value_update(secondary, "field"),
+            Some(WidgetValue::Int(7))
+        ));
+        assert!(inner.take_scroll_override(root, 1).is_none());
+        assert_eq!(
+            inner.take_scroll_override(secondary, 1),
+            Some(egui::vec2(3.0, 4.0))
+        );
+        assert!(!inner.overlays.overlay_debug_config(root).enabled);
+        assert!(inner.overlays.overlay_debug_config(secondary).enabled);
+    }
+
+    #[test]
+    fn dismiss_transient_ui_preserves_other_viewport_consumers() {
+        let inner = new_test_inner();
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        for viewport_id in [root, secondary] {
+            inner.mark_widget_value_consumer(viewport_id, "field");
+        }
+        inner.dismiss_transient_ui(Some(root));
+        // Only the cleared viewport must rediscover the custom widget's
+        // value-override consumer before a later update can be admitted.
+        for viewport_id in [root, secondary] {
+            inner.queue_widget_value_update(viewport_id, "field".into(), WidgetValue::Int(9));
+        }
+        for _ in 0..Inner::UNCONSUMED_OVERRIDE_FRAME_GRACE {
+            inner.advance_frame();
+        }
+        assert!(
+            inner
+                .expired_widget_value_update_error(root, Some("field"))
+                .is_some()
+        );
+        assert!(
+            inner
+                .expired_widget_value_update_error(secondary, Some("field"))
+                .is_none()
+        );
     }
 
     #[test]

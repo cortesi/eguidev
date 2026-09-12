@@ -214,6 +214,8 @@ pub mod eguidev {
 
                 pub fn clear_all(&self) {}
 
+                pub fn clear_viewport(&self, viewport_id: egui::ViewportId) {}
+
                 pub fn drain_actions(
                     &self,
                     viewport_id: egui::ViewportId,

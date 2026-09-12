@@ -30,6 +30,11 @@ local ok, message = pcall(function()
     root:clear_debug_overlay()
     assert(border_color(root_widget) == root_before, "root debug overlay remains")
     assert(border_color(secondary_widget) == "#0000ffff", "viewport clear removed another viewport's overlay")
+
+    root_widget:show_debug_overlay(red)
+    root:dismiss_popups()
+    assert(border_color(root_widget) == root_before, "root dismissal left its debug overlay")
+    assert(border_color(secondary_widget) == "#0000ffff", "root dismissal removed secondary debug overlay")
 end)
 
 root:clear_debug_overlay()

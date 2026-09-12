@@ -249,6 +249,19 @@ impl ActionQueue {
         *lock(&self.pointer_state, "pointer state lock") = PointerState::default();
     }
 
+    pub fn clear_viewport(&self, viewport_id: egui::ViewportId) {
+        lock(&self.actions, "actions lock").remove(&viewport_id);
+        lock(&self.commands, "commands lock").remove(&viewport_id);
+        lock(&self.stats, "action stats lock").remove(&viewport_id);
+        let mut pointer = lock(&self.pointer_state, "pointer state lock");
+        pointer.positions.remove(&viewport_id);
+        pointer.consumed_frames.remove(&viewport_id);
+        let viewport_id = viewport_id_to_string(viewport_id);
+        pointer
+            .trace
+            .retain(|event| event.viewport_id != viewport_id);
+    }
+
     pub fn stats(&self, viewport_id: egui::ViewportId) -> ActionQueueStats {
         lock(&self.stats, "action stats lock")
             .get(&viewport_id)

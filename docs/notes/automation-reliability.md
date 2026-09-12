@@ -55,7 +55,9 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   value updates, value-override consumer tracking, scroll overrides, and overlay debug artifacts)
   to avoid cross-run leakage.
 - The same cleanup closes egui popups/menus and stops active text input on captured
-  contexts. Scripts can call `Viewport:dismiss_popups()` for the same viewport-scoped path.
+  contexts. `Viewport:dismiss_popups()` clears queued input, overrides, and visual aids
+  only in its viewport. The egui popup and focus operations use a shared context and
+  can affect other viewports.
 - Fixtures without preconditions are baseline-reset by contract: they are independently invokable,
   isolated from prior app state, and safe to apply in any order. Fixtures with preconditions are
   transitions and require the caller to establish their declared entry state first.
