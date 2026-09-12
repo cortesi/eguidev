@@ -11,7 +11,7 @@ local initial = row:state()
 assert(initial ~= nil)
 assert(not initial.visible, "row 40 should start out of view")
 
--- The plan's promise: scroll then interact, with no manual wait between them.
+-- Scroll then interact, with no manual wait between them.
 row:scroll_into_view()
 row:click()
 
@@ -48,14 +48,21 @@ assert(
     "the timeout should name the remedy: " .. message
 )
 
--- The pointer-admission error names the same remedy.
+-- High-level click waits for the same condition before admitting pointer input.
 local click_ok, click_err = pcall(function()
-    eguidev.widget("basic.scroll.row.40"):click({ settle = false })
+    clipped:click({ timeout_ms = 250, poll_interval_ms = 16, settle = false })
 end)
 assert(not click_ok, "a fully clipped row must not accept a click")
+assert(type(click_err) == "table", "click readiness errors should be structured tables")
+local click_error = click_err :: any
+assert(click_error.code == "timeout", "a clipped click should time out waiting for readiness")
 assert(
-    string.find(tostring(click_err), "wait({ actionable = true })", 1, true) ~= nil,
-    "the invisible-interaction error should name the actionable wait: " .. tostring(click_err)
+    string.find(click_error.message, "interaction-ready", 1, true) ~= nil,
+    "the click timeout should name the interaction-ready condition: " .. tostring(click_err)
+)
+assert(
+    string.find(click_error.message, "scroll_into_view", 1, true) ~= nil,
+    "the click timeout should name the remedy: " .. tostring(click_err)
 )
 
 return { row = ready.viewport_id .. "/" .. ready.id }
