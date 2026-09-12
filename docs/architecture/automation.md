@@ -112,9 +112,9 @@ queues root-viewport closure through the UI-thread action queue and requests a r
 confirms only that it accepted the request.
 
 Edev keeps the launcher ownership channel open while it waits for the existing supervisor or
-child-exit event. `[app].shutdown_grace_secs` sets an asynchronous escalation deadline and
-defaults to 30 seconds. Edev kills the managed process group only when the app connection is
-unavailable, the close request fails, or the deadline expires. Launcher `stop` and `status`
+child-exit event. `[app].shutdown_grace_secs` sets one asynchronous deadline for both the close
+request and process exit, and defaults to 30 seconds. Edev kills the managed process group only
+when the app connection is unavailable, the close request fails, or the deadline expires. Launcher `stop` and `status`
 identify graceful and forced results. One-shot commands fail when teardown is forced.
 
 ## Platform presentation

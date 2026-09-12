@@ -5,7 +5,7 @@
 //! terminates its process group. It opens no window, so lifecycle tests never
 //! put a window on the developer's desktop. Only smoketests run a real app.
 
-use std::{env, sync::Arc};
+use std::{env, future::pending, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -35,6 +35,8 @@ enum CloseMode {
     Fail,
     /// Accept the request but remain alive.
     Ignore,
+    /// Never finish handling the request.
+    Hang,
 }
 
 impl CloseMode {
@@ -51,6 +53,7 @@ impl CloseMode {
             Some("graceful") => Self::Graceful,
             Some("fail") => Self::Fail,
             Some("ignore") => Self::Ignore,
+            Some("hang") => Self::Hang,
             Some(value) => {
                 return Err(McpError::InvalidParams(format!(
                     "unknown close mode: {value}"
@@ -119,6 +122,7 @@ impl ServerHandler for TestApp {
                 CloseMode::Ignore => Ok(CallToolResult::new()
                     .with_structured_content(json!({ "queued": true }))
                     .into()),
+                CloseMode::Hang => pending().await,
             };
         }
         if name == "script_eval" {

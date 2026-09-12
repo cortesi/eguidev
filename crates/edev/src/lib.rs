@@ -623,9 +623,14 @@ impl AppProcess {
     /// Request normal app closure and escalate only when the request or exit
     /// fails.
     async fn shutdown(mut self) -> ShutdownResult {
-        let close_result = request_app_close(&self.client).await;
+        let client = Arc::clone(&self.client);
         let shutdown_grace = self.shutdown_grace;
-        let result = resolve_shutdown(close_result, self.wait_for_exit(), shutdown_grace).await;
+        let result = resolve_shutdown(
+            request_app_close(&client),
+            self.wait_for_exit(),
+            shutdown_grace,
+        )
+        .await;
         if result.is_forced() {
             self.start_termination();
             let _wait_result = self.wait_for_exit().await;
@@ -724,23 +729,19 @@ async fn request_app_close(
     Ok(())
 }
 
-/// Classify one close request and event-driven exit observation.
-async fn resolve_shutdown<F>(
-    close_result: Result<(), ShutdownCause>,
-    exit: F,
-    grace: Duration,
-) -> ShutdownResult
+/// Bound the close request and event-driven exit observation by one deadline.
+async fn resolve_shutdown<C, F>(close: C, exit: F, grace: Duration) -> ShutdownResult
 where
+    C: Future<Output = Result<(), ShutdownCause>>,
     F: Future<Output = Result<(), String>>,
 {
-    if let Err(cause) = close_result {
-        return ShutdownResult::Forced { cause };
-    }
-    match timeout(grace, exit).await {
+    let shutdown = async {
+        close.await?;
+        exit.await.map_err(ShutdownCause::ExitFailed)
+    };
+    match timeout(grace, shutdown).await {
         Ok(Ok(())) => ShutdownResult::Graceful,
-        Ok(Err(error)) => ShutdownResult::Forced {
-            cause: ShutdownCause::ExitFailed(error),
-        },
+        Ok(Err(cause)) => ShutdownResult::Forced { cause },
         Err(_) => ShutdownResult::Forced {
             cause: ShutdownCause::DeadlineExpired,
         },
@@ -3220,14 +3221,15 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_resolution_reports_normal_exit() {
-        let result = resolve_shutdown(Ok(()), async { Ok(()) }, Duration::from_secs(1)).await;
+        let result =
+            resolve_shutdown(async { Ok(()) }, async { Ok(()) }, Duration::from_secs(1)).await;
         assert_eq!(result, ShutdownResult::Graceful);
     }
 
     #[tokio::test]
     async fn shutdown_resolution_reports_missing_mcp() {
         let result = resolve_shutdown(
-            Err(ShutdownCause::AppMcpUnavailable("closed".to_string())),
+            async { Err(ShutdownCause::AppMcpUnavailable("closed".to_string())) },
             async { Ok(()) },
             Duration::from_secs(1),
         )
@@ -3243,7 +3245,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_resolution_reports_close_failure() {
         let result = resolve_shutdown(
-            Err(ShutdownCause::AppCloseFailed("rejected".to_string())),
+            async { Err(ShutdownCause::AppCloseFailed("rejected".to_string())) },
             async { Ok(()) },
             Duration::from_secs(1),
         )
@@ -3258,8 +3260,28 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_resolution_reports_deadline_expiry() {
-        let result =
-            resolve_shutdown(Ok(()), pending::<Result<(), String>>(), Duration::ZERO).await;
+        let result = resolve_shutdown(
+            async { Ok(()) },
+            pending::<Result<(), String>>(),
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(
+            result,
+            ShutdownResult::Forced {
+                cause: ShutdownCause::DeadlineExpired,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_resolution_bounds_close_request() {
+        let result = resolve_shutdown(
+            pending::<Result<(), ShutdownCause>>(),
+            async { Ok(()) },
+            Duration::ZERO,
+        )
+        .await;
         assert_eq!(
             result,
             ShutdownResult::Forced {

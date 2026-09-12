@@ -347,6 +347,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hung_close_obeys_shutdown_grace_and_cleans_up() -> Result<(), Box<dyn Error>> {
+        let tempdir = test_tempdir();
+        let config_path = tempdir.path().join("hung-close.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), "hang", 0);
+        let observer = ProcessGroupObserver::new()?;
+        let mut client = Client::new("hung-close-test", env!("CARGO_PKG_VERSION"))
+            .with_request_timeout(Duration::from_secs(10));
+        let spawned = client
+            .connect_process(launcher_command(&config_path, tempdir.path()))
+            .await?;
+        let mut process = spawned.process;
+        let start = client.call_tool("start", json!({})).await?;
+        assert!(!start.is_error(), "start should succeed: {start:?}");
+        let status = client
+            .call_tool("status", json!({}))
+            .await?
+            .structured_content
+            .ok_or("status did not include structured content")?;
+        let app_process_group_id = i32::try_from(
+            status["process_group_id"]
+                .as_i64()
+                .ok_or("status did not report app process group")?,
+        )?;
+        let supervisor_pid = i32::try_from(
+            status["supervisor_pid"]
+                .as_u64()
+                .ok_or("status did not report supervisor PID")?,
+        )?;
+        let record_path = PathBuf::from(
+            status["registry_entry_path"]
+                .as_str()
+                .ok_or("status did not report app record path")?,
+        );
+
+        let stop = timeout(Duration::from_secs(3), client.call_tool("stop", json!({}))).await;
+        if stop.is_err() {
+            // Keep the failing regression from leaving its hung app alive.
+            process.kill().await?;
+            drop(client);
+            wait_for_cleanup(&observer, app_process_group_id, supervisor_pid).await?;
+            return Err("hung app_close exceeded the shutdown grace".into());
+        }
+        let stop = stop??;
+        assert!(
+            !stop.is_error(),
+            "forced stop should be reportable: {stop:?}"
+        );
+        let stop = stop
+            .structured_content
+            .ok_or("stop did not include structured content")?;
+        assert_eq!(stop["report"]["shutdown"]["mode"], "forced");
+        assert_eq!(
+            stop["report"]["shutdown"]["cause"]["kind"],
+            "deadline_expired"
+        );
+        assert!(live_process_group_members(app_process_group_id).is_empty());
+        assert!(!process_is_alive(supervisor_pid));
+        assert!(
+            !record_path.exists(),
+            "forced stop must remove the app record"
+        );
+        drop(client);
+        timeout(Duration::from_secs(10), process.wait()).await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn forced_one_shot_teardown_returns_failure_status() -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
         let config_path = tempdir.path().join("ignored-close.toml");
