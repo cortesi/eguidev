@@ -473,6 +473,8 @@ pub mod eguidev {
 
                 pub fn clear_transient_state(&self) {}
 
+                pub fn clear_viewport_overlays(&self, viewport_id: ViewportId) {}
+
                 pub fn new() -> Self {}
 
                 pub fn overlay_debug_config(&self) -> OverlayDebugConfig {}
@@ -485,9 +487,15 @@ pub mod eguidev {
                 ) {
                 }
 
-                pub fn remove_overlay(&self, key: &str) {}
+                pub fn remove_overlay(&self, viewport_id: ViewportId, key: &str) {}
 
-                pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {}
+                pub fn set_overlay(
+                    &self,
+                    viewport_id: ViewportId,
+                    key: String,
+                    overlay: OverlayEntry,
+                ) {
+                }
 
                 pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {}
             }
@@ -588,6 +596,8 @@ pub mod eguidev {
 
                 pub fn clear_overlays(&self) {}
 
+                pub fn clear_viewport_overlays(&self, viewport_id: egui::ViewportId) {}
+
                 pub fn clear_widget_value_update_if_matches(
                     &self,
                     viewport_id: egui::ViewportId,
@@ -656,7 +666,7 @@ pub mod eguidev {
 
                 pub fn remember_context(&self, viewport_id: egui::ViewportId, ctx: &Context) {}
 
-                pub fn remove_overlay(&self, key: &str) {}
+                pub fn remove_overlay(&self, viewport_id: egui::ViewportId, key: &str) {}
 
                 pub fn request_repaint(&self) {}
 
@@ -668,7 +678,13 @@ pub mod eguidev {
 
                 pub fn set_automation_options(&self, options: AutomationOptions) {}
 
-                pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {}
+                pub fn set_overlay(
+                    &self,
+                    viewport_id: egui::ViewportId,
+                    key: String,
+                    overlay: OverlayEntry,
+                ) {
+                }
 
                 pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {}
 

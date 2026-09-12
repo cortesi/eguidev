@@ -438,11 +438,13 @@ declare class Viewport
     read sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample }
     read layout_issues: (self: Viewport) -> { LayoutIssue }
 
+    --- Highlights a rectangle in this viewport's local logical coordinates.
     read show_highlight: (
         self: Viewport,
         rect: Rect,
         color: string
     ) -> HighlightResult
+    --- Clears this viewport's rectangle and widget highlights.
     read clear_highlights: (self: Viewport) -> ()
     read show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> ()
     read clear_debug_overlay: (self: Viewport) -> ()

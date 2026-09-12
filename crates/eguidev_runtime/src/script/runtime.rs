@@ -2377,9 +2377,13 @@ impl ScriptRuntime {
         Ok(Value::Null)
     }
 
-    /// Clear all highlights.
-    pub(super) async fn clear_highlights(&self, pos: ScriptPosition) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.clear_highlights(None, None))
+    /// Clear all highlights in the selected viewport.
+    pub(super) async fn clear_highlights(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: Option<String>,
+    ) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.clear_highlights(viewport_id, None))
             .await?;
         Ok(Value::Null)
     }

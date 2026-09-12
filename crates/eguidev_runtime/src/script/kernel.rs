@@ -1266,12 +1266,12 @@ impl EguidevModule {
         builder.async_function(
             "viewport_clear_highlights",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, _: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .clear_highlights(pos)
+                        .clear_highlights(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -3124,6 +3124,7 @@ mod tests {
         },
     };
 
+    use egui::{Color32, Context, RawInput, ViewportId, epaint::Shape};
     use eguidev::AutomationOptions;
     use ruau::vm::{
         Ambient, Function, Limits, RuntimeCapabilities, Vm, serde::json_to_scoped_value,
@@ -3903,6 +3904,133 @@ return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
             outcome.value,
             Some(json!({ "widget_issues": 0, "viewport_issues": 0 }))
         );
+    }
+
+    fn run_highlight_script(script: &str) -> (Arc<Inner>, ViewportId) {
+        let inner = Arc::new(Inner::new());
+        let secondary = ViewportId::from_hash_of("highlight.secondary");
+        for viewport_id in [ViewportId::ROOT, secondary] {
+            inner.viewports.remember_viewport_id(viewport_id);
+            let mut entry = make_entry("shared", 1, WidgetRole::Button);
+            // Generated IDs can repeat across viewports; explicit IDs cannot.
+            entry.explicit_id = false;
+            entry.viewport_id = viewport_id_to_string(viewport_id);
+            inner.widgets.clear_registry(viewport_id);
+            inner.widgets.record_widget(viewport_id, entry);
+            inner.widgets.finalize_registry(viewport_id);
+        }
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            Arc::clone(&inner),
+            runtime,
+            format!(
+                "local secondary_id = \"{}\"\n{script}",
+                viewport_id_to_string(secondary)
+            ),
+            1_000,
+            "highlight-viewports.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        (inner, secondary)
+    }
+
+    fn painted_highlight_colors(inner: &Inner, viewport_id: ViewportId) -> Vec<Color32> {
+        let ctx = Context::default();
+        let mut input = RawInput {
+            viewport_id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(100.0, 100.0),
+            )),
+            ..Default::default()
+        };
+        input.viewports.entry(viewport_id).or_default();
+        ctx.begin_pass(input);
+        inner.paint_overlays(&ctx);
+        let output = ctx.end_pass();
+        let colors = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Rect(rect) => Some(rect.stroke.color),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        colors
+    }
+
+    #[test]
+    fn rectangle_highlights_stay_in_their_viewport() {
+        let (inner, secondary) = run_highlight_script(
+            r##"
+local rect = { min = { x = 10, y = 10 }, max = { x = 50, y = 50 } }
+eguidev.root:show_highlight(rect, "#ff0000")
+eguidev.viewport(secondary_id):show_highlight(rect, "#0000ff")
+"##,
+        );
+        assert_eq!(
+            painted_highlight_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_highlight_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn widget_highlights_stay_in_their_viewport() {
+        let (inner, secondary) = run_highlight_script(
+            r##"
+eguidev.root:widget("shared"):show_highlight("#ff0000")
+eguidev.viewport(secondary_id):widget("shared"):show_highlight("#0000ff")
+"##,
+        );
+        assert_eq!(
+            painted_highlight_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_highlight_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn clearing_viewport_highlights_preserves_other_viewports() {
+        let (inner, secondary) = run_highlight_script(
+            r##"
+local rect = { min = { x = 10, y = 10 }, max = { x = 50, y = 50 } }
+eguidev.root:show_highlight(rect, "#ff0000")
+local secondary = eguidev.viewport(secondary_id)
+secondary:show_highlight(rect, "#0000ff")
+secondary:clear_highlights()
+"##,
+        );
+        assert_eq!(
+            painted_highlight_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert!(painted_highlight_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn clearing_widget_highlight_preserves_other_viewports() {
+        let (inner, secondary) = run_highlight_script(
+            r##"
+eguidev.root:widget("shared"):show_highlight("#ff0000")
+local secondary = eguidev.viewport(secondary_id):widget("shared")
+secondary:show_highlight("#0000ff")
+secondary:clear_highlight()
+"##,
+        );
+        assert_eq!(
+            painted_highlight_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert!(painted_highlight_colors(&inner, secondary).is_empty());
     }
 
     #[test]

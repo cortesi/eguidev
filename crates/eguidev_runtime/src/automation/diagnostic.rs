@@ -34,15 +34,19 @@ impl DevMcpServer {
         rect: Option<Rect>,
         color: String,
     ) -> ToolResult<OverlayHighlightResult> {
-        let (rect, key) = if let Some(ref target) = target {
+        let (viewport_id, rect, key) = if let Some(ref target) = target {
             let widget = resolve_widget(&self.inner, viewport_id.as_deref(), target)?;
-            (widget.interact_rect, format!("widget:{}", widget.id))
+            (
+                resolve_viewport_id(&self.inner, Some(widget.viewport_id))?,
+                widget.interact_rect,
+                format!("widget:{}", widget.id),
+            )
         } else if let Some(rect) = rect {
             let key = format!(
                 "rect:{},{},{},{}",
                 rect.min.x, rect.min.y, rect.max.x, rect.max.y
             );
-            (rect, key)
+            (resolve_viewport_id(&self.inner, viewport_id)?, rect, key)
         } else {
             return Err(
                 ToolError::new(ErrorCode::InvalidArgument, "Missing rect or target").into(),
@@ -55,6 +59,7 @@ impl DevMcpServer {
             )
         })?;
         self.inner.set_overlay(
+            viewport_id,
             key,
             OverlayEntry {
                 rect: egui::Rect::from(rect),
@@ -66,7 +71,7 @@ impl DevMcpServer {
     }
 
     /// Hide highlights. If a target widget is given, removes just that widget's
-    /// highlight. Otherwise clears all highlights.
+    /// highlight. Otherwise clears all highlights in the selected viewport.
     pub(super) async fn clear_highlights(
         &self,
         viewport_id: Option<String>,
@@ -74,9 +79,12 @@ impl DevMcpServer {
     ) -> ToolResult<()> {
         if let Some(ref target) = target {
             let widget = resolve_widget(&self.inner, viewport_id.as_deref(), target)?;
-            self.inner.remove_overlay(&format!("widget:{}", widget.id));
+            let viewport_id = resolve_viewport_id(&self.inner, Some(widget.viewport_id))?;
+            self.inner
+                .remove_overlay(viewport_id, &format!("widget:{}", widget.id));
         } else {
-            self.inner.clear_overlays();
+            let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+            self.inner.clear_viewport_overlays(viewport_id);
         }
         Ok(())
     }

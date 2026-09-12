@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, sync::Mutex};
 
-use egui::{Color32, Context, Rect as EguiRect};
+use egui::{Color32, Context, Rect as EguiRect, ViewportId};
 
 use crate::{
     registry::{lock, viewport_id_to_string},
@@ -97,7 +97,7 @@ pub fn parse_css_hex(value: &str, require_hash: bool) -> Option<Color32> {
 }
 
 pub struct OverlayManager {
-    overlays: Mutex<HashMap<String, OverlayEntry>>,
+    overlays: Mutex<HashMap<(ViewportId, String), OverlayEntry>>,
     overlay_debug: Mutex<OverlayDebugConfig>,
 }
 
@@ -124,14 +124,19 @@ impl OverlayManager {
         *stored = config;
     }
 
-    pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {
+    pub fn set_overlay(&self, viewport_id: ViewportId, key: String, overlay: OverlayEntry) {
         let mut overlays = lock(&self.overlays, "overlay lock");
-        overlays.insert(key, overlay);
+        overlays.insert((viewport_id, key), overlay);
     }
 
-    pub fn remove_overlay(&self, key: &str) {
+    pub fn remove_overlay(&self, viewport_id: ViewportId, key: &str) {
         let mut overlays = lock(&self.overlays, "overlay lock");
-        overlays.remove(key);
+        overlays.remove(&(viewport_id, key.to_string()));
+    }
+
+    pub fn clear_viewport_overlays(&self, viewport_id: ViewportId) {
+        lock(&self.overlays, "overlay lock")
+            .retain(|(stored_viewport, _), _| *stored_viewport != viewport_id);
     }
 
     pub fn clear_overlays(&self) {
@@ -161,7 +166,10 @@ impl OverlayManager {
         }
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("eguidev.overlay"));
         let painter = ctx.layer_painter(layer);
-        for overlay in overlays.values() {
+        for ((viewport_id, _), overlay) in overlays.iter() {
+            if *viewport_id != ctx.viewport_id() {
+                continue;
+            }
             painter.rect_stroke(
                 overlay.rect,
                 egui::CornerRadius::ZERO,

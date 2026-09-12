@@ -426,13 +426,18 @@ impl Inner {
         self.request_repaint();
     }
 
-    pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {
-        self.overlays.set_overlay(key, overlay);
+    pub fn set_overlay(&self, viewport_id: egui::ViewportId, key: String, overlay: OverlayEntry) {
+        self.overlays.set_overlay(viewport_id, key, overlay);
         self.request_repaint();
     }
 
-    pub fn remove_overlay(&self, key: &str) {
-        self.overlays.remove_overlay(key);
+    pub fn remove_overlay(&self, viewport_id: egui::ViewportId, key: &str) {
+        self.overlays.remove_overlay(viewport_id, key);
+        self.request_repaint();
+    }
+
+    pub fn clear_viewport_overlays(&self, viewport_id: egui::ViewportId) {
+        self.overlays.clear_viewport_overlays(viewport_id);
         self.request_repaint();
     }
 
