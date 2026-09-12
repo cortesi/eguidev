@@ -150,6 +150,21 @@ enum ScreenshotWaitOutcome {
     NativeCapture(ScreenshotState),
 }
 
+/// Release retained screenshot state even when the enclosing script is
+/// cancelled.
+struct ScreenshotRequest<'a> {
+    /// Runtime that retains this request until it completes.
+    runtime: &'a Runtime,
+    /// Unique request owned by the capture future.
+    request_id: u64,
+}
+
+impl Drop for ScreenshotRequest<'_> {
+    fn drop(&mut self) {
+        self.runtime.take_screenshot(self.request_id);
+    }
+}
+
 pub(super) fn resolve_screenshot_viewport(
     inner: &Inner,
     viewport_id: Option<String>,
@@ -334,6 +349,10 @@ async fn await_screenshot(
     kind: &ScreenshotKind,
     start_frame: u64,
 ) -> Result<ScreenshotState, ToolError> {
+    let request = ScreenshotRequest {
+        runtime,
+        request_id,
+    };
     let notify = match runtime.screenshot_state(request_id) {
         Some(state) => state.notify(),
         None => {
@@ -409,7 +428,6 @@ async fn await_screenshot(
     match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
         Ok(Ok(ScreenshotWaitOutcome::Ready)) => {}
         Ok(Ok(ScreenshotWaitOutcome::NativeCapture(state))) => {
-            runtime.take_screenshot(request_id);
             runtime.log_screenshot(
                 inner,
                 format!(
@@ -421,7 +439,7 @@ async fn await_screenshot(
         }
         Ok(Err(error)) => return Err(error),
         Err(_) => {
-            runtime.take_screenshot(request_id);
+            drop(request);
             let end_frame = inner.frame_count();
             runtime.log_screenshot(
                 inner,
@@ -888,10 +906,76 @@ fn crop_image(
 
 #[cfg(test)]
 mod tests {
+    use std::{future::poll_fn, sync::Arc, task::Poll};
+
     use super::{
-        DEFAULT_MAX_SCREENSHOT_DIMENSION, ScreenshotFormat, ScreenshotOptions, encode_screenshot,
-        scale_screenshot_image,
+        DEFAULT_MAX_SCREENSHOT_DIMENSION, ScreenshotFormat, ScreenshotOptions, await_screenshot,
+        encode_screenshot, scale_screenshot_image,
     };
+    use crate::{
+        registry::Inner,
+        runtime::Runtime,
+        screenshots::{ScreenshotKind, ScreenshotState},
+    };
+
+    #[tokio::test]
+    async fn cancelled_screenshot_releases_only_its_request() {
+        for arrives_before_cancellation in [false, true] {
+            let inner = Arc::new(Inner::new());
+            let runtime = Runtime::ensure_for_inner(&inner);
+            runtime.insert_screenshot(1, ScreenshotState::pending(ScreenshotKind::Viewport));
+            runtime.insert_screenshot(2, ScreenshotState::pending(ScreenshotKind::Viewport));
+            let mut capture = Box::pin(await_screenshot(
+                &inner,
+                &runtime,
+                1,
+                egui::ViewportId::ROOT,
+                &ScreenshotKind::Viewport,
+                0,
+            ));
+            poll_fn(|cx| {
+                assert!(capture.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+
+            let image = Arc::new(solid_image(2, 2));
+            if arrives_before_cancellation {
+                let mut state = ScreenshotState::pending(ScreenshotKind::Viewport);
+                state.mark_ready(Arc::clone(&image));
+                runtime.insert_screenshot(1, state);
+            }
+            drop(capture);
+
+            assert!(runtime.screenshot_state(1).is_none());
+            assert_eq!(Arc::strong_count(&image), 1);
+            assert!(runtime.screenshot_state(2).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_screenshot_returns_image_and_releases_request() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let image = Arc::new(solid_image(2, 2));
+        let mut state = ScreenshotState::pending(ScreenshotKind::Viewport);
+        state.mark_ready(Arc::clone(&image));
+        runtime.insert_screenshot(1, state);
+
+        let captured = await_screenshot(
+            &inner,
+            &runtime,
+            1,
+            egui::ViewportId::ROOT,
+            &ScreenshotKind::Viewport,
+            0,
+        )
+        .await
+        .expect("completed capture");
+
+        assert!(Arc::ptr_eq(&captured.image().expect("image"), &image));
+        assert!(runtime.screenshot_state(1).is_none());
+    }
 
     fn solid_image(width: usize, height: usize) -> egui::ColorImage {
         egui::ColorImage {
