@@ -663,11 +663,13 @@ impl AppProcess {
         }
     }
 
-    /// Await the existing supervisor or direct-child exit event.
+    /// Await the existing supervisor or direct-child exit event, retaining its
+    /// handle if this wait is cancelled before completion.
     async fn wait_for_exit(&mut self) -> Result<(), String> {
-        if let Some(task) = self.supervisor_exit_task.take() {
-            let status = task
-                .await
+        if let Some(task) = self.supervisor_exit_task.as_mut() {
+            let result = task.await;
+            self.supervisor_exit_task.take();
+            let status = result
                 .map_err(|error| format!("supervisor exit task failed: {error}"))?
                 .map_err(|error| format!("supervisor exit failed: {error}"))?;
             if status.success() {
@@ -675,11 +677,12 @@ impl AppProcess {
             }
             return Err(format!("supervisor exited with {status}"));
         }
-        if let Some(mut child) = self.child.take() {
+        if let Some(child) = self.child.as_mut() {
             let status = child
                 .wait()
                 .await
                 .map_err(|error| format!("app exit wait failed: {error}"))?;
+            self.child.take();
             if status.success() {
                 return Ok(());
             }
@@ -1869,6 +1872,10 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::process::Stdio;
+    use std::{future::poll_fn, task::Poll};
+
     use async_trait::async_trait;
     use eguidev_runtime::{
         ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo,
@@ -1883,6 +1890,8 @@ mod tests {
         },
         testutils::{TestServerContext, make_duplex_pair},
     };
+    #[cfg(unix)]
+    use tokio::process::Command;
     use tokio::{sync::oneshot, time::timeout};
 
     use super::*;
@@ -3217,6 +3226,66 @@ mod tests {
         assert!(matches!(already_stopped, StopStatus::AlreadyStopped));
         assert!(matches!(state.status, AppStatus::NotRunning));
         assert_eq!(state.last_shutdown, Some(ShutdownResult::Graceful));
+    }
+
+    #[tokio::test]
+    async fn cancelled_exit_wait_retains_supervisor_task() {
+        let (mut app, _handle) = make_mock_app().await;
+        let (release, released) = oneshot::channel::<()>();
+        app.supervisor_exit_task = Some(tokio::spawn(async move {
+            released.await.expect("release supervisor exit");
+            Err(std_io::Error::other("observed supervisor exit"))
+        }));
+
+        {
+            let mut wait = Box::pin(app.wait_for_exit());
+            assert!(
+                poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+        }
+        let retained = app.supervisor_exit_task.is_some();
+        release.send(()).expect("release exit task");
+        let result = app.wait_for_exit().await;
+        assert!(retained, "cancelled wait lost the supervisor task");
+        assert_eq!(
+            result,
+            Err("supervisor exit failed: observed supervisor exit".to_string())
+        );
+        assert!(app.supervisor_exit_task.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_exit_wait_retains_direct_child() {
+        let (mut app, _handle) = make_mock_app().await;
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn child waiting for stdin");
+        // Keep stdin outside Child, since Child::wait closes its owned stdin.
+        let stdin = child.stdin.take().expect("piped stdin");
+        app.child = Some(child);
+
+        {
+            let mut wait = Box::pin(app.wait_for_exit());
+            assert!(
+                poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+        }
+        let retained = app.child.is_some();
+        drop(stdin);
+        let result = timeout(Duration::from_secs(5), app.wait_for_exit())
+            .await
+            .expect("child exits after stdin closes");
+        assert!(retained, "cancelled wait lost the direct child");
+        assert_eq!(result, Ok(()));
+        assert!(app.child.is_none());
     }
 
     #[tokio::test]

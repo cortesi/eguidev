@@ -348,11 +348,23 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn hung_close_obeys_shutdown_grace_and_cleans_up() -> Result<(), Box<dyn Error>> {
+        assert_shutdown_deadline_cleans_up("hang", 0).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accepted_close_with_no_exit_waits_for_forced_cleanup() -> Result<(), Box<dyn Error>> {
+        assert_shutdown_deadline_cleans_up("ignore", 1).await
+    }
+
+    async fn assert_shutdown_deadline_cleans_up(
+        close_mode: &str,
+        grace_secs: u64,
+    ) -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
-        let config_path = tempdir.path().join("hung-close.toml");
-        write_app_config_with_close_mode(&config_path, tempdir.path(), "hang", 0);
+        let config_path = tempdir.path().join("shutdown-deadline.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), close_mode, grace_secs);
         let observer = ProcessGroupObserver::new()?;
-        let mut client = Client::new("hung-close-test", env!("CARGO_PKG_VERSION"))
+        let mut client = Client::new("shutdown-deadline-test", env!("CARGO_PKG_VERSION"))
             .with_request_timeout(Duration::from_secs(10));
         let spawned = client
             .connect_process(launcher_command(&config_path, tempdir.path()))
@@ -387,7 +399,7 @@ mod tests {
             process.kill().await?;
             drop(client);
             wait_for_cleanup(&observer, app_process_group_id, supervisor_pid).await?;
-            return Err("hung app_close exceeded the shutdown grace".into());
+            return Err("stop exceeded the shutdown grace".into());
         }
         let stop = stop??;
         assert!(
