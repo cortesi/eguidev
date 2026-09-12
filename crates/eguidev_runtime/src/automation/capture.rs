@@ -765,18 +765,18 @@ fn scale_screenshot_image(image: &egui::ColorImage, max_dimension: u32) -> egui:
 
 /// Average one source rectangle into a single destination pixel.
 fn average_pixel(image: &egui::ColorImage, xs: Range<usize>, ys: Range<usize>) -> egui::Color32 {
-    let mut totals = [0u32; 4];
-    let mut count = 0u32;
+    let mut totals = [0u64; 4];
+    let mut count = 0u64;
     for y in ys {
         for x in xs.clone() {
             let Some(pixel) = image.pixels.get(y * image.width() + x) else {
                 continue;
             };
             let [r, g, b, a] = pixel.to_array();
-            totals[0] += u32::from(r);
-            totals[1] += u32::from(g);
-            totals[2] += u32::from(b);
-            totals[3] += u32::from(a);
+            totals[0] += u64::from(r);
+            totals[1] += u64::from(g);
+            totals[2] += u64::from(b);
+            totals[3] += u64::from(a);
             count += 1;
         }
     }
@@ -1035,6 +1035,16 @@ mod tests {
         let [red, green, blue, _] = scaled.pixels[0].to_array();
         assert!((120..=136).contains(&red), "unexpected red {red}");
         assert_eq!([red, green, blue], [red; 3]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_averages_large_sources_without_overflow() {
+        // A tiny thumbnail of a high-resolution capture can sum more than
+        // u32::MAX in each channel, even though every source pixel is valid.
+        let image = solid_image(5120, 3456);
+        let scaled = scale_screenshot_image(&image, 1);
+        assert_eq!(scaled.size, [1, 1]);
+        assert_eq!(scaled.pixels, vec![egui::Color32::WHITE]);
     }
 
     #[test]
