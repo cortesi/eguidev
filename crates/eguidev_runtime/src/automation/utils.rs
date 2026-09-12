@@ -832,12 +832,13 @@ mod tests {
         let viewport_id = egui::ViewportId::ROOT;
         let start = Pos2 { x: 10.0, y: 20.0 };
         let end = Pos2 { x: 40.0, y: 20.0 };
+        assert!(inner.actions.drain_actions(viewport_id, 0).is_empty());
         queue_drag(&inner, viewport_id, start, end, Modifiers::default());
 
         // One stage drains per frame. The press must not share a frame with the
         // move that lands the pointer, or the whole jump from wherever the
         // pointer was reads as part of the drag.
-        let frames = (0..4)
+        let frames = (1..5)
             .map(|frame| {
                 inner
                     .actions

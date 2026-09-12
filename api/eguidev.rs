@@ -166,8 +166,8 @@ pub mod eguidev {
 
             /// How many whole frames an action waits before it reaches the app.
             ///
-            /// Each drain delivers the immediate stage and moves every later stage one
-            /// step closer, so a sequence that must span frames stages one step per frame.
+            /// Delayed actions start counting at their first drain. Repeated drains with
+            /// the same frame number do not shorten the delay.
             #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             pub enum ActionTiming {
                 /// Deliver at the next drain.
