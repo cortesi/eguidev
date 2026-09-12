@@ -5859,6 +5859,40 @@ return state.scroll_state.offset.y"#
     }
 
     #[tokio::test]
+    async fn action_hover_duration_is_independent_of_frame_rate() {
+        for fast_frames in [false, true] {
+            let inner = Arc::new(Inner::new());
+            let server = DevMcpServer::new(Arc::clone(&inner));
+            let viewport_id = egui::ViewportId::ROOT;
+            let runtime = Runtime::ensure_for_inner(&inner);
+            inner
+                .widgets
+                .record_widget(viewport_id, make_entry("hover", 1, WidgetRole::Button));
+            inner.widgets.finalize_registry(viewport_id);
+
+            let started = Instant::now();
+            let frames = fast_frames.then(|| {
+                tokio::spawn(async move {
+                    loop {
+                        runtime.frame_notify().notify_waiters();
+                        sleep(Duration::from_millis(1)).await;
+                    }
+                })
+            });
+            let result = server
+                .action_hover(None, widget_ref_id("hover"), None, Some(60), None)
+                .await;
+            let elapsed = started.elapsed();
+            if let Some(frames) = frames {
+                frames.abort();
+                assert!(frames.await.expect_err("stopped frame task").is_cancelled());
+            }
+            result.expect("hover duration must not require frames");
+            assert!(elapsed >= Duration::from_millis(60));
+        }
+    }
+
+    #[tokio::test]
     async fn action_hover_fails_when_the_pointer_never_arrives() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));

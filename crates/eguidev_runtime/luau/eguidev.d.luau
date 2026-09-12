@@ -499,7 +499,8 @@ export type HoverOptions = {
     settle: boolean?,
     --- Normalized within the widget from 0 to 1. Defaults to the center.
     position: Vec?,
-    --- Defaults to zero.
+    --- Hold the hover for this many milliseconds, independent of frame rate.
+    --- Defaults to zero. The script deadline still applies.
     duration_ms: number?,
 }
 

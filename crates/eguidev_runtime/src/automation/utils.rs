@@ -7,7 +7,7 @@ use std::{
 use egui::PointerButton;
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 use crate::{
     actions::{ActionQueueStats, ActionTiming, InputAction},
@@ -542,46 +542,6 @@ pub fn printable_key_text(key: &str) -> Option<String> {
         return None;
     }
     Some(ch.to_string())
-}
-
-pub fn frames_for_duration(duration_ms: u64) -> u64 {
-    duration_ms.div_ceil(FRAME_DURATION_MS)
-}
-
-pub async fn wait_for_frames(
-    inner: &Inner,
-    frames: u64,
-    start: Instant,
-    timeout_ms: u64,
-) -> Result<(), ToolError> {
-    let mut completed = 0u64;
-    let runtime =
-        Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
-    let observation_start = WaitObservationStart::new(inner, Some(egui::ViewportId::ROOT));
-    while completed < frames {
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        if elapsed_ms >= timeout_ms {
-            let observation = observation_start.finish(inner);
-            return Err(ToolError::new(
-                ErrorCode::Timeout,
-                wait_timeout_message("Timed out waiting for frame notifications", &observation),
-            )
-            .with_details(json!({
-                "kind": "frames",
-                "elapsed_ms": elapsed_ms,
-                "observation": observation,
-            })));
-        }
-        let mut notified = pin!(runtime.frame_notify().notified());
-        notified.as_mut().enable();
-        request_wait_repaint(inner, Some(egui::ViewportId::ROOT));
-        let remaining = timeout_ms.saturating_sub(elapsed_ms).max(1);
-        let poll = Duration::from_millis(FRAME_DURATION_MS).min(Duration::from_millis(remaining));
-        if timeout(poll, notified.as_mut()).await.is_ok() {
-            completed += 1;
-        }
-    }
-    Ok(())
 }
 
 /// Generic utility for polling a condition that requires UI interaction or

@@ -361,8 +361,7 @@ impl DevMcpServer {
         }
         let duration_ms = duration_ms.unwrap_or(0);
         if duration_ms > 0 {
-            let frames = frames_for_duration(duration_ms);
-            wait_for_frames(&self.inner, frames, Instant::now(), duration_ms).await?;
+            sleep(Duration::from_millis(duration_ms)).await;
         }
         Ok(())
     }
