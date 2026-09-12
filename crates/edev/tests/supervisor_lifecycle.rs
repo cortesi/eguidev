@@ -382,6 +382,47 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fixture_error_survives_forced_cleanup() -> Result<(), Box<dyn Error>> {
+        let tempdir = test_tempdir();
+        let config_path = tempdir.path().join("fixture-error.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), "fail", 30);
+
+        // This app answers script_eval with true, which is deliberately not a
+        // fixture catalog. Its subsequent close rejection must not hide that.
+        let output = timeout(
+            Duration::from_secs(10),
+            Command::new(env!("CARGO_BIN_EXE_edev"))
+                .kill_on_drop(true)
+                .current_dir(tempdir.path())
+                .args([
+                    "--config",
+                    config_path.to_str().ok_or("config path is not UTF-8")?,
+                    "fixtures",
+                ])
+                .output(),
+        )
+        .await??;
+        assert!(
+            !output.status.success(),
+            "invalid fixture catalog must fail"
+        );
+        let lifecycle_records = fs::read_dir(tempdir.path().join(".edev-instances"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>();
+        assert!(
+            lifecycle_records.is_empty(),
+            "cleanup left records: {lifecycle_records:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed to decode fixtures list"),
+            "original fixture error was lost: {stderr}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deliberate_owner_shutdown_is_silent_success() -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
         let registry_dir = tempdir.path().join(".edev-instances");

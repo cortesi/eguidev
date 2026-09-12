@@ -512,35 +512,32 @@ async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
         "fixture command could not reach the app",
     )
     .await?;
-    let client = Arc::clone(&session.client);
+    let result = run_fixture_session(&session.client, &config).await;
+    session.finish(result).await
+}
 
+/// List or apply fixtures using an existing app connection.
+async fn run_fixture_session(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    config: &FixtureConfig,
+) -> Result<(), EdevError> {
     // Query registered fixtures.
-    let fixtures =
-        match eval_fixture_script(&client, FIXTURE_LIST_SCRIPT, "failed to query fixtures")
-            .await
-            .and_then(parse_fixture_list)
-        {
-            Ok(fixtures) => fixtures,
-            Err(error) => {
-                session.shutdown().await?;
-                return Err(error);
-            }
-        };
+    let fixtures = eval_fixture_script(client, FIXTURE_LIST_SCRIPT, "failed to query fixtures")
+        .await
+        .and_then(parse_fixture_list)?;
 
     if fixtures.is_empty() {
         if config.json || config.markdown {
-            print_fixture_list(&config, &fixtures)?;
+            print_fixture_list(config, &fixtures)?;
         } else {
             println!("No fixtures registered.");
         }
-        session.shutdown().await?;
         return Ok(());
     }
 
-    let Some(name) = config.name else {
+    let Some(name) = config.name.as_deref() else {
         // List-only mode.
-        print_fixture_list(&config, &fixtures)?;
-        session.shutdown().await?;
+        print_fixture_list(config, &fixtures)?;
         return Ok(());
     };
 
@@ -548,41 +545,27 @@ async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
     let Some(fixture) = fixtures.iter().find(|f| f.name == name) else {
         eprintln!("error: unknown fixture \"{name}\"\n");
         print_fixture_table(&fixtures);
-        session.shutdown().await?;
         return Err(EdevError::FixtureFailed(format!("unknown fixture: {name}")));
     };
 
-    let outcome = match eval_fixture_apply(&client, &name, &config.params, !config.no_wait).await {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            session.shutdown().await?;
-            return Err(error);
-        }
-    };
+    let outcome = eval_fixture_apply(client, name, &config.params, !config.no_wait).await?;
     print_fixture_result(fixture, outcome.value.as_ref());
     if config.no_wait {
         println!("ready: not waited (--no-wait)");
     }
 
     if config.dump {
-        match eval_fixture_script(
-            &client,
+        let outcome = eval_fixture_script(
+            client,
             "return eguidev.dump_text()",
             "post-fixture dump failed",
         )
-        .await
-        {
-            Ok(outcome) => print_fixture_dump(outcome)?,
-            Err(error) => {
-                session.shutdown().await?;
-                return Err(error);
-            }
-        }
+        .await?;
+        print_fixture_dump(outcome)?;
     }
 
     eprintln!("Fixture \"{name}\" applied. Press ctrl-c to stop.");
     shutdown_signal().await;
-    session.shutdown().await?;
     Ok(())
 }
 
