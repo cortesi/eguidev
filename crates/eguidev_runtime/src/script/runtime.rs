@@ -2820,7 +2820,8 @@ mod tests {
     use crate::{
         EguiDiagnosticBatch, EguiDiagnosticKind,
         automation::script::types::ScriptPosition,
-        registry::Inner,
+        dump::{DumpOptions, build_tree_dump},
+        registry::{Inner, viewport_id_to_string},
         runtime::{Runtime, attach_for_tests},
         types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue},
     };
@@ -2890,6 +2891,46 @@ mod tests {
             timeout_ms,
         ));
         (runtime, script)
+    }
+
+    #[test]
+    fn closed_viewport_is_removed_from_dumps_and_capture_diffs() {
+        let (_runtime, script) = script_runtime(1_000);
+        let inner = &script.server.inner;
+        let ctx = egui::Context::default();
+        let secondary = egui::ViewportId::from_hash_of("capture.closed.secondary");
+        let secondary_id = viewport_id_to_string(secondary);
+        let mut open = egui::RawInput::default();
+        open.viewports.insert(secondary, Default::default());
+        ctx.run_ui(open.clone(), |_| {})
+            .drop_without_applying_deltas();
+        inner.viewports.update_viewports(&ctx);
+        let pos = ScriptPosition::default();
+        let before = script.capture(pos).expect("capture open viewport");
+
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+        inner.viewports.update_viewports(&ctx);
+        let dump = build_tree_dump(inner, &DumpOptions::default()).expect("dump after close");
+        assert_eq!(dump.viewports.len(), 1);
+        assert_eq!(dump.viewports[0].id, "root");
+        let diff = script.capture_diff(pos, &before, None).expect("close diff");
+        assert_eq!(diff["viewports_removed"], json!([secondary_id]));
+
+        let closed = script.capture(pos).expect("capture closed viewport");
+        ctx.run_ui(open, |_| {}).drop_without_applying_deltas();
+        inner.viewports.update_viewports(&ctx);
+        let diff = script
+            .capture_diff(pos, &closed, None)
+            .expect("reopen diff");
+        assert_eq!(diff["viewports_added"], json!([secondary_id]));
+        assert_eq!(
+            build_tree_dump(inner, &DumpOptions::default())
+                .expect("reopened dump")
+                .viewports
+                .len(),
+            2
+        );
     }
 
     #[test]

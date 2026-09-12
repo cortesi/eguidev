@@ -2374,6 +2374,9 @@ pub mod eguidev {
             }
 
             impl ViewportState {
+                /// Current viewport snapshots, excluding closed secondary viewports.
+                pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {}
+
                 pub fn capture_input_snapshot(
                     &self,
                     ctx: &Context,
@@ -2452,8 +2455,6 @@ pub mod eguidev {
                 pub fn update_viewports(&self, ctx: &Context) {}
 
                 pub fn viewport_name_error(&self) -> Option<ToolError> {}
-
-                pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {}
             }
         }
 

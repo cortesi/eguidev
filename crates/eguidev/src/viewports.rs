@@ -184,6 +184,11 @@ impl ViewportState {
                 },
             );
         }
+        snapshots.retain(|id, _| {
+            lookup.get(id).is_some_and(|viewport_id| {
+                *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
+            })
+        });
         let mut ordered = snapshots.into_values().collect::<Vec<_>>();
         ordered.sort_by(|left, right| left.viewport_id.cmp(&right.viewport_id));
         *stored = ordered;
@@ -306,6 +311,7 @@ impl ViewportState {
         );
     }
 
+    /// Current viewport snapshots, excluding closed secondary viewports.
     pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {
         lock(&self.viewports_snapshot, "viewports snapshot lock").clone()
     }
@@ -543,7 +549,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn update_viewports_retains_known_secondary_viewports() {
+    fn update_viewports_retains_secondary_ids_but_prunes_closed_snapshots() {
         let state = ViewportState::new();
         let ctx = Context::default();
         let secondary = egui::ViewportId::from_hash_of("secondary");
@@ -592,7 +598,7 @@ mod tests {
 
         assert_eq!(
             state
-                .resolve_viewport_id(Some(secondary_id))
+                .resolve_viewport_id(Some(secondary_id.clone()))
                 .expect("retained secondary viewport"),
             secondary
         );
@@ -603,6 +609,34 @@ mod tests {
         );
         assert!(!state.is_live_viewport(secondary));
         assert!(state.is_live_viewport(egui::ViewportId::ROOT));
+        assert!(!state.has_viewport_snapshot(secondary));
+        assert_eq!(state.viewports_snapshot().len(), 1);
+
+        let mut reopened = egui::RawInput::default();
+        reopened.viewports.insert(
+            secondary,
+            egui::ViewportInfo {
+                title: Some("Reopened secondary".to_string()),
+                ..Default::default()
+            },
+        );
+        ctx.run_ui(reopened, |_| {}).drop_without_applying_deltas();
+        state.update_viewports(&ctx);
+        assert!(state.is_live_viewport(secondary));
+        let snapshot = state
+            .viewports_snapshot()
+            .into_iter()
+            .find(|snapshot| snapshot.viewport_id == secondary_id)
+            .expect("reopened secondary snapshot");
+        assert_eq!(snapshot.title.as_deref(), Some("Reopened secondary"));
+        assert!(snapshot.name.is_none());
+        state.name_viewport(secondary, "secondary".to_string());
+        assert_eq!(
+            state
+                .resolve_viewport_id(Some("secondary".to_string()))
+                .expect("renewed name"),
+            secondary
+        );
     }
 
     #[test]
