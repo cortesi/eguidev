@@ -52,14 +52,24 @@ impl DevMcpServer {
             FixtureExecution::Ready(result) => result,
             FixtureExecution::Queued(receiver) => {
                 self.inner.request_repaint();
-                spawn_blocking(move || receiver.recv_timeout(Duration::from_millis(timeout_ms)))
-                    .await
-                    .map_err(|error| {
-                        ToolError::new(
-                            ErrorCode::Internal,
-                            format!("fixture wait task failed: {error}"),
-                        )
-                    })?
+                let (_, response, _, _) = wait_until_condition(
+                    &self.inner,
+                    timeout_ms,
+                    DEFAULT_POLL_INTERVAL_MS,
+                    Some(egui::ViewportId::ROOT),
+                    None,
+                    move || {
+                        let response = receiver.try_recv();
+                        async move { Ok::<_, ToolError>((response.is_some(), response)) }
+                    },
+                )
+                .await?;
+                response.unwrap_or_else(|| {
+                    Err(eguidev::FixtureError::new(
+                        "timeout",
+                        format!("fixture handler {name:?} timed out"),
+                    ))
+                })
             }
         };
         self.inner.dismiss_transient_ui(None);
@@ -80,5 +90,77 @@ impl DevMcpServer {
         Ok(self
             .fixture_apply_internal(&name, params.unwrap_or_default(), DEFAULT_WAIT_TIMEOUT_MS)
             .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::poll_fn,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
+
+    use eguidev::{FixtureResponse, FixtureSpec};
+
+    use super::*;
+    use crate::fixtures::FixtureHandler;
+
+    /// Build a fixture whose invocation is observable without running an app.
+    fn queued_fixture_server() -> (DevMcpServer, Arc<AtomicBool>) {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("queued", "Queued fixture").ready("status"),
+        ]);
+        let called = Arc::new(AtomicBool::new(false));
+        let recorded = Arc::clone(&called);
+        inner
+            .fixtures
+            .set_handler(FixtureHandler::Ui(Arc::new(Mutex::new(Box::new(
+                move |_ctx, _call| {
+                    recorded.store(true, Ordering::SeqCst);
+                    Ok(FixtureResponse::new())
+                },
+            )))))
+            .expect("handler");
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        (server, called)
+    }
+
+    #[tokio::test]
+    async fn cancelled_ui_fixture_future_does_not_apply_the_fixture_later() {
+        let (server, called) = queued_fixture_server();
+        let mut apply = Box::pin(server.fixture_apply_internal("queued", BTreeMap::new(), 5_000));
+        poll_fn(|cx| {
+            assert!(apply.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(apply);
+
+        server.inner.fixtures.drain_ui(&egui::Context::default());
+
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "cancelled fixture must not modify the app"
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_ui_fixture_future_preserves_error_and_cancels_request() {
+        let (server, called) = queued_fixture_server();
+        let error = server
+            .fixture_apply_internal("queued", BTreeMap::new(), 0)
+            .await
+            .expect_err("UI did not drain the request");
+        assert_eq!(error.code(), ErrorCode::Timeout);
+        assert_eq!(error.message(), "fixture handler \"queued\" timed out");
+        assert_eq!(error.details(), Some(&json!({ "cause_code": "timeout" })));
+
+        server.inner.fixtures.drain_ui(&egui::Context::default());
+        assert!(!called.load(Ordering::SeqCst));
     }
 }

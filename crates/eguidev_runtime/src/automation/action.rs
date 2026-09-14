@@ -1,21 +1,32 @@
 //! Typed action request validation and translation.
 
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 use super::*;
 
 pub(super) fn raw_input_action(event: RawInputEvent) -> Result<InputAction, ToolError> {
     Ok(match event {
-        RawInputEvent::PointerMove { position } => InputAction::PointerMove { pos: position },
+        RawInputEvent::PointerMove { position } => {
+            ensure_finite_coordinates(position.x, position.y, "Pointer position")?;
+            InputAction::PointerMove { pos: position }
+        }
         RawInputEvent::PointerButton {
             position,
             button,
             action,
             modifiers,
-        } => InputAction::PointerButton {
-            pos: position,
-            button: egui_pointer_button(button),
-            pressed: action == RawInputAction::Press,
-            modifiers: modifiers.unwrap_or_default(),
-        },
+        } => {
+            ensure_finite_coordinates(position.x, position.y, "Pointer position")?;
+            InputAction::PointerButton {
+                pos: position,
+                button: egui_pointer_button(button),
+                pressed: action == RawInputAction::Press,
+                modifiers: modifiers.unwrap_or_default(),
+            }
+        }
         RawInputEvent::Key {
             key,
             action,
@@ -28,11 +39,25 @@ pub(super) fn raw_input_action(event: RawInputEvent) -> Result<InputAction, Tool
             modifiers: modifiers.unwrap_or_default(),
         },
         RawInputEvent::Text { text } => InputAction::Text { text },
-        RawInputEvent::Scroll { delta, modifiers } => InputAction::Scroll {
-            delta,
-            modifiers: modifiers.unwrap_or_default(),
-        },
+        RawInputEvent::Scroll { delta, modifiers } => {
+            ensure_finite_coordinates(delta.x, delta.y, "Scroll delta")?;
+            InputAction::Scroll {
+                delta,
+                modifiers: modifiers.unwrap_or_default(),
+            }
+        }
     })
+}
+
+/// Reject nonfinite coordinates before admitting a raw event to the queue.
+fn ensure_finite_coordinates(x: f32, y: f32, field: &str) -> Result<(), ToolError> {
+    if !x.is_finite() || !y.is_finite() {
+        return Err(ToolError::new(
+            ErrorCode::InvalidArgument,
+            format!("{field} must be finite"),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn resize_commands(
@@ -74,7 +99,13 @@ impl DevMcpServer {
         target: &WidgetRef,
     ) -> ToolResult<(WidgetRegistryEntry, egui::ViewportId)> {
         let (widget, viewport_id) = resolve_widget_and_viewport(&self.inner, viewport_id, target)?;
+        if pointer_ready(&widget) {
+            return Ok((widget, viewport_id));
+        }
         if let Some(error) = invisible_interaction_error(&self.inner, &widget, viewport_id) {
+            return Err(error.into());
+        }
+        if let Some(error) = covered_interaction_error(&self.inner, &widget, viewport_id) {
             return Err(error.into());
         }
         Ok((widget, viewport_id))
@@ -93,8 +124,9 @@ impl DevMcpServer {
 
     /// Press and release a key (optionally repeating), with modifiers.
     ///
-    /// `key_name` is the original user-provided key name string, used to derive the text event
-    /// (preserving case for single characters like `"a"` vs `"A"`).
+    /// `key_name` is the original user-provided key name string, used to derive
+    /// the text event (preserving case for single characters like `"a"` vs
+    /// `"A"`).
     pub(super) async fn action_key(
         &self,
         viewport_id: Option<String>,
@@ -213,13 +245,15 @@ impl DevMcpServer {
 
     /// Request OS-level focus for a viewport.
     ///
-    /// Raises the window and steals keyboard focus from whatever the user is currently working in.
+    /// Raises the window and steals keyboard focus from whatever the user is
+    /// currently working in.
     ///
-    /// **WARNING: Do not use this for general app interaction or automation.** Input injection,
-    /// clicks, keyboard events, and all other automation actions work correctly without OS focus.
-    /// This function exists solely for testing window focus events themselves (e.g. verifying that
-    /// your app responds correctly when it gains or loses focus). Using it unnecessarily disrupts
-    /// the user's workflow.
+    /// **WARNING: Do not use this for general app interaction or automation.**
+    /// Input injection, clicks, keyboard events, and all other automation
+    /// actions work correctly without OS focus. This function exists solely
+    /// for testing window focus events themselves (e.g. verifying that your
+    /// app responds correctly when it gains or loses focus). Using it
+    /// unnecessarily disrupts the user's workflow.
     pub(super) async fn focus_window(&self, viewport_id: String) -> ToolResult<()> {
         let viewport_id = self
             .inner
@@ -313,26 +347,107 @@ impl DevMcpServer {
     }
 
     /// Hover over a widget without clicking.
+    ///
+    /// The pointer move is queued. With `confirm`, the move is then polled
+    /// until the app reports the pointer inside the target and no other
+    /// widget covers that point. One missed move is re-issued from the fresh
+    /// rect. A hover that never arrives fails with the covering widget named,
+    /// instead of leaving a later cursor assertion to spin until the script
+    /// deadline. A script that disables settle skips the confirmation.
     pub(super) async fn action_hover(
         &self,
         viewport_id: Option<String>,
         target: WidgetRef,
         position: Option<Vec2>,
         duration_ms: Option<u64>,
+        confirm: Option<HoverConfirm>,
     ) -> ToolResult<()> {
+        let viewport_name = viewport_id;
         let (widget, viewport_id) =
-            self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
-        let pos = if let Some(position) = position {
-            resolve_relative_pos(widget.interact_rect, position)?
-        } else {
-            widget.interact_rect.center()
-        };
+            self.resolve_widget_for_pointer(viewport_name.as_deref(), &target)?;
+        let pos = hover_position(&widget, position)?;
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
+        if let Some(confirm) = confirm {
+            self.confirm_hover(
+                viewport_name.as_deref(),
+                viewport_id,
+                &target,
+                &widget,
+                position,
+                confirm,
+            )
+            .await?;
+        }
         let duration_ms = duration_ms.unwrap_or(0);
         if duration_ms > 0 {
-            let frames = frames_for_duration(duration_ms);
-            wait_for_frames(&self.inner, frames, Instant::now(), duration_ms).await?;
+            sleep(Duration::from_millis(duration_ms)).await;
+        }
+        Ok(())
+    }
+
+    /// Poll until the queued hover reaches its target. The move is issued
+    /// again once, and again each time the target rect moves, so a widget
+    /// that settles after the first move still receives the pointer.
+    async fn confirm_hover(
+        &self,
+        viewport_name: Option<&str>,
+        viewport_id: egui::ViewportId,
+        target: &WidgetRef,
+        widget: &WidgetRegistryEntry,
+        position: Option<Vec2>,
+        confirm: HoverConfirm,
+    ) -> ToolResult<()> {
+        let (timeout_ms, poll_interval_ms) =
+            super::wait::parameters(confirm.timeout_ms, confirm.poll_interval_ms);
+        let target_id = widget.id.clone();
+        let reissued = AtomicBool::new(false);
+        let last_pos = Mutex::new(hover_position(widget, position)?);
+        let issued_pos = Mutex::new(hover_position(widget, position)?);
+        let (arrived, coverer, _, _) = wait_until_condition(
+            &self.inner,
+            timeout_ms,
+            poll_interval_ms,
+            Some(viewport_id),
+            None,
+            || async {
+                self.inner.request_repaint_all();
+                let fresh = resolve_widget(&self.inner, viewport_name, target)?;
+                let pos = hover_position(&fresh, position)?;
+                *last_pos.lock().expect("hover position lock") = pos;
+                let coverer =
+                    super::query::covering_widget_id(&self.inner, viewport_id, pos, &target_id);
+                let pointer_inside = self
+                    .inner
+                    .viewports
+                    .input_snapshot(viewport_id)
+                    .and_then(|snapshot| snapshot.pointer_pos)
+                    .is_some_and(|pointer| point_in_rect(pointer, fresh.interact_rect));
+                let arrived = coverer.is_none() && pointer_inside;
+                if !arrived {
+                    let mut issued = issued_pos.lock().expect("hover issue lock");
+                    let moved = (issued.x - pos.x).abs() > f32::EPSILON
+                        || (issued.y - pos.y).abs() > f32::EPSILON;
+                    if moved || !reissued.swap(true, Ordering::Relaxed) {
+                        *issued = pos;
+                        self.inner
+                            .queue_action(viewport_id, InputAction::PointerMove { pos });
+                    }
+                }
+                Ok::<_, ToolError>((arrived, coverer))
+            },
+        )
+        .await?;
+        if !arrived {
+            let pos = *last_pos.lock().expect("hover position lock");
+            log_pointer_cover(&self.inner, viewport_id, pos, &target_id);
+            let detail =
+                coverer.map_or_else(String::new, |coverer| format!(" and {coverer:?} covers it"));
+            return Err(ToolError::new(
+                ErrorCode::NotActionable,
+                format!("pointer did not reach {target_id:?} within {timeout_ms} ms{detail}"),
+            )
+            .into());
         }
         Ok(())
     }
@@ -493,19 +608,18 @@ impl DevMcpServer {
     ) -> ToolResult<()> {
         let (widget, viewport_id) =
             self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
+        if widget.role == WidgetRole::ScrollArea && modifiers.is_some() {
+            return Err(ToolError::new(
+                ErrorCode::InvalidArgument,
+                "modifiers are not applied when scrolling a scroll area",
+            )
+            .into());
+        }
         let pos = widget.interact_rect.center();
         log_pointer_cover(&self.inner, viewport_id, pos, &widget.id);
         self.inner
             .queue_action(viewport_id, InputAction::PointerMove { pos });
-        let mut applied_override = false;
         if widget.role == WidgetRole::ScrollArea {
-            if modifiers.is_some() {
-                return Err(ToolError::new(
-                    ErrorCode::InvalidArgument,
-                    "modifiers are not applied when scrolling a scroll area",
-                )
-                .into());
-            }
             let scroll = widget.role_state.as_ref().and_then(RoleState::scroll_state);
             let current = scroll
                 .map(|scroll| scroll.offset.into())
@@ -519,9 +633,7 @@ impl DevMcpServer {
             target.y = target.y.clamp(0.0, max_offset.y);
             self.inner
                 .set_scroll_override(viewport_id, widget.native_id, target);
-            applied_override = true;
-        }
-        if !applied_override {
+        } else {
             self.inner.queue_action(
                 viewport_id,
                 InputAction::Scroll {
@@ -597,11 +709,16 @@ impl DevMcpServer {
     }
 
     /// Scroll ancestor scroll areas so the target widget becomes visible.
+    /// Scroll every enclosing scroll area so that the target is revealed.
+    ///
+    /// Returns each scroll area that received an override with the offset it
+    /// was asked to reach, so the caller can wait for exactly those areas to
+    /// settle and leave a target with no scroll ancestor untouched.
     pub(super) async fn action_scroll_into_view(
         &self,
         viewport_id: Option<String>,
         target: WidgetRef,
-    ) -> ToolResult<()> {
+    ) -> ToolResult<Vec<AppliedScroll>> {
         let (widget, viewport_id) =
             resolve_widget_and_viewport(&self.inner, viewport_id.as_deref(), &target)?;
         let widgets = self.inner.widgets.widget_list(viewport_id);
@@ -611,6 +728,7 @@ impl DevMcpServer {
             .collect();
         let mut target_widget = widget;
         let mut parent_id = target_widget.parent_id.clone();
+        let mut applied = Vec::new();
 
         while let Some(parent_key) = parent_id {
             let Some(parent) = by_id.get(parent_key.as_str()) else {
@@ -621,12 +739,43 @@ impl DevMcpServer {
             {
                 self.inner
                     .set_scroll_override(viewport_id, parent.native_id, offset.into());
+                applied.push(AppliedScroll {
+                    widget_id: parent.id.clone(),
+                    offset,
+                });
             }
             target_widget = (*parent).clone();
             parent_id = parent.parent_id.clone();
         }
 
-        Ok(())
+        Ok(applied)
+    }
+}
+
+/// One scroll area that `scroll_into_view` moved, with the requested offset.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct AppliedScroll {
+    /// Canonical id of the scroll area.
+    pub(super) widget_id: String,
+    /// Offset the override asked the area to reach.
+    pub(super) offset: Vec2,
+}
+
+/// Wait policy for confirming that a hover reached its target.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct HoverConfirm {
+    /// Wait budget, or the default wait timeout.
+    pub(super) timeout_ms: Option<u64>,
+    /// Poll interval, or the default poll interval.
+    pub(super) poll_interval_ms: Option<u64>,
+}
+
+/// Resolve the pointer position for a hover: a normalized offset when given,
+/// else the center of the interaction rect.
+fn hover_position(widget: &WidgetRegistryEntry, position: Option<Vec2>) -> Result<Pos2, ToolError> {
+    match position {
+        Some(position) => resolve_relative_pos(widget.interact_rect, position),
+        None => Ok(widget.interact_rect.center()),
     }
 }
 

@@ -88,7 +88,8 @@ pub struct WindowSelection {
     pub(crate) owner_match: bool,
 }
 
-/// Select one window by preferring app-owned title matches over title-only fallback.
+/// Select one window by preferring app-owned title matches over title-only
+/// fallback.
 pub fn select_window(
     candidates: &[WindowCandidate],
     title: &str,

@@ -64,8 +64,9 @@ type CaptureKernel = {
     widget_text_measure: (widget: any) -> any,
     widget_layout_issues: (widget: any) -> { any },
     viewport_layout_issues: (viewport: any) -> { any },
-    widget_screenshot: (widget: any) -> any,
-    viewport_screenshot: (viewport: any) -> any,
+    widget_screenshot: (widget: any, options: any) -> any,
+    viewport_screenshot: (viewport: any, options: any) -> any,
+    viewport_native_screenshot: (viewport: any, options: any) -> any,
     widget_sample_pixels: (widget: any, positions: { Pos }) -> { any },
     widget_sample_grid: (widget: any, nx: number, ny: number) -> { any },
     viewport_sample_pixels: (viewport: any, positions: { Pos }) -> { any },
@@ -333,6 +334,7 @@ end
 local function validateWidgetCondition(condition: WidgetCondition)
     local hasStateField = condition.actionable ~= nil
         or condition.visible ~= nil
+        or condition.covered ~= nil
         or condition.enabled ~= nil
         or condition.focused ~= nil
         or condition.selected ~= nil
@@ -373,6 +375,8 @@ local function validateViewportCondition(condition: ViewportCondition)
         or condition.focused ~= nil
         or condition.minimized ~= nil
         or condition.occluded ~= nil
+        or condition.os_title_visible ~= nil
+        or condition.cursor_icon ~= nil
         or condition.maximized ~= nil
         or condition.fullscreen ~= nil
         or condition.frame_at_least ~= nil
@@ -388,6 +392,9 @@ local function validateViewportCondition(condition: ViewportCondition)
     if condition.title_contains == "" then
         fail("invalid_argument", "title_contains must not be empty", "wait")
     end
+    if condition.cursor_icon == "" then
+        fail("invalid_argument", "cursor_icon must not be empty", "wait")
+    end
 end
 
 local function widgetConditionMatches(state: WidgetState?, condition: WidgetCondition): boolean
@@ -401,11 +408,12 @@ local function widgetConditionMatches(state: WidgetState?, condition: WidgetCond
     local current = state :: WidgetState
     if condition.actionable == true then
         local visibleFraction = if current.layout ~= nil then current.layout.visible_fraction else 1
-        if not current.visible or not current.enabled or visibleFraction <= 0 then
+        if not current.visible or not current.enabled or visibleFraction <= 0 or current.covered then
             return false
         end
     end
     if condition.visible ~= nil and current.visible ~= condition.visible then return false end
+    if condition.covered ~= nil and current.covered ~= condition.covered then return false end
     if condition.enabled ~= nil and current.enabled ~= condition.enabled then return false end
     if condition.focused ~= nil and current.focused ~= condition.focused then return false end
     if condition.selected ~= nil and current.selected ~= condition.selected then return false end
@@ -440,7 +448,8 @@ end
 
 local function widgetConditionDescription(condition: WidgetCondition): string
     if condition.actionable == true then
-        return "interaction-ready condition; call scroll_into_view() before wait({ actionable = true })"
+        return "interaction-ready and uncovered condition; call scroll_into_view() first for "
+            .. "clipping, or close the overlay that covers the widget"
     end
     return "condition"
 end
@@ -460,6 +469,10 @@ local function viewportConditionMatches(state: ViewportState?, condition: Viewpo
     if condition.focused ~= nil and current.focused ~= condition.focused then return false end
     if condition.minimized ~= nil and current.minimized ~= condition.minimized then return false end
     if condition.occluded ~= nil and current.occluded ~= condition.occluded then return false end
+    if condition.os_title_visible ~= nil and current.os_title_visible ~= condition.os_title_visible then
+        return false
+    end
+    if condition.cursor_icon ~= nil and current.cursor_icon ~= condition.cursor_icon then return false end
     if condition.maximized ~= nil and current.maximized ~= condition.maximized then return false end
     if condition.fullscreen ~= nil and current.fullscreen ~= condition.fullscreen then return false end
     if condition.frame_at_least ~= nil and current.frame_count < condition.frame_at_least then return false end
@@ -805,8 +818,9 @@ function widgetMethods.layout_issues(self: Widget): { LayoutIssue }
     return freezeOwned(kernel.capture.widget_layout_issues(scopedWidgetTarget(self))) :: { LayoutIssue }
 end
 
-function widgetMethods.screenshot(self: Widget): ImageRef
-    return freezeOwned(kernel.capture.widget_screenshot(scopedWidgetTarget(self))) :: ImageRef
+function widgetMethods.screenshot(self: Widget, options: ScreenshotOptions?): ImageRef
+    return freezeOwned(kernel.capture.widget_screenshot(scopedWidgetTarget(self), options or {}))
+        :: ImageRef
 end
 
 function widgetMethods.sample_pixels(self: Widget, positions: { Pos }): { PixelSample }
@@ -983,8 +997,12 @@ function viewportMethods.layout_issues(self: Viewport): { LayoutIssue }
     return freezeOwned(kernel.capture.viewport_layout_issues(self)) :: { LayoutIssue }
 end
 
-function viewportMethods.screenshot(self: Viewport): ImageRef
-    return freezeOwned(kernel.capture.viewport_screenshot(self)) :: ImageRef
+function viewportMethods.screenshot(self: Viewport, options: ScreenshotOptions?): ImageRef
+    return freezeOwned(kernel.capture.viewport_screenshot(self, options or {})) :: ImageRef
+end
+
+function viewportMethods.native_screenshot(self: Viewport, options: ScreenshotOptions?): ImageRef
+    return freezeOwned(kernel.capture.viewport_native_screenshot(self, options or {})) :: ImageRef
 end
 
 function viewportMethods.sample_pixels(self: Viewport, positions: { Pos }): { PixelSample }

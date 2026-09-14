@@ -152,7 +152,8 @@ pub enum ScriptStatus {
 pub struct ScriptResult {
     /// One-based round index for repeated suite runs.
     pub round: u32,
-    /// Forward-slash-normalized relative script path, or `<suite>` for suite-level failures.
+    /// Forward-slash-normalized relative script path, or `<suite>` for
+    /// suite-level failures.
     pub path: String,
     /// Final script status.
     pub status: ScriptStatus,
@@ -443,6 +444,7 @@ pub fn run_suite(devmcp: &DevMcp, handle: &Handle, config: &SuiteConfig) -> Suit
             ScriptEvalOptions {
                 source_name: Some(request.path),
                 args: request.args,
+                ..ScriptEvalOptions::default()
             },
         )))
     })
@@ -646,7 +648,7 @@ fn script_timeout_ms(
     suite_deadline: Option<Instant>,
 ) -> Option<u64> {
     let remaining =
-        suite_deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()));
+        suite_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
     match (script_timeout, remaining) {
         (Some(script), Some(remain)) => Some(duration_to_millis(script.min(remain))),
         (Some(script), None) => Some(duration_to_millis(script)),
@@ -777,8 +779,8 @@ fn natural_key(value: &str) -> Vec<NaturalChunk<'_>> {
     chunks
 }
 
-/// One natural-order chunk. A number sorts before text, so a numbered script at the suite root
-/// runs before a directory whose name begins with a letter.
+/// One natural-order chunk. A number sorts before text, so a numbered script at
+/// the suite root runs before a directory whose name begins with a letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NaturalChunk<'a> {
     Number(u64, usize),
@@ -905,7 +907,7 @@ mod tests {
     use super::{
         ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, SuiteRunMode,
         collect_suite_paths, collect_suite_scripts, discover_suite_scripts, normalize_path,
-        run_suite, run_suite_with,
+        run_suite, run_suite_with, script_timeout_ms,
     };
     use crate::{
         DevMcp, EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
@@ -1420,6 +1422,14 @@ return true
         assert_eq!(result.skipped(), 1);
 
         drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn expired_suite_deadline_does_not_restore_script_timeout() {
+        let deadline = Instant::now();
+        for script_timeout in [None, Some(Duration::from_secs(60))] {
+            assert_eq!(script_timeout_ms(script_timeout, Some(deadline)), Some(0));
+        }
     }
 
     #[test]

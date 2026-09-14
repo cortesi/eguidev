@@ -30,8 +30,8 @@
 --   settle.
 -- - Return `ImageRef` values from `screenshot()` when you want image blocks in
 --   the MCP response.
--- - The sandbox has no filesystem access, no network access, and no module
---   imports.
+-- - The sandbox has no filesystem or network access. It can import only named
+--   modules that the caller supplies.
 
 export type Pos = {
     x: number,
@@ -124,6 +124,15 @@ export type WidgetLayout = {
     available_rect: Rect,
     --- Fraction of the widget's area that is visible after clipping (0..1).
     visible_fraction: number,
+    --- Exact text layout when the widget published its painted galley.
+    text: WidgetTextLayout?,
+}
+
+export type WidgetTextLayout = {
+    fonts: { { family: string, size: number } },
+    lines: { { text: string, width: number } },
+    line_height: number,
+    elided: boolean,
 }
 
 export type ScrollAreaMeta = {
@@ -164,9 +173,17 @@ declare class Widget
     read parent: (self: Widget) -> Widget?
     read children: (self: Widget) -> { Widget }
 
-    --- Clicks the widget's interact-rect center. Input is coordinate-based: a
-    --- covering widget receives the event. Probe occlusion with Viewport:widgets_at.
+    --- Clicks the widget's interact-rect center. Fails with `not_actionable`
+    --- and reason `covered` when another egui layer covers that point, such
+    --- as a floating card drawn above the widget. Probe occlusion with
+    --- `state().covered` or Viewport:widgets_at.
     read click: (self: Widget, options: ClickOptions?) -> ()
+    --- Moves the pointer to the widget. Fails immediately with the same
+    --- `covered` reason as click when another egui layer covers the target.
+    --- Otherwise, unless settle is false, it then waits until the app reports
+    --- the pointer inside the target with no covering widget, and re-issues
+    --- one missed move. A hover that never arrives fails and names the
+    --- covering widget.
     read hover: (self: Widget, options: HoverOptions?) -> ()
     read focus: (self: Widget, options: ActionOptions?) -> ()
     read type_text: (self: Widget, text: string, options: TypeTextOptions?) -> ()
@@ -180,15 +197,20 @@ declare class Widget
     --- Offset is clamped to `[0, max_offset]`. Other roles inject a pointer scroll.
     read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
-    --- Times out when the widget is disabled. The same `interaction_ready`
-    --- predicate governs this poll, `actionable` waits, and pointer admission.
+    --- Unless settle is false, waits until each scrolled area reports the
+    --- requested offset on two consecutive captures, then until the target
+    --- rect stops moving and the widget is interaction-ready (visible,
+    --- enabled, and not clipped away). Times out when the widget is disabled.
+    --- This poll ignores coverage: scrolling cannot uncover a widget under a
+    --- fixed overlay, so a script can scroll a covered widget into view to
+    --- read it. `actionable` waits and pointer admission use a stricter
+    --- predicate that also requires the widget to be uncovered.
     read scroll_into_view: (self: Widget, options: ActionOptions?) -> ()
 
     read text_measure: (self: Widget) -> TextMeasure
     read layout_issues: (self: Widget) -> { LayoutIssue }
     --- Waits for a fresh screenshot and crops it to the widget.
-    --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
-    read screenshot: (self: Widget) -> ImageRef
+    read screenshot: (self: Widget, options: ScreenshotOptions?) -> ImageRef
     --- Waits for one fresh screenshot. Positions are logical offsets from the
     --- widget rectangle's minimum point.
     read sample_pixels: (self: Widget, positions: { Pos }) -> { PixelSample }
@@ -199,7 +221,10 @@ declare class Widget
     --- Visual aids persist until cleared. These methods do not wait or settle.
     read show_highlight: (self: Widget, color: string) -> HighlightResult
     read clear_highlight: (self: Widget) -> ()
+    --- Replaces this widget's viewport debug overlay with its subtree. If the
+    --- widget disappears, the overlay draws nothing until it returns.
     read show_debug_overlay: (self: Widget, options: DebugOverlayOptions?) -> ()
+    --- Clears the debug overlay in this widget's viewport.
     read clear_debug_overlay: (self: Widget) -> ()
 end
 
@@ -240,6 +265,11 @@ export type WidgetState = {
     enabled: boolean,
     visible: boolean,
     focused: boolean,
+    --- True when another egui layer covers this widget's action point (the
+    --- center of interact_rect), such as a floating card drawn above it. A
+    --- pointer action on a covered widget fails with `not_actionable` and
+    --- reason `covered` instead of silently reaching the covering layer.
+    covered: boolean,
 }
 
 export type ViewportState = {
@@ -258,6 +288,10 @@ export type ViewportState = {
     --- automation runs this can differ from `occluded`, which is forced false
     --- so eframe keeps rendering in covered windows.
     os_occluded: boolean?,
+    --- Real platform title visibility when eguidev can observe it.
+    os_title_visible: boolean?,
+    --- Cursor icon requested by the latest viewport frame.
+    cursor_icon: string?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_count: number,
@@ -287,6 +321,7 @@ export type WidgetDump = {
     enabled: boolean,
     visible: boolean,
     focused: boolean,
+    covered: boolean,
     selected: boolean?,
     interact_rect: Rect?,
     layout: WidgetLayout?,
@@ -381,6 +416,9 @@ declare class Viewport
     --- Uses viewport-local logical points and returns topmost widgets first.
     read widgets_at: (self: Viewport, position: Pos) -> { Widget }
 
+    --- Clears this viewport's queued input, overrides, and visual aids.
+    --- Sends Escape in this viewport to dismiss popups and release text focus.
+    --- App code can also receive Escape, for example to close a modal.
     read dismiss_popups: (self: Viewport, options: ActionOptions?) -> ()
     read key: (self: Viewport, key: string, options: KeyOptions?) -> ()
     read paste: (self: Viewport, text: string, options: ActionOptions?) -> ()
@@ -397,20 +435,27 @@ declare class Viewport
     --- Dismisses evaluation-scoped entries without returning them.
     read clear_egui_diagnostics: (self: Viewport) -> ()
     --- Waits for a fresh screenshot of the viewport.
-    --- The returned JPEG is scaled so the long edge is at most 1600 pixels.
-    read screenshot: (self: Viewport) -> ImageRef
+    read screenshot: (self: Viewport, options: ScreenshotOptions?) -> ImageRef
+    --- Captures the complete native window, including platform chrome.
+    --- This operation is available on macOS and requires Screen Recording permission.
+    read native_screenshot: (self: Viewport, options: ScreenshotOptions?) -> ImageRef
     --- Waits for one fresh screenshot. Positions are viewport-local logical
     --- points.
     read sample_pixels: (self: Viewport, positions: { Pos }) -> { PixelSample }
     read layout_issues: (self: Viewport) -> { LayoutIssue }
 
+    --- Highlights a rectangle in this viewport's local logical coordinates.
     read show_highlight: (
         self: Viewport,
         rect: Rect,
         color: string
     ) -> HighlightResult
+    --- Clears this viewport's rectangle and widget highlights.
     read clear_highlights: (self: Viewport) -> ()
+    --- Replaces this viewport's debug overlay. Each viewport has an independent
+    --- configuration that persists until cleared or a fixture resets it.
     read show_debug_overlay: (self: Viewport, options: DebugOverlayOptions?) -> ()
+    --- Clears only this viewport's debug overlay.
     read clear_debug_overlay: (self: Viewport) -> ()
 end
 
@@ -445,6 +490,7 @@ export type WidgetFilter = {
     enabled: boolean?,
     focused: boolean?,
     selected: boolean?,
+    covered: boolean?,
 }
 
 export type WidgetQuery = WidgetFilter & {
@@ -464,7 +510,8 @@ export type HoverOptions = {
     settle: boolean?,
     --- Normalized within the widget from 0 to 1. Defaults to the center.
     position: Vec?,
-    --- Defaults to zero.
+    --- Hold the hover for this many milliseconds, independent of frame rate.
+    --- Defaults to zero. The script deadline still applies.
     duration_ms: number?,
 }
 
@@ -492,6 +539,20 @@ export type ScrollToOptions = {
     settle: boolean?,
     offset: Vec?,
     align: "top" | "center" | "bottom"?,
+}
+
+--- Encoding for one capture. Omitting the table keeps lossy JPEG at a 1600
+--- pixel long edge, which is small enough to return through a tool call.
+--- Raise `max_dimension` to the captured pixel size to stop the reduction and
+--- keep a large window as legible as a small one. Reduction averages the
+--- source pixels, so a thumbnail keeps its text readable.
+--- Every returned image travels in one response. `png` is exact but can be
+--- more than ten times larger on gradients, so reserve it for small captures
+--- and keep `jpeg` for full viewports.
+export type ScreenshotOptions = {
+    format: ("jpeg" | "png")?,
+    --- Largest long edge in whole pixels. Zero keeps the captured size.
+    max_dimension: number?,
 }
 
 export type KeyOptions = {
@@ -686,10 +747,13 @@ export type ScrollAtCondition = {
 --- `present = false` cannot appear with a state field.
 export type WidgetCondition = {
     present: boolean?,
-    --- Requires presence, visibility, enabled state, and a positive visible
-    --- fraction.
+    --- Requires presence, visibility, enabled state, a positive visible
+    --- fraction, and that no other egui layer covers the widget.
     actionable: boolean?,
     visible: boolean?,
+    --- Whether another egui layer must (true) or must not (false) cover the
+    --- widget's action point.
+    covered: boolean?,
     enabled: boolean?,
     focused: boolean?,
     selected: boolean?,
@@ -714,6 +778,8 @@ export type ViewportCondition = {
     focused: boolean?,
     minimized: boolean?,
     occluded: boolean?,
+    os_title_visible: boolean?,
+    cursor_icon: string?,
     maximized: boolean?,
     fullscreen: boolean?,
     frame_at_least: number?,
@@ -856,7 +922,8 @@ export type Eguidev = {
     --- Reads one application-defined provider and throws `diagnostic_failed`
     --- if that provider fails.
     diagnostic: (name: string) -> any,
-    --- Reads all application-defined providers and records failures by name.
+    --- Reads all application-defined providers and the built-in input trace.
+    --- Provider failures are recorded by name.
     diagnostics: () -> DiagnosticsSnapshot,
 }
 

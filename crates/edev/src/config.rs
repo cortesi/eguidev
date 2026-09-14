@@ -111,6 +111,9 @@ pub struct SmokeConfig {
     pub(crate) list_json: bool,
     /// Optional failure bundle output directory.
     pub(crate) bundle_dir: Option<PathBuf>,
+    /// Optional root directory whose Luau files are available through
+    /// `require`.
+    pub(crate) module_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +140,9 @@ pub struct EvalConfig {
     pub(crate) timeout: Option<Duration>,
     /// Args passed to the script, merged over `[smoke].args`.
     pub(crate) args: ScriptArgs,
+    /// Optional root directory whose Luau files are available through
+    /// `require`.
+    pub(crate) module_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,7 +156,8 @@ pub struct DumpConfig {
     pub(crate) params: BTreeMap<String, ScriptArgValue>,
     /// Optional viewport selector to dump.
     pub(crate) viewport: Option<String>,
-    /// Whether to wait for a fresh capture before dumping when no fixture is set.
+    /// Whether to wait for a fresh capture before dumping when no fixture is
+    /// set.
     pub(crate) wait_for_initial_capture: bool,
     /// Emit structured JSON instead of text.
     pub(crate) json: bool,
@@ -343,6 +350,7 @@ struct SmokeCliOptions {
     args: ScriptArgs,
     bundle: bool,
     bundle_dir: Option<PathBuf>,
+    module_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -359,6 +367,7 @@ struct EvalCliOptions {
     out_dir: Option<PathBuf>,
     script_timeout_secs: Option<u64>,
     args: ScriptArgs,
+    module_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -476,7 +485,8 @@ struct SmokeSuiteArgs {
     /// Emit list output as JSON.
     #[arg(long = "json", action = ArgAction::SetTrue, requires = "list")]
     list_json: bool,
-    /// Filter discovered smoke scripts by display-path glob. Repeat to select more scripts (union).
+    /// Filter discovered smoke scripts by display-path glob. Repeat to select
+    /// more scripts (union).
     #[arg(long = "only", value_name = "GLOB")]
     only: Vec<String>,
     /// Run the selected smoke scripts this many times.
@@ -513,6 +523,10 @@ struct SmokeSuiteArgs {
     /// Write failure bundles to this directory.
     #[arg(long = "bundle-dir")]
     bundle_dir: Option<PathBuf>,
+    /// Make every `.luau` file below this directory available through
+    /// `require`.
+    #[arg(long = "module-dir")]
+    module_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -530,6 +544,10 @@ struct EvalArgs {
     /// Pass a typed script arg.
     #[arg(long = "arg", value_parser = parse_script_arg_cli)]
     args: Vec<(String, ScriptArgValue)>,
+    /// Make every `.luau` file below this directory available through
+    /// `require`.
+    #[arg(long = "module-dir")]
+    module_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -652,6 +670,7 @@ fn smoke_cli_options(common: CommonArgs, args: SmokeSuiteArgs) -> SmokeCliOption
         args: script_args,
         bundle: args.bundle,
         bundle_dir: args.bundle_dir,
+        module_dir: args.module_dir,
     }
 }
 
@@ -665,6 +684,7 @@ impl From<EvalArgs> for EvalCliOptions {
             out_dir: args.out_dir,
             script_timeout_secs: args.script_timeout_secs,
             args: script_args,
+            module_dir: args.module_dir,
         }
     }
 }
@@ -782,6 +802,7 @@ struct FileSmokeConfig {
     #[serde(rename = "artifact_dir")]
     legacy_artifact_dir: Option<PathBuf>,
     bundle_dir: Option<PathBuf>,
+    module_dir: Option<PathBuf>,
     #[serde(default)]
     args: ScriptArgs,
 }
@@ -890,6 +911,14 @@ fn resolve_eval_config(
         out_dir,
         timeout,
         args,
+        module_dir: resolve_optional_path(
+            cli.module_dir.as_ref(),
+            file_smoke.and_then(|smoke| smoke.module_dir.as_ref()),
+            current_dir,
+            loaded
+                .and_then(|config| config.path.parent())
+                .unwrap_or(current_dir),
+        ),
     })
 }
 
@@ -966,6 +995,12 @@ fn resolve_smoke_config(
     } else {
         None
     };
+    let module_dir = resolve_optional_path(
+        cli.module_dir.as_ref(),
+        file_smoke.and_then(|smoke| smoke.module_dir.as_ref()),
+        current_dir,
+        suite_base_dir,
+    );
     let suite = SuiteConfig {
         suite_dir,
         scripts: cli.scripts,
@@ -1009,6 +1044,7 @@ fn resolve_smoke_config(
         launch,
         suite,
         bundle_dir,
+        module_dir,
     })
 }
 
@@ -1116,6 +1152,18 @@ fn resolve_path(
         absolutize_path(default, current_dir)
     };
     Ok(path.canonicalize().unwrap_or(path))
+}
+
+fn resolve_optional_path(
+    cli: Option<&PathBuf>,
+    file: Option<&PathBuf>,
+    current_dir: &Path,
+    file_base_dir: &Path,
+) -> Option<PathBuf> {
+    let path = cli
+        .map(|path| absolutize_path(path, current_dir))
+        .or_else(|| file.map(|path| absolutize_path(path, file_base_dir)))?;
+    Some(path.canonicalize().unwrap_or(path))
 }
 
 fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
@@ -1446,6 +1494,41 @@ mod tests {
             vec!["*layout*".to_string(), "nested/*".to_string()]
         );
         assert_eq!(config.suite.run_mode, SuiteRunMode::Repeat(3));
+    }
+
+    #[test]
+    fn smoke_and_eval_resolve_the_same_module_directory() {
+        let dir = tempdir();
+        let repo_root = dir.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).expect("create git root");
+        fs::create_dir_all(repo_root.join("smoketest/modules")).expect("create modules");
+        fs::write(
+            repo_root.join(DEFAULT_CONFIG_FILE),
+            "\
+[app]
+command = [\"cargo\", \"run\"]
+
+[smoke]
+module_dir = \"smoketest/modules\"
+",
+        )
+        .expect("write config");
+
+        let smoke =
+            EdevCommand::parse_args_in_dir(&os_args(&["smoke"]), &repo_root).expect("parse smoke");
+        let EdevCommand::Smoke(smoke) = smoke else {
+            panic!("expected smoke command");
+        };
+        let eval =
+            EdevCommand::parse_args_in_dir(&os_args(&["eval", "tmp/probe.luau"]), &repo_root)
+                .expect("parse eval");
+        let EdevCommand::Eval(eval) = eval else {
+            panic!("expected eval command");
+        };
+
+        let expected = repo_root.join("smoketest/modules");
+        assert_eq!(smoke.module_dir, Some(expected.clone()));
+        assert_eq!(eval.module_dir, Some(expected));
     }
 
     #[test]

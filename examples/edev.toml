@@ -60,6 +60,11 @@ command = [
 # from the directory containing this file.
 # suite_dir = "smoketest"
 
+# Directory containing shared checked Luau modules for `edev smoke` and
+# `edev eval`. A file such as `layout/strict.luau` is available as
+# `require("layout/strict")`. Relative paths resolve from this file.
+# module_dir = "smoketest/modules"
+
 # Stop the suite after the first failure.
 # fail_fast = false
 

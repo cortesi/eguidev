@@ -347,6 +347,85 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hung_close_obeys_shutdown_grace_and_cleans_up() -> Result<(), Box<dyn Error>> {
+        assert_shutdown_deadline_cleans_up("hang", 0).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accepted_close_with_no_exit_waits_for_forced_cleanup() -> Result<(), Box<dyn Error>> {
+        assert_shutdown_deadline_cleans_up("ignore", 1).await
+    }
+
+    async fn assert_shutdown_deadline_cleans_up(
+        close_mode: &str,
+        grace_secs: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let tempdir = test_tempdir();
+        let config_path = tempdir.path().join("shutdown-deadline.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), close_mode, grace_secs);
+        let observer = ProcessGroupObserver::new()?;
+        let mut client = Client::new("shutdown-deadline-test", env!("CARGO_PKG_VERSION"))
+            .with_request_timeout(Duration::from_secs(10));
+        let spawned = client
+            .connect_process(launcher_command(&config_path, tempdir.path()))
+            .await?;
+        let mut process = spawned.process;
+        let start = client.call_tool("start", json!({})).await?;
+        assert!(!start.is_error(), "start should succeed: {start:?}");
+        let status = client
+            .call_tool("status", json!({}))
+            .await?
+            .structured_content
+            .ok_or("status did not include structured content")?;
+        let app_process_group_id = i32::try_from(
+            status["process_group_id"]
+                .as_i64()
+                .ok_or("status did not report app process group")?,
+        )?;
+        let supervisor_pid = i32::try_from(
+            status["supervisor_pid"]
+                .as_u64()
+                .ok_or("status did not report supervisor PID")?,
+        )?;
+        let record_path = PathBuf::from(
+            status["registry_entry_path"]
+                .as_str()
+                .ok_or("status did not report app record path")?,
+        );
+
+        let stop = timeout(Duration::from_secs(3), client.call_tool("stop", json!({}))).await;
+        if stop.is_err() {
+            // Keep the failing regression from leaving its hung app alive.
+            process.kill().await?;
+            drop(client);
+            wait_for_cleanup(&observer, app_process_group_id, supervisor_pid).await?;
+            return Err("stop exceeded the shutdown grace".into());
+        }
+        let stop = stop??;
+        assert!(
+            !stop.is_error(),
+            "forced stop should be reportable: {stop:?}"
+        );
+        let stop = stop
+            .structured_content
+            .ok_or("stop did not include structured content")?;
+        assert_eq!(stop["report"]["shutdown"]["mode"], "forced");
+        assert_eq!(
+            stop["report"]["shutdown"]["cause"]["kind"],
+            "deadline_expired"
+        );
+        assert!(live_process_group_members(app_process_group_id).is_empty());
+        assert!(!process_is_alive(supervisor_pid));
+        assert!(
+            !record_path.exists(),
+            "forced stop must remove the app record"
+        );
+        drop(client);
+        timeout(Duration::from_secs(10), process.wait()).await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn forced_one_shot_teardown_returns_failure_status() -> Result<(), Box<dyn Error>> {
         let tempdir = test_tempdir();
         let config_path = tempdir.path().join("ignored-close.toml");
@@ -377,6 +456,47 @@ mod tests {
         assert!(
             lifecycle_records.is_empty(),
             "forced eval teardown left lifecycle records: {lifecycle_records:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fixture_error_survives_forced_cleanup() -> Result<(), Box<dyn Error>> {
+        let tempdir = test_tempdir();
+        let config_path = tempdir.path().join("fixture-error.toml");
+        write_app_config_with_close_mode(&config_path, tempdir.path(), "fail", 30);
+
+        // This app answers script_eval with true, which is deliberately not a
+        // fixture catalog. Its subsequent close rejection must not hide that.
+        let output = timeout(
+            Duration::from_secs(10),
+            Command::new(env!("CARGO_BIN_EXE_edev"))
+                .kill_on_drop(true)
+                .current_dir(tempdir.path())
+                .args([
+                    "--config",
+                    config_path.to_str().ok_or("config path is not UTF-8")?,
+                    "fixtures",
+                ])
+                .output(),
+        )
+        .await??;
+        assert!(
+            !output.status.success(),
+            "invalid fixture catalog must fail"
+        );
+        let lifecycle_records = fs::read_dir(tempdir.path().join(".edev-instances"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>();
+        assert!(
+            lifecycle_records.is_empty(),
+            "cleanup left records: {lifecycle_records:?}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("failed to decode fixtures list"),
+            "original fixture error was lost: {stderr}"
         );
         Ok(())
     }

@@ -1,0 +1,36 @@
+eguidev.fixture("viewports.default")
+local root = eguidev.root
+local secondary = eguidev.wait_viewport({ name = "secondary" })
+
+local ok, message = pcall(function()
+    local root_menu_item = root:widget("basic.menu.actions.mark_ready")
+    local secondary_menu_item = secondary:widget("viewports.dismiss.menu.open")
+    root:widget("basic.menu.actions"):click()
+    secondary:widget("viewports.dismiss.menu"):click()
+    root_menu_item:expect({ present = true })
+    secondary_menu_item:expect({ present = true })
+
+    root:dismiss_popups()
+    root_menu_item:expect({ present = false })
+    secondary:settle()
+    secondary_menu_item:expect({ present = true })
+    secondary:dismiss_popups()
+    secondary_menu_item:expect({ present = false })
+
+    local root_input = root:widget("basic.name")
+    local secondary_input = secondary:widget("viewports.dismiss.input")
+    root_input:focus()
+    secondary_input:focus()
+    root_input:expect({ focused = true })
+    secondary_input:expect({ focused = true })
+    root:dismiss_popups()
+    root_input:expect({ focused = false })
+    secondary:settle()
+    secondary_input:expect({ focused = true })
+    secondary:dismiss_popups()
+    secondary_input:expect({ focused = false })
+end)
+
+eguidev.fixture("basic.default")
+assert(ok, tostring(message))
+return true

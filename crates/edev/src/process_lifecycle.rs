@@ -224,7 +224,8 @@ pub fn terminate_supervisor(supervisor_pid: Option<u32>, log_state: &LogState) {
     }
 }
 
-/// Detect the hidden supervisor invocation without exposing it through clap help.
+/// Detect the hidden supervisor invocation without exposing it through clap
+/// help.
 pub fn is_supervisor_invocation(args: &[OsString]) -> bool {
     args.get(1)
         .is_some_and(|arg| arg == OsStr::new("__edev_supervisor"))
@@ -253,7 +254,8 @@ pub async fn run_hidden_supervisor(args: &[OsString]) -> Result<(), String> {
     }
 }
 
-/// Spawn the current app command directly on platforms with parent-death support.
+/// Spawn the current app command directly on platforms with parent-death
+/// support.
 #[cfg(not(target_os = "macos"))]
 async fn spawn_direct(
     config: &LaunchConfig,
@@ -935,9 +937,11 @@ fn write_normal_shutdown_marker(writer: &OwnedFd) -> io::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-/// Create a pipe whose ends remain close-on-exec until a child clears its reader.
+/// Create a pipe whose ends remain close-on-exec until a child clears its
+/// reader.
 pub fn create_inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-    // macOS has no atomic pipe-with-CLOEXEC API, so protect both ends before returning them.
+    // macOS has no atomic pipe-with-CLOEXEC API, so protect both ends before
+    // returning them.
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());

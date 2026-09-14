@@ -47,7 +47,8 @@ pub struct PresentationTransition {
 }
 
 impl PresentationSession {
-    /// Update the requested presentation and capture the policy for a new session.
+    /// Update the requested presentation and capture the policy for a new
+    /// session.
     pub fn configure(
         &mut self,
         session_id: u64,
@@ -124,7 +125,8 @@ impl PresentationSession {
             && observed_activation_policy != Some(accessory_policy)
     }
 
-    /// Mark a conflicting observed policy and return whether it is the first report.
+    /// Mark a conflicting observed policy and return whether it is the first
+    /// report.
     pub fn report_conflict(
         &mut self,
         observed_activation_policy: Option<i64>,

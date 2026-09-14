@@ -3,12 +3,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
+    ffi::OsStr,
     fmt::Display,
-    fs,
+    fs::{self, DirEntry},
     future::{Future, pending},
     io as std_io,
     net::{Ipv4Addr, TcpListener},
-    path::{Path, PathBuf},
+    path::{MAIN_SEPARATOR, Path, PathBuf},
     pin::Pin,
     process::ExitStatus,
     sync::{Arc, Mutex},
@@ -24,7 +25,7 @@ use eguidev::{
 };
 use eguidev_runtime::{
     ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
-    ScriptEvalRequest, script_definitions,
+    ScriptEvalRequest, ScriptModules, script_definitions,
     smoke::{ScriptRunRequest, SuiteResult, discover_suite_scripts, run_suite_with},
 };
 use instance_registry::{
@@ -79,14 +80,16 @@ use config::{
     SmokeConfig,
 };
 use failure_bundle::{
-    BundleContext, image_extension, pretty_json, safe_file_component, write_failure_bundle,
+    BundleContext, FailureBundleScript, image_extension, pretty_json, safe_file_component,
+    write_failure_bundle,
 };
 use fixture_projection::{FIXTURE_APPLY_SCRIPT, FIXTURE_LIST_SCRIPT, parse_fixture_list};
 use session::AppSession;
 
 /// Timeout used for app MCP request/response round-trips.
 const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-/// Maximum time allowed for a launched app to build and open its direct MCP socket.
+/// Maximum time allowed for a launched app to build and open its direct MCP
+/// socket.
 const APP_CONNECT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum app stdout/stderr bytes retained for diagnostics.
 const APP_LOG_TAIL_LIMIT: usize = 4 * 1024 * 1024;
@@ -98,12 +101,55 @@ const APP_LOG_TAIL_TRIM_SLACK: usize = 256 * 1024;
 const APP_RECORD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Poll interval used while the launcher waits for the supervisor app record.
 const APP_RECORD_POLL_INTERVAL: Duration = Duration::from_millis(10);
-/// Maximum attempts for restart when the app MCP transport closes mid-handshake.
+/// Maximum attempts for restart when the app MCP transport closes
+/// mid-handshake.
 const RESTART_MAX_ATTEMPTS: usize = 3;
-/// Fresh-capture attempts used while waiting for the native window to enter ScreenCaptureKit.
+/// Fresh-capture attempts used while waiting for the native window to enter
+/// ScreenCaptureKit.
 const RECORD_WINDOW_DISCOVERY_ATTEMPTS: usize = 3;
 /// Checked-in projection used by the dump command.
 const DUMP_SCRIPT: &str = include_str!("../luau/dump.luau");
+
+/// Load one deterministic Luau module tree for `edev smoke` and `edev eval`.
+fn load_script_modules(module_dir: Option<&Path>) -> Result<ScriptModules, EdevError> {
+    let Some(module_dir) = module_dir else {
+        return Ok(ScriptModules::default());
+    };
+    if !module_dir.is_dir() {
+        return Err(EdevError::InvalidArgs(format!(
+            "module directory is not an existing directory: {}",
+            module_dir.display()
+        )));
+    }
+    let mut pending = vec![module_dir.to_path_buf()];
+    let mut modules = ScriptModules::default();
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(DirEntry::file_name);
+        for entry in entries.into_iter().rev() {
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !file_type.is_file() || path.extension().and_then(OsStr::to_str) != Some("luau") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(module_dir)
+                .expect("walked module stays below its root");
+            let name = relative.to_str().ok_or_else(|| {
+                EdevError::InvalidArgs(format!(
+                    "module path is not valid UTF-8: {}",
+                    path.display()
+                ))
+            })?;
+            modules.insert(name.replace(MAIN_SEPARATOR, "/"), fs::read_to_string(path)?);
+        }
+    }
+    Ok(modules)
+}
 
 #[derive(Debug, thiserror::Error)]
 /// Errors returned by the edev launcher.
@@ -230,7 +276,8 @@ impl State {
         self.mark_activity();
     }
 
-    /// Stop the managed app process and reset launcher state without unregistering the launcher.
+    /// Stop the managed app process and reset launcher state without
+    /// unregistering the launcher.
     async fn stop_app(&mut self) -> Result<StopStatus, EdevError> {
         if let Some(app) = self.app.take() {
             let shutdown = app.shutdown().await;
@@ -313,7 +360,8 @@ impl State {
         }
     }
 
-    /// Resolve the current direct app client, or return a lifecycle-specific tool error.
+    /// Resolve the current direct app client, or return a lifecycle-specific
+    /// tool error.
     fn app_client(&self) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, CallToolResult> {
         match &self.status {
             AppStatus::Running => {
@@ -371,7 +419,8 @@ impl State {
         self.spawn_with(LifecycleAction::Restart, true, spawn).await
     }
 
-    /// Spawn and attach an app process for either a start or restart transition.
+    /// Spawn and attach an app process for either a start or restart
+    /// transition.
     async fn spawn_with<F>(
         &mut self,
         action: LifecycleAction,
@@ -552,7 +601,8 @@ struct AppProcess {
 }
 
 impl AppProcess {
-    /// Trigger immediate app termination without waiting for child process exit.
+    /// Trigger immediate app termination without waiting for child process
+    /// exit.
     fn start_termination(&mut self) {
         let process_group_id = self.process_group_id.take();
         process_lifecycle::terminate_process_group(process_group_id, &self.log_state);
@@ -570,11 +620,17 @@ impl AppProcess {
         }
     }
 
-    /// Request normal app closure and escalate only when the request or exit fails.
+    /// Request normal app closure and escalate only when the request or exit
+    /// fails.
     async fn shutdown(mut self) -> ShutdownResult {
-        let close_result = request_app_close(&self.client).await;
+        let client = Arc::clone(&self.client);
         let shutdown_grace = self.shutdown_grace;
-        let result = resolve_shutdown(close_result, self.wait_for_exit(), shutdown_grace).await;
+        let result = resolve_shutdown(
+            request_app_close(&client),
+            self.wait_for_exit(),
+            shutdown_grace,
+        )
+        .await;
         if result.is_forced() {
             self.start_termination();
             let _wait_result = self.wait_for_exit().await;
@@ -607,11 +663,13 @@ impl AppProcess {
         }
     }
 
-    /// Await the existing supervisor or direct-child exit event.
+    /// Await the existing supervisor or direct-child exit event, retaining its
+    /// handle if this wait is cancelled before completion.
     async fn wait_for_exit(&mut self) -> Result<(), String> {
-        if let Some(task) = self.supervisor_exit_task.take() {
-            let status = task
-                .await
+        if let Some(task) = self.supervisor_exit_task.as_mut() {
+            let result = task.await;
+            self.supervisor_exit_task.take();
+            let status = result
                 .map_err(|error| format!("supervisor exit task failed: {error}"))?
                 .map_err(|error| format!("supervisor exit failed: {error}"))?;
             if status.success() {
@@ -619,11 +677,12 @@ impl AppProcess {
             }
             return Err(format!("supervisor exited with {status}"));
         }
-        if let Some(mut child) = self.child.take() {
+        if let Some(child) = self.child.as_mut() {
             let status = child
                 .wait()
                 .await
                 .map_err(|error| format!("app exit wait failed: {error}"))?;
+            self.child.take();
             if status.success() {
                 return Ok(());
             }
@@ -673,23 +732,19 @@ async fn request_app_close(
     Ok(())
 }
 
-/// Classify one close request and event-driven exit observation.
-async fn resolve_shutdown<F>(
-    close_result: Result<(), ShutdownCause>,
-    exit: F,
-    grace: Duration,
-) -> ShutdownResult
+/// Bound the close request and event-driven exit observation by one deadline.
+async fn resolve_shutdown<C, F>(close: C, exit: F, grace: Duration) -> ShutdownResult
 where
+    C: Future<Output = Result<(), ShutdownCause>>,
     F: Future<Output = Result<(), String>>,
 {
-    if let Err(cause) = close_result {
-        return ShutdownResult::Forced { cause };
-    }
-    match timeout(grace, exit).await {
+    let shutdown = async {
+        close.await?;
+        exit.await.map_err(ShutdownCause::ExitFailed)
+    };
+    match timeout(grace, shutdown).await {
         Ok(Ok(())) => ShutdownResult::Graceful,
-        Ok(Err(error)) => ShutdownResult::Forced {
-            cause: ShutdownCause::ExitFailed(error),
-        },
+        Ok(Err(cause)) => ShutdownResult::Forced { cause },
         Err(_) => ShutdownResult::Forced {
             cause: ShutdownCause::DeadlineExpired,
         },
@@ -749,7 +804,8 @@ enum LifecycleStartStatus {
 }
 
 #[derive(Debug)]
-/// State transition selected before starting an app without holding the state lock.
+/// State transition selected before starting an app without holding the state
+/// lock.
 enum PrepareStart {
     /// The app is already running.
     AlreadyRunning,
@@ -1084,7 +1140,8 @@ fn allocate_mcp_endpoint() -> std_io::Result<String> {
     Ok(listener.local_addr()?.to_string())
 }
 
-/// Connect to a newly launched app, including time spent in an app build command.
+/// Connect to a newly launched app, including time spent in an app build
+/// command.
 // Non-macOS startup probes need mutable access for `Child::try_wait`; macOS
 // probes the supervisor task through the same cross-platform call boundary.
 #[cfg_attr(target_os = "macos", allow(clippy::needless_pass_by_ref_mut))]
@@ -1181,7 +1238,8 @@ async fn wait_for_idle_shutdown(state: Arc<AsyncMutex<State>>, idle_after: Durat
 enum IdleShutdownAction {
     /// Re-check idle state after this duration.
     Sleep(Duration),
-    /// A client is attached, so the guard should stay pending until stdio exits.
+    /// A client is attached, so the guard should stay pending until stdio
+    /// exits.
     Suspend,
     /// No client attached before the idle budget elapsed.
     Shutdown,
@@ -1231,7 +1289,8 @@ async fn start_app_unlocked(state: &Arc<AsyncMutex<State>>) -> Result<StartStatu
     .await
 }
 
-/// Start the app through a supplied spawn routine without locking state during I/O.
+/// Start the app through a supplied spawn routine without locking state during
+/// I/O.
 async fn start_app_unlocked_with<F, Fut>(
     state: &Arc<AsyncMutex<State>>,
     spawn: F,
@@ -1261,7 +1320,8 @@ where
     }
 }
 
-/// Restart the app without holding state during I/O, retrying closed transports.
+/// Restart the app without holding state during I/O, retrying closed
+/// transports.
 async fn restart_app_unlocked(state: &Arc<AsyncMutex<State>>) -> UnlockedRestart {
     let mut attempt = 1;
     loop {
@@ -1455,23 +1515,27 @@ impl ServerHandler for EdevServer {
     }
 }
 
-/// Execute the resolved smoke suite by calling `script_eval` for each discovered script.
+/// Execute the resolved smoke suite by calling `script_eval` for each
+/// discovered script.
 async fn run_smoke_suite(
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
     config: &SmokeConfig,
     bundle_context: Option<BundleContext>,
 ) -> Result<SuiteResult, EdevError> {
+    let modules = load_script_modules(config.module_dir.as_deref())?;
     Ok(run_suite_with(
         &config.suite,
         |request: ScriptRunRequest| {
             let script_path = request.path.clone();
             let script_args = request.args.clone();
+            let script_source = request.source.clone();
             let payload = script_eval_request_value(ScriptEvalRequest {
                 script: request.source,
                 timeout_ms: request.timeout_ms,
                 options: Some(ScriptEvalOptions {
                     source_name: Some(script_path.clone()),
                     args: request.args,
+                    modules: modules.clone(),
                 }),
             });
             let result = block_in_place(|| {
@@ -1497,9 +1561,13 @@ async fn run_smoke_suite(
                     Handle::current().block_on(write_failure_bundle(
                         &client,
                         context,
-                        &script_path,
-                        bundle_round,
-                        &script_args,
+                        FailureBundleScript {
+                            path: &script_path,
+                            round: bundle_round,
+                            args: &script_args,
+                            source: &script_source,
+                            modules: &modules,
+                        },
                         &outcome,
                     ))
                 });
@@ -1512,7 +1580,8 @@ async fn run_smoke_suite(
     ))
 }
 
-/// Decode a proxied `script_eval` tool result back into the checked-in outcome shape.
+/// Decode a proxied `script_eval` tool result back into the checked-in outcome
+/// shape.
 fn parse_script_eval_outcome(result: &CallToolResult) -> Result<ScriptEvalOutcome, String> {
     decode_tool_result(result, "script_eval", "script_eval outcome")
 }
@@ -1803,6 +1872,10 @@ fn test_config(cwd: PathBuf) -> LaunchConfig {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::process::Stdio;
+    use std::{future::poll_fn, task::Poll};
+
     use async_trait::async_trait;
     use eguidev_runtime::{
         ScriptArgValue, ScriptArgs, ScriptErrorInfo, ScriptImageInfo,
@@ -1817,6 +1890,8 @@ mod tests {
         },
         testutils::{TestServerContext, make_duplex_pair},
     };
+    #[cfg(unix)]
+    use tokio::process::Command;
     use tokio::{sync::oneshot, time::timeout};
 
     use super::*;
@@ -2080,12 +2155,24 @@ mod tests {
             ScriptArgValue::String("Sky".to_string()),
         )]);
 
-        let meta = bundle_meta(&context, "nested/fail.luau", Some(2), &args, &outcome)
-            .expect("bundle meta");
+        let modules = ScriptModules::from([(
+            "layout.luau".to_string(),
+            "return { strict = true }".to_string(),
+        )]);
+        let meta = bundle_meta(
+            &context,
+            "nested/fail.luau",
+            Some(2),
+            &args,
+            &modules,
+            &outcome,
+        )
+        .expect("bundle meta");
         let meta: serde_json::Value = serde_json::from_str(&meta).expect("meta json");
         assert_eq!(meta["script"]["path"], "nested/fail.luau");
         assert_eq!(meta["script"]["round"], 2);
         assert_eq!(meta["script"]["args"]["name"], "Sky");
+        assert_eq!(meta["modules"][0], "layout.luau");
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
         assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
         assert_eq!(meta["failure"]["details"]["widget"], "basic.status");
@@ -2116,6 +2203,13 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let (app, _handle) = make_recording_eval_app(Arc::clone(&requests)).await;
         let tempdir = test_tempdir();
+        let module_dir = tempdir.path().join("modules");
+        fs::create_dir_all(module_dir.join("shared")).expect("create modules");
+        fs::write(
+            module_dir.join("shared/value.luau"),
+            "return { value = 42 }",
+        )
+        .expect("write module");
         let config = EvalConfig {
             launch: test_config(tempdir.path().to_path_buf()),
             script: tempdir.path().join("probe.luau"),
@@ -2125,6 +2219,7 @@ mod tests {
                 "name".to_string(),
                 ScriptArgValue::String("Sky".to_string()),
             )]),
+            module_dir: Some(module_dir),
         };
 
         run_eval_script(
@@ -2144,6 +2239,16 @@ mod tests {
             request.options.as_ref().expect("options").args.get("name"),
             Some(&ScriptArgValue::String("Sky".to_string()))
         );
+        assert_eq!(
+            request
+                .options
+                .as_ref()
+                .expect("options")
+                .modules
+                .get("shared/value.luau")
+                .map(String::as_str),
+            Some("return { value = 42 }")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2154,6 +2259,10 @@ mod tests {
         let suite_dir = tempdir.path().join("suite");
         fs::create_dir_all(&suite_dir).expect("create suite");
         fs::write(suite_dir.join("10_fail.luau"), "assert(false, \"boom\")").expect("write script");
+        let module_dir = tempdir.path().join("modules");
+        fs::create_dir_all(&module_dir).expect("create modules");
+        fs::write(module_dir.join("layout.luau"), "return { strict = true }")
+            .expect("write module");
         let bundle_dir = tempdir.path().join("bundles");
         let stderr_buffer = Arc::new(Mutex::new(b"app stderr\n".to_vec()));
         let stdout_buffer = Arc::new(Mutex::new(b"app stdout\n".to_vec()));
@@ -2184,6 +2293,7 @@ mod tests {
             list: false,
             list_json: false,
             bundle_dir: Some(bundle_dir.clone()),
+            module_dir: Some(module_dir),
         };
 
         let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context.clone()))
@@ -2211,6 +2321,14 @@ mod tests {
                 .unwrap_or_default()
         );
         assert!(script_dir.join("failure.txt").is_file());
+        assert_eq!(
+            fs::read_to_string(script_dir.join("script.luau")).expect("script source"),
+            "assert(false, \"boom\")"
+        );
+        assert_eq!(
+            fs::read_to_string(script_dir.join("modules/layout.luau")).expect("module source"),
+            "return { strict = true }"
+        );
         assert!(script_dir.join("tree.json").is_file());
         assert!(script_dir.join("tree.txt").is_file());
         assert!(script_dir.join("diagnostics.json").is_file());
@@ -2275,6 +2393,7 @@ mod tests {
             list: false,
             list_json: false,
             bundle_dir: Some(bundle_dir.clone()),
+            module_dir: None,
         };
 
         let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
@@ -2344,6 +2463,7 @@ mod tests {
             list: false,
             list_json: false,
             bundle_dir: Some(bundle_root),
+            module_dir: None,
         };
 
         let result = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
@@ -3109,15 +3229,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_exit_wait_retains_supervisor_task() {
+        let (mut app, _handle) = make_mock_app().await;
+        let (release, released) = oneshot::channel::<()>();
+        app.supervisor_exit_task = Some(tokio::spawn(async move {
+            released.await.expect("release supervisor exit");
+            Err(std_io::Error::other("observed supervisor exit"))
+        }));
+
+        {
+            let mut wait = Box::pin(app.wait_for_exit());
+            assert!(
+                poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+        }
+        let retained = app.supervisor_exit_task.is_some();
+        release.send(()).expect("release exit task");
+        let result = app.wait_for_exit().await;
+        assert!(retained, "cancelled wait lost the supervisor task");
+        assert_eq!(
+            result,
+            Err("supervisor exit failed: observed supervisor exit".to_string())
+        );
+        assert!(app.supervisor_exit_task.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_exit_wait_retains_direct_child() {
+        let (mut app, _handle) = make_mock_app().await;
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn child waiting for stdin");
+        // Keep stdin outside Child, since Child::wait closes its owned stdin.
+        let stdin = child.stdin.take().expect("piped stdin");
+        app.child = Some(child);
+
+        {
+            let mut wait = Box::pin(app.wait_for_exit());
+            assert!(
+                poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+        }
+        let retained = app.child.is_some();
+        drop(stdin);
+        let result = timeout(Duration::from_secs(5), app.wait_for_exit())
+            .await
+            .expect("child exits after stdin closes");
+        assert!(retained, "cancelled wait lost the direct child");
+        assert_eq!(result, Ok(()));
+        assert!(app.child.is_none());
+    }
+
+    #[tokio::test]
     async fn shutdown_resolution_reports_normal_exit() {
-        let result = resolve_shutdown(Ok(()), async { Ok(()) }, Duration::from_secs(1)).await;
+        let result =
+            resolve_shutdown(async { Ok(()) }, async { Ok(()) }, Duration::from_secs(1)).await;
         assert_eq!(result, ShutdownResult::Graceful);
     }
 
     #[tokio::test]
     async fn shutdown_resolution_reports_missing_mcp() {
         let result = resolve_shutdown(
-            Err(ShutdownCause::AppMcpUnavailable("closed".to_string())),
+            async { Err(ShutdownCause::AppMcpUnavailable("closed".to_string())) },
             async { Ok(()) },
             Duration::from_secs(1),
         )
@@ -3133,7 +3314,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_resolution_reports_close_failure() {
         let result = resolve_shutdown(
-            Err(ShutdownCause::AppCloseFailed("rejected".to_string())),
+            async { Err(ShutdownCause::AppCloseFailed("rejected".to_string())) },
             async { Ok(()) },
             Duration::from_secs(1),
         )
@@ -3148,8 +3329,28 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_resolution_reports_deadline_expiry() {
-        let result =
-            resolve_shutdown(Ok(()), pending::<Result<(), String>>(), Duration::ZERO).await;
+        let result = resolve_shutdown(
+            async { Ok(()) },
+            pending::<Result<(), String>>(),
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(
+            result,
+            ShutdownResult::Forced {
+                cause: ShutdownCause::DeadlineExpired,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_resolution_bounds_close_request() {
+        let result = resolve_shutdown(
+            pending::<Result<(), ShutdownCause>>(),
+            async { Ok(()) },
+            Duration::ZERO,
+        )
+        .await;
         assert_eq!(
             result,
             ShutdownResult::Forced {

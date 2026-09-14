@@ -11,7 +11,9 @@ use egui::scroll_area::{ScrollAreaOutput, State};
 
 use crate::{
     registry::Inner,
-    types::{WidgetLayout, WidgetRoleMeta, WidgetValue},
+    types::{
+        WidgetFont, WidgetLayout, WidgetRoleMeta, WidgetTextLayout, WidgetTextLine, WidgetValue,
+    },
     ui_ext::DevScrollAreaExt,
     widget_registry::{WidgetMeta, record_rect_meta, record_widget},
 };
@@ -228,8 +230,8 @@ fn begin_container_with_inner(
 
 /// Run a closure within a container scope with an explicit id.
 ///
-/// The container is registered as a widget so it is discoverable via `parent()` and
-/// `children()`.
+/// The container is registered as a widget so it is discoverable via `parent()`
+/// and `children()`.
 pub fn container<R>(
     ui: &mut egui::Ui,
     id: impl Into<String>,
@@ -237,8 +239,8 @@ pub fn container<R>(
 ) -> R {
     let id = id.into();
     let inner = active_inner();
-    // Run contents inside a scope to get a response, with the container on the stack
-    // so children get the right parent_id.
+    // Run contents inside a scope to get a response, with the container on the
+    // stack so children get the right parent_id.
     let output = ui.scope(|ui| {
         let _guard = begin_container_with_inner(ui, inner.clone(), id.clone());
         add_contents(ui)
@@ -246,9 +248,9 @@ pub fn container<R>(
     let Some(inner) = inner else {
         return output.inner;
     };
-    // Register the container widget after content, so its rect covers all children.
-    // At this point the container has been popped, so the container's own parent_id
-    // is correctly set to the enclosing scope.
+    // Register the container widget after content, so its rect covers all
+    // children. At this point the container has been popped, so the
+    // container's own parent_id is correctly set to the enclosing scope.
     swallow_panic("container", || {
         record_widget(
             &inner.widgets,
@@ -295,13 +297,15 @@ impl ScrollAreaState {
         self.pending_offset = Some(offset);
     }
 
-    /// Reset tracked state and request that the next frame jump back to the origin.
+    /// Reset tracked state and request that the next frame jump back to the
+    /// origin.
     pub fn reset(&mut self) {
         self.offset = egui::Vec2::ZERO;
         self.pending_offset = Some(egui::Vec2::ZERO);
     }
 
-    /// Show a scroll area, record DevMCP metadata, and update the tracked offset.
+    /// Show a scroll area, record DevMCP metadata, and update the tracked
+    /// offset.
     pub fn show<R>(
         &mut self,
         scroll_area: egui::ScrollArea,
@@ -312,7 +316,8 @@ impl ScrollAreaState {
         self.show_viewport(scroll_area, ui, id, |ui, _| add_contents(ui))
     }
 
-    /// Show a scroll area with viewport access, record DevMCP metadata, and update the offset.
+    /// Show a scroll area with viewport access, record DevMCP metadata, and
+    /// update the offset.
     pub fn show_viewport<R>(
         &mut self,
         scroll_area: egui::ScrollArea,
@@ -368,7 +373,42 @@ pub fn capture_layout(ui: &egui::Ui, response: &egui::Response) -> WidgetLayout 
         overflow,
         available_rect: available_rect.into(),
         visible_fraction: sanitize_f32(visible_fraction(response.rect, clip_rect)),
+        text: None,
     }
+}
+
+/// Capture layout metadata plus the exact galley that a text widget painted.
+pub fn capture_layout_with_galley(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    galley: &egui::Galley,
+) -> WidgetLayout {
+    let mut layout = capture_layout(ui, response);
+    let mut fonts = Vec::new();
+    for section in &galley.job.sections {
+        let font = WidgetFont {
+            family: section.format.font_id.family.to_string(),
+            size: section.format.font_id.size,
+        };
+        if !fonts.contains(&font) {
+            fonts.push(font);
+        }
+    }
+    let lines = galley
+        .rows
+        .iter()
+        .map(|row| WidgetTextLine {
+            text: row.row.glyphs.iter().map(|glyph| glyph.chr).collect(),
+            width: row.row.size.x,
+        })
+        .collect();
+    layout.text = Some(WidgetTextLayout {
+        fonts,
+        lines,
+        line_height: galley.rows.first().map_or(0.0, |row| row.row.size.y),
+        elided: galley.elided,
+    });
+    layout
 }
 
 #[cfg(test)]
@@ -432,7 +472,10 @@ fn visible_fraction(rect: egui::Rect, clip_rect: egui::Rect) -> f32 {
 mod tests {
     use std::{any::Any, sync::Arc};
 
-    use egui::{Color32, ColorImage, Context, TextureOptions};
+    use egui::{
+        Color32, ColorImage, Context, FontId, FontSelection, Label, RichText, TextWrapMode,
+        TextureOptions, WidgetText,
+    };
 
     use super::*;
     use crate::{
@@ -655,7 +698,7 @@ mod tests {
             ui.dev_separator("separator");
             ui.dev_spinner("spinner");
             let _menu = ui.dev_menu_button("menu", "Actions", |ui| {
-                ui.dev_button("menu.item", "Reset");
+                let _response = ui.dev_button("menu.item", "Reset");
             });
             let _advanced = ui.dev_collapsing("advanced", &mut advanced_open, "Advanced", |ui| {
                 ui.dev_label("advanced.summary", "Shown");
@@ -801,7 +844,7 @@ mod tests {
                 .max_height(40.0)
                 .show(ui, |ui| {
                     ui.add_space(200.0);
-                    ui.dev_button("clipped", "Clipped");
+                    let _response = ui.dev_button("clipped", "Clipped");
                 });
             devmcp.end_frame(ctx, true);
         });
@@ -821,6 +864,28 @@ mod tests {
         assert!(layout.clipped);
         assert!(layout.overflow);
         assert!(layout.visible_fraction < 1.0);
+    }
+
+    #[test]
+    fn layout_metadata_captures_the_painted_galley() {
+        let ctx = Context::default();
+        let mut captured = None;
+        run_panel(&ctx, egui::RawInput::default(), |_ctx, ui| {
+            let galley = WidgetText::from(
+                RichText::new("wide monospace text wraps").font(FontId::monospace(20.0)),
+            )
+            .into_galley(ui, Some(TextWrapMode::Wrap), 80.0, FontSelection::Default);
+            let response = ui.add(Label::new(Arc::clone(&galley)));
+            captured = Some(capture_layout_with_galley(ui, &response, &galley));
+        });
+
+        let text = captured
+            .and_then(|layout| layout.text)
+            .expect("captured text layout");
+        assert!(text.lines.len() > 1);
+        assert_eq!(text.fonts.len(), 1);
+        assert_eq!(text.fonts[0].family, "Monospace");
+        assert!((text.fonts[0].size - 20.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1023,7 +1088,7 @@ mod tests {
             devmcp.begin_frame(ctx);
             container(ui, "outer", |ui| {
                 container(ui, "inner", |ui| {
-                    ui.dev_button("leaf", "Leaf");
+                    let _response = ui.dev_button("leaf", "Leaf");
                 });
             });
             devmcp.end_frame(ctx, true);
@@ -1169,9 +1234,9 @@ mod tests {
         let raw_input = egui::RawInput::default();
         run_panel(&ctx, raw_input, |ctx, ui| {
             devmcp.begin_frame(ctx);
-            ui.dev_button("enabled_btn", "Enabled");
+            let _response = ui.dev_button("enabled_btn", "Enabled");
             ui.add_enabled_ui(false, |ui| {
-                ui.dev_button("disabled_btn", "Disabled");
+                let _response = ui.dev_button("disabled_btn", "Disabled");
             });
             ui.dev_label("visible_lbl", "Visible");
             egui::ScrollArea::vertical()

@@ -21,7 +21,7 @@ use crate::{
     fixtures::{FixtureExecution, FixtureManager},
     idle::IdleRegistry,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
-    types::{FixtureCall, WidgetValue},
+    types::{FixtureCall, Modifiers, WidgetValue},
     viewports::{FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
 };
@@ -173,6 +173,30 @@ impl Inner {
     }
 
     pub fn dismiss_transient_ui(&self, viewport_id: Option<egui::ViewportId>) {
+        if let Some(viewport_id) = viewport_id {
+            self.actions.clear_viewport(viewport_id);
+            lock(&self.widget_value_updates, "widget value update lock")
+                .retain(|key, _| key.viewport_id != viewport_id);
+            lock(&self.widget_value_consumers, "widget value consumers lock")
+                .retain(|key| key.viewport_id != viewport_id);
+            lock(&self.scroll_overrides, "scroll overrides lock")
+                .retain(|key, _| key.viewport_id != viewport_id);
+            self.overlays.clear_viewport_overlays(viewport_id);
+            self.overlays.clear_overlay_debug_config(viewport_id);
+            // Context clones share memory: direct popup/focus mutations cannot
+            // select a viewport. Escape runs in the target's next input pass.
+            for pressed in [true, false] {
+                self.queue_action(
+                    viewport_id,
+                    InputAction::Key {
+                        key: egui::Key::Escape,
+                        pressed,
+                        modifiers: Modifiers::default(),
+                    },
+                );
+            }
+            return;
+        }
         self.actions.clear_all();
         lock(&self.widget_value_updates, "widget value update lock").clear();
         lock(&self.widget_value_consumers, "widget value consumers lock").clear();
@@ -180,23 +204,13 @@ impl Inner {
         self.overlays.clear_transient_state();
         let contexts = {
             let contexts = lock(&self.contexts, "contexts lock");
-            contexts
-                .iter()
-                .filter(|(stored_viewport_id, _)| {
-                    viewport_id.is_none_or(|viewport_id| viewport_id == **stored_viewport_id)
-                })
-                .map(|(_, ctx)| ctx.clone())
-                .collect::<Vec<_>>()
+            contexts.values().cloned().collect::<Vec<_>>()
         };
         for ctx in &contexts {
             egui::Popup::close_all(ctx);
             ctx.memory_mut(|memory| memory.stop_text_input());
         }
-        if let Some(viewport_id) = viewport_id {
-            self.request_repaint_of(viewport_id);
-        } else {
-            self.request_repaint_all();
-        }
+        self.request_repaint_all();
     }
 
     pub fn set_verbose_logging(&self, verbose_logging: bool) {
@@ -421,24 +435,38 @@ impl Inner {
         )
     }
 
-    pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
-        self.overlays.set_overlay_debug_config(config);
-        self.request_repaint();
+    pub fn set_overlay_debug_config(
+        &self,
+        viewport_id: egui::ViewportId,
+        config: OverlayDebugConfig,
+    ) {
+        self.overlays.set_overlay_debug_config(viewport_id, config);
+        self.request_repaint_of(viewport_id);
     }
 
-    pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {
-        self.overlays.set_overlay(key, overlay);
-        self.request_repaint();
+    pub fn clear_overlay_debug_config(&self, viewport_id: egui::ViewportId) {
+        self.overlays.clear_overlay_debug_config(viewport_id);
+        self.request_repaint_of(viewport_id);
     }
 
-    pub fn remove_overlay(&self, key: &str) {
-        self.overlays.remove_overlay(key);
-        self.request_repaint();
+    pub fn set_overlay(&self, viewport_id: egui::ViewportId, key: String, overlay: OverlayEntry) {
+        self.overlays.set_overlay(viewport_id, key, overlay);
+        self.request_repaint_of(viewport_id);
+    }
+
+    pub fn remove_overlay(&self, viewport_id: egui::ViewportId, key: &str) {
+        self.overlays.remove_overlay(viewport_id, key);
+        self.request_repaint_of(viewport_id);
+    }
+
+    pub fn clear_viewport_overlays(&self, viewport_id: egui::ViewportId) {
+        self.overlays.clear_viewport_overlays(viewport_id);
+        self.request_repaint_of(viewport_id);
     }
 
     pub fn clear_overlays(&self) {
         self.overlays.clear_overlays();
-        self.request_repaint();
+        self.request_repaint_all();
     }
 
     pub fn paint_overlays(&self, ctx: &Context) {
@@ -477,6 +505,8 @@ impl Inner {
         action: InputAction,
     ) {
         self.actions
+            .record_pointer_queued(viewport_id, self.frame_count(), &action);
+        self.actions
             .queue_action_with_timing(viewport_id, timing, action);
         self.request_repaint_of(viewport_id);
     }
@@ -510,7 +540,8 @@ impl Inner {
         *depth == 1
     }
 
-    /// Exit a viewport frame. Returns true when this is the matching outermost end.
+    /// Exit a viewport frame. Returns true when this is the matching outermost
+    /// end.
     pub fn exit_viewport_frame(&self, viewport_id: egui::ViewportId) -> bool {
         let mut depths = lock(&self.frame_depth, "frame depth lock");
         let Some(depth) = depths.get_mut(&viewport_id) else {
@@ -529,7 +560,8 @@ impl Inner {
         lock(&self.frame_fixture_epochs, "frame fixture epochs lock").remove(&viewport_id)
     }
 
-    /// Count a completed egui pass. Multi-pass frames increment this more than once.
+    /// Count one settled automation frame. Discarded layout passes do not
+    /// publish automation state or increment this count.
     pub fn advance_frame(&self) {
         self.frame_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -538,7 +570,8 @@ impl Inner {
         self.frame_count.load(Ordering::Relaxed)
     }
 
-    /// Drop heavy per-viewport maps for non-root viewports that left the live set.
+    /// Drop heavy per-viewport maps for non-root viewports that left the live
+    /// set.
     pub fn forget_dead_viewports(&self) {
         let Some(live) = self.viewports.live_viewport_ids() else {
             return;
@@ -580,6 +613,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::types::Pos2;
 
     #[test]
     fn request_repaint_targets_viewport_without_holding_contexts_lock() {
@@ -604,6 +638,86 @@ mod tests {
                 .expect("repaint callback"),
             viewport_id
         );
+    }
+
+    #[test]
+    fn overlay_changes_repaint_their_viewport() {
+        let viewport_id = egui::ViewportId::from_hash_of("secondary");
+        let operations: [fn(&Inner, egui::ViewportId); 5] = [
+            |inner, viewport_id| {
+                inner.set_overlay(
+                    viewport_id,
+                    "test".into(),
+                    OverlayEntry {
+                        rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(10.0, 10.0)),
+                        color: egui::Color32::RED,
+                        stroke_width: 1.0,
+                    },
+                )
+            },
+            |inner, viewport_id| inner.remove_overlay(viewport_id, "test"),
+            Inner::clear_viewport_overlays,
+            |inner, viewport_id| {
+                inner.set_overlay_debug_config(
+                    viewport_id,
+                    OverlayDebugConfig {
+                        enabled: true,
+                        ..Default::default()
+                    },
+                )
+            },
+            Inner::clear_overlay_debug_config,
+        ];
+        for operation in operations {
+            let inner = new_test_inner();
+            let ctx = Context::default();
+            inner.capture_context(viewport_id, &ctx);
+            let (sender, receiver) = mpsc::channel();
+            ctx.set_request_repaint_callback(move |info| {
+                sender
+                    .send(info.viewport_id)
+                    .expect("notify repaint callback");
+            });
+            operation(&inner, viewport_id);
+            assert_eq!(
+                receiver
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("overlay repaint"),
+                viewport_id
+            );
+        }
+    }
+
+    #[test]
+    fn global_overlay_resets_repaint_all_viewports() {
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let operations: [fn(&Inner); 2] = [Inner::clear_overlays, |inner| {
+            inner.dismiss_transient_ui(None)
+        }];
+        for operation in operations {
+            let inner = new_test_inner();
+            let (sender, receiver) = mpsc::channel();
+            for viewport_id in [egui::ViewportId::ROOT, secondary] {
+                let ctx = Context::default();
+                inner.capture_context(viewport_id, &ctx);
+                let sender = sender.clone();
+                ctx.set_request_repaint_callback(move |info| {
+                    sender
+                        .send(info.viewport_id)
+                        .expect("notify repaint callback");
+                });
+            }
+            operation(&inner);
+            let first = receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("first repaint");
+            let second = receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("second repaint");
+            assert_ne!(first, second);
+            assert!([first, second].contains(&egui::ViewportId::ROOT));
+            assert!([first, second].contains(&secondary));
+        }
     }
 
     #[test]
@@ -643,6 +757,106 @@ mod tests {
             .expired_widget_value_update_error(viewport_id, Some("custom.value"))
             .expect("unwired widget should fault after reset");
         assert_eq!(error.code(), ErrorCode::InstrumentationFault);
+    }
+
+    #[test]
+    fn dismiss_transient_ui_preserves_other_viewport_state() {
+        let inner = new_test_inner();
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let pos = Pos2 { x: 5.0, y: 6.0 };
+        for viewport_id in [root, secondary] {
+            inner.queue_action(viewport_id, InputAction::PointerMove { pos });
+            assert_eq!(inner.actions.drain_actions(viewport_id, 1).len(), 1);
+            inner.queue_action_with_timing(
+                viewport_id,
+                ActionTiming::AfterTwoFrames,
+                InputAction::Text {
+                    text: "pending".to_string(),
+                },
+            );
+            inner.queue_command(viewport_id, egui::ViewportCommand::Title("pending".into()));
+            inner.mark_widget_value_consumer(viewport_id, "field");
+            inner.queue_widget_value_update(viewport_id, "field".into(), WidgetValue::Int(7));
+            inner.set_scroll_override(viewport_id, 1, egui::vec2(3.0, 4.0));
+            inner.set_overlay_debug_config(
+                viewport_id,
+                OverlayDebugConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        inner.dismiss_transient_ui(Some(root));
+
+        assert_eq!(inner.actions.pending_action_count(root), 2);
+        assert!(!inner.actions.has_pending_commands(root));
+        assert_eq!(inner.actions.stats(root).queued_actions, 2);
+        assert_eq!(inner.actions.stats(root).last_drain_frame, None);
+        assert!(inner.actions.pointer_pos(root).is_none());
+        assert_eq!(inner.actions.pending_action_count(secondary), 1);
+        assert_eq!(inner.actions.pending_command_count(secondary), 1);
+        assert_eq!(inner.actions.stats(secondary).queued_actions, 2);
+        assert_eq!(inner.actions.stats(secondary).last_drain_frame, Some(1));
+        assert_eq!(inner.actions.pointer_pos(secondary), Some(pos));
+        // Reports only enter the trace when recent consumed pointer state
+        // remains. The cleared viewport must not leave either kind of trace.
+        for viewport_id in [root, secondary] {
+            inner
+                .actions
+                .record_pointer_report(viewport_id, 2, Some(pos));
+        }
+        let trace = inner.actions.pointer_trace();
+        let events = trace["events"].as_array().expect("pointer events");
+        assert!(!events.is_empty());
+        assert!(
+            events
+                .iter()
+                .all(|event| event["viewport_id"] == viewport_id_to_string(secondary))
+        );
+
+        assert!(inner.take_widget_value_update(root, "field").is_none());
+        assert!(matches!(
+            inner.take_widget_value_update(secondary, "field"),
+            Some(WidgetValue::Int(7))
+        ));
+        assert!(inner.take_scroll_override(root, 1).is_none());
+        assert_eq!(
+            inner.take_scroll_override(secondary, 1),
+            Some(egui::vec2(3.0, 4.0))
+        );
+        assert!(!inner.overlays.overlay_debug_config(root).enabled);
+        assert!(inner.overlays.overlay_debug_config(secondary).enabled);
+    }
+
+    #[test]
+    fn dismiss_transient_ui_preserves_other_viewport_consumers() {
+        let inner = new_test_inner();
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        for viewport_id in [root, secondary] {
+            inner.mark_widget_value_consumer(viewport_id, "field");
+        }
+        inner.dismiss_transient_ui(Some(root));
+        // Only the cleared viewport must rediscover the custom widget's
+        // value-override consumer before a later update can be admitted.
+        for viewport_id in [root, secondary] {
+            inner.queue_widget_value_update(viewport_id, "field".into(), WidgetValue::Int(9));
+        }
+        for _ in 0..Inner::UNCONSUMED_OVERRIDE_FRAME_GRACE {
+            inner.advance_frame();
+        }
+        assert!(
+            inner
+                .expired_widget_value_update_error(root, Some("field"))
+                .is_some()
+        );
+        assert!(
+            inner
+                .expired_widget_value_update_error(secondary, Some("field"))
+                .is_none()
+        );
     }
 
     #[test]

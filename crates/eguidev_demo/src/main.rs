@@ -205,7 +205,8 @@ fn main() -> MainResult<()> {
 #[derive(Debug, Clone, Copy)]
 /// Parsed configuration for the demo app.
 struct AppConfig {
-    /// Whether the root viewport should stay covered by the smoke-test occluder.
+    /// Whether the root viewport should stay covered by the smoke-test
+    /// occluder.
     force_occluder: bool,
 }
 
@@ -322,10 +323,13 @@ struct DemoState {
     show_occluder: bool,
     /// Whether fixture resets should preserve the test occluder viewport.
     force_occluder: bool,
-    /// Whether the occluder should deliberately reuse the secondary viewport name.
+    /// Whether the occluder should deliberately reuse the secondary viewport
+    /// name.
     duplicate_viewport_names: bool,
     /// Selected row index from the secondary viewport list.
     secondary_selected_row: usize,
+    /// Editable text for the secondary viewport's focus demo.
+    secondary_text: String,
     /// Accumulated drag offset for the secondary viewport drag region.
     secondary_drag_offset: egui::Vec2,
     /// Scroll state for the secondary viewport list.
@@ -404,6 +408,7 @@ impl DemoState {
             force_occluder,
             duplicate_viewport_names: false,
             secondary_selected_row: 0,
+            secondary_text: String::new(),
             secondary_drag_offset: egui::Vec2::ZERO,
             secondary_scroll_state: ScrollAreaState::default(),
             secondary_unwired_value: 0,
@@ -453,6 +458,7 @@ impl DemoState {
         self.show_occluder = self.force_occluder;
         self.duplicate_viewport_names = false;
         self.secondary_selected_row = 0;
+        self.secondary_text.clear();
         self.secondary_drag_offset = egui::Vec2::ZERO;
         self.secondary_scroll_state.reset();
         self.secondary_unwired_value = 0;
@@ -1005,7 +1011,8 @@ impl DemoApp {
         }
     }
 
-    /// Render the viewport-filling scroll area used to exercise the layout gate.
+    /// Render the viewport-filling scroll area used to exercise the layout
+    /// gate.
     ///
     /// The scroll area fills the root viewport, so its rows carry the viewport
     /// clip rect and only the declared content extent can explain a scrolled
@@ -1020,8 +1027,9 @@ impl DemoApp {
             "gate.scroll",
             |ui| {
                 if offenders {
-                    // Publish the intersecting pair at the top of the content so
-                    // it is on screen at the origin offset.
+                    // Publish the intersecting pair at the top of the content
+                    // so it is on screen at the origin
+                    // offset.
                     let (overlap_rect, _) =
                         ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
                     Self::publish_gate_overlap(ui, overlap_rect);
@@ -1029,8 +1037,9 @@ impl DemoApp {
                 for row in 0..GATE_ROW_COUNT {
                     ui.dev_label(format!("gate.row.{row}"), format!("Gate row {row}"));
                 }
-                // A painter-published marker inside the scroll content carries no
-                // layout of its own and must inherit the scroll clip region.
+                // A painter-published marker inside the scroll content carries
+                // no layout of its own and must inherit the
+                // scroll clip region.
                 let (marker_rect, _) =
                     ui.allocate_exact_size(egui::vec2(120.0, 20.0), egui::Sense::hover());
                 ui.painter()
@@ -1225,7 +1234,12 @@ impl DemoApp {
                 _ => "Secondary viewport",
             };
             ui.heading(title);
-            ui.label("Scroll and drag inside this viewport.");
+            ui.horizontal(|ui| {
+                ui.dev_text_edit("viewports.dismiss.input", &mut s.secondary_text);
+                ui.dev_menu_button("viewports.dismiss.menu", "Actions", |ui| {
+                    ui.dev_label("viewports.dismiss.menu.open", "Secondary menu");
+                });
+            });
 
             let _output = s.secondary_scroll_state.show(
                 egui::ScrollArea::vertical()
@@ -1476,8 +1490,8 @@ impl App for DemoApp {
                 ui.ctx().request_repaint();
             }
             if s.root_surface == RootSurface::LayoutGate {
-                // No panel margin, so the scroll area fills the viewport and its
-                // rows carry the viewport clip rect.
+                // No panel margin, so the scroll area fills the viewport and
+                // its rows carry the viewport clip rect.
                 egui::Frame::NONE.show(ui, |ui| Self::render_layout_gate(&mut s, ui));
                 return;
             }

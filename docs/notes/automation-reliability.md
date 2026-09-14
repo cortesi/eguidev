@@ -43,13 +43,23 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - Pointer actions fail fast with `invisible_interaction` when the target widget is hidden or fully
   clipped. Scripts should wait for `{ actionable = true }` or call `scroll_into_view()` before
   interacting with content that may be outside the viewport.
+- Pointer actions also fail fast with `not_actionable` and reason `covered`. This happens when
+  another egui layer sits over the target's action point, such as a floating card or a modal
+  backdrop. `eguidev` computes `covered` from `ctx.layer_id_at` at record time and publishes it on
+  `WidgetState`. A click never silently reaches the covering layer instead of the intended widget.
+  `scroll_into_view()` ignores coverage, because scrolling cannot uncover a widget under a fixed
+  overlay. `{ actionable = true }` and pointer admission both require the widget to be uncovered.
 
 6. Fixture reset contract and boundary cleanup
 - Fixture apply boundaries clear transient DevMCP state (queued input/commands, queued widget
   value updates, value-override consumer tracking, scroll overrides, and overlay debug artifacts)
   to avoid cross-run leakage.
-- The same cleanup closes egui popups/menus and stops active text input on captured
-  contexts. Scripts can call `Viewport:dismiss_popups()` for the same viewport-scoped path.
+- The same cleanup closes egui popups/menus on captured contexts. It stops text input
+  in each context's active viewport; shared contexts can retain focus in other
+  viewports. `Viewport:dismiss_popups()` clears queued input, overrides, and visual aids
+  only in its viewport, then sends Escape there to dismiss popups and release text
+  focus. App code can also receive this Escape, for example to close a modal or
+  cancel a drag. Fixture-wide cleanup does not inject Escape.
 - Fixtures without preconditions are baseline-reset by contract: they are independently invokable,
   isolated from prior app state, and safe to apply in any order. Fixtures with preconditions are
   transitions and require the caller to establish their declared entry state first.

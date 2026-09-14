@@ -198,7 +198,8 @@ pub fn write_app_record(path: &Path, record: &AppRecord) -> Result<(), io::Error
     write_atomic_payload(path, &payload)
 }
 
-/// Remove an app record only when it still describes the exact launch supplied by the caller.
+/// Remove an app record only when it still describes the exact launch supplied
+/// by the caller.
 pub fn remove_app_record_if_matches(path: &Path, expected: &AppRecord) -> Result<bool, io::Error> {
     let Some(actual) = read_app_record(path)? else {
         return Ok(false);
@@ -382,7 +383,8 @@ pub fn process_start_time(_pid: i32) -> Option<ProcessStartTime> {
     None
 }
 
-/// Confirm that a recorded process group still belongs to the original app leader.
+/// Confirm that a recorded process group still belongs to the original app
+/// leader.
 pub fn recorded_app_group_is_current(record: &AppRecord) -> bool {
     record
         .app_group_leader_start_time
@@ -401,11 +403,12 @@ fn remove_file_if_exists(path: &Path) -> Result<(), io::Error> {
 
 #[cfg(target_os = "macos")]
 /// Return true when a process with the provided pid appears alive.
-fn is_process_alive(pid: u32) -> bool {
+pub fn is_process_alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
-    // The launcher is a same-user process, so BSD info remains available throughout its life.
+    // The launcher is a same-user process, so BSD info remains available
+    // throughout its life.
     pidinfo::<BSDInfo>(pid, 0).is_ok_and(|info| info.pbi_status != libc::SZOMB)
 }
 

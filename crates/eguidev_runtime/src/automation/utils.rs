@@ -7,7 +7,7 @@ use std::{
 use egui::PointerButton;
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 use crate::{
     actions::{ActionQueueStats, ActionTiming, InputAction},
@@ -329,11 +329,12 @@ pub fn ensure_positive_vec2(value: Vec2, field: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// Resolve a key name to an `egui::Key`, case-insensitively for multi-character names.
+/// Resolve a key name to an `egui::Key`, case-insensitively for multi-character
+/// names.
 ///
 /// Single characters are passed through as-is (case-sensitive: `"a"` ≠ `"A"`).
-/// Multi-character names are matched case-insensitively: `"enter"`, `"Enter"`, `"ENTER"` all
-/// resolve to `egui::Key::Enter`.
+/// Multi-character names are matched case-insensitively: `"enter"`, `"Enter"`,
+/// `"ENTER"` all resolve to `egui::Key::Enter`.
 pub fn resolve_key_name(name: &str) -> Option<egui::Key> {
     // Single characters: pass through directly (case-sensitive for letters).
     if name.len() == 1 {
@@ -479,25 +480,28 @@ const LOWERCASE_KEY_MAP: &[(&str, egui::Key)] = &[
 ///
 /// Format: `[modifier-]...[modifier-]keyname`
 ///
-/// Modifiers (case-insensitive): `ctrl`, `shift`, `alt`, `cmd` (alias: `command`).
-/// The last segment after splitting on `-` is the key name; all preceding segments are modifiers.
+/// Modifiers (case-insensitive): `ctrl`, `shift`, `alt`, `cmd` (alias:
+/// `command`). The last segment after splitting on `-` is the key name; all
+/// preceding segments are modifiers.
 ///
-/// Examples: `"enter"`, `"ctrl-a"`, `"shift-tab"`, `"ctrl-shift-z"`, `"cmd-s"`, `"-"` (minus).
-/// Returns `(key, modifiers, key_name_str)` where `key_name_str` is the raw key name segment
-/// from the combo (preserving original case for single characters).
+/// Examples: `"enter"`, `"ctrl-a"`, `"shift-tab"`, `"ctrl-shift-z"`, `"cmd-s"`,
+/// `"-"` (minus). Returns `(key, modifiers, key_name_str)` where `key_name_str`
+/// is the raw key name segment from the combo (preserving original case for
+/// single characters).
 pub fn parse_key_combo(combo: &str) -> Result<(egui::Key, Modifiers, String), String> {
     if combo.is_empty() {
         return Err("empty key combo".to_string());
     }
 
-    // Split on '-'. The last segment is the key name. But we need to handle edge cases:
+    // Split on '-'. The last segment is the key name. But we need to handle
+    // edge cases:
     // - bare "-" → segments = ["", ""], key is "-"
     // - "ctrl--" → segments = ["ctrl", "", ""], key is "-"
     // - "ctrl-a" → segments = ["ctrl", "a"]
     let segments: Vec<&str> = combo.split('-').collect();
 
-    // Find the key name: it's the last segment, except when the last segment is empty
-    // (meaning the combo ended with '-', so the key is '-' itself).
+    // Find the key name: it's the last segment, except when the last segment is
+    // empty (meaning the combo ended with '-', so the key is '-' itself).
     let (modifier_segments, key_name) = if segments.len() >= 2 && segments.last() == Some(&"") {
         // Ends with '-', so key is the minus character.
         (&segments[..segments.len() - 2], "-")
@@ -526,7 +530,7 @@ pub fn parse_key_combo(combo: &str) -> Result<(egui::Key, Modifiers, String), St
 }
 
 pub fn printable_key_text(key: &str) -> Option<String> {
-    if key == "Space" {
+    if key.eq_ignore_ascii_case("space") {
         return Some(" ".to_string());
     }
     let mut chars = key.chars();
@@ -540,57 +544,20 @@ pub fn printable_key_text(key: &str) -> Option<String> {
     Some(ch.to_string())
 }
 
-pub fn frames_for_duration(duration_ms: u64) -> u64 {
-    duration_ms.div_ceil(FRAME_DURATION_MS)
-}
-
-pub async fn wait_for_frames(
-    inner: &Inner,
-    frames: u64,
-    start: Instant,
-    timeout_ms: u64,
-) -> Result<(), ToolError> {
-    let mut completed = 0u64;
-    let runtime =
-        Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
-    let observation_start = WaitObservationStart::new(inner, Some(egui::ViewportId::ROOT));
-    while completed < frames {
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        if elapsed_ms >= timeout_ms {
-            let observation = observation_start.finish(inner);
-            return Err(ToolError::new(
-                ErrorCode::Timeout,
-                wait_timeout_message("Timed out waiting for frame notifications", &observation),
-            )
-            .with_details(json!({
-                "kind": "frames",
-                "elapsed_ms": elapsed_ms,
-                "observation": observation,
-            })));
-        }
-        let mut notified = pin!(runtime.frame_notify().notified());
-        notified.as_mut().enable();
-        request_wait_repaint(inner, Some(egui::ViewportId::ROOT));
-        let remaining = timeout_ms.saturating_sub(elapsed_ms).max(1);
-        let poll = Duration::from_millis(FRAME_DURATION_MS).min(Duration::from_millis(remaining));
-        if timeout(poll, notified.as_mut()).await.is_ok() {
-            completed += 1;
-        }
-    }
-    Ok(())
-}
-
-/// Generic utility for polling a condition that requires UI interaction or state updates.
+/// Generic utility for polling a condition that requires UI interaction or
+/// state updates.
 ///
-/// This function handles the boilerplate of checking a condition, tracking elapsed time
-/// against a timeout, and efficiently waiting for `egui` frame updates.
+/// This function handles the boilerplate of checking a condition, tracking
+/// elapsed time against a timeout, and efficiently waiting for `egui` frame
+/// updates.
 ///
-/// `condition` should return `Ok((matched, state))` where `state` is some snapshot or
-/// context to return to the caller (e.g., the last seen widget state or viewports).
+/// `condition` should return `Ok((matched, state))` where `state` is some
+/// snapshot or context to return to the caller (e.g., the last seen widget
+/// state or viewports).
 ///
-/// `deadline` is an optional hard cutoff (useful for script timeouts). If the deadline
-/// is exceeded while waiting, `wait_until_condition` will immediately return the last
-/// known state as unmatched.
+/// `deadline` is an optional hard cutoff (useful for script timeouts). If the
+/// deadline is exceeded while waiting, `wait_until_condition` will immediately
+/// return the last known state as unmatched.
 pub async fn wait_until_condition<F, Fut, T, E>(
     inner: &Inner,
     timeout_ms: u64,
@@ -784,6 +751,7 @@ pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
         "occluded": snapshot.occluded,
         "os_minimized": snapshot.os_minimized,
         "os_occluded": snapshot.os_occluded,
+        "os_title_visible": snapshot.os_title_visible,
         "maximized": snapshot.maximized,
         "fullscreen": snapshot.fullscreen,
         "pixels_per_point": snapshot.pixels_per_point,
@@ -864,12 +832,13 @@ mod tests {
         let viewport_id = egui::ViewportId::ROOT;
         let start = Pos2 { x: 10.0, y: 20.0 };
         let end = Pos2 { x: 40.0, y: 20.0 };
+        assert!(inner.actions.drain_actions(viewport_id, 0).is_empty());
         queue_drag(&inner, viewport_id, start, end, Modifiers::default());
 
         // One stage drains per frame. The press must not share a frame with the
         // move that lands the pointer, or the whole jump from wherever the
         // pointer was reads as part of the drag.
-        let frames = (0..4)
+        let frames = (1..5)
             .map(|frame| {
                 inner
                     .actions
@@ -918,6 +887,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         }
     }
 

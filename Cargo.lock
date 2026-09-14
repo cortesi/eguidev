@@ -876,6 +876,7 @@ dependencies = [
  "image",
  "objc2 0.6.4",
  "ruau",
+ "ruau-script-api",
  "schemars",
  "serde",
  "serde_json",
@@ -2400,6 +2401,7 @@ dependencies = [
  "ruau-filesystem",
  "ruau-json-schema",
  "ruau-session",
+ "ruau-highlight",
  "ruau-source",
  "ruau-surface",
  "ruau-syntax",
@@ -2478,6 +2480,23 @@ dependencies = [
  "ruau-vm",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "ruau-highlight"
+version = "0.1.0"
+dependencies = [
+ "ruau-syntax",
+]
+
+[[package]]
+name = "ruau-script-api"
+version = "0.1.0"
+dependencies = [
+ "ruau-declaration",
+ "ruau-syntax",
+ "schemars",
+ "serde",
 ]
 
 [[package]]
@@ -3001,6 +3020,7 @@ dependencies = [
 name = "tmcp"
 version = "0.5.0"
 source = "git+https://github.com/cortesi/tmcp?rev=e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee#e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3024,6 +3044,7 @@ dependencies = [
 name = "tmcp-macros"
 version = "0.5.0"
 source = "git+https://github.com/cortesi/tmcp?rev=e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee#e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee"
+version = "0.6.0"
 dependencies = [
  "heck",
  "proc-macro2",

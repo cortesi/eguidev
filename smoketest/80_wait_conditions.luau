@@ -3,7 +3,7 @@ local vp = eguidev.root
 
 -- Widget:wait with a presence predicate
 local exists_result = eguidev.widget("basic.submit"):wait( function(widget)
-    return true
+    return widget ~= nil
 end)
 assert(exists_result ~= nil)
 
@@ -101,8 +101,8 @@ eguidev.widget("basic.name"):expect( { value = "Sky" })
 -- timeout diagnostics are catchable through pcall as surfaced error text
 eguidev.configure({ timeout_ms = 10, poll_interval_ms = 1 })
 local ok, err = pcall(function()
-    return eguidev.widget("basic.missing.timeout"):wait( function(_widget)
-        return true
+    return eguidev.widget("basic.missing.timeout"):wait( function(widget)
+        return widget ~= nil
     end)
 end)
 assert(not ok)

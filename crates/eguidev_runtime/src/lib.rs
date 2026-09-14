@@ -125,7 +125,7 @@ pub use crate::{
     automation::{
         FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
         ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
-        ScriptTiming,
+        ScriptModules, ScriptTiming,
         script::{CheckFailure as ScriptCheckError, check_source as check_script_source},
     },
     egui_diagnostics::{
