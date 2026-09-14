@@ -2391,26 +2391,26 @@ dependencies = [
 
 [[package]]
 name = "ruau"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
 dependencies = [
- "blake3",
- "cap-std",
- "libc",
  "ruau-bytecode",
  "ruau-declaration",
+ "ruau-executor",
+ "ruau-filesystem",
+ "ruau-json-schema",
+ "ruau-session",
  "ruau-source",
+ "ruau-surface",
  "ruau-syntax",
  "ruau-typecheck",
  "ruau-vm",
- "same-file",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]
 name = "ruau-bytecode"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
 dependencies = [
  "foldhash",
  "ruau-syntax",
@@ -2419,40 +2419,112 @@ dependencies = [
 
 [[package]]
 name = "ruau-declaration"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
 dependencies = [
  "ruau-syntax",
 ]
 
 [[package]]
+name = "ruau-executor"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
+dependencies = [
+ "blake3",
+ "ruau-bytecode",
+ "ruau-declaration",
+ "ruau-source",
+ "ruau-surface",
+ "ruau-syntax",
+ "ruau-typecheck",
+ "ruau-vm",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "ruau-filesystem"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
+dependencies = [
+ "cap-std",
+ "ruau-source",
+ "ruau-syntax",
+ "ruau-typecheck",
+ "same-file",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "ruau-json-schema"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
+dependencies = [
+ "ruau-declaration",
+ "serde_json",
+]
+
+[[package]]
+name = "ruau-session"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
+dependencies = [
+ "ruau-bytecode",
+ "ruau-declaration",
+ "ruau-source",
+ "ruau-surface",
+ "ruau-typecheck",
+ "ruau-vm",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ruau-source"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
+
+[[package]]
+name = "ruau-surface"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
+dependencies = [
+ "blake3",
+ "ruau-bytecode",
+ "ruau-declaration",
+ "ruau-source",
+ "ruau-syntax",
+ "ruau-typecheck",
+ "ruau-vm",
+]
 
 [[package]]
 name = "ruau-syntax"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
 dependencies = [
  "serde",
  "serde_json",
- "stacker",
  "strum",
 ]
 
 [[package]]
 name = "ruau-typecheck"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
 dependencies = [
  "foldhash",
  "ruau-source",
  "ruau-syntax",
  "serde",
  "serde_json",
- "stacker",
 ]
 
 [[package]]
 name = "ruau-vm"
-version = "0.1.0"
+version = "0.4.0"
+source = "git+https://github.com/cortesi/ruau?rev=640bb091fd1b56efa2177a2891620c24667c0adc#640bb091fd1b56efa2177a2891620c24667c0adc"
 dependencies = [
  "blake3",
  "foldhash",
@@ -2928,6 +3000,7 @@ dependencies = [
 [[package]]
 name = "tmcp"
 version = "0.5.0"
+source = "git+https://github.com/cortesi/tmcp?rev=e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee#e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2950,6 +3023,7 @@ dependencies = [
 [[package]]
 name = "tmcp-macros"
 version = "0.5.0"
+source = "git+https://github.com/cortesi/tmcp?rev=e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee#e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee"
 dependencies = [
  "heck",
  "proc-macro2",

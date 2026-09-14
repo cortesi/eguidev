@@ -22,13 +22,17 @@ egui = "0.36"
 glob = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 libc = "0.2"
-ruau = { version = "0.1.0", path = "/Users/cortesi/git/private/ruau/crates/ruau", default-features = false }
+# FreeDF 포크: 저자 로컬 절대경로 대신 공개 저장소의 동일 리비전을 고정합니다.
+# (ruau 0.4.0 공개 표면 = 2026-08-17, 이 eguidev 리비전이 기대하던 상태와 일치)
+ruau = { git = "https://github.com/cortesi/ruau", rev = "640bb091fd1b56efa2177a2891620c24667c0adc", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 schemars = "1.2"
 tempfile = "3.27"
 thiserror = "2.0"
-tmcp = { version = "0.5.0", path = "../tmcp/crates/tmcp" }
+# FreeDF 포크: 저자 로컬 상대경로 대신 공개 저장소의 동일 리비전을 고정합니다.
+# (2026-08-24 리비전 = 이 eguidev 리비전이 기대하던 상태)
+tmcp = { git = "https://github.com/cortesi/tmcp", rev = "e1a009ab07f6ec0f1eb61e5d2399b9a04a2eaeee" }
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "sync", "io-util", "process"] }
 eguidev = { version = "0.1.0", path = "crates/eguidev" }
 eguidev_runtime = { version = "0.1.0", path = "crates/eguidev_runtime" }
