@@ -6,7 +6,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, RecvTimeoutError},
+        mpsc::{self, RecvTimeoutError, TryRecvError},
     },
     time::Duration,
 };
@@ -43,6 +43,8 @@ struct UiFixtureRequest {
 }
 
 /// Pending UI-thread fixture result.
+///
+/// Dropping the receiver cancels a request that is still queued.
 pub struct UiFixtureReceiver {
     name: String,
     receiver: mpsc::Receiver<FixtureResult>,
@@ -50,25 +52,39 @@ pub struct UiFixtureReceiver {
 }
 
 impl UiFixtureReceiver {
-    /// Wait until the UI-thread fixture returns or the caller's timeout expires.
+    /// Wait until the UI-thread fixture returns or the caller's timeout
+    /// expires.
     pub fn recv_timeout(self, timeout: Duration) -> FixtureResult {
         match self.receiver.recv_timeout(timeout) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => {
-                self.cancelled.store(true, Ordering::Release);
-                Err(FixtureError::new(
-                    "timeout",
-                    format!("fixture handler {:?} timed out", self.name),
-                ))
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                self.cancelled.store(true, Ordering::Release);
-                Err(FixtureError::new(
-                    "internal",
-                    format!("fixture handler {:?} did not return a result", self.name),
-                ))
-            }
+            Err(RecvTimeoutError::Timeout) => Err(FixtureError::new(
+                "timeout",
+                format!("fixture handler {:?} timed out", self.name),
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(FixtureError::new(
+                "internal",
+                format!("fixture handler {:?} did not return a result", self.name),
+            )),
         }
+    }
+
+    /// Return the result without blocking, or `None` while the request is
+    /// pending.
+    pub fn try_recv(&self) -> Option<FixtureResult> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(FixtureError::new(
+                "internal",
+                format!("fixture handler {:?} did not return a result", self.name),
+            ))),
+        }
+    }
+}
+
+impl Drop for UiFixtureReceiver {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -76,11 +92,13 @@ impl UiFixtureReceiver {
 pub enum FixtureExecution {
     /// The fixture handler completed immediately.
     Ready(FixtureResult),
-    /// The fixture handler must be awaited after the UI thread drains the request.
+    /// The fixture handler must be awaited after the UI thread drains the
+    /// request.
     Queued(UiFixtureReceiver),
 }
 
-/// Manages fixture metadata and dispatches fixture application through a registered handler.
+/// Manages fixture metadata and dispatches fixture application through a
+/// registered handler.
 pub struct FixtureManager {
     fixtures: Mutex<Vec<FixtureSpec>>,
     handler: Mutex<Option<FixtureHandler>>,
@@ -176,7 +194,8 @@ impl FixtureManager {
         }
     }
 
-    /// Run one queued UI-thread fixture handler against the current root context.
+    /// Run one queued UI-thread fixture handler against the current root
+    /// context.
     pub fn drain_ui(&self, ctx: &Context) {
         let request = loop {
             let request = {
@@ -251,16 +270,23 @@ mod tests {
             FixtureExecution::Queued(receiver) => receiver,
             FixtureExecution::Ready(_) => panic!("expected queued UI fixture"),
         };
+        assert!(receiver.try_recv().is_none());
         manager.drain_ui(&Context::default());
 
         let response = receiver
-            .recv_timeout(Duration::from_millis(1))
+            .try_recv()
+            .expect("completed request")
             .expect("fixture response");
         assert_eq!(
             called.lock().expect("called lock").as_deref(),
             Some("ui.ready")
         );
         assert_eq!(response.values.get("done"), Some(&WidgetValue::Bool(true)));
+        let error = receiver
+            .try_recv()
+            .expect("closed channel")
+            .expect_err("result already taken");
+        assert_eq!(error.code, "internal");
     }
 
     #[test]
@@ -289,5 +315,31 @@ mod tests {
         manager.drain_ui(&Context::default());
 
         assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn dropped_ui_fixture_does_not_delay_the_next_request() {
+        let manager = FixtureManager::new();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&calls);
+        manager
+            .set_handler(FixtureHandler::Ui(Arc::new(Mutex::new(Box::new(
+                move |_ctx, call| {
+                    recorded.lock().expect("calls lock").push(call.name.clone());
+                    Ok(FixtureResponse::new())
+                },
+            )))))
+            .expect("handler");
+        let abandoned = manager.start_fixture(empty_call("abandoned"));
+        let FixtureExecution::Queued(retained) = manager.start_fixture(empty_call("retained"))
+        else {
+            panic!("expected queued fixture");
+        };
+        drop(abandoned);
+
+        manager.drain_ui(&Context::default());
+
+        retained.recv_timeout(Duration::ZERO).expect("next request");
+        assert_eq!(*calls.lock().expect("calls lock"), vec!["retained"]);
     }
 }

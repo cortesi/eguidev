@@ -85,6 +85,7 @@ pub struct WidgetDump {
     pub(crate) enabled: bool,
     pub(crate) visible: bool,
     pub(crate) focused: bool,
+    pub(crate) covered: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) selected: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,6 +216,7 @@ fn build_widget_dump(
         enabled: widget.enabled,
         visible: widget.visible,
         focused: widget.focused,
+        covered: widget.covered,
         selected,
         interact_rect: (fields == DumpFields::Full).then_some(widget.interact_rect),
         layout: (fields == DumpFields::Full)
@@ -367,6 +369,9 @@ fn render_flags(widget: &WidgetDump, out: &mut String) {
     if !widget.enabled {
         out.push_str(" !enabled");
     }
+    if widget.covered {
+        out.push_str(" covered");
+    }
     if let Some(layout) = &widget.layout {
         if layout.clipped {
             let clipped = ((1.0 - layout.visible_fraction).max(0.0) * 100.0).round();
@@ -462,6 +467,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
             selected: None,
             interact_rect: None,
             layout: None,
@@ -599,6 +605,7 @@ mod tests {
             overflow: true,
             available_rect: rect(0.0, 0.0, 50.0, 20.0),
             visible_fraction: 0.5,
+            text: None,
         });
         let dump = TreeDump {
             viewports: vec![ViewportDump {
@@ -619,5 +626,31 @@ mod tests {
         assert!(text.contains("status label [0,0 50x20] !enabled !clipped(50%) !overflow"));
         assert!(text.contains("data={\"payload\":\"xxxxxxxx"));
         assert!(text.contains("..."));
+    }
+
+    #[test]
+    fn dump_text_marks_a_covered_widget() {
+        let mut item = widget("approve", WidgetRole::Button, rect(0.0, 0.0, 50.0, 20.0));
+        item.covered = true;
+        let dump = TreeDump {
+            viewports: vec![ViewportDump {
+                id: "root".to_string(),
+                name: None,
+                title: None,
+                focused: false,
+                minimized: None,
+                occluded: None,
+                inner_size: Vec2 { x: 800.0, y: 600.0 },
+                frame_count: 1,
+                widgets: vec![item],
+            }],
+        };
+
+        let text = dump_text(&dump);
+
+        assert!(
+            text.contains("approve button [0,0 50x20] covered"),
+            "{text}"
+        );
     }
 }

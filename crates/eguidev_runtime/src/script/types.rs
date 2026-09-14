@@ -56,6 +56,13 @@ impl<'de> Deserialize<'de> for ScriptArgValue {
 /// Deterministic map of script args exposed to Luau as the global `args` table.
 pub type ScriptArgs = BTreeMap<String, ScriptArgValue>;
 
+/// Named Luau module sources available through `require` during one evaluation.
+///
+/// Keys are portable module paths relative to the caller-selected module root.
+/// A `.luau` suffix is optional for `require`; retaining it here keeps source
+/// names useful in diagnostics and failure bundles.
+pub type ScriptModules = BTreeMap<String, String>;
+
 /// Options for evaluating a Luau script.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct ScriptEvalOptions {
@@ -64,6 +71,9 @@ pub struct ScriptEvalOptions {
     /// Optional JSON object exposed to the script as the global `args` table.
     #[serde(default)]
     pub args: ScriptArgs,
+    /// Named Luau modules available to this script and its dependencies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: ScriptModules,
 }
 
 /// Request payload for the `script_eval` MCP tool.
@@ -177,7 +187,8 @@ pub struct ScriptImageInfo {
 pub struct FixtureApplication {
     /// Fixture name passed to `eguidev.fixture(...)`.
     pub name: String,
-    /// Validated fixture parameters, including defaults supplied by the fixture spec.
+    /// Validated fixture parameters, including defaults supplied by the fixture
+    /// spec.
     #[serde(default)]
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, WidgetValue>,
@@ -190,7 +201,8 @@ pub(super) struct ScriptValue {
     pub(super) content: Vec<ContentBlock>,
 }
 
-/// Structured result of evaluating a Luau script directly against a `DevMcp` instance.
+/// Structured result of evaluating a Luau script directly against a `DevMcp`
+/// instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptEvalOutcome {
     /// Whether evaluation completed successfully.
@@ -279,6 +291,7 @@ impl From<ScriptEvalOutcome> for CallToolResult {
 
 #[derive(Debug, Clone)]
 pub(super) enum ScriptImageKind {
+    NativeViewport,
     Viewport,
     Widget,
 }
@@ -286,6 +299,7 @@ pub(super) enum ScriptImageKind {
 impl ScriptImageKind {
     pub(super) fn as_str(&self) -> &'static str {
         match self {
+            Self::NativeViewport => "native_viewport",
             Self::Viewport => "viewport",
             Self::Widget => "widget",
         }
@@ -296,6 +310,8 @@ impl ScriptImageKind {
 pub(super) struct ImageCapture {
     pub(super) id: String,
     pub(super) data: String,
+    /// MCP media type of the encoded payload.
+    pub(super) media_type: &'static str,
     pub(super) kind: ScriptImageKind,
     pub(super) viewport_id: String,
     pub(super) target: Option<WidgetRef>,
@@ -327,11 +343,12 @@ mod tests {
     use super::{ScriptArgValue, ScriptEvalOptions};
 
     #[test]
-    fn script_eval_options_default_args_to_empty_map() {
+    fn script_eval_options_default_maps_to_empty() {
         let options: ScriptEvalOptions =
             serde_json::from_value(json!({ "source_name": "test.luau" })).expect("options");
         assert_eq!(options.source_name.as_deref(), Some("test.luau"));
         assert!(options.args.is_empty());
+        assert!(options.modules.is_empty());
     }
 
     #[test]

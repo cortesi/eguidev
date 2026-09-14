@@ -40,7 +40,8 @@ pub fn stable_hash8(value: &str) -> String {
 
 use super::*;
 
-/// Inputs retained by an active app session for deterministic failure collection.
+/// Inputs retained by an active app session for deterministic failure
+/// collection.
 #[derive(Clone)]
 pub struct BundleContext {
     /// Root directory for all failure bundles in this smoke run.
@@ -111,20 +112,24 @@ local shots = {}
 local errors = {}
 for _, viewport in ipairs(eguidev.viewports()) do
     local state = viewport:state()
+    local name: string? = nil
+    if state ~= nil then
+        name = state.name
+    end
     local ok, image = pcall(function()
         return viewport:screenshot()
     end)
     if ok then
         table.insert(shots, {
             viewport_id = viewport.id,
-            name = state.name,
+            name = name,
             image = image,
         })
     else
         table.insert(errors, {
             kind = "screenshot",
             viewport_id = viewport.id,
-            name = state.name,
+            name = name,
             message = tostring(image),
         })
     end
@@ -137,7 +142,8 @@ return {
 }
 "#;
 
-/// Internal Luau script used to collect diagnostics after frame artifacts are written.
+/// Internal Luau script used to collect diagnostics after frame artifacts are
+/// written.
 pub const BUNDLE_DIAGNOSTICS_SCRIPT: &str = r#"
 return eguidev.diagnostics()
 "#;
@@ -180,15 +186,34 @@ where
     }
 }
 
+/// Source inputs retained for one failed smoke script.
+pub struct FailureBundleScript<'a> {
+    /// Suite-relative script path.
+    pub path: &'a str,
+    /// Optional repeated-suite round.
+    pub round: Option<u32>,
+    /// Script arguments used for the failed evaluation.
+    pub args: &'a ScriptArgs,
+    /// Root script source used for the failed evaluation.
+    pub source: &'a str,
+    /// Named module sources used for the failed evaluation.
+    pub modules: &'a ScriptModules,
+}
+
 /// Write one deterministic failure bundle for a failed smoke script.
 pub async fn write_failure_bundle(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     context: &BundleContext,
-    script_path: &str,
-    round: Option<u32>,
-    args: &ScriptArgs,
+    script: FailureBundleScript<'_>,
     outcome: &ScriptEvalOutcome,
 ) -> Result<(), EdevError> {
+    let FailureBundleScript {
+        path: script_path,
+        round,
+        args,
+        source: script_source,
+        modules,
+    } = script;
     let bundle_key = match round {
         Some(round) => format!("{script_path}-round-{round}"),
         None => script_path.to_string(),
@@ -201,8 +226,10 @@ pub async fn write_failure_bundle(
     replace_dir(&bundle_dir)?;
     fs::write(
         bundle_dir.join("meta.json"),
-        bundle_meta(context, script_path, round, args, outcome)?,
+        bundle_meta(context, script_path, round, args, modules, outcome)?,
     )?;
+    fs::write(bundle_dir.join("script.luau"), script_source)?;
+    write_bundle_modules(&bundle_dir, modules)?;
     fs::write(bundle_dir.join("failure.txt"), failure_text(outcome)?)?;
     fs::write(
         bundle_dir.join("app.stderr.log"),
@@ -221,6 +248,7 @@ pub async fn write_failure_bundle(
             options: Some(ScriptEvalOptions {
                 source_name: Some(format!("<bundle:{script_path}>")),
                 args: ScriptArgs::default(),
+                ..ScriptEvalOptions::default()
             }),
         },
     )
@@ -311,7 +339,8 @@ pub async fn write_failure_bundle(
     Ok(())
 }
 
-/// Collect diagnostics for a bundle without coupling them to tree/screenshot capture.
+/// Collect diagnostics for a bundle without coupling them to tree/screenshot
+/// capture.
 async fn collect_bundle_diagnostics(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     context: &BundleContext,
@@ -334,6 +363,7 @@ async fn collect_bundle_diagnostics(
             options: Some(ScriptEvalOptions {
                 source_name: Some(format!("<bundle-diagnostics:{script_path}>")),
                 args: ScriptArgs::default(),
+                ..ScriptEvalOptions::default()
             }),
         },
     )
@@ -409,6 +439,7 @@ pub fn bundle_meta(
     script_path: &str,
     round: Option<u32>,
     args: &ScriptArgs,
+    modules: &ScriptModules,
     outcome: &ScriptEvalOutcome,
 ) -> Result<String, EdevError> {
     let script = match round {
@@ -424,6 +455,7 @@ pub fn bundle_meta(
     };
     let value = serde_json::json!({
         "script": script,
+        "modules": modules.keys().collect::<Vec<_>>(),
         "fixtures": &outcome.fixtures,
         "app": {
             "command": &context.launch.command,
@@ -438,6 +470,19 @@ pub fn bundle_meta(
         },
     });
     pretty_json(&value)
+}
+
+/// Write module files below a stable bundle subdirectory.
+fn write_bundle_modules(bundle_dir: &Path, modules: &ScriptModules) -> Result<(), EdevError> {
+    let root = bundle_dir.join("modules");
+    for (name, source) in modules {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, source)?;
+    }
+    Ok(())
 }
 
 /// Render the human-readable failure summary for `failure.txt`.
@@ -546,4 +591,15 @@ pub fn pretty_json(value: &impl Serialize) -> Result<String, EdevError> {
     })?;
     text.push('\n');
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BUNDLE_COLLECTION_SCRIPT;
+
+    #[test]
+    fn bundle_collection_script_satisfies_the_runtime_type_contract() {
+        eguidev_runtime::check_script_source("failure_bundle.luau", BUNDLE_COLLECTION_SCRIPT)
+            .expect("bundle collection script should type-check");
+    }
 }

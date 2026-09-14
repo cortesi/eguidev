@@ -25,6 +25,7 @@ eguidev = { workspace = true }
 glob = { workspace = true }
 image = { workspace = true }
 ruau = { workspace = true }
+ruau-script-api = { workspace = true, features = ["schema"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

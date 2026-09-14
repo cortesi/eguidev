@@ -55,13 +55,30 @@ end)
 local status = eguidev.widget("basic.status"):wait({ label = "Fixture: secondary viewport scrolled" })
 assert(status ~= nil)
 
-eguidev.fixture("viewports.duplicate_names")
-eguidev.wait(function()
-    return #eguidev.viewports({ name = "secondary" }) >= 2
+-- Duplicate names intentionally prevent widget lookup, including fixture ready
+-- checks and capture waits. Frame waits still let the app apply and clear them.
+local function wait_for_duplicate_names(expected: boolean)
+    local deadline = os.clock() + 5
+    while (#eguidev.viewports({ name = "secondary" }) >= 2) ~= expected do
+        assert(os.clock() < deadline, "duplicate viewport names did not reach the expected state")
+        eguidev.wait_frames(1)
+    end
+end
+
+local duplicates_ok, duplicates_err = pcall(function()
+    eguidev.fixture("viewports.duplicate_names", nil, { wait = false })
+    wait_for_duplicate_names(true)
+    local capture_ok, capture_err = pcall(function()
+        root_vp:wait_capture()
+    end)
+    assert(not capture_ok, "duplicate viewport names must prevent capture waits")
+    assert(type(capture_err) == "table", "instrumentation errors should be structured tables")
+    local capture_error = capture_err :: any
+    assert(capture_error.code == "instrumentation_fault", "duplicate names should report an instrumentation fault")
 end)
 eguidev.fixture("basic.default", nil, { wait = false })
-eguidev.wait_frames(3)
-assert(#eguidev.viewports({ name = "secondary" }) <= 1, "duplicate viewport should clear after reset")
+wait_for_duplicate_names(false)
+assert(duplicates_ok, tostring(duplicates_err))
 
 return {
     viewport_id = secondary_vp.id,

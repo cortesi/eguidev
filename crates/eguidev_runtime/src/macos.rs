@@ -61,6 +61,8 @@ use crate::{
 
 /// `NSWindowOcclusionStateVisible`.
 const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
+/// `NSWindowTitleVisible`.
+const WINDOW_TITLE_VISIBLE: isize = 0;
 const CG_IMAGE_ALPHA_INFO_MASK: u32 = 0x1f;
 const CG_IMAGE_BYTE_ORDER_MASK: u32 = 0x7000;
 
@@ -106,7 +108,8 @@ pub fn platform_window_states() -> Vec<PlatformViewportState> {
         .collect()
 }
 
-/// Return the AppKit window number for a titled window recorded by the occlusion hook.
+/// Return the AppKit window number for a titled window recorded by the
+/// occlusion hook.
 pub fn window_number_for_title(title: &str) -> Result<u32, String> {
     match recorded_window_number_for_title(title) {
         Ok(window_number) => Ok(window_number),
@@ -229,7 +232,8 @@ fn window_info_string(info: &WindowInfo, key: CFStringRef) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-/// Capture a window directly through Quartz and return an egui-compatible image.
+/// Capture a window directly through Quartz and return an egui-compatible
+/// image.
 pub fn capture_window_image(window_number: u32) -> Result<egui::ColorImage, String> {
     let image_options = kCGWindowImageBoundsIgnoreFraming | kCGWindowImageBestResolution;
     let Some(image) = create_image(
@@ -282,6 +286,7 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
         window_number: unsafe { window_number(window) },
         os_minimized: Some(unsafe { window_is_minimized(window) }),
         os_occluded: Some(real_state & OCCLUSION_STATE_VISIBLE == 0),
+        os_title_visible: Some(unsafe { window_title_is_visible(window) }),
     };
     let states = WINDOW_STATES.get_or_init(|| Mutex::new(HashMap::new()));
     states
@@ -292,6 +297,11 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
 
 unsafe fn window_is_minimized(window: *mut AnyObject) -> bool {
     unsafe { msg_send![window, isMiniaturized] }
+}
+
+unsafe fn window_title_is_visible(window: *mut AnyObject) -> bool {
+    let visibility: isize = unsafe { msg_send![window, titleVisibility] };
+    visibility == WINDOW_TITLE_VISIBLE
 }
 
 unsafe fn window_number(window: *mut AnyObject) -> Option<u32> {
@@ -331,7 +341,8 @@ fn presentation_session() -> &'static Mutex<PresentationSession> {
     PRESENTATION_SESSION.get_or_init(|| Mutex::new(PresentationSession::default()))
 }
 
-/// Apply one connection's presentation and return whether a live window needs a frame.
+/// Apply one connection's presentation and return whether a live window needs a
+/// frame.
 pub async fn configure_session(
     session_id: u64,
     presentation: Presentation,
@@ -364,7 +375,8 @@ pub async fn configure_session(
     .await?
 }
 
-/// Remove one connection's presentation and restore the newest remaining request.
+/// Remove one connection's presentation and restore the newest remaining
+/// request.
 pub async fn disconnect_session(session_id: u64) -> Result<(), String> {
     run_on_main(move || {
         let observed_policy = activation_policy();

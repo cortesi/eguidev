@@ -40,9 +40,10 @@ local status = eguidev.widget("basic.status")
 assert(status ~= nil, "submit should update status")
 ```
 
-Scripts are strict Luau. eguidev checks each script before it runs, and the
-sandbox has no filesystem, network, or module imports. eguidev adds one global,
-`eguidev`. You can run the same script in three ways:
+Scripts are strict Luau. eguidev checks each script before it runs. The sandbox
+has no filesystem or network access and can import only the named modules that
+the caller supplies. eguidev adds one global, `eguidev`. You can run the same
+script in three ways:
 
 - **`edev eval script.luau`** runs one script and prints its structured result.
 - **`edev smoke`** runs your full suite against one live app.
@@ -87,10 +88,31 @@ behavior instead of app internals. No script depends on another script.
 `edev smoke` ignores return values: assertions decide pass or fail, and
 `eguidev.log(...)` adds evidence to the result.
 
+Set `[smoke] module_dir` when smoke and eval scripts share checked Luau source.
+Every `.luau` file below that directory becomes a named module. Its path below
+the directory is the `require` name, with or without the `.luau` suffix. Both
+commands use the same setting, so a script can run alone through `edev eval`:
+
+```toml
+[smoke]
+suite_dir = "smoketest/specs"
+module_dir = "smoketest/modules"
+```
+
+```luau
+local layout = require("layout")
+layout.assert_strict("project sheet")
+```
+
+Edev checks the root and all reachable modules before execution. Type errors
+and runtime backtraces name the module file. Failure bundles retain the root
+script and the complete module tree used for the failed evaluation.
+
 Use these flags while you write a suite:
 
 - `--list [--json]` shows the selected scripts and does not launch the app.
 - `--only GLOB` narrows the run. `--fail-fast` stops at the first failure.
+- `--module-dir DIR` overrides the shared Luau module directory.
 - `--repeat N` and `--until-fail N` find intermittent failures across rounds.
 - `--bundle` writes a failure bundle for each failure. A bundle holds the tree
   dump, diagnostics, screenshots, script logs, and app output.
@@ -164,7 +186,21 @@ let devmcp = eguidev_runtime::attach(devmcp);
 usual `cargo run` therefore starts a usual app, with no server and no change to
 presentation.
 
-**3. Configure the launcher.** Install the CLI with `cargo install edev`. Then
+**3. Keep the focus** where the developer put it, before the event loop starts.
+
+```rust
+eguidev_runtime::enable_background_launch_guard();
+```
+
+On macOS an app takes the focus when it opens its first window. The guard hands
+each activation that no mouse click caused back to the application that was
+frontmost, so an automated run does not interrupt the developer. Call it in
+`main`, before `run_native`: the guard must watch every activation from the
+start, and `attach` can run later, inside the app builder. The guard applies
+only to a run that Edev started, and only while the session presentation is
+`background`.
+
+**4. Configure the launcher.** Install the CLI with `cargo install edev`. Then
 put a `.edev.toml` file in your project root:
 
 ```toml
@@ -176,8 +212,8 @@ suite_dir = "smoketest"
 ```
 
 On macOS, the default `background` presentation continues to render covered
-windows. It adds no Dock item and does not take the focus. Set
-`presentation = "foreground"` for manual sessions. See
+windows. It adds no Dock item, and with the guard from step 3 it keeps the
+focus where it was. Set `presentation = "foreground"` for manual sessions. See
 [`examples/edev.toml`](./examples/edev.toml) for a commented reference of every
 option.
 

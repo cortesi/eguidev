@@ -1,6 +1,68 @@
 //! Capture metadata shared by screenshot and sampling operations.
 
+use std::ops::Range;
+
+use image::codecs::png::PngEncoder;
+
 use super::*;
+
+/// Encoding that a screenshot request selects.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum ScreenshotFormat {
+    /// Lossy encoding. It keeps a capture small.
+    #[default]
+    Jpeg,
+    /// Lossless encoding. It keeps every rendered pixel exact.
+    Png,
+}
+
+impl ScreenshotFormat {
+    /// Return the MCP media type of this encoding.
+    pub(super) fn media_type(self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+        }
+    }
+
+    /// Parse one script-supplied format word.
+    pub(super) fn parse(word: &str) -> Option<Self> {
+        match word {
+            "jpeg" => Some(Self::Jpeg),
+            "png" => Some(Self::Png),
+            _ => None,
+        }
+    }
+}
+
+/// Encoding options for one screenshot.
+///
+/// The default keeps the established JPEG encoding and the 1,600 pixel long
+/// edge, so a call that passes no options is unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ScreenshotOptions {
+    /// Selected encoding.
+    pub(super) format: ScreenshotFormat,
+    /// Largest long edge in pixels. Zero keeps the captured size.
+    pub(super) max_dimension: u32,
+}
+
+impl Default for ScreenshotOptions {
+    fn default() -> Self {
+        Self {
+            format: ScreenshotFormat::default(),
+            max_dimension: DEFAULT_MAX_SCREENSHOT_DIMENSION,
+        }
+    }
+}
+
+/// One encoded capture and the media type that describes it.
+pub(super) struct EncodedImage {
+    /// Base64 image payload.
+    pub(super) data: String,
+    /// MCP media type, such as `image/png`.
+    pub(super) media_type: &'static str,
+}
 
 pub(super) fn capture_pixels_per_point(inner: &Inner, viewport_id: egui::ViewportId) -> f32 {
     inner
@@ -18,7 +80,8 @@ pub(super) fn captured_viewport_name(
 }
 
 impl DevMcpServer {
-    /// Capture a viewport once and sample exact RGBA pixels at logical positions.
+    /// Capture a viewport once and sample exact RGBA pixels at logical
+    /// positions.
     pub(super) async fn viewport_sample_pixels(
         &self,
         viewport_id: Option<String>,
@@ -30,7 +93,8 @@ impl DevMcpServer {
         sample_color_image(&image, pixels_per_point, &positions).map_err(Into::into)
     }
 
-    /// Capture a widget's viewport once and sample relative widget positions from it.
+    /// Capture a widget's viewport once and sample relative widget positions
+    /// from it.
     pub(super) async fn widget_sample_pixels(
         &self,
         viewport_id: Option<String>,
@@ -52,7 +116,8 @@ impl DevMcpServer {
         .map_err(Into::into)
     }
 
-    /// Capture a widget's viewport once and sample a grid over its visible rect.
+    /// Capture a widget's viewport once and sample a grid over its visible
+    /// rect.
     pub(super) async fn widget_sample_grid(
         &self,
         viewport_id: Option<String>,
@@ -85,6 +150,21 @@ enum ScreenshotWaitOutcome {
     NativeCapture(ScreenshotState),
 }
 
+/// Release retained screenshot state even when the enclosing script is
+/// cancelled.
+struct ScreenshotRequest<'a> {
+    /// Runtime that retains this request until it completes.
+    runtime: &'a Runtime,
+    /// Unique request owned by the capture future.
+    request_id: u64,
+}
+
+impl Drop for ScreenshotRequest<'_> {
+    fn drop(&mut self) {
+        self.runtime.take_screenshot(self.request_id);
+    }
+}
+
 pub(super) fn resolve_screenshot_viewport(
     inner: &Inner,
     viewport_id: Option<String>,
@@ -100,9 +180,57 @@ pub(super) async fn capture_screenshot(
     runtime: &Runtime,
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
-) -> Result<String, ToolError> {
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
     let state = capture_screenshot_state(inner, runtime, viewport_id, kind).await?;
-    build_screenshot_data(&state)
+    build_screenshot_data(&state, options)
+}
+
+/// Capture the complete native window, including platform chrome.
+#[cfg(target_os = "macos")]
+pub(super) fn capture_native_screenshot(
+    inner: &Inner,
+    viewport_id: egui::ViewportId,
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
+    let snapshot = viewport_snapshot_for(inner, viewport_id).ok_or_else(|| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            "Viewport not ready for a native screenshot",
+        )
+    })?;
+    let title = snapshot.title.as_deref().ok_or_else(|| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            "Viewport has no title to match a native window",
+        )
+    })?;
+    let window_number = window_number_for_title(title).map_err(|error| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!("Could not resolve native window: {error}"),
+        )
+    })?;
+    let image = capture_window_image(window_number).map_err(|error| {
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!("Could not capture native window: {error}"),
+        )
+    })?;
+    encode_screenshot(&image, options)
+}
+
+/// Report that native screenshots are not available on this platform.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn capture_native_screenshot(
+    _inner: &Inner,
+    _viewport_id: egui::ViewportId,
+    _options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
+    Err(ToolError::new(
+        ErrorCode::Unsupported,
+        "Native window screenshots are only available on macOS",
+    ))
 }
 
 async fn capture_screenshot_image(
@@ -121,9 +249,9 @@ async fn capture_screenshot_state(
     viewport_id: egui::ViewportId,
     kind: ScreenshotKind,
 ) -> Result<ScreenshotState, ToolError> {
-    // Best-effort wake-up before sending the screenshot command. Some idle windows won't
-    // produce a frame until a command is queued, so only treat this as fatal if context
-    // capture is not ready yet.
+    // Best-effort wake-up before sending the screenshot command. Some idle
+    // windows won't produce a frame until a command is queued, so only
+    // treat this as fatal if context capture is not ready yet.
     let event_loop_ready = ensure_event_loop_active(inner, runtime, viewport_id).await;
     let has_snapshot = inner.viewports.has_viewport_snapshot(viewport_id);
     if !inner.has_context() {
@@ -221,6 +349,10 @@ async fn await_screenshot(
     kind: &ScreenshotKind,
     start_frame: u64,
 ) -> Result<ScreenshotState, ToolError> {
+    let request = ScreenshotRequest {
+        runtime,
+        request_id,
+    };
     let notify = match runtime.screenshot_state(request_id) {
         Some(state) => state.notify(),
         None => {
@@ -256,9 +388,10 @@ async fn await_screenshot(
                 .map(|snapshot| snapshot.frame_count)
                 .unwrap_or(0);
             if should_try_native_screenshot_fallback(viewport_id, current_frame, start_frame) {
-                // A native capture can disagree with the recorded viewport while
-                // a resize settles, so keep retrying against fresh frames until
-                // the screenshot deadline instead of failing the first attempt.
+                // A native capture can disagree with the recorded viewport
+                // while a resize settles, so keep retrying
+                // against fresh frames until the screenshot
+                // deadline instead of failing the first attempt.
                 match native_screenshot_fallback(inner, viewport_id, kind) {
                     Ok(state) => break ScreenshotWaitOutcome::NativeCapture(state),
                     Err(error) => runtime.log_screenshot(
@@ -295,7 +428,6 @@ async fn await_screenshot(
     match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
         Ok(Ok(ScreenshotWaitOutcome::Ready)) => {}
         Ok(Ok(ScreenshotWaitOutcome::NativeCapture(state))) => {
-            runtime.take_screenshot(request_id);
             runtime.log_screenshot(
                 inner,
                 format!(
@@ -307,7 +439,7 @@ async fn await_screenshot(
         }
         Ok(Err(error)) => return Err(error),
         Err(_) => {
-            runtime.take_screenshot(request_id);
+            drop(request);
             let end_frame = inner.frame_count();
             runtime.log_screenshot(
                 inner,
@@ -381,9 +513,12 @@ pub(super) fn should_try_native_screenshot_fallback(
     native_fallback_applies(viewport_id) && current_frame > start_frame
 }
 
-fn build_screenshot_data(state: &ScreenshotState) -> Result<String, ToolError> {
+fn build_screenshot_data(
+    state: &ScreenshotState,
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
     let image = build_screenshot_image(state)?;
-    encode_jpeg(&image)
+    encode_screenshot(&image, options)
 }
 
 fn build_screenshot_image(state: &ScreenshotState) -> Result<Arc<egui::ColorImage>, ToolError> {
@@ -592,22 +727,33 @@ fn screenshot_request_details_with_frames(
 
 const DEFAULT_MAX_SCREENSHOT_DIMENSION: u32 = 1600;
 
+/// Reduce an image so its long edge fits `max_dimension`.
+///
+/// The reduction averages every source pixel that a destination pixel covers.
+/// A point sample would alias rendered text, and a screenshot reduced to a
+/// thumbnail must stay readable.
 fn scale_screenshot_image(image: &egui::ColorImage, max_dimension: u32) -> egui::ColorImage {
     let width = image.width();
     let height = image.height();
     let long_edge = width.max(height) as u32;
-    if long_edge <= max_dimension {
+    if long_edge <= max_dimension || max_dimension == 0 {
         return image.clone();
     }
-    let scale = max_dimension as f32 / long_edge as f32;
-    let new_width = ((width as f32) * scale).round().max(1.0) as usize;
-    let new_height = ((height as f32) * scale).round().max(1.0) as usize;
+    let scale = f64::from(max_dimension) / f64::from(long_edge);
+    let new_width = (((width as f64) * scale).round() as usize).max(1);
+    let new_height = (((height as f64) * scale).round() as usize).max(1);
     let mut pixels = Vec::with_capacity(new_width * new_height);
     for y in 0..new_height {
+        let y0 = y * height / new_height;
+        let y1 = (((y + 1) * height).div_ceil(new_height))
+            .min(height)
+            .max(y0 + 1);
         for x in 0..new_width {
-            let source_x = x * width / new_width;
-            let source_y = y * height / new_height;
-            pixels.push(image.pixels[source_y * width + source_x]);
+            let x0 = x * width / new_width;
+            let x1 = (((x + 1) * width).div_ceil(new_width))
+                .min(width)
+                .max(x0 + 1);
+            pixels.push(average_pixel(image, x0..x1, y0..y1));
         }
     }
     egui::ColorImage {
@@ -617,9 +763,72 @@ fn scale_screenshot_image(image: &egui::ColorImage, max_dimension: u32) -> egui:
     }
 }
 
-fn encode_jpeg(image: &egui::ColorImage) -> Result<String, ToolError> {
-    const JPEG_QUALITY: u8 = 80;
-    let image = scale_screenshot_image(image, DEFAULT_MAX_SCREENSHOT_DIMENSION);
+/// Average one source rectangle into a single destination pixel.
+fn average_pixel(image: &egui::ColorImage, xs: Range<usize>, ys: Range<usize>) -> egui::Color32 {
+    let mut totals = [0u64; 4];
+    let mut count = 0u64;
+    for y in ys {
+        for x in xs.clone() {
+            let Some(pixel) = image.pixels.get(y * image.width() + x) else {
+                continue;
+            };
+            let [r, g, b, a] = pixel.to_array();
+            totals[0] += u64::from(r);
+            totals[1] += u64::from(g);
+            totals[2] += u64::from(b);
+            totals[3] += u64::from(a);
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return egui::Color32::TRANSPARENT;
+    }
+    egui::Color32::from_rgba_premultiplied(
+        (totals[0] / count) as u8,
+        (totals[1] / count) as u8,
+        (totals[2] / count) as u8,
+        (totals[3] / count) as u8,
+    )
+}
+
+/// Encode a captured image under the requested options.
+fn encode_screenshot(
+    image: &egui::ColorImage,
+    options: ScreenshotOptions,
+) -> Result<EncodedImage, ToolError> {
+    let image = scale_screenshot_image(image, options.max_dimension);
+    match options.format {
+        ScreenshotFormat::Jpeg => encode_jpeg(&image),
+        ScreenshotFormat::Png => encode_png(&image),
+    }
+}
+
+/// Encode one image as PNG, which keeps every rendered pixel exact.
+fn encode_png(image: &egui::ColorImage) -> Result<EncodedImage, ToolError> {
+    let width = image.size[0] as u32;
+    let height = image.size[1] as u32;
+    let mut bytes = Vec::with_capacity(image.pixels.len() * 4);
+    for pixel in &image.pixels {
+        bytes.extend_from_slice(&pixel.to_srgba_unmultiplied());
+    }
+    let mut png_data = Vec::new();
+    let encoder = PngEncoder::new(&mut png_data);
+    image::ImageEncoder::write_image(
+        encoder,
+        &bytes,
+        width,
+        height,
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|error| ToolError::new(ErrorCode::Internal, format!("PNG encode failed: {error}")))?;
+    Ok(EncodedImage {
+        data: STANDARD.encode(png_data),
+        media_type: ScreenshotFormat::Png.media_type(),
+    })
+}
+
+fn encode_jpeg(image: &egui::ColorImage) -> Result<EncodedImage, ToolError> {
+    const JPEG_QUALITY: u8 = 88;
     let width = image.size[0] as u32;
     let height = image.size[1] as u32;
     let capacity = width
@@ -629,16 +838,14 @@ fn encode_jpeg(image: &egui::ColorImage) -> Result<String, ToolError> {
     let mut bytes = Vec::with_capacity(capacity);
     for pixel in &image.pixels {
         let [r, g, b, a] = pixel.to_array();
-        if a == 255 {
-            bytes.extend_from_slice(&[r, g, b]);
-        } else {
-            let alpha = u16::from(a);
-            let inv = 255_u16.saturating_sub(alpha);
-            let r = ((u16::from(r) * alpha) + 255 * inv) / 255;
-            let g = ((u16::from(g) * alpha) + 255 * inv) / 255;
-            let b = ((u16::from(b) * alpha) + 255 * inv) / 255;
-            bytes.extend_from_slice(&[r as u8, g as u8, b as u8]);
-        }
+        // Color32 channels already include alpha in gamma space. Add the
+        // white matte once, retaining the captured color convention.
+        let white = 255 - a;
+        bytes.extend_from_slice(&[
+            r.saturating_add(white),
+            g.saturating_add(white),
+            b.saturating_add(white),
+        ]);
     }
     let mut jpeg_data = Vec::new();
     let encoder = JpegEncoder::new_with_quality(&mut jpeg_data, JPEG_QUALITY);
@@ -650,7 +857,10 @@ fn encode_jpeg(image: &egui::ColorImage) -> Result<String, ToolError> {
         image::ExtendedColorType::Rgb8,
     )
     .map_err(|error| ToolError::new(ErrorCode::Internal, format!("JPEG encode failed: {error}")))?;
-    Ok(STANDARD.encode(jpeg_data))
+    Ok(EncodedImage {
+        data: STANDARD.encode(jpeg_data),
+        media_type: ScreenshotFormat::Jpeg.media_type(),
+    })
 }
 
 fn crop_image(
@@ -694,13 +904,103 @@ fn crop_image(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_MAX_SCREENSHOT_DIMENSION, scale_screenshot_image};
+    use std::{future::poll_fn, sync::Arc, task::Poll};
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    use super::{
+        DEFAULT_MAX_SCREENSHOT_DIMENSION, ScreenshotFormat, ScreenshotOptions, await_screenshot,
+        encode_screenshot, scale_screenshot_image,
+    };
+    use crate::{
+        registry::Inner,
+        runtime::Runtime,
+        screenshots::{ScreenshotKind, ScreenshotState},
+    };
+
+    #[tokio::test]
+    async fn cancelled_screenshot_releases_only_its_request() {
+        for arrives_before_cancellation in [false, true] {
+            let inner = Arc::new(Inner::new());
+            let runtime = Runtime::ensure_for_inner(&inner);
+            runtime.insert_screenshot(1, ScreenshotState::pending(ScreenshotKind::Viewport));
+            runtime.insert_screenshot(2, ScreenshotState::pending(ScreenshotKind::Viewport));
+            let mut capture = Box::pin(await_screenshot(
+                &inner,
+                &runtime,
+                1,
+                egui::ViewportId::ROOT,
+                &ScreenshotKind::Viewport,
+                0,
+            ));
+            poll_fn(|cx| {
+                assert!(capture.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+
+            let image = Arc::new(solid_image(2, 2));
+            if arrives_before_cancellation {
+                let mut state = ScreenshotState::pending(ScreenshotKind::Viewport);
+                state.mark_ready(Arc::clone(&image));
+                runtime.insert_screenshot(1, state);
+            }
+            drop(capture);
+
+            assert!(runtime.screenshot_state(1).is_none());
+            assert_eq!(Arc::strong_count(&image), 1);
+            assert!(runtime.screenshot_state(2).is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_screenshot_returns_image_and_releases_request() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let image = Arc::new(solid_image(2, 2));
+        let mut state = ScreenshotState::pending(ScreenshotKind::Viewport);
+        state.mark_ready(Arc::clone(&image));
+        runtime.insert_screenshot(1, state);
+
+        let captured = await_screenshot(
+            &inner,
+            &runtime,
+            1,
+            egui::ViewportId::ROOT,
+            &ScreenshotKind::Viewport,
+            0,
+        )
+        .await
+        .expect("completed capture");
+
+        assert!(Arc::ptr_eq(&captured.image().expect("image"), &image));
+        assert!(runtime.screenshot_state(1).is_none());
+    }
 
     fn solid_image(width: usize, height: usize) -> egui::ColorImage {
         egui::ColorImage {
             size: [width, height],
             source_size: egui::Vec2::new(width as f32, height as f32),
             pixels: vec![egui::Color32::WHITE; width * height],
+        }
+    }
+
+    /// Build an image whose left half is black and right half is white.
+    fn split_image(width: usize, height: usize) -> egui::ColorImage {
+        let mut pixels = Vec::with_capacity(width * height);
+        for _ in 0..height {
+            for x in 0..width {
+                pixels.push(if x < width / 2 {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::WHITE
+                });
+            }
+        }
+        egui::ColorImage {
+            size: [width, height],
+            source_size: egui::Vec2::new(width as f32, height as f32),
+            pixels,
         }
     }
 
@@ -716,5 +1016,136 @@ mod tests {
         let image = solid_image(3200, 1800);
         let scaled = scale_screenshot_image(&image, 1600);
         assert_eq!(scaled.size, [1600, 900]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_keeps_the_captured_size_when_the_cap_is_zero() {
+        let image = solid_image(3200, 1800);
+        let scaled = scale_screenshot_image(&image, 0);
+        assert_eq!(scaled.size, [3200, 1800]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_averages_the_source_pixels() {
+        // A point sample would return pure black or pure white. An area
+        // average returns the midpoint, which keeps reduced text readable.
+        let image = split_image(8, 2);
+        let scaled = scale_screenshot_image(&image, 1);
+        assert_eq!(scaled.size, [1, 1]);
+        let [red, green, blue, _] = scaled.pixels[0].to_array();
+        assert!((120..=136).contains(&red), "unexpected red {red}");
+        assert_eq!([red, green, blue], [red; 3]);
+    }
+
+    #[test]
+    fn scale_screenshot_image_averages_large_sources_without_overflow() {
+        // A tiny thumbnail of a high-resolution capture can sum more than
+        // u32::MAX in each channel, even though every source pixel is valid.
+        let image = solid_image(5120, 3456);
+        let scaled = scale_screenshot_image(&image, 1);
+        assert_eq!(scaled.size, [1, 1]);
+        assert_eq!(scaled.pixels, vec![egui::Color32::WHITE]);
+    }
+
+    #[test]
+    fn encode_screenshot_reports_the_selected_media_type() {
+        let image = solid_image(4, 4);
+        let jpeg = encode_screenshot(&image, ScreenshotOptions::default()).expect("jpeg");
+        assert_eq!(jpeg.media_type, "image/jpeg");
+        let png = encode_screenshot(
+            &image,
+            ScreenshotOptions {
+                format: ScreenshotFormat::Png,
+                max_dimension: 0,
+            },
+        )
+        .expect("png");
+        assert_eq!(png.media_type, "image/png");
+        assert_ne!(jpeg.data, png.data);
+    }
+
+    #[test]
+    fn png_screenshots_preserve_translucent_colors() {
+        for (color, expected) in [
+            (egui::Color32::TRANSPARENT, [0, 0, 0, 0]),
+            (
+                egui::Color32::from_rgba_premultiplied(64, 32, 16, 128),
+                [128, 64, 32, 128],
+            ),
+            (egui::Color32::from_rgb(12, 34, 56), [12, 34, 56, 255]),
+        ] {
+            let mut image = solid_image(16, 16);
+            image.pixels.fill(color);
+            let encoded = encode_screenshot(
+                &image,
+                ScreenshotOptions {
+                    format: ScreenshotFormat::Png,
+                    max_dimension: 0,
+                },
+            )
+            .expect("encode PNG");
+            let bytes = STANDARD.decode(encoded.data).expect("decode base64");
+            let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .expect("decode PNG")
+                .to_rgba8();
+            assert_eq!(decoded.dimensions(), (16, 16));
+            assert!(
+                decoded.pixels().all(|pixel| pixel.0 == expected),
+                "PNG must use straight alpha for {color:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn jpeg_screenshots_composite_translucent_colors_once() {
+        for (color, expected) in [
+            (egui::Color32::TRANSPARENT, [255_u8, 255, 255]),
+            (
+                egui::Color32::from_rgba_premultiplied(64, 32, 16, 128),
+                [191, 159, 143],
+            ),
+            (egui::Color32::from_rgb(12, 34, 56), [12, 34, 56]),
+        ] {
+            let mut image = solid_image(16, 16);
+            image.pixels.fill(color);
+            let encoded = encode_screenshot(
+                &image,
+                ScreenshotOptions {
+                    format: ScreenshotFormat::Jpeg,
+                    max_dimension: 0,
+                },
+            )
+            .expect("encode JPEG");
+            let bytes = STANDARD.decode(encoded.data).expect("decode base64");
+            let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+                .expect("decode JPEG")
+                .to_rgb8();
+            assert_eq!(decoded.dimensions(), (16, 16));
+            for pixel in decoded.pixels() {
+                for (actual, expected) in pixel.0.into_iter().zip(expected) {
+                    assert!(
+                        actual.abs_diff(expected) <= 3,
+                        "JPEG white composite for {color:?}: expected {expected}, got {actual}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_format_parses_only_supported_words() {
+        assert_eq!(
+            ScreenshotFormat::parse("jpeg"),
+            Some(ScreenshotFormat::Jpeg)
+        );
+        assert_eq!(ScreenshotFormat::parse("png"), Some(ScreenshotFormat::Png));
+        assert_eq!(ScreenshotFormat::parse("webp"), None);
+    }
+
+    #[test]
+    fn default_screenshot_options_keep_the_established_encoding() {
+        let options = ScreenshotOptions::default();
+        assert_eq!(options.format, ScreenshotFormat::Jpeg);
+        assert_eq!(options.max_dimension, DEFAULT_MAX_SCREENSHOT_DIMENSION);
     }
 }

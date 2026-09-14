@@ -26,7 +26,7 @@ use objc2_screen_capture_kit::{
 };
 
 use super::{RecordingRequest, RecordingSummary, WindowCandidate, select_window};
-use crate::EdevError;
+use crate::{EdevError, instance_registry};
 
 /// Minimum macOS version with ScreenCaptureKit direct recording output.
 const MIN_MACOS_VERSION: NSOperatingSystemVersion = NSOperatingSystemVersion {
@@ -190,6 +190,8 @@ pub fn live_process_group_members(process_group_id: i32) -> Vec<i32> {
     processes::pids_by_type(ProcFilter::ByProgramGroup { pgrpid })
         .unwrap_or_default()
         .into_iter()
+        // Group enumeration includes zombies until their parent reaps them.
+        .filter(|pid| instance_registry::is_process_alive(*pid))
         .filter_map(|pid| i32::try_from(pid).ok())
         .collect::<Vec<_>>()
 }
@@ -391,7 +393,8 @@ fn shareable_content() -> Result<Retained<SCShareableContent>, EdevError> {
         .map_err(EdevError::RecordFailed)
 }
 
-/// Run a ScreenCaptureKit start/stop action and wait for its completion callback.
+/// Run a ScreenCaptureKit start/stop action and wait for its completion
+/// callback.
 fn complete_stream_action(
     name: &'static str,
     action: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),
@@ -430,4 +433,59 @@ fn delegate_failure(events: &Arc<Mutex<Vec<RecordingEvent>>>) -> Option<EdevErro
         RecordingEvent::Failed(message) => Some(EdevError::RecordFailed(message.clone())),
         RecordingEvent::Started | RecordingEvent::Finished => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        mem::MaybeUninit,
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
+
+    use super::{ProcFilter, live_process_group_members, processes};
+
+    #[test]
+    fn live_process_group_members_exclude_defunct_children() {
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn owned process group");
+        let pid = i32::try_from(child.id()).expect("child PID");
+        let running_members = live_process_group_members(pid);
+        drop(child.stdin.take());
+        let mut exit_info = MaybeUninit::<libc::siginfo_t>::uninit();
+        // SAFETY: waitid writes to valid, aligned siginfo_t storage. This waits
+        // only for our child, and WNOWAIT leaves it unreaped for the assertion.
+        let wait_result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id(),
+                exit_info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        let listed_members =
+            processes::pids_by_type(ProcFilter::ByProgramGroup { pgrpid: child.id() });
+        let exited_members = live_process_group_members(pid);
+        let status = child.wait().expect("reap owned child");
+        assert!(status.success());
+        assert_eq!(wait_result, 0, "wait for child exit without reaping");
+        assert!(
+            listed_members
+                .expect("list defunct child")
+                .contains(&(pid as u32))
+        );
+        assert!(
+            running_members.contains(&pid),
+            "running child must count as live"
+        );
+        assert!(
+            exited_members.is_empty(),
+            "defunct child must not count as live"
+        );
+    }
 }

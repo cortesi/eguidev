@@ -9,6 +9,7 @@ use eguidev::internal::{
     devmcp::RuntimeHooks,
     presentation::Presentation,
     registry::{Inner, viewport_id_to_string},
+    viewports::OutputSnapshot,
 };
 #[cfg(test)]
 use tokio::time::sleep;
@@ -22,7 +23,7 @@ use crate::{
     DevMcp, McpEndpoint, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
     automation::{
         DEFAULT_SCRIPT_EVAL_TIMEOUT_MS,
-        script::{run_script_eval, warm_checker_baseline},
+        script::{run_script_eval_with_modules, warm_checker_baseline},
     },
     egui_diagnostics::EguiDiagnosticJournal,
     mcp_endpoint_from,
@@ -250,6 +251,12 @@ impl Runtime {
         viewport_id: egui::ViewportId,
         output: &FullOutput,
     ) {
+        inner.viewports.record_output_snapshot(
+            viewport_id,
+            OutputSnapshot {
+                cursor_icon: output.platform_output.cursor_icon,
+            },
+        );
         self.egui_diagnostics.record_output(
             viewport_id_to_string(viewport_id),
             inner.frame_count(),
@@ -343,16 +350,20 @@ pub async fn eval_script(
     };
     let runtime = Runtime::for_devmcp(devmcp).expect("runtime attached");
     let timeout_ms = timeout_ms.unwrap_or(DEFAULT_SCRIPT_EVAL_TIMEOUT_MS);
-    let source_name = options
-        .source_name
-        .unwrap_or_else(|| "script.luau".to_string());
-    run_script_eval(
+    let ScriptEvalOptions {
+        source_name,
+        args,
+        modules,
+    } = options;
+    let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
+    run_script_eval_with_modules(
         inner,
         runtime,
         script_source.to_string(),
         timeout_ms,
         source_name,
-        options.args,
+        args,
+        modules,
     )
     .await
 }

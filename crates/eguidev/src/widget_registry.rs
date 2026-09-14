@@ -330,7 +330,8 @@ struct WidgetEntryInput<'a> {
     focused: bool,
 }
 
-/// Map one egui layer order onto a comparable paint rank, where a larger value paints later.
+/// Map one egui layer order onto a comparable paint rank, where a larger value
+/// paints later.
 fn layer_paint_order(order: egui::Order) -> u8 {
     match order {
         egui::Order::Background => 0,
@@ -339,6 +340,24 @@ fn layer_paint_order(order: egui::Order) -> u8 {
         egui::Order::Tooltip => 3,
         egui::Order::Debug => 4,
     }
+}
+
+/// Whether another egui layer covers a widget's action point.
+///
+/// The action point is the center of the widget's (already
+/// globally-transformed) `interact_rect`, the same point pointer actions
+/// target. `ctx.layer_id_at` returns the topmost interactable layer at that
+/// point, already skipping non-interactable layers such as tooltips. `None`
+/// means no layer claims the point, so the widget is not covered. A modal
+/// backdrop registers as an interactable layer over the whole screen, so a
+/// widget under a modal reports covered too.
+fn widget_action_point_covered(
+    ctx: &egui::Context,
+    layer_id: egui::LayerId,
+    interact_rect: egui::Rect,
+) -> bool {
+    ctx.layer_id_at(interact_rect.center())
+        .is_some_and(|top| top != layer_id)
 }
 
 fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
@@ -362,6 +381,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
     } else {
         (rect, interact_rect)
     };
+    let covered = widget_action_point_covered(ctx, layer_id, interact_rect);
     let entry = WidgetRegistryEntry {
         id,
         explicit_id: true,
@@ -381,6 +401,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         enabled,
         visible: meta.visible,
         focused,
+        covered,
     };
     widgets.record_widget(viewport_id, entry);
 }
@@ -904,6 +925,7 @@ mod tests {
                 enabled: true,
                 visible: true,
                 focused: false,
+                covered: false,
             }
         }
 
@@ -932,6 +954,59 @@ mod tests {
         assert_eq!(
             resolved.expect_err("duplicate id").code(),
             ErrorCode::InstrumentationFault
+        );
+    }
+
+    #[test]
+    fn widget_action_point_covered_reports_the_topmost_interactable_layer() {
+        use super::widget_action_point_covered;
+
+        let ctx = egui::Context::default();
+        let show_card = |ui: &mut egui::Ui| -> egui::LayerId {
+            egui::Area::new(egui::Id::new("floating.card"))
+                .order(egui::Order::Middle)
+                .fixed_pos(egui::pos2(10.0, 10.0))
+                .show(ui.ctx(), |ui| {
+                    ui.set_min_size(egui::vec2(100.0, 100.0));
+                })
+                .response
+                .layer_id
+        };
+        let raw_input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        // An area needs one prior frame before egui treats it as
+        // interactable, so render it twice before checking coverage.
+        ctx.run_ui(raw_input(), |ui| {
+            show_card(ui);
+        })
+        .drop_without_applying_deltas();
+        let mut card_layer = None;
+        ctx.run_ui(raw_input(), |ui| {
+            card_layer = Some(show_card(ui));
+        })
+        .drop_without_applying_deltas();
+        let card_layer = card_layer.expect("area registers its layer");
+
+        let under_card = egui::Rect::from_center_size(egui::pos2(50.0, 50.0), egui::vec2(4.0, 4.0));
+        let outside_card =
+            egui::Rect::from_center_size(egui::pos2(300.0, 300.0), egui::vec2(4.0, 4.0));
+
+        assert!(
+            widget_action_point_covered(&ctx, egui::LayerId::background(), under_card),
+            "a background widget under the card is covered"
+        );
+        assert!(
+            !widget_action_point_covered(&ctx, card_layer, under_card),
+            "a widget on the card's own layer is not covered by the card"
+        );
+        assert!(
+            !widget_action_point_covered(&ctx, egui::LayerId::background(), outside_card),
+            "a background widget outside the card is not covered"
         );
     }
 }

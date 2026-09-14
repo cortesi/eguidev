@@ -34,15 +34,19 @@ impl DevMcpServer {
         rect: Option<Rect>,
         color: String,
     ) -> ToolResult<OverlayHighlightResult> {
-        let (rect, key) = if let Some(ref target) = target {
+        let (viewport_id, rect, key) = if let Some(ref target) = target {
             let widget = resolve_widget(&self.inner, viewport_id.as_deref(), target)?;
-            (widget.interact_rect, format!("widget:{}", widget.id))
+            (
+                resolve_viewport_id(&self.inner, Some(widget.viewport_id))?,
+                widget.interact_rect,
+                format!("widget:{}", widget.id),
+            )
         } else if let Some(rect) = rect {
             let key = format!(
                 "rect:{},{},{},{}",
                 rect.min.x, rect.min.y, rect.max.x, rect.max.y
             );
-            (rect, key)
+            (resolve_viewport_id(&self.inner, viewport_id)?, rect, key)
         } else {
             return Err(
                 ToolError::new(ErrorCode::InvalidArgument, "Missing rect or target").into(),
@@ -55,6 +59,7 @@ impl DevMcpServer {
             )
         })?;
         self.inner.set_overlay(
+            viewport_id,
             key,
             OverlayEntry {
                 rect: egui::Rect::from(rect),
@@ -66,7 +71,7 @@ impl DevMcpServer {
     }
 
     /// Hide highlights. If a target widget is given, removes just that widget's
-    /// highlight. Otherwise clears all highlights.
+    /// highlight. Otherwise clears all highlights in the selected viewport.
     pub(super) async fn clear_highlights(
         &self,
         viewport_id: Option<String>,
@@ -74,21 +79,37 @@ impl DevMcpServer {
     ) -> ToolResult<()> {
         if let Some(ref target) = target {
             let widget = resolve_widget(&self.inner, viewport_id.as_deref(), target)?;
-            self.inner.remove_overlay(&format!("widget:{}", widget.id));
+            let viewport_id = resolve_viewport_id(&self.inner, Some(widget.viewport_id))?;
+            self.inner
+                .remove_overlay(viewport_id, &format!("widget:{}", widget.id));
         } else {
-            self.inner.clear_overlays();
+            let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+            self.inner.clear_viewport_overlays(viewport_id);
         }
         Ok(())
     }
 
-    /// Enable the persistent debug overlay with a fresh configuration.
+    /// Replace the selected viewport's persistent debug overlay configuration.
     pub(super) async fn show_debug_overlay(
         &self,
-        _viewport_id: Option<String>,
+        viewport_id: Option<String>,
         mode: Option<OverlayDebugModeName>,
         scope: Option<WidgetRef>,
         options: Option<OverlayDebugOptionsInput>,
     ) -> ToolResult<()> {
+        let (viewport_id, scope) = if let Some(scope) = scope {
+            let (widget, viewport_id) =
+                resolve_widget_and_viewport(&self.inner, viewport_id.as_deref(), &scope)?;
+            (
+                viewport_id,
+                Some(WidgetRef {
+                    id: widget.id,
+                    viewport_id: Some(widget.viewport_id),
+                }),
+            )
+        } else {
+            (resolve_viewport_id(&self.inner, viewport_id)?, None)
+        };
         let mut config = OverlayDebugConfig {
             enabled: true,
             mode: mode.map(Into::into).unwrap_or(OverlayDebugMode::Bounds),
@@ -98,14 +119,14 @@ impl DevMcpServer {
         if let Some(input) = options {
             apply_overlay_debug_options(&mut config.options, input)?;
         }
-        self.inner.set_overlay_debug_config(config);
+        self.inner.set_overlay_debug_config(viewport_id, config);
         Ok(())
     }
 
-    /// Disable the persistent debug overlay.
-    pub(super) async fn clear_debug_overlay(&self) -> ToolResult<()> {
-        let config = OverlayDebugConfig::default();
-        self.inner.set_overlay_debug_config(config);
+    /// Clear the selected viewport's persistent debug overlay.
+    pub(super) async fn clear_debug_overlay(&self, viewport_id: Option<String>) -> ToolResult<()> {
+        let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
+        self.inner.clear_overlay_debug_config(viewport_id);
         Ok(())
     }
 }

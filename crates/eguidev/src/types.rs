@@ -108,7 +108,8 @@ impl ViewportSel {
         })
     }
 
-    /// Parse the Luau/tool selector grammar: `root`, a semantic name, or `vp:<hex>`.
+    /// Parse the Luau/tool selector grammar: `root`, a semantic name, or
+    /// `vp:<hex>`.
     pub fn parse(selector: impl AsRef<str>) -> Result<Self, ViewportSelParseError> {
         let selector = selector.as_ref();
         if selector.trim().is_empty() {
@@ -302,7 +303,8 @@ pub struct FixtureSpec {
     pub name: String,
     /// Fixture description.
     pub description: String,
-    /// Declarative conditions that must be satisfied before fixture application.
+    /// Declarative conditions that must be satisfied before fixture
+    /// application.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preconditions: Vec<FixtureTargetSpec>,
     /// Declarative ready conditions for the fixture baseline.
@@ -347,7 +349,8 @@ pub struct DataCondition {
     pub equals: serde_json::Value,
 }
 
-/// Shared declarative condition used by waits, assertions, actions, and fixtures.
+/// Shared declarative condition used by waits, assertions, actions, and
+/// fixtures.
 ///
 /// Every populated field must match. An empty condition means `present = true`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -361,6 +364,10 @@ pub struct WidgetCondition {
     /// Required visibility state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    /// Required coverage state: whether another egui layer covers the
+    /// widget's action point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered: Option<bool>,
     /// Required enabled state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -420,6 +427,12 @@ pub struct ViewportCondition {
     /// Required occlusion state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occluded: Option<bool>,
+    /// Required observed native title visibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_title_visible: Option<bool>,
+    /// Required cursor icon requested by the viewport's latest frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_icon: Option<String>,
     /// Required maximized state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
@@ -620,7 +633,8 @@ pub struct FixtureParam {
     pub kind: ParamKind,
     /// Human-readable parameter description.
     pub description: String,
-    /// Optional default. Missing default means the caller must supply the param.
+    /// Optional default. Missing default means the caller must supply the
+    /// param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<WidgetValue>,
     /// Optional exact allowed values.
@@ -1398,6 +1412,7 @@ impl WidgetCondition {
     pub fn validate(&self) -> Result<(), String> {
         let has_state_field = self.actionable.is_some()
             || self.visible.is_some()
+            || self.covered.is_some()
             || self.enabled.is_some()
             || self.focused.is_some()
             || self.selected.is_some()
@@ -1451,6 +1466,8 @@ impl ViewportCondition {
             || self.focused.is_some()
             || self.minimized.is_some()
             || self.occluded.is_some()
+            || self.os_title_visible.is_some()
+            || self.cursor_icon.is_some()
             || self.maximized.is_some()
             || self.fullscreen.is_some()
             || self.frame_at_least.is_some();
@@ -1465,6 +1482,9 @@ impl ViewportCondition {
         }
         if self.title_contains.as_ref().is_some_and(String::is_empty) {
             return Err("title_contains must not be empty".to_string());
+        }
+        if self.cursor_icon.as_ref().is_some_and(String::is_empty) {
+            return Err("cursor_icon must not be empty".to_string());
         }
         Ok(())
     }
@@ -1841,6 +1861,41 @@ pub struct WidgetLayout {
     pub available_rect: Rect,
     /// Visible fraction of the widget within the clip rect.
     pub visible_fraction: f32,
+    /// Exact text layout painted by the widget, when the caller supplies its
+    /// galley.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<WidgetTextLayout>,
+}
+
+/// Captured text layout from the galley that a widget painted.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetTextLayout {
+    /// Fonts used by the galley's layout sections.
+    pub fonts: Vec<WidgetFont>,
+    /// Painted lines in visual order.
+    pub lines: Vec<WidgetTextLine>,
+    /// Height of the first painted line.
+    pub line_height: f32,
+    /// Whether egui removed text because of its row limit.
+    pub elided: bool,
+}
+
+/// One font used by a captured galley.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetFont {
+    /// Egui font family name.
+    pub family: String,
+    /// Font size in logical points.
+    pub size: f32,
+}
+
+/// One painted line from a captured galley.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WidgetTextLine {
+    /// Text on this line.
+    pub text: String,
+    /// Painted line width in logical points.
+    pub width: f32,
 }
 
 /// Scroll metadata captured for a scroll area.
@@ -1982,7 +2037,8 @@ pub enum WidgetRoleMeta {
     },
     /// Checkbox, optionally carrying a third visual state.
     Checkbox {
-        /// Whether the checkbox is visually indeterminate, when the app tracks it.
+        /// Whether the checkbox is visually indeterminate, when the app tracks
+        /// it.
         indeterminate: Option<bool>,
     },
     /// Text edit with its input configuration.
@@ -2572,6 +2628,7 @@ mod tests {
                 enabled: true,
                 visible: true,
                 focused: false,
+                covered: false,
             }
         }
 
@@ -2624,11 +2681,13 @@ pub struct WidgetRegistryEntry {
     pub native_id: u64,
     /// Viewport id string.
     pub viewport_id: String,
-    /// Layer id rendered as a stable string (internal use only, e.g. debug overlay).
+    /// Layer id rendered as a stable string (internal use only, e.g. debug
+    /// overlay).
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     pub layer_id: String,
-    /// Paint order of the widget's layer, where a larger value paints later (internal use only).
+    /// Paint order of the widget's layer, where a larger value paints later
+    /// (internal use only).
     #[serde(skip_serializing, skip_deserializing)]
     #[schemars(skip)]
     pub layer_order: u8,
@@ -2656,8 +2715,14 @@ pub struct WidgetRegistryEntry {
     pub enabled: bool,
     /// Whether the widget is visible.
     pub visible: bool,
-    /// Whether the widget reported egui focus in the captured frame (may lag keyboard focus).
+    /// Whether the widget reported egui focus in the captured frame (may lag
+    /// keyboard focus).
     pub focused: bool,
+    /// Whether another egui layer covers the widget's action point (the
+    /// center of `interact_rect`), so a pointer action here would route to
+    /// that layer instead. `false` when no layer, or only the widget's own
+    /// layer, sits at that point.
+    pub covered: bool,
 }
 
 /// Live widget snapshot exposed to scripting surfaces.
@@ -2717,8 +2782,12 @@ pub struct WidgetState {
     pub enabled: bool,
     /// Whether the widget is visible.
     pub visible: bool,
-    /// Whether the widget reported egui focus in the captured frame (may lag keyboard focus).
+    /// Whether the widget reported egui focus in the captured frame (may lag
+    /// keyboard focus).
     pub focused: bool,
+    /// Whether another egui layer covers the widget's action point. See
+    /// [`WidgetState::covered`].
+    pub covered: bool,
 }
 
 impl WidgetRegistryEntry {
@@ -2793,6 +2862,7 @@ impl From<&WidgetRegistryEntry> for WidgetState {
             enabled: entry.enabled,
             visible: entry.visible,
             focused: entry.focused,
+            covered: entry.covered,
         }
     }
 }

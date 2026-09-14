@@ -14,12 +14,13 @@ use eguidev::AutomationOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tmcp::ToolResult;
-use tokio::{task::spawn_blocking, time::timeout};
+use tokio::time::timeout;
 
 use super::{
     super::{
-        DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode,
-        MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE, ToolError,
+        DEFAULT_POLL_INTERVAL_MS, DEFAULT_WAIT_TIMEOUT_MS, DevMcpServer, ErrorCode, HoverConfirm,
+        MAX_SAMPLE_GRID_COUNT, OverlayDebugOptionsInput, SCROLL_STABILITY_TOLERANCE,
+        ScreenshotFormat, ScreenshotOptions, ToolError, capture_native_screenshot,
         capture_screenshot, collect_widget_list, interaction_ready, parse_key_combo,
         resolve_screenshot_viewport, resolve_widget_and_viewport, viewport_snapshot_for,
         wait_timeout_details, wait_timeout_message,
@@ -44,8 +45,8 @@ use crate::{
     runtime::Runtime,
     screenshots::ScreenshotKind,
     types::{
-        Modifiers, RawInputEvent, Rect, ResizeOptions, Vec2, WidgetRef, WidgetRegistryEntry,
-        WidgetState, WidgetValue,
+        Modifiers, RawInputEvent, Rect, ResizeOptions, RoleState, Vec2, WidgetRef,
+        WidgetRegistryEntry, WidgetState, WidgetValue,
     },
     viewports::ViewportSnapshot,
 };
@@ -742,6 +743,8 @@ impl ScriptRuntime {
             resolve_viewport_id(&self.server.inner, Some(snapshot.viewport_id.clone())).ok();
         let input = resolved
             .and_then(|viewport_id| self.server.inner.viewports.input_snapshot(viewport_id));
+        let output = resolved
+            .and_then(|viewport_id| self.server.inner.viewports.output_snapshot(viewport_id));
         let frame_count = resolved
             .map(|viewport_id| {
                 self.server
@@ -764,6 +767,8 @@ impl ScriptRuntime {
                 "occluded": snapshot.occluded,
                 "os_minimized": snapshot.os_minimized,
                 "os_occluded": snapshot.os_occluded,
+                "os_title_visible": snapshot.os_title_visible,
+                "cursor_icon": output.map(|output| format!("{:?}", output.cursor_icon)),
                 "maximized": snapshot.maximized,
                 "fullscreen": snapshot.fullscreen,
                 "frame_count": frame_count,
@@ -792,8 +797,10 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
     ) -> Result<Option<Modifiers>, ScriptErrorInfo> {
         match options {
-            Some(map) => Ok(Some(parse_modifiers(Some(map))?)),
-            None => Ok(None),
+            Some(map) if map_has_any(map, &["ctrl", "shift", "alt", "command"]) => {
+                Ok(Some(parse_modifiers(Some(map))?))
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1000,6 +1007,8 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let selected = parse_optional_bool(options, "selected")
             .map_err(|error| self.type_error(pos, error.message))?;
+        let covered = parse_optional_bool(options, "covered")
+            .map_err(|error| self.type_error(pos, error.message))?;
         let widgets = collect_widget_list(
             &self.server.inner,
             viewport_id,
@@ -1012,6 +1021,7 @@ impl ScriptRuntime {
             enabled,
             focused,
             selected,
+            covered,
         )
         .map_err(|error| self.tool_error(pos, error))?;
         self.widget_handle_list_json(pos, &widgets)
@@ -1136,6 +1146,13 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         let duration_ms = parse_optional_u64(options, "duration_ms")
             .map_err(|error| self.type_error(pos, error.message))?;
+        let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
+        let confirm = self
+            .action_settle_enabled(pos, options)?
+            .then_some(HoverConfirm {
+                timeout_ms,
+                poll_interval_ms,
+            });
         self.await_tool(
             pos,
             self.server.action_hover(
@@ -1143,6 +1160,7 @@ impl ScriptRuntime {
                 target,
                 position,
                 duration_ms,
+                confirm,
             ),
         )
         .await?;
@@ -1375,20 +1393,59 @@ impl ScriptRuntime {
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
         let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
-        self.await_tool(
-            pos,
-            self.server
-                .action_scroll_into_view(Some(action_viewport_id.clone()), target.clone()),
-        )
-        .await?;
+        let applied = self
+            .await_tool(
+                pos,
+                self.server
+                    .action_scroll_into_view(Some(action_viewport_id.clone()), target.clone()),
+            )
+            .await?;
         let settle_enabled = self.action_settle_enabled(pos, options)?;
         self.settle_after_action(pos, options, Some(action_viewport_id.clone()))
             .await?;
         if settle_enabled {
-            // Requesting the offsets only queues them. An animated scroll area
-            // needs the target polled to the interaction-ready predicate, or
-            // the next click fails on the call that just returned.
+            // Requesting the offsets only queues them. Each scrolled area is
+            // polled until it reports the requested offset on two consecutive
+            // captures, then the target is polled until its rect stops moving
+            // and it is interaction-ready. Otherwise the next click fails on
+            // the call that just returned.
             let (timeout_ms, poll_interval_ms) = self.action_timeouts(pos, options)?;
+            for scroll in applied {
+                let requested = scroll.offset;
+                let mut previous: Option<Vec2> = None;
+                self.await_tool(
+                    pos,
+                    self.server.wait_for_widget_state(
+                        Some(action_viewport_id.clone()),
+                        WidgetRef {
+                            id: scroll.widget_id,
+                            viewport_id: None,
+                        },
+                        timeout_ms,
+                        poll_interval_ms,
+                        "to reach the requested offset after scroll_into_view",
+                        move |widget| {
+                            let Some(current) = widget
+                                .and_then(|widget| widget.role_state.as_ref())
+                                .and_then(RoleState::scroll_state)
+                                .map(|scroll| scroll.offset)
+                            else {
+                                previous = None;
+                                return false;
+                            };
+                            let reached = (current.x - requested.x).abs()
+                                <= SCROLL_STABILITY_TOLERANCE
+                                && (current.y - requested.y).abs() <= SCROLL_STABILITY_TOLERANCE;
+                            let stable = previous
+                                .is_some_and(|prior| prior.x == current.x && prior.y == current.y);
+                            previous = Some(current);
+                            reached && stable
+                        },
+                    ),
+                )
+                .await?;
+            }
+            let mut previous_rect: Option<Rect> = None;
             self.await_tool(
                 pos,
                 self.server.wait_for_widget_state(
@@ -1397,7 +1454,15 @@ impl ScriptRuntime {
                     timeout_ms,
                     poll_interval_ms,
                     "to become interaction-ready after scroll_into_view",
-                    |widget| widget.is_some_and(interaction_ready),
+                    move |widget| {
+                        let Some(widget) = widget else {
+                            previous_rect = None;
+                            return false;
+                        };
+                        let stable = previous_rect == Some(widget.interact_rect);
+                        previous_rect = Some(widget.interact_rect);
+                        stable && interaction_ready(widget)
+                    },
                 ),
             )
             .await?;
@@ -1962,10 +2027,11 @@ impl ScriptRuntime {
                 {
                     return Err(self.script_timeout_error(pos));
                 }
-                let viewport = viewport
-                    .ok_or_else(|| self.runtime_error(pos, "Viewport not ready for wait"))?;
                 if matched {
-                    self.viewport_state_json(pos, &viewport)
+                    match viewport {
+                        Some(viewport) => self.viewport_state_json(pos, &viewport),
+                        None => Ok(Value::Null),
+                    }
                 } else {
                     Err(self.tool_error(
                         pos,
@@ -1982,7 +2048,7 @@ impl ScriptRuntime {
                             "viewport",
                             elapsed_ms,
                             None,
-                            Some(&viewport),
+                            viewport.as_ref(),
                             None,
                             None,
                             &observation,
@@ -1995,11 +2061,56 @@ impl ScriptRuntime {
         }
     }
 
+    /// Read the optional screenshot encoding options.
+    ///
+    /// An absent table keeps the established JPEG encoding and the 1,600 pixel
+    /// long edge, so every current script is unaffected.
+    fn screenshot_options(
+        &self,
+        pos: ScriptPosition,
+        options: Option<&Value>,
+    ) -> ScriptResult<ScreenshotOptions> {
+        let mut resolved = ScreenshotOptions::default();
+        let Some(options) = options else {
+            return Ok(resolved);
+        };
+        if options.is_null() {
+            return Ok(resolved);
+        }
+        let map = options
+            .as_object()
+            .ok_or_else(|| self.type_error(pos, "screenshot options must be a table"))?;
+        if let Some(format) = map.get("format") {
+            let word = format
+                .as_str()
+                .ok_or_else(|| self.type_error(pos, "screenshot format must be a string"))?;
+            resolved.format = ScreenshotFormat::parse(word).ok_or_else(|| {
+                self.type_error(pos, format!("unknown screenshot format `{word}`"))
+            })?;
+        }
+        if let Some(max_dimension) = map.get("max_dimension") {
+            let value = max_dimension
+                .as_f64()
+                .ok_or_else(|| self.type_error(pos, "max_dimension must be a number"))?;
+            if !value.is_finite()
+                || value < 0.0
+                || value > f64::from(u32::MAX)
+                || value.fract() != 0.0
+            {
+                return Err(self.type_error(pos, "max_dimension must be a non-negative integer"));
+            }
+            resolved.max_dimension = value as u32;
+        }
+        Ok(resolved)
+    }
+
     pub(super) async fn screenshot(
         &self,
         pos: ScriptPosition,
         target: Option<&Value>,
+        options: Option<&Value>,
     ) -> ScriptResult<Value> {
+        let options = self.screenshot_options(pos, options)?;
         let mut viewport_id = None;
         let mut widget_target: Option<WidgetRef> = None;
         if let Some(target) = target {
@@ -2040,7 +2151,7 @@ impl ScriptRuntime {
                 .input_snapshot(viewport_id_resolved)
                 .map(|snapshot| snapshot.pixels_per_point)
                 .unwrap_or(1.0);
-            let data = self
+            let encoded = self
                 .await_tool(pos, async {
                     capture_screenshot(
                         &self.server.inner,
@@ -2050,6 +2161,7 @@ impl ScriptRuntime {
                             rect: widget.interact_rect,
                             pixels_per_point,
                         },
+                        options,
                     )
                     .await
                     .map_err(tmcp::ToolError::from)
@@ -2057,7 +2169,8 @@ impl ScriptRuntime {
                 .await?;
             self.store_image(ImageCapture {
                 id: id.clone(),
-                data,
+                data: encoded.data,
+                media_type: encoded.media_type,
                 kind: ScriptImageKind::Widget,
                 viewport_id: viewport_id_to_string(viewport_id_resolved),
                 target: Some(target),
@@ -2068,13 +2181,14 @@ impl ScriptRuntime {
 
         let viewport_id_resolved = resolve_screenshot_viewport(&self.server.inner, viewport_id)
             .map_err(|error| self.tool_error(pos, error.into()))?;
-        let data = self
+        let encoded = self
             .await_tool(pos, async {
                 capture_screenshot(
                     &self.server.inner,
                     &self.server.runtime,
                     viewport_id_resolved,
                     ScreenshotKind::Viewport,
+                    options,
                 )
                 .await
                 .map_err(tmcp::ToolError::from)
@@ -2082,8 +2196,38 @@ impl ScriptRuntime {
             .await?;
         self.store_image(ImageCapture {
             id: id.clone(),
-            data,
+            data: encoded.data,
+            media_type: encoded.media_type,
             kind: ScriptImageKind::Viewport,
+            viewport_id: viewport_id_to_string(viewport_id_resolved),
+            target: None,
+            rect: None,
+        });
+        Ok(image_ref_json(id))
+    }
+
+    pub(super) async fn native_screenshot(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: String,
+        options: Option<&Value>,
+    ) -> ScriptResult<Value> {
+        let options = self.screenshot_options(pos, options)?;
+        let viewport_id_resolved =
+            resolve_screenshot_viewport(&self.server.inner, Some(viewport_id))
+                .map_err(|error| self.tool_error(pos, error.into()))?;
+        let id = self.next_image_id();
+        let encoded = self
+            .await_tool(pos, async {
+                capture_native_screenshot(&self.server.inner, viewport_id_resolved, options)
+                    .map_err(tmcp::ToolError::from)
+            })
+            .await?;
+        self.store_image(ImageCapture {
+            id: id.clone(),
+            data: encoded.data,
+            media_type: encoded.media_type,
+            kind: ScriptImageKind::NativeViewport,
             viewport_id: viewport_id_to_string(viewport_id_resolved),
             target: None,
             rect: None,
@@ -2185,7 +2329,8 @@ impl ScriptRuntime {
         self.to_json(pos, result)
     }
 
-    /// Show a highlight on a widget (by target) or a rect with a mandatory color.
+    /// Show a highlight on a widget (by target) or a rect with a mandatory
+    /// color.
     pub(super) async fn show_highlight_widget(
         &self,
         pos: ScriptPosition,
@@ -2237,9 +2382,13 @@ impl ScriptRuntime {
         Ok(Value::Null)
     }
 
-    /// Clear all highlights.
-    pub(super) async fn clear_highlights(&self, pos: ScriptPosition) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.clear_highlights(None, None))
+    /// Clear all highlights in the selected viewport.
+    pub(super) async fn clear_highlights(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: Option<String>,
+    ) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.clear_highlights(viewport_id, None))
             .await?;
         Ok(Value::Null)
     }
@@ -2280,10 +2429,30 @@ impl ScriptRuntime {
         self.to_json(pos, ())
     }
 
-    pub(super) async fn clear_debug_overlay(&self, pos: ScriptPosition) -> ScriptResult<Value> {
-        self.await_tool(pos, self.server.clear_debug_overlay())
+    pub(super) async fn clear_debug_overlay(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: Option<String>,
+    ) -> ScriptResult<Value> {
+        self.await_tool(pos, self.server.clear_debug_overlay(viewport_id))
             .await?;
         self.to_json(pos, ())
+    }
+
+    pub(super) async fn clear_widget_debug_overlay(
+        &self,
+        pos: ScriptPosition,
+        target: WidgetRef,
+    ) -> ScriptResult<Value> {
+        let viewport_id = match target.viewport_id.as_ref() {
+            Some(viewport_id) => viewport_id.clone(),
+            None => {
+                resolve_widget(&self.server.inner, None, &target)
+                    .map_err(|error| self.tool_error(pos, error.into()))?
+                    .viewport_id
+            }
+        };
+        self.clear_debug_overlay(pos, Some(viewport_id)).await
     }
 
     pub(super) async fn viewport_resize(
@@ -2374,6 +2543,10 @@ impl ScriptRuntime {
                 }
             }
         }
+        values.insert(
+            "eguidev.input".to_string(),
+            self.server.inner.actions.pointer_trace(),
+        );
         self.to_json(
             pos,
             serde_json::json!({
@@ -2395,14 +2568,27 @@ impl ScriptRuntime {
                     )
                 })?;
                 let remaining = remaining.unwrap_or(Duration::from_secs(24 * 60 * 60));
-                spawn_blocking(move || receiver.recv_timeout(remaining))
-                    .await
-                    .map_err(|error| {
-                        eguidev::DiagnosticError::new(
-                            "internal",
-                            format!("diagnostic wait task failed: {error}"),
-                        )
-                    })?
+                let (_, response, _, _) =
+                    super::super::utils::wait_until_condition(
+                        &self.server.inner,
+                        remaining.as_millis() as u64,
+                        DEFAULT_POLL_INTERVAL_MS,
+                        Some(egui::ViewportId::ROOT),
+                        self.deadline,
+                        move || {
+                            let response = receiver.try_recv();
+                            async move {
+                                Ok::<_, eguidev::DiagnosticError>((response.is_some(), response))
+                            }
+                        },
+                    )
+                    .await?;
+                response.unwrap_or_else(|| {
+                    Err(eguidev::DiagnosticError::new(
+                        "timeout",
+                        format!("diagnostic provider {name:?} timed out"),
+                    ))
+                })
             }
         }
     }
@@ -2640,7 +2826,14 @@ fn image_ref_json(id: String) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        future::poll_fn,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::Poll,
+    };
 
     use serde_json::json;
     use tokio::task::yield_now;
@@ -2651,8 +2844,9 @@ mod tests {
     use crate::{
         EguiDiagnosticBatch, EguiDiagnosticKind,
         automation::script::types::ScriptPosition,
-        registry::Inner,
-        runtime::Runtime,
+        dump::{DumpOptions, build_tree_dump},
+        registry::{Inner, viewport_id_to_string},
+        runtime::{Runtime, attach_for_tests},
         types::{Pos2, Rect, WidgetRegistryEntry, WidgetRole, WidgetState, WidgetValue},
     };
 
@@ -2682,6 +2876,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         })
     }
 
@@ -2723,6 +2918,64 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_dimensions_require_whole_pixels() {
+        let (_runtime, script) = script_runtime(1_000);
+        let pos = ScriptPosition::default();
+        for value in [0.4, 1.5, 1600.5] {
+            let error = script
+                .screenshot_options(pos, Some(&json!({ "max_dimension": value })))
+                .expect_err("fractional dimensions must be rejected");
+            assert!(error.message.contains("non-negative integer"));
+        }
+        for value in [0_u32, 1, 1600, u32::MAX] {
+            let options = script
+                .screenshot_options(pos, Some(&json!({ "max_dimension": value })))
+                .expect("whole pixel dimension");
+            assert_eq!(options.max_dimension, value);
+        }
+    }
+
+    #[test]
+    fn closed_viewport_is_removed_from_dumps_and_capture_diffs() {
+        let (_runtime, script) = script_runtime(1_000);
+        let inner = &script.server.inner;
+        let ctx = egui::Context::default();
+        let secondary = egui::ViewportId::from_hash_of("capture.closed.secondary");
+        let secondary_id = viewport_id_to_string(secondary);
+        let mut open = egui::RawInput::default();
+        open.viewports.insert(secondary, Default::default());
+        ctx.run_ui(open.clone(), |_| {})
+            .drop_without_applying_deltas();
+        inner.viewports.update_viewports(&ctx);
+        let pos = ScriptPosition::default();
+        let before = script.capture(pos).expect("capture open viewport");
+
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .drop_without_applying_deltas();
+        inner.viewports.update_viewports(&ctx);
+        let dump = build_tree_dump(inner, &DumpOptions::default()).expect("dump after close");
+        assert_eq!(dump.viewports.len(), 1);
+        assert_eq!(dump.viewports[0].id, "root");
+        let diff = script.capture_diff(pos, &before, None).expect("close diff");
+        assert_eq!(diff["viewports_removed"], json!([secondary_id]));
+
+        let closed = script.capture(pos).expect("capture closed viewport");
+        ctx.run_ui(open, |_| {}).drop_without_applying_deltas();
+        inner.viewports.update_viewports(&ctx);
+        let diff = script
+            .capture_diff(pos, &closed, None)
+            .expect("reopen diff");
+        assert_eq!(diff["viewports_added"], json!([secondary_id]));
+        assert_eq!(
+            build_tree_dump(inner, &DumpOptions::default())
+                .expect("reopened dump")
+                .viewports
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn parse_sample_grid_count_rejects_axis_over_cap() {
         assert!(parse_sample_grid_count(&json!(0), "nx").is_err());
         assert!(parse_sample_grid_count(&json!(MAX_SAMPLE_GRID_COUNT + 1), "nx").is_err());
@@ -2735,6 +2988,66 @@ mod tests {
     #[test]
     fn script_runtime_is_send_sync() {
         assert_send_sync::<ScriptRuntime>();
+    }
+
+    /// Build a UI provider whose invocation is observable without running an
+    /// app.
+    fn queued_diagnostic_script(timeout_ms: u64) -> (ScriptRuntime, Arc<AtomicBool>) {
+        let called = Arc::new(AtomicBool::new(false));
+        let recorded = Arc::clone(&called);
+        let devmcp = attach_for_tests(
+            eguidev::DevMcp::new()
+                .diagnostic_ui("queued", move |_ctx| {
+                    recorded.store(true, Ordering::SeqCst);
+                    Ok(json!(true))
+                })
+                .expect("provider"),
+        );
+        let inner = devmcp.inner_arc().expect("attached runtime");
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let script = ScriptRuntime::new(inner, runtime, "queued.luau".to_string(), timeout_ms);
+        (script, called)
+    }
+
+    #[tokio::test]
+    async fn cancelled_ui_diagnostic_future_does_not_run_the_provider_later() {
+        let (script, called) = queued_diagnostic_script(5_000);
+        let mut diagnostic = Box::pin(script.run_diagnostic(ScriptPosition::default(), "queued"));
+        poll_fn(|cx| {
+            assert!(diagnostic.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(diagnostic);
+
+        script
+            .server
+            .inner
+            .diagnostics
+            .drain_ui(&egui::Context::default());
+
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "cancelled diagnostic must not call the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_ui_diagnostic_future_preserves_error_and_cancels_request() {
+        let (script, called) = queued_diagnostic_script(1_000);
+        let error = script
+            .run_diagnostic(ScriptPosition::default(), "queued")
+            .await
+            .expect_err("UI did not drain the request");
+        assert_eq!(error.code, "timeout");
+        assert_eq!(error.message, "diagnostic provider \"queued\" timed out");
+
+        script
+            .server
+            .inner
+            .diagnostics
+            .drain_ui(&egui::Context::default());
+        assert!(!called.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -2831,7 +3144,8 @@ mod tests {
 
     #[test]
     fn diff_ignores_the_int_float_round_trip_a_capture_takes_through_luau() {
-        // Luau has one number type, so a captured Float(42.0) returns as Int(42).
+        // Luau has one number type, so a captured Float(42.0) returns as
+        // Int(42).
         let before = state(Some(WidgetValue::Int(42)));
         let after = state(Some(WidgetValue::Float(42.0)));
         assert!(changed_widget_fields(&before, &after, 0.5).is_empty());

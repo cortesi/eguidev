@@ -33,22 +33,27 @@ eguidev.widget("status.summary"):expect({
     data = { pointer = "/rgba/0", equals = 28 },
 })
 
--- The fixture catalog exposes the data anchor in its readiness contract.
-local found = false
+-- The fixture catalog exposes both scalar and structured data anchors.
+local found_pass = false
+local found_meta = false
 for _, entry in ipairs(eguidev.fixtures()) do
     if entry.name == "analysis.loaded" then
         for _, target in ipairs(entry.ready) do
             local condition = target.condition
-            if condition.data ~= nil then
-                found = true
-                assert(
-                    condition.data.pointer == "/pass",
-                    "the declared data anchor should point at /pass"
-                )
+            local data = condition.data
+            if data ~= nil and data.pointer == "/pass" then
+                found_pass = true
+                assert(data.equals == "analysis", "the scalar anchor should name the analysis pass")
+            elseif data ~= nil and data.pointer == "/pass_meta" then
+                found_meta = true
+                assert(type(data.equals) == "table", "the metadata anchor should be a table")
+                local metadata = data.equals :: { kind: string }
+                assert(metadata.kind == "analysis", "the metadata anchor should name the analysis pass")
             end
         end
     end
 end
-assert(found, "analysis.loaded should declare a data anchor")
+assert(found_pass, "analysis.loaded should declare the /pass data anchor")
+assert(found_meta, "analysis.loaded should declare the /pass_meta data anchor")
 
 return { analysed = loaded_data.analysed }

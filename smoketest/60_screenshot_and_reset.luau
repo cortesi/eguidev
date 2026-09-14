@@ -11,7 +11,7 @@ eguidev.widget("overlay.fixture_probe.input"):wait( function(widget)
     return widget ~= nil and widget.value == ""
 end)
 
-local widget_image = eguidev.widget("basic.preview.image"):screenshot()
+local widget_image = eguidev.widget("basic.preview.image"):screenshot({ format = "png", max_dimension = 0 })
 assert(widget_image.type == "image_ref")
 
 local viewport_image = vp:screenshot()

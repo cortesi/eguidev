@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, sync::Mutex};
 
-use egui::{Color32, Context, Rect as EguiRect};
+use egui::{Color32, Context, Rect as EguiRect, ViewportId};
 
 use crate::{
     registry::{lock, viewport_id_to_string},
@@ -97,8 +97,8 @@ pub fn parse_css_hex(value: &str, require_hash: bool) -> Option<Color32> {
 }
 
 pub struct OverlayManager {
-    overlays: Mutex<HashMap<String, OverlayEntry>>,
-    overlay_debug: Mutex<OverlayDebugConfig>,
+    overlays: Mutex<HashMap<(ViewportId, String), OverlayEntry>>,
+    overlay_debug: Mutex<HashMap<ViewportId, OverlayDebugConfig>>,
 }
 
 impl Default for OverlayManager {
@@ -111,27 +111,38 @@ impl OverlayManager {
     pub fn new() -> Self {
         Self {
             overlays: Mutex::new(HashMap::new()),
-            overlay_debug: Mutex::new(OverlayDebugConfig::default()),
+            overlay_debug: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn overlay_debug_config(&self) -> OverlayDebugConfig {
-        lock(&self.overlay_debug, "overlay debug lock").clone()
+    pub fn overlay_debug_config(&self, viewport_id: ViewportId) -> OverlayDebugConfig {
+        lock(&self.overlay_debug, "overlay debug lock")
+            .get(&viewport_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    pub fn set_overlay_debug_config(&self, config: OverlayDebugConfig) {
-        let mut stored = lock(&self.overlay_debug, "overlay debug lock");
-        *stored = config;
+    pub fn set_overlay_debug_config(&self, viewport_id: ViewportId, config: OverlayDebugConfig) {
+        lock(&self.overlay_debug, "overlay debug lock").insert(viewport_id, config);
     }
 
-    pub fn set_overlay(&self, key: String, overlay: OverlayEntry) {
+    pub fn clear_overlay_debug_config(&self, viewport_id: ViewportId) {
+        lock(&self.overlay_debug, "overlay debug lock").remove(&viewport_id);
+    }
+
+    pub fn set_overlay(&self, viewport_id: ViewportId, key: String, overlay: OverlayEntry) {
         let mut overlays = lock(&self.overlays, "overlay lock");
-        overlays.insert(key, overlay);
+        overlays.insert((viewport_id, key), overlay);
     }
 
-    pub fn remove_overlay(&self, key: &str) {
+    pub fn remove_overlay(&self, viewport_id: ViewportId, key: &str) {
         let mut overlays = lock(&self.overlays, "overlay lock");
-        overlays.remove(key);
+        overlays.remove(&(viewport_id, key.to_string()));
+    }
+
+    pub fn clear_viewport_overlays(&self, viewport_id: ViewportId) {
+        lock(&self.overlays, "overlay lock")
+            .retain(|(stored_viewport, _), _| *stored_viewport != viewport_id);
     }
 
     pub fn clear_overlays(&self) {
@@ -140,8 +151,7 @@ impl OverlayManager {
 
     pub fn clear_transient_state(&self) {
         self.clear_overlays();
-        let mut debug = lock(&self.overlay_debug, "overlay debug lock");
-        *debug = OverlayDebugConfig::default();
+        lock(&self.overlay_debug, "overlay debug lock").clear();
     }
 
     pub fn paint_overlays(
@@ -161,7 +171,10 @@ impl OverlayManager {
         }
         let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("eguidev.overlay"));
         let painter = ctx.layer_painter(layer);
-        for overlay in overlays.values() {
+        for ((viewport_id, _), overlay) in overlays.iter() {
+            if *viewport_id != ctx.viewport_id() {
+                continue;
+            }
             painter.rect_stroke(
                 overlay.rect,
                 egui::CornerRadius::ZERO,
@@ -177,11 +190,11 @@ impl OverlayManager {
         widget_registry: &WidgetRegistry,
         viewport_state: &ViewportState,
     ) {
-        let config = self.overlay_debug_config();
+        let viewport_id = ctx.viewport_id();
+        let config = self.overlay_debug_config(viewport_id);
         if !config.enabled {
             return;
         }
-        let viewport_id = ctx.viewport_id();
         let viewport_id_str = viewport_id_to_string(viewport_id);
         if let Some(scope) = config.scope.as_ref()
             && let Some(scope_viewport) = scope.viewport_id.as_deref()
@@ -190,10 +203,12 @@ impl OverlayManager {
             return;
         }
         let mut widget_list = widget_registry.widget_list(viewport_id);
-        if let Some(scope) = config.scope.as_ref()
-            && let Ok(root) =
+        if let Some(scope) = config.scope.as_ref() {
+            let Ok(root) =
                 widget_registry.resolve_widget(viewport_state, Some(&viewport_id_str), scope)
-        {
+            else {
+                return;
+            };
             widget_list = collect_subtree(&widget_list, &root);
         }
         if widget_list.is_empty() {

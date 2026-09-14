@@ -26,6 +26,11 @@ pub struct InputSnapshot {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub struct OutputSnapshot {
+    pub cursor_icon: egui::CursorIcon,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct CaptureSnapshot {
     pub fixture_epoch: u64,
     pub frame_count: u64,
@@ -71,6 +76,7 @@ pub struct ViewportSnapshot {
     pub occluded: Option<bool>,
     pub os_minimized: Option<bool>,
     pub os_occluded: Option<bool>,
+    pub os_title_visible: Option<bool>,
     pub maximized: Option<bool>,
     pub fullscreen: Option<bool>,
 }
@@ -81,6 +87,7 @@ pub struct PlatformViewportState {
     pub window_number: Option<u32>,
     pub os_minimized: Option<bool>,
     pub os_occluded: Option<bool>,
+    pub os_title_visible: Option<bool>,
 }
 
 pub struct ViewportState {
@@ -90,6 +97,7 @@ pub struct ViewportState {
     viewport_name_errors: Mutex<HashMap<egui::ViewportId, ViewportNameViolation>>,
     live_viewports: Mutex<Option<HashSet<egui::ViewportId>>>,
     input_snapshot: Mutex<HashMap<egui::ViewportId, InputSnapshot>>,
+    output_snapshot: Mutex<HashMap<egui::ViewportId, OutputSnapshot>>,
     capture_snapshot: Mutex<HashMap<egui::ViewportId, CaptureSnapshot>>,
     frame_health: Mutex<HashMap<egui::ViewportId, FrameHealth>>,
 }
@@ -109,6 +117,7 @@ impl ViewportState {
             viewport_name_errors: Mutex::new(HashMap::new()),
             live_viewports: Mutex::new(None),
             input_snapshot: Mutex::new(HashMap::new()),
+            output_snapshot: Mutex::new(HashMap::new()),
             capture_snapshot: Mutex::new(HashMap::new()),
             frame_health: Mutex::new(HashMap::new()),
         }
@@ -146,9 +155,13 @@ impl ViewportState {
             let ppp = info.native_pixels_per_point.unwrap_or(pixels_per_point);
             let focused = info.focused.unwrap_or(focused);
             lookup.insert(viewport_id_str.clone(), viewport_id);
-            let platform = snapshots
-                .get(&viewport_id_str)
-                .map(|snapshot| (snapshot.os_minimized, snapshot.os_occluded));
+            let platform = snapshots.get(&viewport_id_str).map(|snapshot| {
+                (
+                    snapshot.os_minimized,
+                    snapshot.os_occluded,
+                    snapshot.os_title_visible,
+                )
+            });
             snapshots.insert(
                 viewport_id_str.clone(),
                 ViewportSnapshot {
@@ -163,13 +176,19 @@ impl ViewportState {
                     parent_viewport_id: info.parent.map(viewport_id_to_string),
                     minimized: info.minimized,
                     occluded: info.occluded,
-                    os_minimized: platform.and_then(|(minimized, _)| minimized),
-                    os_occluded: platform.and_then(|(_, occluded)| occluded),
+                    os_minimized: platform.and_then(|(minimized, _, _)| minimized),
+                    os_occluded: platform.and_then(|(_, occluded, _)| occluded),
+                    os_title_visible: platform.and_then(|(_, _, title_visible)| title_visible),
                     maximized: info.maximized,
                     fullscreen: info.fullscreen,
                 },
             );
         }
+        snapshots.retain(|id, _| {
+            lookup.get(id).is_some_and(|viewport_id| {
+                *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
+            })
+        });
         let mut ordered = snapshots.into_values().collect::<Vec<_>>();
         ordered.sort_by(|left, right| left.viewport_id.cmp(&right.viewport_id));
         *stored = ordered;
@@ -182,6 +201,8 @@ impl ViewportState {
             *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
         };
         lock(&self.input_snapshot, "input snapshot lock")
+            .retain(|viewport_id, _| is_live(viewport_id));
+        lock(&self.output_snapshot, "output snapshot lock")
             .retain(|viewport_id, _| is_live(viewport_id));
         lock(&self.capture_snapshot, "capture snapshot lock")
             .retain(|viewport_id, _| is_live(viewport_id));
@@ -210,6 +231,9 @@ impl ViewportState {
             }
             if state.os_occluded.is_some() {
                 snapshot.os_occluded = state.os_occluded;
+            }
+            if state.os_title_visible.is_some() {
+                snapshot.os_title_visible = state.os_title_visible;
             }
         }
     }
@@ -287,6 +311,7 @@ impl ViewportState {
         );
     }
 
+    /// Current viewport snapshots, excluding closed secondary viewports.
     pub fn viewports_snapshot(&self) -> Vec<ViewportSnapshot> {
         lock(&self.viewports_snapshot, "viewports snapshot lock").clone()
     }
@@ -315,6 +340,17 @@ impl ViewportState {
         lock(&self.input_snapshot, "input snapshot lock")
             .get(&viewport_id)
             .cloned()
+    }
+
+    pub fn record_output_snapshot(&self, viewport_id: egui::ViewportId, snapshot: OutputSnapshot) {
+        self.remember_viewport_id(viewport_id);
+        lock(&self.output_snapshot, "output snapshot lock").insert(viewport_id, snapshot);
+    }
+
+    pub fn output_snapshot(&self, viewport_id: egui::ViewportId) -> Option<OutputSnapshot> {
+        lock(&self.output_snapshot, "output snapshot lock")
+            .get(&viewport_id)
+            .copied()
     }
 
     pub fn recorded_frame_count(&self, viewport_id: egui::ViewportId) -> u64 {
@@ -513,7 +549,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn update_viewports_retains_known_secondary_viewports() {
+    fn update_viewports_retains_secondary_ids_but_prunes_closed_snapshots() {
         let state = ViewportState::new();
         let ctx = Context::default();
         let secondary = egui::ViewportId::from_hash_of("secondary");
@@ -562,7 +598,7 @@ mod tests {
 
         assert_eq!(
             state
-                .resolve_viewport_id(Some(secondary_id))
+                .resolve_viewport_id(Some(secondary_id.clone()))
                 .expect("retained secondary viewport"),
             secondary
         );
@@ -573,6 +609,34 @@ mod tests {
         );
         assert!(!state.is_live_viewport(secondary));
         assert!(state.is_live_viewport(egui::ViewportId::ROOT));
+        assert!(!state.has_viewport_snapshot(secondary));
+        assert_eq!(state.viewports_snapshot().len(), 1);
+
+        let mut reopened = egui::RawInput::default();
+        reopened.viewports.insert(
+            secondary,
+            egui::ViewportInfo {
+                title: Some("Reopened secondary".to_string()),
+                ..Default::default()
+            },
+        );
+        ctx.run_ui(reopened, |_| {}).drop_without_applying_deltas();
+        state.update_viewports(&ctx);
+        assert!(state.is_live_viewport(secondary));
+        let snapshot = state
+            .viewports_snapshot()
+            .into_iter()
+            .find(|snapshot| snapshot.viewport_id == secondary_id)
+            .expect("reopened secondary snapshot");
+        assert_eq!(snapshot.title.as_deref(), Some("Reopened secondary"));
+        assert!(snapshot.name.is_none());
+        state.name_viewport(secondary, "secondary".to_string());
+        assert_eq!(
+            state
+                .resolve_viewport_id(Some("secondary".to_string()))
+                .expect("renewed name"),
+            secondary
+        );
     }
 
     #[test]
@@ -629,6 +693,26 @@ mod tests {
     }
 
     #[test]
+    fn record_output_snapshot_keeps_the_latest_cursor() {
+        let state = ViewportState::new();
+        let viewport_id = egui::ViewportId::ROOT;
+        state.record_output_snapshot(
+            viewport_id,
+            OutputSnapshot {
+                cursor_icon: egui::CursorIcon::PointingHand,
+            },
+        );
+
+        assert_eq!(
+            state
+                .output_snapshot(viewport_id)
+                .expect("output snapshot")
+                .cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
+    }
+
+    #[test]
     fn merge_platform_state_matches_viewport_titles() {
         let state = ViewportState::new();
         let ctx = Context::default();
@@ -651,6 +735,7 @@ mod tests {
             window_number: Some(12),
             os_minimized: Some(false),
             os_occluded: Some(true),
+            os_title_visible: Some(false),
         }]);
 
         let snapshot = state
@@ -660,6 +745,7 @@ mod tests {
             .expect("root snapshot");
         assert_eq!(snapshot.os_minimized, Some(false));
         assert_eq!(snapshot.os_occluded, Some(true));
+        assert_eq!(snapshot.os_title_visible, Some(false));
     }
 
     #[test]
@@ -693,11 +779,13 @@ mod tests {
             window_number: Some(1),
             os_minimized: Some(true),
             os_occluded: Some(true),
+            os_title_visible: Some(true),
         }]);
 
         for snapshot in state.viewports_snapshot() {
             assert_eq!(snapshot.os_minimized, None, "{snapshot:?}");
             assert_eq!(snapshot.os_occluded, None, "{snapshot:?}");
+            assert_eq!(snapshot.os_title_visible, None, "{snapshot:?}");
         }
     }
 }

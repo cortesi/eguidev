@@ -28,7 +28,8 @@ pub async fn run() -> Result<(), EdevError> {
     }
 }
 
-/// Run the long-lived `edev mcp` launcher server over stdio without starting the app eagerly.
+/// Run the long-lived `edev mcp` launcher server over stdio without starting
+/// the app eagerly.
 async fn run_mcp(config: McpConfig) -> Result<(), EdevError> {
     let instance_registry = InstanceRegistry::register(&config.launch)?;
     let mut raw_state = State::new(config.launch, instance_registry);
@@ -171,7 +172,8 @@ fn finish_smoke_run(
     }
 }
 
-/// Finish a record command while preserving smoke failures over recording errors.
+/// Finish a record command while preserving smoke failures over recording
+/// errors.
 fn finish_record_run(
     suite_result: Result<SuiteResult, EdevError>,
     recording_result: Result<recording::RecordingSummary, EdevError>,
@@ -239,7 +241,8 @@ fn required_smoke_launch(config: &SmokeConfig) -> Result<LaunchConfig, EdevError
     })
 }
 
-/// Start native recording, waiting on fresh captures if the window server lags startup.
+/// Start native recording, waiting on fresh captures if the window server lags
+/// startup.
 async fn start_recording_with_retries(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     timeout: Option<Duration>,
@@ -260,7 +263,8 @@ async fn start_recording_with_retries(
     }))
 }
 
-/// Internal script used to synchronize native window probing with a fresh app capture.
+/// Internal script used to synchronize native window probing with a fresh app
+/// capture.
 const WAIT_FOR_CAPTURE_SCRIPT: &str = r#"
 eguidev.root:wait_capture()
 return true
@@ -285,7 +289,8 @@ async fn wait_for_initial_capture_refresh(
     }
 }
 
-/// Internal script used to get the root viewport title for native window matching.
+/// Internal script used to get the root viewport title for native window
+/// matching.
 const ROOT_VIEWPORT_TITLE_SCRIPT: &str = r#"
 eguidev.root:wait_capture()
 local state = eguidev.root:state()
@@ -354,7 +359,8 @@ fn print_smoke_list(config: &SmokeConfig) -> Result<(), EdevError> {
     Ok(())
 }
 
-/// Run one Luau script through `script_eval`, print JSON, and write returned images.
+/// Run one Luau script through `script_eval`, print JSON, and write returned
+/// images.
 async fn run_eval(config: EvalConfig) -> Result<(), EdevError> {
     let source = fs::read_to_string(&config.script)?;
     let session = AppSession::start(
@@ -390,6 +396,7 @@ async fn run_dump_script(
             options: Some(ScriptEvalOptions {
                 source_name: Some("@edev_dump.luau".to_string()),
                 args: dump_script_args(config),
+                ..ScriptEvalOptions::default()
             }),
         },
     )
@@ -465,6 +472,7 @@ pub async fn run_eval_script(
     config: &EvalConfig,
     source: String,
 ) -> Result<(), EdevError> {
+    let modules = load_script_modules(config.module_dir.as_deref())?;
     let result = call_script_eval_result(
         &client,
         ScriptEvalRequest {
@@ -473,6 +481,7 @@ pub async fn run_eval_script(
             options: Some(ScriptEvalOptions {
                 source_name: Some(config.script.display().to_string()),
                 args: config.args.clone(),
+                modules,
             }),
         },
     )
@@ -503,35 +512,32 @@ async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
         "fixture command could not reach the app",
     )
     .await?;
-    let client = Arc::clone(&session.client);
+    let result = run_fixture_session(&session.client, &config).await;
+    session.finish(result).await
+}
 
+/// List or apply fixtures using an existing app connection.
+async fn run_fixture_session(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    config: &FixtureConfig,
+) -> Result<(), EdevError> {
     // Query registered fixtures.
-    let fixtures =
-        match eval_fixture_script(&client, FIXTURE_LIST_SCRIPT, "failed to query fixtures")
-            .await
-            .and_then(parse_fixture_list)
-        {
-            Ok(fixtures) => fixtures,
-            Err(error) => {
-                session.shutdown().await?;
-                return Err(error);
-            }
-        };
+    let fixtures = eval_fixture_script(client, FIXTURE_LIST_SCRIPT, "failed to query fixtures")
+        .await
+        .and_then(parse_fixture_list)?;
 
     if fixtures.is_empty() {
         if config.json || config.markdown {
-            print_fixture_list(&config, &fixtures)?;
+            print_fixture_list(config, &fixtures)?;
         } else {
             println!("No fixtures registered.");
         }
-        session.shutdown().await?;
         return Ok(());
     }
 
-    let Some(name) = config.name else {
+    let Some(name) = config.name.as_deref() else {
         // List-only mode.
-        print_fixture_list(&config, &fixtures)?;
-        session.shutdown().await?;
+        print_fixture_list(config, &fixtures)?;
         return Ok(());
     };
 
@@ -539,41 +545,27 @@ async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
     let Some(fixture) = fixtures.iter().find(|f| f.name == name) else {
         eprintln!("error: unknown fixture \"{name}\"\n");
         print_fixture_table(&fixtures);
-        session.shutdown().await?;
         return Err(EdevError::FixtureFailed(format!("unknown fixture: {name}")));
     };
 
-    let outcome = match eval_fixture_apply(&client, &name, &config.params, !config.no_wait).await {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            session.shutdown().await?;
-            return Err(error);
-        }
-    };
+    let outcome = eval_fixture_apply(client, name, &config.params, !config.no_wait).await?;
     print_fixture_result(fixture, outcome.value.as_ref());
     if config.no_wait {
         println!("ready: not waited (--no-wait)");
     }
 
     if config.dump {
-        match eval_fixture_script(
-            &client,
+        let outcome = eval_fixture_script(
+            client,
             "return eguidev.dump_text()",
             "post-fixture dump failed",
         )
-        .await
-        {
-            Ok(outcome) => print_fixture_dump(outcome)?,
-            Err(error) => {
-                session.shutdown().await?;
-                return Err(error);
-            }
-        }
+        .await?;
+        print_fixture_dump(outcome)?;
     }
 
     eprintln!("Fixture \"{name}\" applied. Press ctrl-c to stop.");
     shutdown_signal().await;
-    session.shutdown().await?;
     Ok(())
 }
 
@@ -598,6 +590,7 @@ async fn eval_fixture_apply(
             options: Some(ScriptEvalOptions {
                 source_name: Some("@edev_fixture_apply.luau".to_string()),
                 args,
+                ..ScriptEvalOptions::default()
             }),
         },
     )
@@ -614,7 +607,8 @@ async fn eval_fixture_apply(
     }
 }
 
-/// Decodes structured content or the first JSON text block with stable domain errors.
+/// Decodes structured content or the first JSON text block with stable domain
+/// errors.
 pub fn decode_tool_result<T: DeserializeOwned>(
     result: &CallToolResult,
     tool_name: &str,
@@ -760,7 +754,8 @@ fn format_widget_value(value: &WidgetValue) -> String {
     }
 }
 
-/// Start the app and resolve its direct client, shutting down on startup failures.
+/// Start the app and resolve its direct client, shutting down on startup
+/// failures.
 pub async fn start_app_client(
     state: &mut State,
     unavailable_message: &str,
@@ -801,7 +796,8 @@ async fn call_script_eval(
     parse_script_eval_outcome(&result)
 }
 
-/// Call the app-side `script_eval` tool and preserve all returned content blocks.
+/// Call the app-side `script_eval` tool and preserve all returned content
+/// blocks.
 pub async fn call_script_eval_result(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     request: ScriptEvalRequest,
@@ -905,7 +901,8 @@ async fn eval_fixture_script(
     }
 }
 
-/// Prefer the runtime's script error text and fall back to a caller-provided message.
+/// Prefer the runtime's script error text and fall back to a caller-provided
+/// message.
 pub fn script_eval_error_message(
     error: Option<&ScriptErrorInfo>,
     fallback_message: &str,

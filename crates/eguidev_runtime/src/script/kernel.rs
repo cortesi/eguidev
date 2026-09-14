@@ -7,15 +7,17 @@ use std::{
 };
 
 use ruau::{
-    bytecode::{CompileError, CompileErrorKind, CompileOptions},
+    bytecode::{BytecodeChunk, CompileError, CompileErrorKind, CompileOptions, encode_chunk},
     declaration::DeclarationSource,
     module::{self},
+    source::{InMemorySource, ModuleId, SourceMetadata, SourceProvider},
     vm::{
         Ambient, AsyncHostContext, AsyncHostFunction, CallOptions, Deadline, FromLua, FromLuaMulti,
         HostReturn, IntoLuaMulti, Limits, LoadedModule, MarshaledScriptError, ModuleBinding,
-        MultiValue, NativeModule, OwnedValue, RuntimeCapabilities, RuntimeError, RuntimeErrorKind,
-        Scope, ScopedValue, ScriptErrorField, SourceLocation, StashedClosure, StashedValue,
-        TracebackFrame, ValueSnapshot, Vm, async_host_fn,
+        MultiValue, NativeModule, OwnedValue, RuntimeCapabilities, RuntimeCompileContext,
+        RuntimeCompiler, RuntimeError, RuntimeErrorKind, Scope, ScopedValue, ScriptErrorField,
+        SourceLocation, StashedClosure, StashedValue, TracebackFrame, ValueSnapshot, Vm,
+        async_host_fn,
         serde::{
             JsonDecodeOptions, from_scoped_value, json_to_scoped_value,
             json_to_scoped_value_with_options, marshaled_to_json, scoped_value_to_json,
@@ -32,31 +34,40 @@ use super::{
     outcome::{build_error_outcome, build_success_outcome, finalize_outcome},
     runtime::ScriptRuntime,
     types::{
-        ScriptArgs, ScriptErrorInfo, ScriptEvalOutcome, ScriptLocation, ScriptPosition,
-        ScriptResult, ScriptTiming,
+        ScriptArgs, ScriptErrorInfo, ScriptEvalOutcome, ScriptLocation, ScriptModules,
+        ScriptPosition, ScriptResult, ScriptTiming,
     },
     value::{script_args_to_json, script_return_value_from_json_values, script_value_from_json},
 };
 use crate::{
     registry::Inner,
     runtime::Runtime,
-    script::{CheckFailure, check_source, library},
+    script::{CheckFailure, check_source, library, typecheck::check_source_graph},
     types::WidgetRef,
 };
 
 const EGUIDEV_SEED: u64 = 0x00e9_d1de;
 
-pub async fn run_script_eval(
+pub async fn run_script_eval_with_modules(
     inner: Arc<Inner>,
     runtime: Arc<Runtime>,
     script: String,
     timeout_ms: u64,
     source_name: String,
     args: ScriptArgs,
+    modules: ScriptModules,
 ) -> ScriptEvalOutcome {
     let _guard = super::SCRIPT_EVAL_LOCK.lock().await;
     match spawn_blocking(move || {
-        run_script_eval_blocking(inner, runtime, script, timeout_ms, source_name, args)
+        run_script_eval_blocking_with_modules(
+            inner,
+            runtime,
+            script,
+            timeout_ms,
+            source_name,
+            args,
+            modules,
+        )
     })
     .await
     {
@@ -65,6 +76,7 @@ pub async fn run_script_eval(
     }
 }
 
+#[cfg(test)]
 fn run_script_eval_blocking(
     inner: Arc<Inner>,
     runtime: Arc<Runtime>,
@@ -72,6 +84,26 @@ fn run_script_eval_blocking(
     timeout_ms: u64,
     source_name: String,
     args: ScriptArgs,
+) -> ScriptEvalOutcome {
+    run_script_eval_blocking_with_modules(
+        inner,
+        runtime,
+        script,
+        timeout_ms,
+        source_name,
+        args,
+        ScriptModules::default(),
+    )
+}
+
+fn run_script_eval_blocking_with_modules(
+    inner: Arc<Inner>,
+    runtime: Arc<Runtime>,
+    script: String,
+    timeout_ms: u64,
+    source_name: String,
+    args: ScriptArgs,
+    modules: ScriptModules,
 ) -> ScriptEvalOutcome {
     let local_runtime = match TokioRuntimeBuilder::new_current_thread()
         .enable_time()
@@ -86,7 +118,15 @@ fn run_script_eval_blocking(
     };
     LocalSet::new().block_on(
         &local_runtime,
-        run_script_eval_local(inner, runtime, script, timeout_ms, source_name, args),
+        run_script_eval_local(
+            inner,
+            runtime,
+            script,
+            timeout_ms,
+            source_name,
+            args,
+            modules,
+        ),
     )
 }
 
@@ -97,10 +137,26 @@ async fn run_script_eval_local(
     timeout_ms: u64,
     source_name: String,
     args: ScriptArgs,
+    modules: ScriptModules,
 ) -> ScriptEvalOutcome {
     let start = Instant::now();
     let compile_start = Instant::now();
-    if let Err(error) = check_source(&source_name, &script) {
+    let module_source = match script_module_source(&modules) {
+        Ok(source) => source,
+        Err(error) => {
+            let mut outcome = ScriptEvalOutcome::error_only(error);
+            outcome.timing = timing(start, compile_start.elapsed(), Duration::ZERO);
+            return outcome;
+        }
+    };
+    let check = module_source.as_ref().map_or_else(
+        || check_source(&source_name, &script),
+        |source| {
+            let source: Arc<dyn SourceProvider> = source.clone();
+            check_source_graph(&source_name, &script, source)
+        },
+    );
+    if let Err(error) = check {
         let mut outcome = ScriptEvalOutcome::error_only(check_error_info(error));
         outcome.timing = timing(start, compile_start.elapsed(), Duration::ZERO);
         return outcome;
@@ -131,14 +187,17 @@ async fn run_script_eval_local(
         declaration: library::DECLARATION.to_string(),
     }
     .build();
-    let mut vm = match Vm::builder()
+    let mut vm_builder = Vm::builder()
         .ambient(Ambient::production(EGUIDEV_SEED))
         .limits(base_limits())
         .runtime_capabilities(runtime_capabilities.clone())
         .module(module)
-        .trusted_host()
-        .build()
-    {
+        .trusted_host();
+    if let Some(source) = module_source.as_ref() {
+        let source: Arc<dyn SourceProvider> = source.clone();
+        vm_builder = vm_builder.module_source(source);
+    }
+    let mut vm = match vm_builder.build() {
         Ok(vm) => vm,
         Err(error) => {
             let timing = timing(start, compile_start.elapsed(), Duration::ZERO);
@@ -174,6 +233,9 @@ async fn run_script_eval_local(
         source_chunk_name.as_bytes(),
         script.as_bytes(),
         &source_name,
+        module_source
+            .as_ref()
+            .map(|_| ModuleId::canonicalized(&source_name)),
     ) {
         Ok(module) => module,
         Err(error) => {
@@ -200,12 +262,13 @@ async fn run_script_eval_local(
         .await;
     }
     let exec_start = Instant::now();
-    let outcome = vm
-        .exec_async(
-            &module,
-            CallOptions::new().limits(invocation_limits(start, timeout_ms)),
-        )
-        .await;
+    let mut call_options = CallOptions::new().limits(invocation_limits(start, timeout_ms));
+    if module_source.is_some() {
+        call_options = call_options.runtime_compiler(Arc::new(ScriptModuleCompiler {
+            runtime_capabilities,
+        }));
+    }
+    let outcome = vm.exec_async(&module, call_options).await;
     let timing = timing(start, compile_elapsed, exec_start.elapsed());
 
     let outcome = match outcome {
@@ -239,12 +302,92 @@ fn load(
     chunk_name: &[u8],
     source: &[u8],
     source_name: &str,
+    module_id: Option<ModuleId>,
 ) -> Result<LoadedModule, ScriptErrorInfo> {
     let chunk = runtime_capabilities
         .compile_source(source, &CompileOptions::new())
         .map_err(|error| compile_error_info(&error, source_name))?;
-    vm.load_named(&chunk, chunk_name)
-        .map_err(|error| runtime_error(format!("failed to load Ruau chunk: {error}")))
+    match module_id {
+        Some(module_id) => vm.load_named_module(&chunk, module_id, chunk_name),
+        None => vm.load_named(&chunk, chunk_name),
+    }
+    .map_err(|error| runtime_error(format!("failed to load Ruau chunk: {error}")))
+}
+
+fn script_module_source(
+    modules: &ScriptModules,
+) -> Result<Option<Arc<InMemorySource>>, ScriptErrorInfo> {
+    if modules.is_empty() {
+        return Ok(None);
+    }
+    let mut source = InMemorySource::new();
+    let mut names = BTreeMap::new();
+    for (name, contents) in modules {
+        let id = ModuleId::canonicalized(name);
+        if id.as_bytes().is_empty() {
+            return Err(type_error(
+                "script module name must not be empty".to_string(),
+            ));
+        }
+        if let Some(previous) = names.insert(id.clone(), name) {
+            return Err(type_error(format!(
+                "script module names {previous:?} and {name:?} resolve to the same module"
+            )));
+        }
+        source.insert_with_metadata(id, contents, SourceMetadata::new(name.clone()));
+    }
+    Ok(Some(Arc::new(source)))
+}
+
+struct ScriptModuleCompiler {
+    runtime_capabilities: RuntimeCapabilities,
+}
+
+impl RuntimeCompiler for ScriptModuleCompiler {
+    fn compile(
+        &self,
+        source: &[u8],
+        context: RuntimeCompileContext,
+    ) -> Result<BytecodeChunk, Vec<u8>> {
+        context.check_cancelled()?;
+        enforce_runtime_compile_limit(
+            "source byte",
+            source.len(),
+            context.limits.max_source_bytes,
+        )?;
+        let chunk = self
+            .runtime_capabilities
+            .compile_source(source, &CompileOptions::new())
+            .map_err(|error| error.to_string().into_bytes())?;
+        context.check_cancelled()?;
+        let instructions = match &chunk {
+            BytecodeChunk::Valid { protos, .. } => protos
+                .iter()
+                .flat_map(|proto| &proto.code)
+                .map(|instruction| instruction.word_len() as usize)
+                .sum(),
+            BytecodeChunk::Error { .. } => 0,
+        };
+        enforce_runtime_compile_limit(
+            "compiled instruction",
+            instructions,
+            context.limits.max_compiled_instructions,
+        )?;
+        let encoded = encode_chunk(&chunk).map_err(|error| error.to_string().into_bytes())?;
+        enforce_runtime_compile_limit(
+            "compiled bytecode byte",
+            encoded.len(),
+            context.limits.max_compiled_bytecode_bytes,
+        )?;
+        Ok(chunk)
+    }
+}
+
+fn enforce_runtime_compile_limit(label: &str, used: usize, cap: usize) -> Result<(), Vec<u8>> {
+    if used <= cap {
+        return Ok(());
+    }
+    Err(format!("runtime compilation exceeded {label} limit ({used} > {cap})").into_bytes())
 }
 
 fn values_to_script_value(
@@ -1033,13 +1176,30 @@ impl EguidevModule {
         builder.async_function(
             "viewport_screenshot",
             ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let target = serde_json::json!({ "viewport_id": viewport.id });
+                    let target = serde_json::json!({ "viewport_id": args.receiver.id });
                     let value = runtime
-                        .screenshot(pos, Some(&target))
+                        .screenshot(pos, Some(&target), Some(&args.value))
+                        .await
+                        .map_err(host_script_error)?;
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
+                }
+            }),
+        );
+        let runtime = Arc::clone(&self.runtime);
+        builder.async_function(
+            "viewport_native_screenshot",
+            ModuleBinding::hidden("eguidev.capture"),
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
+                let runtime = Arc::clone(&runtime);
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = runtime
+                        .native_screenshot(pos, args.receiver.id, Some(&args.value))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1106,12 +1266,12 @@ impl EguidevModule {
         builder.async_function(
             "viewport_clear_highlights",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, _: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .clear_highlights(pos)
+                        .clear_highlights(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1146,12 +1306,12 @@ impl EguidevModule {
         builder.async_function(
             "viewport_clear_debug_overlay",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, _: ViewportReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .clear_debug_overlay(pos)
+                        .clear_debug_overlay(pos, Some(viewport.id))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1454,12 +1614,12 @@ impl EguidevModule {
         builder.async_function(
             "widget_screenshot",
             ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, receiver: WidgetReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .screenshot(pos, Some(&receiver.value))
+                        .screenshot(pos, Some(&args.receiver.value), Some(&args.value))
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -1578,12 +1738,12 @@ impl EguidevModule {
         builder.async_function(
             "widget_clear_debug_overlay",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, _: WidgetReceiver| {
+            async_host_fn(move |ctx: AsyncHostContext, widget: WidgetReceiver| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
                     let value = runtime
-                        .clear_debug_overlay(pos)
+                        .clear_widget_debug_overlay(pos, widget.widget_ref())
                         .await
                         .map_err(host_script_error)?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
@@ -2964,6 +3124,7 @@ mod tests {
         },
     };
 
+    use egui::{Color32, Context, RawInput, ViewportId, epaint::Shape};
     use eguidev::AutomationOptions;
     use ruau::vm::{
         Ambient, Function, Limits, RuntimeCapabilities, Vm, serde::json_to_scoped_value,
@@ -2980,7 +3141,7 @@ mod tests {
         runtime::{self, Runtime},
         types::{
             FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, WidgetRegistryEntry,
-            WidgetRole, WidgetValue,
+            WidgetRole, WidgetRoleMeta, WidgetValue,
         },
     };
 
@@ -3043,6 +3204,7 @@ mod tests {
                         "viewport_layout_issues",
                         "viewport_sample_pixels",
                         "viewport_screenshot",
+                        "viewport_native_screenshot",
                         "widget_layout_issues",
                         "widget_sample_grid",
                         "widget_sample_pixels",
@@ -3182,6 +3344,7 @@ return eguidev.diagnostics()"#,
             crate::ScriptEvalOptions {
                 source_name: Some("diagnostics.luau".to_string()),
                 args: ScriptArgs::default(),
+                ..crate::ScriptEvalOptions::default()
             },
         ));
 
@@ -3190,6 +3353,10 @@ return eguidev.diagnostics()"#,
             outcome.value,
             Some(json!({
                 "values": {
+                    "eguidev.input": {
+                        "positions": {},
+                        "events": [],
+                    },
                     "ready": {
                         "ready": true,
                         "count": 2,
@@ -3218,6 +3385,7 @@ end)
             crate::ScriptEvalOptions {
                 source_name: Some("wait-until-timeout.luau".to_string()),
                 args: ScriptArgs::default(),
+                ..crate::ScriptEvalOptions::default()
             },
         ));
 
@@ -3258,6 +3426,7 @@ end)
             crate::ScriptEvalOptions {
                 source_name: Some("diagnostics.luau".to_string()),
                 args: ScriptArgs::default(),
+                ..crate::ScriptEvalOptions::default()
             },
         ));
 
@@ -3265,7 +3434,12 @@ end)
         assert_eq!(
             outcome.value,
             Some(json!({
-                "values": {},
+                "values": {
+                    "eguidev.input": {
+                        "positions": {},
+                        "events": [],
+                    },
+                },
                 "errors": {
                     "broken": {
                         "code": "broken",
@@ -3732,6 +3906,272 @@ return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
         );
     }
 
+    fn run_overlay_script(script: &str) -> (Arc<Inner>, ViewportId) {
+        let inner = Arc::new(Inner::new());
+        let secondary = ViewportId::from_hash_of("highlight.secondary");
+        for viewport_id in [ViewportId::ROOT, secondary] {
+            inner.viewports.remember_viewport_id(viewport_id);
+            let mut entry = make_entry("shared", 1, WidgetRole::Button);
+            // Generated IDs can repeat across viewports; explicit IDs cannot.
+            entry.explicit_id = false;
+            entry.viewport_id = viewport_id_to_string(viewport_id);
+            inner.widgets.clear_registry(viewport_id);
+            inner.widgets.record_widget(viewport_id, entry);
+            inner.widgets.finalize_registry(viewport_id);
+        }
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            Arc::clone(&inner),
+            runtime,
+            format!(
+                "local secondary_id = \"{}\"\n{script}",
+                viewport_id_to_string(secondary)
+            ),
+            1_000,
+            "highlight-viewports.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        (inner, secondary)
+    }
+
+    fn painted_overlay_colors(inner: &Inner, viewport_id: ViewportId) -> Vec<Color32> {
+        let ctx = Context::default();
+        let mut input = RawInput {
+            viewport_id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(100.0, 100.0),
+            )),
+            ..Default::default()
+        };
+        input.viewports.entry(viewport_id).or_default();
+        ctx.begin_pass(input);
+        inner.paint_overlays(&ctx);
+        let output = ctx.end_pass();
+        let colors = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                Shape::Rect(rect) => Some(rect.stroke.color),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        colors
+    }
+
+    #[test]
+    fn rectangle_highlights_stay_in_their_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+local rect = { min = { x = 10, y = 10 }, max = { x = 50, y = 50 } }
+eguidev.root:show_highlight(rect, "#ff0000")
+eguidev.viewport(secondary_id):show_highlight(rect, "#0000ff")
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn widget_highlights_stay_in_their_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:widget("shared"):show_highlight("#ff0000")
+eguidev.viewport(secondary_id):widget("shared"):show_highlight("#0000ff")
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn clearing_viewport_highlights_preserves_other_viewports() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+local rect = { min = { x = 10, y = 10 }, max = { x = 50, y = 50 } }
+eguidev.root:show_highlight(rect, "#ff0000")
+local secondary = eguidev.viewport(secondary_id)
+secondary:show_highlight(rect, "#0000ff")
+secondary:clear_highlights()
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn clearing_widget_highlight_preserves_other_viewports() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:widget("shared"):show_highlight("#ff0000")
+local secondary = eguidev.viewport(secondary_id):widget("shared")
+secondary:show_highlight("#0000ff")
+secondary:clear_highlight()
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn viewport_debug_overlays_stay_in_their_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+eguidev.viewport(secondary_id):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn widget_debug_overlays_stay_in_their_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+eguidev.viewport(secondary_id):widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn clearing_viewport_debug_overlay_preserves_other_viewports() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+eguidev.viewport(secondary_id):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+eguidev.root:clear_debug_overlay()
+"##,
+        );
+        assert!(painted_overlay_colors(&inner, ViewportId::ROOT).is_empty());
+        assert_eq!(
+            painted_overlay_colors(&inner, secondary),
+            vec![Color32::BLUE]
+        );
+    }
+
+    #[test]
+    fn clearing_widget_debug_overlay_preserves_other_viewports() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+local widget = eguidev.viewport(secondary_id):widget("shared")
+widget:show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+widget:clear_debug_overlay()
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn missing_debug_scope_does_not_expand_to_the_whole_viewport() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.viewport(secondary_id):widget("shared"):show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+"##,
+        );
+        inner.widgets.clear_registry(secondary);
+        let mut other = make_entry("other", 2, WidgetRole::Button);
+        other.viewport_id = viewport_id_to_string(secondary);
+        inner.widgets.record_widget(secondary, other);
+        inner.widgets.finalize_registry(secondary);
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn missing_scoped_widget_can_clear_its_viewport_debug_overlay() {
+        let (inner, secondary) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+local viewport = eguidev.viewport(secondary_id)
+viewport:show_debug_overlay({ show_labels = false, bounds_color = "#0000ff" })
+viewport:widget("missing"):clear_debug_overlay()
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, egui::ViewportId::ROOT),
+            [egui::Color32::RED]
+        );
+        assert!(painted_overlay_colors(&inner, secondary).is_empty());
+    }
+
+    #[test]
+    fn dismiss_popups_preserves_other_viewport_overlays() {
+        for show_method in ["show_highlight", "show_debug_overlay"] {
+            let options = if show_method == "show_highlight" {
+                "\"#0000ff\""
+            } else {
+                "{ show_labels = false, bounds_color = \"#0000ff\" }"
+            };
+            let script = format!(
+                r#"
+eguidev.viewport(secondary_id):widget("shared"):{show_method}({options})
+eguidev.root:dismiss_popups({{ settle = false }})
+"#
+            );
+            let (inner, secondary) = run_overlay_script(&script);
+            assert_eq!(
+                painted_overlay_colors(&inner, secondary),
+                [egui::Color32::BLUE],
+                "{show_method}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_widget_debug_clear_preserves_other_overlays() {
+        let (inner, _) = run_overlay_script(
+            r##"
+eguidev.root:show_debug_overlay({ show_labels = false, bounds_color = "#ff0000" })
+local ok = pcall(function() eguidev.widget("missing"):clear_debug_overlay() end)
+assert(not ok, "an unscoped missing widget must not clear root")
+"##,
+        );
+        assert_eq!(
+            painted_overlay_colors(&inner, ViewportId::ROOT),
+            vec![Color32::RED]
+        );
+    }
+
     #[test]
     fn initial_ruau_slice_runs_predicate_methods() {
         let inner = Arc::new(Inner::new());
@@ -3874,6 +4314,43 @@ end)
     }
 
     #[test]
+    fn viewport_wait_and_expect_handle_absence() {
+        let inner = Arc::new(Inner::new());
+        let absent = ViewportId::from_hash_of("absent.viewport.wait");
+        inner.viewports.update_viewports(&Context::default());
+        inner.viewports.remember_viewport_id(absent);
+        assert!(!inner.viewports.is_live_viewport(absent));
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let script = r#"
+assert(viewport:state() == nil)
+assert(viewport:wait({ present = false }) == nil)
+assert(viewport:wait(function(current) return current == nil end) == nil)
+assert(viewport:expect({ present = false }) == nil)
+local ok, error = pcall(function()
+    viewport:wait({ present = true }, { timeout_ms = 1, poll_interval_ms = 1 })
+end)
+assert(not ok, "waiting for presence must time out")
+assert((error :: Error).code == "timeout", "absence must preserve the timeout error")
+return true
+"#;
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            format!(
+                "local viewport = eguidev.viewport(\"{}\")\n{script}",
+                viewport_id_to_string(absent)
+            ),
+            1_000,
+            "absent-viewport-wait.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(outcome.value, Some(json!(true)));
+        assert_eq!(outcome.assertions.len(), 1);
+        assert!(outcome.assertions[0].passed);
+    }
+
+    #[test]
     fn capture_snapshots_are_immutable() {
         let inner = Arc::new(Inner::new());
         let viewport_id = egui::ViewportId::ROOT;
@@ -3971,6 +4448,192 @@ return {
                 "viewport": "invalid_argument",
             }))
         );
+    }
+
+    /// Render a background button under an interactable `Area` at
+    /// `Order::Middle`, and a second button inside the area, into `inner`'s
+    /// registry. An area needs one prior frame before egui treats it as
+    /// interactable, and this frame shows the area before the background
+    /// button so a single repeat already reaches steady-state coverage.
+    fn render_covered_scene(inner: &Arc<Inner>) {
+        use crate::widget_registry::{WidgetMeta, record_widget};
+
+        let viewport_id = egui::ViewportId::ROOT;
+        let ctx = egui::Context::default();
+        let raw_input = || egui::RawInput {
+            viewport_id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            inner.widgets.clear_registry(viewport_id);
+            let output = ctx.run_ui(raw_input(), |ui| {
+                let card = egui::Area::new(egui::Id::new("floating.card"))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_size(egui::vec2(200.0, 200.0));
+                        ui.button("Approve")
+                    });
+                record_widget(
+                    &inner.widgets,
+                    "card.approve".to_string(),
+                    &card.inner,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+
+                let background = ui.button("Hidden approve");
+                record_widget(
+                    &inner.widgets,
+                    "background.approve".to_string(),
+                    &background,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Hidden approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            });
+            output.drop_without_applying_deltas();
+            inner.widgets.finalize_registry(viewport_id);
+        }
+    }
+
+    #[test]
+    fn covered_widget_state_reports_coverage_by_the_floating_card() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local background = eguidev.widget("background.approve"):state()
+local card = eguidev.widget("card.approve"):state()
+assert(background ~= nil and card ~= nil)
+return { background_covered = background.covered, card_covered = card.covered }"#
+                .to_string(),
+            1_000,
+            "covered-state.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({ "background_covered": true, "card_covered": false }))
+        );
+    }
+
+    /// `Widget:click()` waits for `{ actionable = true }` before it queues the
+    /// low-level click, exactly as it already does for an invisible or
+    /// disabled widget, so a permanently covered widget times out here rather
+    /// than reaching the covering card. The direct `not_actionable` reason
+    /// `covered` is asserted at the tool layer by
+    /// `action_click_rejects_covered_widget` in `automation::mod`, which calls
+    /// the click tool without this settling wait.
+    #[test]
+    fn covered_widget_click_times_out_instead_of_reaching_the_card() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("background.approve"):click({ timeout_ms = 60, poll_interval_ms = 5 })"#
+                .to_string(),
+            1_000,
+            "covered-click.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("covered click timeout");
+        assert_eq!(error.error_type, "timeout");
+    }
+
+    #[test]
+    fn covered_widget_fails_the_actionable_wait() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("background.approve"):wait(
+    { actionable = true },
+    { timeout_ms = 60, poll_interval_ms = 5 }
+)"#
+            .to_string(),
+            1_000,
+            "covered-actionable-wait.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.as_ref().expect("actionable wait timeout");
+        assert_eq!(error.error_type, "timeout");
+    }
+
+    // `scroll_into_view()`'s settle-enabled interaction-ready poll is tested
+    // in `automation::mod::covered_widget_scroll_into_view_still_settles`,
+    // which drives real frames: `settle_after_action` needs an advancing
+    // frame count that this blocking, single-shot harness cannot provide.
+
+    #[test]
+    fn uncovered_widget_inside_the_card_clicks_normally() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("card.approve"):click({ settle = false })"#.to_string(),
+            1_000,
+            "card-click.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+    }
+
+    #[test]
+    fn covered_query_filter_and_expect_condition_select_the_right_widget() {
+        let inner = Arc::new(Inner::new());
+        render_covered_scene(&inner);
+        let runtime = Runtime::ensure_for_inner(&inner);
+
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local covered = eguidev.root:widgets({ covered = true })
+local uncovered = eguidev.root:widgets({ covered = false })
+eguidev.widget("card.approve"):expect({ covered = false })
+return {
+    covered_count = #covered,
+    covered_first = covered[1].id,
+    uncovered_count = #uncovered,
+    uncovered_first = uncovered[1].id,
+}"#
+            .to_string(),
+            1_000,
+            "covered-filter.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        let value = outcome.value.expect("script value");
+        assert_eq!(value["covered_count"], 1);
+        assert_eq!(value["covered_first"], "background.approve");
+        assert_eq!(value["uncovered_count"], 1);
+        assert_eq!(value["uncovered_first"], "card.approve");
     }
 
     #[test]
@@ -4207,6 +4870,7 @@ return { id = ready.widget.id, viewport = widget.__viewport_id }
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         }
     }
 }

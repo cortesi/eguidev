@@ -11,12 +11,12 @@ mod typecheck;
 mod types;
 mod value;
 
-pub use kernel::run_script_eval;
+pub use kernel::run_script_eval_with_modules;
 pub use typecheck::{CheckFailure, check_source, warm_checker_baseline};
 pub use types::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
     ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
-    ScriptTiming,
+    ScriptModules, ScriptTiming,
 };
 
 pub const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;

@@ -17,7 +17,8 @@ pub enum Presentation {
 }
 
 impl Presentation {
-    /// Return the wire spelling used in the initialize capability and status payload.
+    /// Return the wire spelling used in the initialize capability and status
+    /// payload.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Background => "background",

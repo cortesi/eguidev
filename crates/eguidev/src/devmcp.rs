@@ -136,8 +136,8 @@ struct DevMcpShared {
 
 /// DevMCP handle stored in app state.
 ///
-/// `Clone` is a cheap shared handle: configuration, the shutdown handler, fixtures, diagnostics,
-/// and idle providers are observed by every clone.
+/// `Clone` is a cheap shared handle: configuration, the shutdown handler,
+/// fixtures, diagnostics, and idle providers are observed by every clone.
 #[derive(Clone, Default)]
 pub struct DevMcp {
     state: DevMcpState,
@@ -208,7 +208,8 @@ impl DevMcp {
         self
     }
 
-    /// Enable or disable runtime repaint keep-alive while automation is attached.
+    /// Enable or disable runtime repaint keep-alive while automation is
+    /// attached.
     pub fn keep_alive(self, keep_alive: bool) -> Self {
         let options = {
             let mut options = lock(
@@ -242,9 +243,10 @@ impl DevMcp {
 
     /// Register a nonblocking application shutdown request.
     ///
-    /// Edev calls this handler on the app MCP runtime thread during managed shutdown. The handler
-    /// must publish its request to the application's lifecycle owner and return immediately. If no
-    /// handler is registered, Eguidev closes the root viewport.
+    /// Edev calls this handler on the app MCP runtime thread during managed
+    /// shutdown. The handler must publish its request to the application's
+    /// lifecycle owner and return immediately. If no handler is registered,
+    /// Eguidev closes the root viewport.
     pub fn on_shutdown<F>(self, handler: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -309,7 +311,8 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register a named diagnostic provider that runs on the automation runtime thread.
+    /// Register a named diagnostic provider that runs on the automation runtime
+    /// thread.
     pub fn diagnostic<F>(
         self,
         name: impl Into<String>,
@@ -341,7 +344,8 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register an app-level idle check that runs on the automation runtime thread.
+    /// Register an app-level idle check that runs on the automation runtime
+    /// thread.
     pub fn on_idle<F>(self, is_idle: F) -> Result<Self, DevMcpConfigError>
     where
         F: Fn() -> bool + Send + Sync + 'static,
@@ -353,7 +357,8 @@ impl DevMcp {
         Ok(self)
     }
 
-    /// Register an app-level idle check that runs on the UI thread at root frame end.
+    /// Register an app-level idle check that runs on the UI thread at root
+    /// frame end.
     pub fn on_idle_ui<F>(self, is_idle: F) -> Result<Self, DevMcpConfigError>
     where
         F: FnMut(&Context) -> bool + Send + 'static,
@@ -514,6 +519,9 @@ impl DevMcp {
 
     fn finish_frame(&self, inner: &Arc<Inner>, ctx: &Context) {
         let viewport_id = ctx.viewport_id();
+        if ctx.will_discard() {
+            return;
+        }
         inner.widgets.finalize_registry(viewport_id);
         let next_frame = inner.frame_count() + 1;
         let fixture_epoch = inner
@@ -522,6 +530,13 @@ impl DevMcp {
         inner
             .viewports
             .capture_input_snapshot(ctx, fixture_epoch, next_frame);
+        let pointer_pos = inner
+            .viewports
+            .input_snapshot(viewport_id)
+            .and_then(|snapshot| snapshot.pointer_pos);
+        inner
+            .actions
+            .record_pointer_report(viewport_id, next_frame, pointer_pos);
         if viewport_id == egui::ViewportId::ROOT {
             inner.idle.update_ui(ctx, next_frame);
         }
@@ -568,6 +583,9 @@ impl DevMcp {
         let mut current_modifiers = base_modifiers;
         let mut modifiers_changed = false;
         let mut force_focus = false;
+        let pointer_moved = actions
+            .iter()
+            .any(|action| matches!(action, InputAction::PointerMove { .. }));
         for action in &actions {
             if let InputAction::Key {
                 pressed, modifiers, ..
@@ -592,6 +610,9 @@ impl DevMcp {
         }
         for action in actions {
             action.apply(raw_input);
+        }
+        if !pointer_moved && let Some(pos) = inner.actions.pointer_pos(viewport_id) {
+            raw_input.events.push(egui::Event::PointerMoved(pos.into()));
         }
         if modifiers_changed {
             raw_input
@@ -662,7 +683,7 @@ mod inactive_tests {
     use egui::{Context, Plugin};
 
     use super::*;
-    use crate::{actions::InputAction, instrument, registry::Inner, ui_ext::DevUiExt};
+    use crate::{actions::InputAction, instrument, registry::Inner, types::Pos2, ui_ext::DevUiExt};
 
     #[derive(Default)]
     struct CountingRuntimeHooks {
@@ -754,6 +775,145 @@ mod inactive_tests {
     }
 
     #[test]
+    fn popup_dismissal_delivers_escape_only_to_its_viewport() {
+        let inner = Arc::new(Inner::new());
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let ctx = Context::default();
+        inner.capture_context(egui::ViewportId::ROOT, &ctx);
+        inner.capture_context(secondary, &ctx);
+        let devmcp = DevMcp::new().activate_runtime(
+            Arc::clone(&inner),
+            Arc::new(CountingRuntimeHooks::default()),
+        );
+        let mut plugin = AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        };
+
+        inner.dismiss_transient_ui(Some(secondary));
+
+        let mut root_input = egui::RawInput::default();
+        plugin.input_hook(&ctx, &mut root_input);
+        assert!(root_input.events.is_empty());
+
+        let mut secondary_input = egui::RawInput {
+            viewport_id: secondary,
+            ..Default::default()
+        };
+        plugin.input_hook(&ctx, &mut secondary_input);
+        let mut expected = [true, false]
+            .into_iter()
+            .map(|pressed| egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .collect::<Vec<_>>();
+        expected.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        assert_eq!(secondary_input.events, expected);
+        assert!(!inner.actions.has_pending_actions(secondary));
+    }
+
+    #[test]
+    fn popup_dismissal_preserves_other_viewport_popup_and_focus() {
+        let inner = Arc::new(Inner::new());
+        let devmcp = DevMcp::new().activate_runtime(
+            Arc::clone(&inner),
+            Arc::new(CountingRuntimeHooks::default()),
+        );
+        let ctx = Context::default();
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let input = |viewport_id| {
+            let mut raw = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            raw.viewports.insert(secondary, Default::default());
+            raw
+        };
+        // Install the plugin before opening either viewport's transient UI.
+        ctx.run_ui(input(root), |ui| {
+            let _guard = FrameGuard::new(&devmcp, ui.ctx());
+        })
+        .drop_without_applying_deltas();
+        let render = |viewport_id, open| {
+            let mut state = (false, false);
+            ctx.run_ui(input(viewport_id), |ui| {
+                let pass_context = ui.ctx().clone();
+                let _guard = FrameGuard::new(&devmcp, &pass_context);
+                let edit_id = egui::Id::new((viewport_id, "edit"));
+                let popup_id = egui::Id::new((viewport_id, "popup"));
+                let mut text = String::new();
+                let edit = ui.add(egui::TextEdit::singleline(&mut text).id(edit_id));
+                let anchor = ui.button("Open");
+                if open {
+                    egui::Popup::open_id(ui.ctx(), popup_id);
+                    edit.request_focus();
+                }
+                egui::Popup::new(popup_id, ui.ctx().clone(), &anchor, anchor.layer_id)
+                    .open_memory(None)
+                    .show(|ui| {
+                        ui.label("Popup");
+                    });
+                state = (
+                    egui::Popup::is_id_open(ui.ctx(), popup_id),
+                    ui.ctx().memory(|memory| memory.has_focus(edit_id)),
+                );
+            })
+            .drop_without_applying_deltas();
+            state
+        };
+        assert_eq!(render(root, true), (true, true));
+        assert_eq!(render(secondary, true), (true, true));
+
+        inner.dismiss_transient_ui(Some(root));
+
+        assert_eq!(render(root, false), (false, false));
+        assert_eq!(render(secondary, false), (true, true));
+    }
+
+    #[test]
+    fn input_hook_plugin_retains_the_synthetic_pointer_position() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let pos = Pos2 { x: 12.0, y: 34.0 };
+        inner.queue_action(viewport_id, InputAction::PointerMove { pos });
+        let devmcp =
+            DevMcp::new().activate_runtime(inner, Arc::new(CountingRuntimeHooks::default()));
+        let mut plugin = AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        };
+        let ctx = Context::default();
+        let mut first = egui::RawInput {
+            viewport_id,
+            ..Default::default()
+        };
+        plugin.input_hook(&ctx, &mut first);
+        assert_eq!(
+            first.events,
+            vec![egui::Event::PointerMoved(egui::pos2(12.0, 34.0))]
+        );
+
+        let mut next = egui::RawInput {
+            viewport_id,
+            events: vec![egui::Event::PointerGone],
+            ..Default::default()
+        };
+        plugin.input_hook(&ctx, &mut next);
+        assert_eq!(
+            next.events,
+            vec![
+                egui::Event::PointerGone,
+                egui::Event::PointerMoved(egui::pos2(12.0, 34.0)),
+            ]
+        );
+    }
+
+    #[test]
     fn frame_guard_forwards_input_events_to_runtime_hooks() {
         let inner = Arc::new(Inner::new());
         let hooks = Arc::new(CountingRuntimeHooks::default());
@@ -785,6 +945,39 @@ mod inactive_tests {
             1,
             "automation plugin should forward completed output"
         );
+    }
+
+    #[test]
+    fn frame_guard_publishes_only_the_settled_multipass_registry() {
+        let inner = Arc::new(Inner::new());
+        let hooks = Arc::new(CountingRuntimeHooks::default());
+        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
+        let devmcp = DevMcp::new().activate_runtime(Arc::clone(&inner), runtime_hooks);
+        let ctx = Context::default();
+        let pass = AtomicUsize::new(0);
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let pass_context = ui.ctx().clone();
+            let _guard = FrameGuard::new(&devmcp, &pass_context);
+            if pass.fetch_add(1, AtomicOrdering::Relaxed) == 0 {
+                let _response = ui.dev_button("discarded", "Discarded");
+                ui.ctx().request_discard("test sizing pass");
+            } else {
+                let _response = ui.dev_button("settled", "Settled");
+            }
+        })
+        .drop_without_applying_deltas();
+
+        let widgets = inner.widgets.widget_list(egui::ViewportId::ROOT);
+        assert_eq!(
+            widgets
+                .iter()
+                .map(|widget| widget.id.as_str())
+                .collect::<Vec<_>>(),
+            ["settled"]
+        );
+        assert_eq!(inner.frame_count(), 1);
+        assert_eq!(hooks.frame_end_calls.load(AtomicOrdering::Relaxed), 1);
     }
 
     #[test]
@@ -885,7 +1078,7 @@ mod inactive_tests {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _guard = FrameGuard::new(&devmcp, &ctx);
-            ui.dev_button("inactive.button", "Inactive");
+            let _response = ui.dev_button("inactive.button", "Inactive");
         })
         .drop_without_applying_deltas();
 
@@ -903,16 +1096,16 @@ mod inactive_tests {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _outer = FrameGuard::new(&devmcp, &ctx);
-            ui.dev_button("outer.first", "First");
+            let _response = ui.dev_button("outer.first", "First");
             {
                 let _inner = FrameGuard::new(&devmcp, &ctx);
-                ui.dev_button("inner", "Inner");
+                let _response = ui.dev_button("inner", "Inner");
             }
             assert!(
                 instrument::active_inner().is_some(),
                 "parent frame should stay active after the nested guard drops"
             );
-            ui.dev_button("outer.second", "Second");
+            let _response = ui.dev_button("outer.second", "Second");
         })
         .drop_without_applying_deltas();
 
@@ -956,14 +1149,14 @@ mod inactive_tests {
         ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx().clone();
             let _guard = FrameGuard::new(&devmcp, &ctx);
-            ui.dev_button("inside", "Inside");
+            let _response = ui.dev_button("inside", "Inside");
         })
         .drop_without_applying_deltas();
 
         assert!(instrument::active_inner().is_none());
 
         ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.dev_button("ungarded", "Ungarded");
+            let _response = ui.dev_button("ungarded", "Ungarded");
         })
         .drop_without_applying_deltas();
 

@@ -53,7 +53,9 @@
 //! an explicit string id and auto-populates role, label, and value metadata:
 //!
 //! ```rust,ignore
-//! ui.dev_button("settings.save", "Save");
+//! if ui.dev_button("settings.save", "Save").clicked() {
+//!     save_settings();
+//! }
 //! ui.dev_text_edit("settings.name", &mut name);
 //! ui.dev_checkbox("settings.enabled", &mut enabled, "Enabled");
 //! ui.dev_slider("settings.level", &mut level, 0.0..=100.0);
@@ -134,11 +136,11 @@
 //! establishing its declared entry state. Both kinds leave the app in a state
 //! described by ready conditions. Use typed fixture params for controlled
 //! variants and handler-returned values or ready for dynamic fixture outcomes.
-//! Scripts call `eguidev.fixture("name", params?)` to apply the named fixture, wait for a
-//! fresh capture, verify static and returned ready conditions, and receive the
-//! returned values. Widget and viewport references resolve fresh across fixture
-//! boundaries. Pass `{ wait = false }` only when a script intentionally needs
-//! the state before ready conditions are satisfied.
+//! Scripts call `eguidev.fixture("name", params?)` to apply the named fixture,
+//! wait for a fresh capture, verify static and returned ready conditions, and
+//! receive the returned values. Widget and viewport references resolve fresh
+//! across fixture boundaries. Pass `{ wait = false }` only when a script
+//! intentionally needs the state before ready conditions are satisfied.
 //!
 //! # Scripting reference
 //!
@@ -168,17 +170,18 @@ pub use crate::{
     devmcp::{AutomationOptions, DevMcp, FrameGuard, frame_scope},
     diagnostics::{DevMcpConfigError, DiagnosticError, DiagnosticResult},
     instrument::{
-        ContainerGuard, ScrollAreaState, begin_container, capture_layout, container, name_viewport,
-        publish_rect_container, publish_rect_meta, track_response, track_widget,
-        track_widget_with_meta,
+        ContainerGuard, ScrollAreaState, begin_container, capture_layout,
+        capture_layout_with_galley, container, name_viewport, publish_rect_container,
+        publish_rect_meta, track_response, track_widget, track_widget_with_meta,
     },
     types::{
         ActionOptions, DragOptions, FixtureCall, FixtureError, FixtureParam, FixtureParams,
         FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, ParamKind, PointerButton,
         Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState, ScrollAlign,
         ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
-        ViewportSelParseError, WaitOptions, WidgetCondition, WidgetLayout, WidgetRange, WidgetRef,
-        WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+        ViewportSelParseError, WaitOptions, WidgetCondition, WidgetFont, WidgetLayout, WidgetRange,
+        WidgetRef, WidgetRole, WidgetRoleMeta, WidgetState, WidgetTextLayout, WidgetTextLine,
+        WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -239,8 +242,9 @@ pub mod internal {
             FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, Modifiers, ParamKind,
             PointerButton, Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState,
             ScrollAlign, ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
-            ViewportSelParseError, WaitOptions, WidgetCondition, WidgetLayout, WidgetRange,
-            WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
+            ViewportSelParseError, WaitOptions, WidgetCondition, WidgetFont, WidgetLayout,
+            WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState,
+            WidgetTextLayout, WidgetTextLine, WidgetValue,
         };
     }
 
@@ -250,7 +254,8 @@ pub mod internal {
 
     pub mod viewports {
         pub use crate::viewports::{
-            FrameHealth, InputSnapshot, PlatformViewportState, ViewportSnapshot, ViewportState,
+            FrameHealth, InputSnapshot, OutputSnapshot, PlatformViewportState, ViewportSnapshot,
+            ViewportState,
         };
     }
 

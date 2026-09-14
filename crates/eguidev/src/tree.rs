@@ -199,6 +199,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         }
     }
 

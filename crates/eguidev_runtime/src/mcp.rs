@@ -8,6 +8,7 @@ use std::{
     },
 };
 
+use ruau_script_api::{ScriptApiQuery, ScriptApiResponse};
 use tmcp::{
     ServerCtx, ToolResult, mcp_server,
     schema::{
@@ -20,10 +21,11 @@ use crate::{
     presentation::parse_client_capabilities,
     registry::Inner,
     runtime::Runtime,
-    script_definitions,
+    script_docs::{script_api_response, script_api_tool_result},
 };
 
-/// App MCP server. Automation policy remains in the script and automation modules.
+/// App MCP server. Automation policy remains in the script and automation
+/// modules.
 pub struct AppMcpServer {
     inner: Arc<Inner>,
     runtime: Arc<Runtime>,
@@ -77,26 +79,29 @@ impl AppMcpServer {
         options: Option<ScriptEvalOptions>,
     ) -> ToolResult<CallToolResult> {
         let timeout_ms = timeout_ms.unwrap_or(script::DEFAULT_SCRIPT_TIMEOUT_MS);
-        let options = options.unwrap_or_default();
-        let source_name = options
-            .source_name
-            .unwrap_or_else(|| "script.luau".to_string());
-        let outcome = script::run_script_eval(
+        let ScriptEvalOptions {
+            source_name,
+            args,
+            modules,
+        } = options.unwrap_or_default();
+        let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
+        let outcome = script::run_script_eval_with_modules(
             Arc::clone(&self.inner),
             Arc::clone(&self.runtime),
             script,
             timeout_ms,
             source_name,
-            options.args,
+            args,
+            modules,
         )
         .await;
         Ok(outcome.to_tool_result())
     }
 
-    #[tool]
-    /// Return the exact checked-in Luau declaration bytes.
-    async fn script_api(&self) -> ToolResult<CallToolResult> {
-        Ok(CallToolResult::new().with_text_content(script_definitions()))
+    #[tool(read_only, output_schema = ScriptApiResponse)]
+    /// Return shared discovery for the checked Eguidev API.
+    async fn script_api(&self, params: ScriptApiQuery) -> ToolResult<CallToolResult> {
+        script_api_tool_result(script_api_response(&params))
     }
 
     #[tool]

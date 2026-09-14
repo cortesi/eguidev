@@ -13,20 +13,19 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::codecs::jpeg::JpegEncoder;
+#[cfg(test)]
+use ruau_script_api::ScriptApiQuery;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tmcp::ToolResult;
 #[cfg(test)]
 use tmcp::schema::CallToolResult;
-use tokio::{
-    task::spawn_blocking,
-    time::{sleep, timeout},
-};
+use tokio::time::{sleep, timeout};
 
 #[cfg(target_os = "macos")]
 use crate::macos::{capture_window_image, window_number_for_title};
 #[cfg(test)]
-use crate::script_definitions;
+use crate::script_docs::{script_api_response, script_api_tool_result};
 use crate::{
     actions::{ActionTiming, InputAction},
     fixtures::FixtureExecution,
@@ -65,7 +64,11 @@ mod types;
 mod utils;
 mod wait;
 
-use capture::{capture_screenshot, resolve_screenshot_viewport};
+use action::HoverConfirm;
+use capture::{
+    ScreenshotFormat, ScreenshotOptions, capture_native_screenshot, capture_screenshot,
+    resolve_screenshot_viewport,
+};
 #[cfg(test)]
 use capture::{
     crop_native_capture_to_viewport, screenshot_timeout_message,
@@ -80,7 +83,7 @@ use results::*;
 pub use script::{
     FixtureApplication, ScriptArgValue, ScriptArgs, ScriptAssertion, ScriptErrorInfo,
     ScriptEvalOptions, ScriptEvalOutcome, ScriptEvalRequest, ScriptImageInfo, ScriptLocation,
-    ScriptTiming,
+    ScriptModules, ScriptTiming,
 };
 use types::{OverlayDebugModeName, OverlayDebugOptionsInput};
 pub use utils::ensure_automation_ready;
@@ -725,6 +728,7 @@ pub fn collect_widget_list(
     enabled: Option<bool>,
     focused: Option<bool>,
     selected: Option<bool>,
+    covered: Option<bool>,
 ) -> ToolResult<Vec<WidgetRegistryEntry>> {
     ensure_automation_ready(inner)?;
     let viewport_id = resolve_viewport_id(inner, viewport_id)?;
@@ -744,6 +748,9 @@ pub fn collect_widget_list(
     }
     if let Some(selected) = selected {
         widgets.retain(|entry| entry.selected() == Some(selected));
+    }
+    if let Some(covered) = covered {
+        widgets.retain(|entry| entry.covered == covered);
     }
     if let Some(role) = role {
         widgets.retain(|entry| entry.role == role);
@@ -767,7 +774,8 @@ pub fn collect_widget_list(
     Ok(widgets)
 }
 
-/// Fraction of the widget that survives clipping, or 1.0 with no layout metadata.
+/// Fraction of the widget that survives clipping, or 1.0 with no layout
+/// metadata.
 fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
     widget
         .layout
@@ -775,19 +783,35 @@ fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
         .map_or(1.0, |layout| layout.visible_fraction)
 }
 
-/// Whether a widget exists in a state that can accept an interaction.
+/// Whether a widget exists in a state that could accept an interaction, apart
+/// from coverage by another layer.
 ///
-/// This one predicate governs pointer admission, the Luau `actionable`
-/// condition, and the poll that `scroll_into_view` runs. Keeping them identical
-/// means a wait that passes cannot be followed by a click that fails for the
-/// same reason.
+/// This predicate alone governs the poll that `scroll_into_view` runs.
+/// Scrolling cannot uncover a widget sitting under a fixed overlay, so a poll
+/// that also required [`WidgetRegistryEntry::covered`] to be false would spin
+/// until timeout for a script that scrolls such a widget into view only to
+/// read it. Pointer admission and the Luau `actionable` condition require
+/// [`pointer_ready`] instead, which adds the coverage check.
 pub fn interaction_ready(widget: &WidgetRegistryEntry) -> bool {
     widget.visible && widget.enabled && widget_visible_fraction(widget) > 0.0
+}
+
+/// Whether a widget can accept a pointer action right now.
+///
+/// This adds the coverage check to [`interaction_ready`]: a widget under
+/// another egui layer would route a pointer event to that layer instead, so
+/// pointer admission and the Luau `actionable` condition both require this.
+pub fn pointer_ready(widget: &WidgetRegistryEntry) -> bool {
+    interaction_ready(widget) && !widget.covered
 }
 
 /// Remedy named by the invisible-interaction error and by its `hint` detail.
 pub const INTERACTION_READY_HINT: &str =
     "call wait({ actionable = true }) after scroll_into_view(), or check clipping";
+
+/// Remedy named by the covered-widget error and by its `hint` detail.
+pub const COVERED_HINT: &str =
+    "close or fold the overlay that covers this widget before interacting with it";
 
 fn invisible_interaction_error(
     inner: &Inner,
@@ -827,6 +851,39 @@ fn invisible_interaction_error(
     )
 }
 
+/// Error returned when a pointer action targets a widget that
+/// [`interaction_ready`] admits but another egui layer covers.
+fn covered_interaction_error(
+    inner: &Inner,
+    widget: &WidgetRegistryEntry,
+    viewport_id: egui::ViewportId,
+) -> Option<ToolError> {
+    if !widget.covered {
+        return None;
+    }
+    let viewport = viewport_snapshot_for(inner, viewport_id);
+    Some(
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!(
+                "Cannot interact with widget {:?}: another layer covers it; {COVERED_HINT}",
+                widget.id
+            ),
+        )
+        .with_details(json!({
+            "reason": "covered",
+            "hint": COVERED_HINT,
+            "widget": WidgetState::from(widget),
+            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
+                json!({
+                    "id": viewport_id_to_string(viewport_id),
+                })
+            }),
+            "layout": widget.layout.clone(),
+        })),
+    )
+}
+
 impl DevMcpServer {
     #[cfg(test)]
     pub(crate) fn new(inner: Arc<Inner>) -> Self {
@@ -839,7 +896,8 @@ impl DevMcpServer {
     }
 
     #[cfg(test)]
-    /// Evaluate a Luau script with DevMCP helpers. Scripts are assumed to be strict.
+    /// Evaluate a Luau script with DevMCP helpers. Scripts are assumed to be
+    /// strict.
     async fn script_eval(
         &self,
         script: String,
@@ -847,28 +905,31 @@ impl DevMcpServer {
         options: Option<ScriptEvalOptions>,
     ) -> ToolResult<CallToolResult> {
         let timeout_ms = timeout_ms.unwrap_or(script::DEFAULT_SCRIPT_TIMEOUT_MS);
-        let options = options.unwrap_or_default();
-        let source_name = options
-            .source_name
-            .unwrap_or_else(|| "script.luau".to_string());
+        let ScriptEvalOptions {
+            source_name,
+            args,
+            modules,
+        } = options.unwrap_or_default();
+        let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
         let inner = Arc::clone(&self.inner);
         let runtime = Arc::clone(&self.runtime);
-        let eval = script::run_script_eval(
+        let eval = script::run_script_eval_with_modules(
             inner,
             runtime,
             script,
             timeout_ms,
             source_name,
-            options.args,
+            args,
+            modules,
         )
         .await;
         Ok(eval.to_tool_result())
     }
 
     #[cfg(test)]
-    /// Return the checked-in Luau definitions for the full scripting API.
-    async fn script_api(&self) -> ToolResult<CallToolResult> {
-        Ok(CallToolResult::new().with_text_content(script_definitions()))
+    /// Return shared discovery for the checked scripting API.
+    async fn script_api(&self, params: ScriptApiQuery) -> ToolResult<CallToolResult> {
+        script_api_tool_result(script_api_response(&params))
     }
 }
 
@@ -933,9 +994,10 @@ mod tests {
 
     /// Drain queued actions into one synthetic frame's raw input.
     ///
-    /// A staged action promotes only when the frame counter moved since the last drain, which a
-    /// real application advances for each completed pass. A test that drives `Context::run_ui`
-    /// directly must do the same, or an `AfterOneFrame` action never reaches the application.
+    /// A staged action promotes only when the frame counter moved since the
+    /// last drain, which a real application advances for each completed
+    /// pass. A test that drives `Context::run_ui` directly must do the
+    /// same, or an `AfterOneFrame` action never reaches the application.
     fn apply_actions(inner: &Inner, raw_input: &mut egui::RawInput) {
         inner.advance_frame();
         let viewport_id = raw_input.viewport_id;
@@ -1013,6 +1075,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("widget list")
     }
@@ -1062,6 +1125,7 @@ mod tests {
             enabled: true,
             visible: true,
             focused: false,
+            covered: false,
         }
     }
 
@@ -1106,11 +1170,19 @@ mod tests {
     }
 
     fn record_test_snapshot(inner: &Arc<Inner>, viewport_id: egui::ViewportId) {
+        record_test_pointer_snapshot(inner, viewport_id, None);
+    }
+
+    fn record_test_pointer_snapshot(
+        inner: &Arc<Inner>,
+        viewport_id: egui::ViewportId,
+        pointer_pos: Option<Pos2>,
+    ) {
         inner.viewports.record_input_snapshot(
             viewport_id,
             InputSnapshot {
                 pixels_per_point: 1.0,
-                pointer_pos: None,
+                pointer_pos,
             },
             inner.fixture_epoch(),
             inner.frame_count() + 1,
@@ -1156,6 +1228,7 @@ mod tests {
             occluded: Some(false),
             os_minimized: None,
             os_occluded: None,
+            os_title_visible: None,
             maximized: Some(false),
             fullscreen: Some(false),
         }
@@ -1272,6 +1345,8 @@ mod tests {
             .await
             .expect_err("modifiers rejected on scroll area");
         assert!(error.to_string().contains("modifiers"), "{error}");
+        assert!(!inner.actions.has_pending_actions(viewport_id));
+        assert!(inner.take_scroll_override(viewport_id, 1).is_none());
 
         server
             .action_scroll(None, target, Vec2 { x: 0.0, y: -1000.0 }, None)
@@ -1281,6 +1356,39 @@ mod tests {
             .take_scroll_override(viewport_id, 1)
             .expect("override");
         assert!((offset.y - 40.0).abs() < f32::EPSILON, "{offset:?}");
+    }
+
+    #[tokio::test]
+    async fn script_eval_scroll_area_accepts_action_options() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        let mut area = make_entry("scroller", 1, WidgetRole::ScrollArea);
+        area.role_state = Some(RoleState::ScrollArea {
+            offset: Vec2 { x: 0.0, y: 0.0 },
+            viewport_size: Vec2 { x: 100.0, y: 40.0 },
+            content_size: Vec2 { x: 100.0, y: 80.0 },
+        });
+        inner.widgets.record_widget(viewport_id, area);
+        inner.widgets.finalize_registry(viewport_id);
+        let server = DevMcpServer::new(Arc::clone(&inner));
+
+        let result = server
+            .script_eval(
+                r#"eguidev.widget("scroller"):scroll({ x = 0, y = -10 }, {
+                settle = false, timeout_ms = 1000, poll_interval_ms = 1,
+            })"#
+                .to_string(),
+                Some(TEST_SCRIPT_DEADLINE_MS),
+                None,
+            )
+            .await
+            .expect("script eval");
+        let result = parse_script_eval_json(&result);
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(
+            inner.take_scroll_override(viewport_id, 1),
+            Some(egui::vec2(0.0, 10.0))
+        );
     }
 
     #[test]
@@ -1438,6 +1546,7 @@ mod tests {
             overflow: false,
             available_rect: widget.rect,
             visible_fraction: 0.25,
+            text: None,
         });
 
         let samples = sample_widget_grid(&image, 1.0, &widget, Some("root"), 1, 2).expect("grid");
@@ -1462,15 +1571,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_api_returns_checked_in_definitions() {
+    async fn script_api_returns_shared_discovery() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(inner);
-        let result = server.script_api().await.expect("script_api");
-        let content = result.content.first().expect("content");
-        match content {
-            ContentBlock::Text(text) => assert_eq!(text.text, script_definitions()),
-            other => panic!("expected text content, got {other:?}"),
-        }
+        let overview = server
+            .script_api(ScriptApiQuery::default())
+            .await
+            .expect("overview");
+        assert_eq!(overview.structured_content.unwrap()["mode"], "overview");
+        let detail = server
+            .script_api(ScriptApiQuery {
+                list: false,
+                filter: Some("Widget.click".to_owned()),
+            })
+            .await
+            .expect("detail");
+        assert_eq!(detail.structured_content.unwrap()["mode"], "detail");
     }
 
     #[tokio::test]
@@ -1581,6 +1697,7 @@ return {
                         ("ratio".to_string(), ScriptArgValue::Float(1.5)),
                         ("enabled".to_string(), ScriptArgValue::Bool(true)),
                     ]),
+                    ..ScriptEvalOptions::default()
                 }),
             )
             .await
@@ -1591,6 +1708,97 @@ return {
         assert_eq!(json["value"]["count"], 4);
         assert_eq!(json["value"]["ratio"], 1.5);
         assert_eq!(json["value"]["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn script_eval_checks_and_runs_named_module_sources() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "local helper = require('helpers/math')\nreturn helper.double(21)".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("probe.luau".to_string()),
+                    modules: ScriptModules::from([(
+                        "helpers/math.luau".to_string(),
+                        "local helper = {}\nfunction helper.double(value: number): number\n    return value * 2\nend\nreturn helper".to_string(),
+                    )]),
+                    ..ScriptEvalOptions::default()
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], true);
+        assert_eq!(json["value"], 42);
+    }
+
+    #[tokio::test]
+    async fn script_eval_reports_module_type_errors_at_the_module_source() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "return require('helpers/broken')".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("probe.luau".to_string()),
+                    modules: ScriptModules::from([(
+                        "helpers/broken.luau".to_string(),
+                        "local value: string = 42\nreturn value".to_string(),
+                    )]),
+                    ..ScriptEvalOptions::default()
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"]["type"], "typecheck");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains("helpers/broken.luau:1:"),
+            "{json:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn script_eval_keeps_module_names_in_runtime_backtraces() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(inner);
+        let result = server
+            .script_eval(
+                "local helper = require('helpers/runtime')\nreturn helper.fail()".to_string(),
+                None,
+                Some(ScriptEvalOptions {
+                    source_name: Some("probe.luau".to_string()),
+                    modules: ScriptModules::from([(
+                        "helpers/runtime.luau".to_string(),
+                        "local helper = {}\nfunction helper.fail()\n    error('helper boom')\nend\nreturn helper".to_string(),
+                    )]),
+                    ..ScriptEvalOptions::default()
+                }),
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+
+        assert_eq!(json["success"], false);
+        assert!(
+            json["error"]["backtrace"]
+                .as_array()
+                .expect("backtrace")
+                .iter()
+                .any(|line| line
+                    .as_str()
+                    .is_some_and(|line| line.contains("helpers/runtime"))),
+            "{json:#}"
+        );
     }
 
     #[tokio::test]
@@ -2399,6 +2607,7 @@ return viewport:widgets({ id_prefix = "missing" }),
                 Some(ScriptEvalOptions {
                     source_name: Some("integral-float.luau".to_string()),
                     args: ScriptArgs::from([("unit".to_string(), ScriptArgValue::Float(1.0))]),
+                    ..ScriptEvalOptions::default()
                 }),
             )
             .await
@@ -2946,7 +3155,13 @@ return eguidev.widget("status"):wait({ visible = true })"#
         let json = parse_script_eval_json(&result);
         assert_eq!(json["success"], true);
 
-        let config = inner.overlays.overlay_debug_config();
+        assert!(
+            !inner
+                .overlays
+                .overlay_debug_config(egui::ViewportId::ROOT)
+                .enabled
+        );
+        let config = inner.overlays.overlay_debug_config(secondary);
         let scope = config.scope.expect("widget-scoped overlay");
         assert_eq!(scope.id, "overlay");
         assert_eq!(
@@ -3756,6 +3971,57 @@ return { first = catalog[1].name, count = #catalog }"#
     }
 
     #[tokio::test]
+    async fn scroll_into_view_reports_each_scrolled_area() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        inner.widgets.record_widget(
+            viewport_id,
+            make_scroll_entry(
+                "scroll",
+                1,
+                Vec2 { x: 0.0, y: 0.0 },
+                Vec2 { x: 0.0, y: 400.0 },
+            ),
+        );
+        let mut row = make_entry("row", 2, WidgetRole::Button);
+        row.parent_id = Some("scroll".to_string());
+        row.rect = Rect {
+            min: Pos2 { x: 0.0, y: 300.0 },
+            max: Pos2 { x: 100.0, y: 320.0 },
+        };
+        row.interact_rect = row.rect;
+        inner.widgets.record_widget(viewport_id, row);
+        let mut plain = make_entry("plain", 3, WidgetRole::Button);
+        plain.parent_id = None;
+        inner.widgets.record_widget(viewport_id, plain);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let applied = server
+            .action_scroll_into_view(None, widget_ref_id("row"))
+            .await
+            .expect("scroll into view");
+        assert_eq!(applied.len(), 1, "{applied:?}");
+        assert_eq!(applied[0].widget_id, "scroll");
+        assert!(applied[0].offset.y > 0.0, "{applied:?}");
+        assert!(
+            inner.take_scroll_override(viewport_id, 1).is_some(),
+            "the scroll area received one override"
+        );
+
+        let applied = server
+            .action_scroll_into_view(None, widget_ref_id("plain"))
+            .await
+            .expect("scroll into view");
+        assert!(
+            applied.is_empty(),
+            "a target with no scroll ancestor scrolls nothing"
+        );
+    }
+
+    #[tokio::test]
     async fn shared_scroll_ready_condition_waits_for_stable_scroll_state() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
@@ -3912,10 +4178,16 @@ return state.scroll_state.offset.y"#
             WidgetValue::Text("queued".to_string()),
         );
         inner.set_scroll_override(viewport_id, 7, egui::vec2(1.0, 2.0));
-        inner.set_overlay_debug_config(OverlayDebugConfig {
-            enabled: true,
-            ..Default::default()
-        });
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        for viewport_id in [viewport_id, secondary] {
+            inner.set_overlay_debug_config(
+                viewport_id,
+                OverlayDebugConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+        }
 
         let inner_for_frame = Arc::clone(&inner);
         let runtime_for_frame = Runtime::ensure_for_inner(&inner);
@@ -3942,7 +4214,13 @@ return state.scroll_state.offset.y"#
                 .is_none()
         );
         assert!(inner.take_scroll_override(viewport_id, 7).is_none());
-        assert!(!inner.overlays.overlay_debug_config().enabled);
+        assert!(!inner.overlays.overlay_debug_config(secondary).enabled);
+        assert!(
+            !inner
+                .overlays
+                .overlay_debug_config(egui::ViewportId::ROOT)
+                .enabled
+        );
     }
 
     #[tokio::test]
@@ -4133,6 +4411,7 @@ return state.scroll_state.offset.y"#
             overflow: false,
             available_rect: rect,
             visible_fraction,
+            text: None,
         };
 
         // No layout metadata means nothing is known to clip the widget.
@@ -4154,6 +4433,30 @@ return state.scroll_state.offset.y"#
         let mut disabled = make_entry("disabled", 1, WidgetRole::Button);
         disabled.enabled = false;
         assert!(!interaction_ready(&disabled));
+    }
+
+    #[test]
+    fn pointer_ready_also_requires_the_widget_to_be_uncovered() {
+        let plain = make_entry("plain", 1, WidgetRole::Button);
+        assert!(interaction_ready(&plain));
+        assert!(pointer_ready(&plain));
+
+        let mut covered = make_entry("covered", 1, WidgetRole::Button);
+        covered.covered = true;
+        // A covered widget still satisfies interaction_ready: it is visible,
+        // enabled, and unclipped. scroll_into_view's poll must keep accepting
+        // it, since scrolling cannot uncover a widget under a fixed overlay.
+        assert!(interaction_ready(&covered));
+        assert!(
+            !pointer_ready(&covered),
+            "a covered widget must not admit a pointer action"
+        );
+
+        let mut hidden_and_covered = make_entry("hidden_and_covered", 1, WidgetRole::Button);
+        hidden_and_covered.visible = false;
+        hidden_and_covered.covered = true;
+        assert!(!interaction_ready(&hidden_and_covered));
+        assert!(!pointer_ready(&hidden_and_covered));
     }
 
     #[test]
@@ -4211,6 +4514,7 @@ return state.scroll_state.offset.y"#
             overflow: false,
             available_rect: rect,
             visible_fraction: 0.0,
+            text: None,
         });
         inner.widgets.record_widget(viewport_id, entry);
         inner.widgets.finalize_registry(viewport_id);
@@ -4230,6 +4534,129 @@ return state.scroll_state.offset.y"#
             .expect("details");
         assert_eq!(details["reason"], "invisible_interaction");
         assert_eq!(details["layout"]["visible_fraction"], 0.0);
+    }
+
+    #[tokio::test]
+    async fn action_click_rejects_covered_widget() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("covered", 1, WidgetRole::Button);
+        entry.covered = true;
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+
+        let error = server
+            .action_click(None, widget_ref_id("covered"), None, None, None)
+            .await
+            .expect_err("a covered widget should not be clicked");
+
+        assert_eq!(error.code, ErrorCode::NotActionable.as_str());
+        assert!(error.message.contains("covers it"), "{}", error.message);
+        let details = error
+            .structured
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(|error| error.get("details"))
+            .expect("details");
+        assert_eq!(details["reason"], "covered");
+        assert!(
+            details["hint"]
+                .as_str()
+                .is_some_and(|hint| !hint.is_empty()),
+            "{details:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn covered_widget_scroll_into_view_still_settles() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+        let ctx = egui::Context::default();
+        let raw_input = || egui::RawInput {
+            viewport_id,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            ..Default::default()
+        };
+
+        // An area needs one prior frame before egui treats it as
+        // interactable, and the card renders before the background button so
+        // a single repeat already reaches steady-state coverage.
+        for _ in 0..2 {
+            inner.widgets.clear_registry(viewport_id);
+            discard_output(ctx.run_ui(raw_input(), |ui| {
+                let card = egui::Area::new(egui::Id::new("floating.card"))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(egui::pos2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.set_min_size(egui::vec2(200.0, 200.0));
+                        ui.button("Approve")
+                    });
+                record_widget(
+                    &inner.widgets,
+                    "card.approve".to_string(),
+                    &card.inner,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+
+                let background = ui.button("Hidden approve");
+                record_widget(
+                    &inner.widgets,
+                    "background.approve".to_string(),
+                    &background,
+                    WidgetMeta {
+                        role: WidgetRoleMeta::Plain(WidgetRole::Button),
+                        label: Some("Hidden approve".to_string()),
+                        visible: true,
+                        ..Default::default()
+                    },
+                );
+            }));
+            inner.widgets.finalize_registry(viewport_id);
+        }
+        capture_test_frame(&inner, &ctx);
+
+        let covered = resolve_widget(&inner, None, &widget_ref_id("background.approve"))
+            .expect("widget lookup")
+            .covered;
+        assert!(covered, "the background button should sit under the card");
+
+        // scroll_into_view's settle step needs an advancing frame count to
+        // observe its queued action as processed, so pump frames on the
+        // unchanged scene while the script awaits settling.
+        let inner_for_pump = Arc::clone(&inner);
+        let ctx_for_pump = ctx.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_millis(2)).await;
+                capture_test_frame(&inner_for_pump, &ctx_for_pump);
+            }
+        });
+
+        let result = server
+            .script_eval(
+                r#"eguidev.widget("background.approve"):scroll_into_view(
+    { timeout_ms = 1000, poll_interval_ms = 5 }
+)"#
+                .to_string(),
+                Some(TEST_SCRIPT_DEADLINE_MS),
+                None,
+            )
+            .await
+            .expect("script eval");
+        let json = parse_script_eval_json(&result);
+        assert_eq!(json["success"], true, "{json:?}");
     }
 
     #[tokio::test]
@@ -4304,6 +4731,38 @@ return state.scroll_state.offset.y"#
             .expect("widget lookup")
             .focused;
         assert!(focused);
+    }
+
+    #[tokio::test]
+    async fn raw_input_rejects_numeric_overflow_without_queuing() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        inner.queue_action(
+            egui::ViewportId::ROOT,
+            InputAction::Text {
+                text: "preserved".to_string(),
+            },
+        );
+        for value in [1e100, -1e100] {
+            for event in [
+                json!({ "type": "pointer_move", "position": { "x": value, "y": 0 } }),
+                json!({ "type": "pointer_button", "position": { "x": 0, "y": value }, "button": "primary", "action": "press" }),
+                json!({ "type": "scroll", "delta": { "x": value, "y": 0 } }),
+            ] {
+                // Raw input is deserialized directly, bypassing parse_f32.
+                let event = serde_json::from_value::<RawInputEvent>(event).expect("raw event");
+                let error = server
+                    .input(None, event)
+                    .await
+                    .expect_err("invalid coordinates");
+                assert_eq!(error.code, ErrorCode::InvalidArgument.as_str());
+                assert!(error.message.contains("finite"));
+            }
+        }
+        let queued = inner
+            .actions
+            .drain_actions(egui::ViewportId::ROOT, inner.frame_count());
+        assert!(matches!(queued.as_slice(), [InputAction::Text { text }] if text == "preserved"));
     }
 
     #[tokio::test]
@@ -4958,7 +5417,8 @@ return state.scroll_state.offset.y"#
         let position = Pos2 { x: 20.0, y: 20.0 };
 
         inner.widgets.clear_registry(viewport_id);
-        // A container is recorded after its contents, so it is the last hit at any point inside it.
+        // A container is recorded after its contents, so it is the last hit at
+        // any point inside it.
         inner.widgets.record_widget(
             viewport_id,
             make_entry_with_rect(
@@ -5022,7 +5482,8 @@ return state.scroll_state.offset.y"#
         let position = Pos2 { x: 20.0, y: 20.0 };
 
         inner.widgets.clear_registry(viewport_id);
-        // A menu item paints in a later layer, and the panel behind it is recorded afterwards.
+        // A menu item paints in a later layer, and the panel behind it is
+        // recorded afterwards.
         let mut menu_item =
             make_entry_with_rect("menu.item", 1, WidgetRole::Button, item, Some("menu"));
         menu_item.layer_order = 2;
@@ -5087,6 +5548,10 @@ return state.scroll_state.offset.y"#
         selected.role_state = Some(RoleState::Button { selected: true });
         inner.widgets.record_widget(viewport_id, selected);
 
+        let mut covered = make_entry("covered", 5, WidgetRole::Button);
+        covered.covered = true;
+        inner.widgets.record_widget(viewport_id, covered);
+
         inner.widgets.finalize_registry(viewport_id);
 
         let focused_only = collect_widget_list(
@@ -5100,6 +5565,7 @@ return state.scroll_state.offset.y"#
             None,
             None,
             Some(true),
+            None,
             None,
         )
         .expect("focused filter");
@@ -5120,6 +5586,7 @@ return state.scroll_state.offset.y"#
             None,
             None,
             Some(false),
+            None,
             None,
             None,
             None,
@@ -5145,6 +5612,7 @@ return state.scroll_state.offset.y"#
             Some(true),
             None,
             None,
+            None,
         )
         .expect("enabled filter");
         let enabled_ids: Vec<_> = enabled_only.iter().map(|entry| entry.id.as_str()).collect();
@@ -5164,6 +5632,7 @@ return state.scroll_state.offset.y"#
             None,
             None,
             Some(true),
+            None,
         )
         .expect("selected filter");
         assert_eq!(
@@ -5174,10 +5643,34 @@ return state.scroll_state.offset.y"#
             vec!["selected"]
         );
 
+        let covered_only = collect_widget_list(
+            &inner,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+        )
+        .expect("covered filter");
+        assert_eq!(
+            covered_only
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["covered"]
+        );
+
         let all = collect_widget_list(
             &inner,
             None,
             Some(true),
+            None,
             None,
             None,
             None,
@@ -5335,22 +5828,38 @@ return state.scroll_state.offset.y"#
         let server = DevMcpServer::new(Arc::clone(&inner));
         let viewport_id = egui::ViewportId::ROOT;
 
-        server
-            .action_key(None, egui::Key::A, Modifiers::default(), "a", None)
-            .await
-            .expect("action key");
+        for (combo, expected) in [
+            ("a", Some("a")),
+            ("A", Some("A")),
+            ("Space", Some(" ")),
+            ("space", Some(" ")),
+            ("SPACE", Some(" ")),
+            ("shift-space", Some(" ")),
+            ("ctrl-space", None),
+            ("alt-space", None),
+            ("cmd-space", None),
+        ] {
+            let (key, modifiers, name) = parse_key_combo(combo).expect("key combo");
+            server
+                .action_key(None, key, modifiers, &name, None)
+                .await
+                .expect("action key");
 
-        let mut raw_input = egui::RawInput {
-            viewport_id,
-            ..Default::default()
-        };
-        apply_actions(&inner, &mut raw_input);
-        assert!(
-            raw_input
+            let mut raw_input = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            apply_actions(&inner, &mut raw_input);
+            let text = raw_input
                 .events
                 .iter()
-                .any(|event| matches!(event, egui::Event::Text(text) if text == "a"))
-        );
+                .filter_map(|event| match event {
+                    egui::Event::Text(text) => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(text, expected.into_iter().collect::<Vec<_>>(), "{combo}");
+        }
     }
 
     #[tokio::test]
@@ -5396,10 +5905,11 @@ return state.scroll_state.offset.y"#
     }
 
     #[tokio::test]
-    async fn action_hover_queues_pointer_move() {
+    async fn action_hover_queues_pointer_move_and_waits_for_arrival() {
         let inner = Arc::new(Inner::new());
         let server = DevMcpServer::new(Arc::clone(&inner));
         let viewport_id = egui::ViewportId::ROOT;
+        Runtime::ensure_for_inner(&inner);
 
         inner.widgets.clear_registry(viewport_id);
         inner
@@ -5407,20 +5917,107 @@ return state.scroll_state.offset.y"#
             .record_widget(viewport_id, make_entry("hover", 1, WidgetRole::Button));
         inner.widgets.finalize_registry(viewport_id);
 
+        let inner_for_frame = Arc::clone(&inner);
+        let frame = tokio::spawn(async move {
+            sleep(Duration::from_millis(5)).await;
+            let mut raw_input = egui::RawInput {
+                viewport_id,
+                ..Default::default()
+            };
+            apply_actions(&inner_for_frame, &mut raw_input);
+            let moved = raw_input.events.iter().any(|event| {
+                matches!(event, egui::Event::PointerMoved(pos)
+                    if (pos.x - 5.0).abs() < f32::EPSILON && (pos.y - 5.0).abs() < f32::EPSILON)
+            });
+            record_test_pointer_snapshot(
+                &inner_for_frame,
+                viewport_id,
+                Some(Pos2 { x: 5.0, y: 5.0 }),
+            );
+            moved
+        });
+
         server
-            .action_hover(None, widget_ref_id("hover"), None, Some(0))
+            .action_hover(
+                None,
+                widget_ref_id("hover"),
+                None,
+                Some(0),
+                Some(HoverConfirm {
+                    timeout_ms: Some(500),
+                    poll_interval_ms: Some(1),
+                }),
+            )
             .await
             .expect("action hover");
+        assert!(
+            frame.await.expect("frame task"),
+            "the hover queued one pointer move"
+        );
+    }
 
-        let mut raw_input = egui::RawInput {
-            viewport_id,
-            ..Default::default()
-        };
-        apply_actions(&inner, &mut raw_input);
-        assert!(raw_input.events.iter().any(|event| {
-            matches!(event, egui::Event::PointerMoved(pos)
-                if (pos.x - 5.0).abs() < f32::EPSILON && (pos.y - 5.0).abs() < f32::EPSILON)
-        }));
+    #[tokio::test]
+    async fn action_hover_duration_is_independent_of_frame_rate() {
+        for fast_frames in [false, true] {
+            let inner = Arc::new(Inner::new());
+            let server = DevMcpServer::new(Arc::clone(&inner));
+            let viewport_id = egui::ViewportId::ROOT;
+            let runtime = Runtime::ensure_for_inner(&inner);
+            inner
+                .widgets
+                .record_widget(viewport_id, make_entry("hover", 1, WidgetRole::Button));
+            inner.widgets.finalize_registry(viewport_id);
+
+            let started = Instant::now();
+            let frames = fast_frames.then(|| {
+                tokio::spawn(async move {
+                    loop {
+                        runtime.frame_notify().notify_waiters();
+                        sleep(Duration::from_millis(1)).await;
+                    }
+                })
+            });
+            let result = server
+                .action_hover(None, widget_ref_id("hover"), None, Some(60), None)
+                .await;
+            let elapsed = started.elapsed();
+            if let Some(frames) = frames {
+                frames.abort();
+                assert!(frames.await.expect_err("stopped frame task").is_cancelled());
+            }
+            result.expect("hover duration must not require frames");
+            assert!(elapsed >= Duration::from_millis(60));
+        }
+    }
+
+    #[tokio::test]
+    async fn action_hover_fails_when_the_pointer_never_arrives() {
+        let inner = Arc::new(Inner::new());
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        let viewport_id = egui::ViewportId::ROOT;
+        Runtime::ensure_for_inner(&inner);
+
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("hover", 1, WidgetRole::Button));
+        inner.widgets.finalize_registry(viewport_id);
+
+        let error = server
+            .action_hover(
+                None,
+                widget_ref_id("hover"),
+                None,
+                Some(0),
+                Some(HoverConfirm {
+                    timeout_ms: Some(20),
+                    poll_interval_ms: Some(1),
+                }),
+            )
+            .await
+            .expect_err("a hover with no pointer snapshot fails");
+        assert_eq!(error.code, "not_actionable");
+        assert!(error.message.contains("did not reach"), "{}", error.message);
     }
 
     #[tokio::test]
@@ -6406,15 +7003,20 @@ return state.scroll_state.offset.y"#
             .show_debug_overlay(None, Some(OverlayDebugModeName::Bounds), None, None)
             .await
             .expect("show debug overlay");
-        let config = inner.overlays.overlay_debug_config();
+        let config = inner.overlays.overlay_debug_config(egui::ViewportId::ROOT);
         assert!(config.enabled);
         assert_eq!(config.mode, OverlayDebugMode::Bounds);
 
         server
-            .clear_debug_overlay()
+            .clear_debug_overlay(None)
             .await
             .expect("hide debug overlay");
-        assert!(!inner.overlays.overlay_debug_config().enabled);
+        assert!(
+            !inner
+                .overlays
+                .overlay_debug_config(egui::ViewportId::ROOT)
+                .enabled
+        );
     }
 
     /// Verify that injecting Enter via action_key causes a singleline TextEdit
