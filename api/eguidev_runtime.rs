@@ -56,6 +56,8 @@ pub mod eguidev_runtime {
             pub source: String,
             /// Optional per-script timeout in milliseconds.
             pub timeout_ms: Option<u64>,
+            /// Optional Luau instruction backstop.
+            pub max_instructions: Option<u64>,
             /// Suite-wide args passed to the script.
             pub args: crate::ScriptArgs,
         }
@@ -86,6 +88,8 @@ pub mod eguidev_runtime {
             pub suite_timeout: std::time::Duration,
             /// Per-script timeout. `None` uses the script-eval default.
             pub script_timeout: Option<std::time::Duration>,
+            /// Optional Luau instruction backstop applied to every script.
+            pub max_instructions: Option<u64>,
             /// Stop after the first failure.
             pub fail_fast: bool,
             /// Fail scripts that leave egui identity diagnostics undismissed.
@@ -310,6 +314,10 @@ pub mod eguidev_runtime {
     pub struct ScriptEvalOptions {
         /// Optional source name used in diagnostics and error messages.
         pub source_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Maximum Luau instructions before the runaway-script backstop stops
+        /// evaluation.
+        pub max_instructions: Option<u64>,
         #[serde(default)]
         /// Optional JSON object exposed to the script as the global `args` table.
         pub args: ScriptArgs,

@@ -88,6 +88,10 @@ command = [
 # is passed.
 # script_timeout_secs = 60
 
+# Maximum Luau instructions per script. Increase this for intentional
+# long-running stress scripts; the wall-clock timeout remains independent.
+# script_max_instructions = 10000000
+
 # Typed arguments passed to every script. Values are auto-typed:
 # true/false -> bool, integers -> int, decimals -> float, else string.
 # `edev smoke` and `edev eval` both use these defaults. CLI --arg flags are

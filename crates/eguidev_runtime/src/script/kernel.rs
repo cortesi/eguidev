@@ -34,8 +34,8 @@ use super::{
     outcome::{build_error_outcome, build_success_outcome, finalize_outcome},
     runtime::ScriptRuntime,
     types::{
-        ScriptArgs, ScriptErrorInfo, ScriptEvalOutcome, ScriptLocation, ScriptModules,
-        ScriptPosition, ScriptResult, ScriptTiming,
+        ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptLocation,
+        ScriptModules, ScriptPosition, ScriptResult, ScriptTiming,
     },
     value::{script_args_to_json, script_return_value_from_json_values, script_value_from_json},
 };
@@ -53,21 +53,11 @@ pub async fn run_script_eval_with_modules(
     runtime: Arc<Runtime>,
     script: String,
     timeout_ms: u64,
-    source_name: String,
-    args: ScriptArgs,
-    modules: ScriptModules,
+    options: ScriptEvalOptions,
 ) -> ScriptEvalOutcome {
     let _guard = super::SCRIPT_EVAL_LOCK.lock().await;
     match spawn_blocking(move || {
-        run_script_eval_blocking_with_modules(
-            inner,
-            runtime,
-            script,
-            timeout_ms,
-            source_name,
-            args,
-            modules,
-        )
+        run_script_eval_blocking_with_modules(inner, runtime, script, timeout_ms, options)
     })
     .await
     {
@@ -90,9 +80,11 @@ fn run_script_eval_blocking(
         runtime,
         script,
         timeout_ms,
-        source_name,
-        args,
-        ScriptModules::default(),
+        ScriptEvalOptions {
+            source_name: Some(source_name),
+            args,
+            ..ScriptEvalOptions::default()
+        },
     )
 }
 
@@ -101,9 +93,7 @@ fn run_script_eval_blocking_with_modules(
     runtime: Arc<Runtime>,
     script: String,
     timeout_ms: u64,
-    source_name: String,
-    args: ScriptArgs,
-    modules: ScriptModules,
+    options: ScriptEvalOptions,
 ) -> ScriptEvalOutcome {
     let local_runtime = match TokioRuntimeBuilder::new_current_thread()
         .enable_time()
@@ -118,15 +108,7 @@ fn run_script_eval_blocking_with_modules(
     };
     LocalSet::new().block_on(
         &local_runtime,
-        run_script_eval_local(
-            inner,
-            runtime,
-            script,
-            timeout_ms,
-            source_name,
-            args,
-            modules,
-        ),
+        run_script_eval_local(inner, runtime, script, timeout_ms, options),
     )
 }
 
@@ -135,10 +117,15 @@ async fn run_script_eval_local(
     runtime: Arc<Runtime>,
     script: String,
     timeout_ms: u64,
-    source_name: String,
-    args: ScriptArgs,
-    modules: ScriptModules,
+    options: ScriptEvalOptions,
 ) -> ScriptEvalOutcome {
+    let ScriptEvalOptions {
+        source_name,
+        max_instructions,
+        args,
+        modules,
+    } = options;
+    let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
     let start = Instant::now();
     let compile_start = Instant::now();
     let module_source = match script_module_source(&modules) {
@@ -189,7 +176,7 @@ async fn run_script_eval_local(
     .build();
     let mut vm_builder = Vm::builder()
         .ambient(Ambient::production(EGUIDEV_SEED))
-        .limits(base_limits())
+        .limits(base_limits(max_instructions))
         .runtime_capabilities(runtime_capabilities.clone())
         .module(module)
         .trusted_host();
@@ -262,7 +249,8 @@ async fn run_script_eval_local(
         .await;
     }
     let exec_start = Instant::now();
-    let mut call_options = CallOptions::new().limits(invocation_limits(start, timeout_ms));
+    let mut call_options =
+        CallOptions::new().limits(invocation_limits(start, timeout_ms, max_instructions));
     if module_source.is_some() {
         call_options = call_options.runtime_compiler(Arc::new(ScriptModuleCompiler {
             runtime_capabilities,
@@ -727,9 +715,9 @@ fn timing(start: Instant, compile_elapsed: Duration, exec_elapsed: Duration) -> 
     }
 }
 
-fn base_limits() -> Limits {
+fn base_limits(max_instructions: Option<u64>) -> Limits {
     Limits {
-        gas: Some(10_000_000),
+        gas: Some(max_instructions.unwrap_or(super::DEFAULT_SCRIPT_MAX_INSTRUCTIONS)),
         max_memory_bytes: Some(16 * 1024 * 1024),
         max_native_depth: Some(16),
         quantum: Some(1_000),
@@ -737,12 +725,16 @@ fn base_limits() -> Limits {
     }
 }
 
-fn invocation_limits(started_at: Instant, timeout_ms: u64) -> Limits {
+fn invocation_limits(
+    started_at: Instant,
+    timeout_ms: u64,
+    max_instructions: Option<u64>,
+) -> Limits {
     Limits {
         deadline: started_at
             .checked_add(Duration::from_millis(timeout_ms))
             .map(Deadline::Wall),
-        ..base_limits()
+        ..base_limits(max_instructions)
     }
 }
 
@@ -3132,10 +3124,48 @@ mod tests {
     use serde_json::json;
     use tokio::runtime::Builder as TokioRuntimeBuilder;
 
-    use super::{EguidevModule, run_script_eval_blocking};
+    #[test]
+    fn script_instruction_limit_uses_explicit_override() {
+        assert_eq!(base_limits(Some(25_000_000)).gas, Some(25_000_000));
+        assert_eq!(
+            base_limits(None).gas,
+            Some(super::super::DEFAULT_SCRIPT_MAX_INSTRUCTIONS)
+        );
+    }
+
+    #[test]
+    fn script_instruction_limit_stops_runaway_work() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking_with_modules(
+            inner,
+            runtime,
+            "local total = 0\nfor index = 1, 100000 do total += index end\nreturn total"
+                .to_string(),
+            1_000,
+            ScriptEvalOptions {
+                source_name: Some("instruction-limit.luau".to_string()),
+                max_instructions: Some(1_000),
+                ..ScriptEvalOptions::default()
+            },
+        );
+
+        assert!(!outcome.success, "{outcome:?}");
+        assert!(
+            outcome
+                .error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("instruction budget exhausted")),
+            "{outcome:?}"
+        );
+    }
+
+    use super::{
+        EguidevModule, base_limits, run_script_eval_blocking, run_script_eval_blocking_with_modules,
+    };
     use crate::{
         DevMcp,
-        automation::script::types::{ScriptArgValue, ScriptArgs},
+        automation::script::types::{ScriptArgValue, ScriptArgs, ScriptEvalOptions},
         fixtures::FixtureHandler,
         registry::{Inner, viewport_id_to_string},
         runtime::{self, Runtime},

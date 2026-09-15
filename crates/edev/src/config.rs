@@ -138,6 +138,8 @@ pub struct EvalConfig {
     pub(crate) out_dir: PathBuf,
     /// Per-script timeout, defaulting from `[smoke].script_timeout_secs`.
     pub(crate) timeout: Option<Duration>,
+    /// Optional Luau instruction backstop for this evaluation.
+    pub(crate) max_instructions: Option<u64>,
     /// Args passed to the script, merged over `[smoke].args`.
     pub(crate) args: ScriptArgs,
     /// Optional root directory whose Luau files are available through
@@ -347,6 +349,7 @@ struct SmokeCliOptions {
     fail_fast: Option<bool>,
     suite_timeout_secs: Option<u64>,
     script_timeout_secs: Option<u64>,
+    script_max_instructions: Option<u64>,
     args: ScriptArgs,
     bundle: bool,
     bundle_dir: Option<PathBuf>,
@@ -366,6 +369,7 @@ struct EvalCliOptions {
     script: PathBuf,
     out_dir: Option<PathBuf>,
     script_timeout_secs: Option<u64>,
+    script_max_instructions: Option<u64>,
     args: ScriptArgs,
     module_dir: Option<PathBuf>,
 }
@@ -514,6 +518,9 @@ struct SmokeSuiteArgs {
     /// Override the per-script timeout.
     #[arg(long = "script-timeout-secs")]
     script_timeout_secs: Option<u64>,
+    /// Override the per-script Luau instruction backstop.
+    #[arg(long = "script-max-instructions")]
+    script_max_instructions: Option<u64>,
     /// Pass a typed suite-wide script arg.
     #[arg(long = "arg", value_parser = parse_script_arg_cli)]
     args: Vec<(String, ScriptArgValue)>,
@@ -541,6 +548,9 @@ struct EvalArgs {
     /// Override the per-script timeout.
     #[arg(long = "script-timeout-secs")]
     script_timeout_secs: Option<u64>,
+    /// Override the Luau instruction backstop.
+    #[arg(long = "script-max-instructions")]
+    script_max_instructions: Option<u64>,
     /// Pass a typed script arg.
     #[arg(long = "arg", value_parser = parse_script_arg_cli)]
     args: Vec<(String, ScriptArgValue)>,
@@ -667,6 +677,7 @@ fn smoke_cli_options(common: CommonArgs, args: SmokeSuiteArgs) -> SmokeCliOption
         fail_fast,
         suite_timeout_secs: args.suite_timeout_secs,
         script_timeout_secs: args.script_timeout_secs,
+        script_max_instructions: args.script_max_instructions,
         args: script_args,
         bundle: args.bundle,
         bundle_dir: args.bundle_dir,
@@ -683,6 +694,7 @@ impl From<EvalArgs> for EvalCliOptions {
             script: args.script,
             out_dir: args.out_dir,
             script_timeout_secs: args.script_timeout_secs,
+            script_max_instructions: args.script_max_instructions,
             args: script_args,
             module_dir: args.module_dir,
         }
@@ -797,6 +809,7 @@ struct FileSmokeConfig {
     legacy_filter: Option<String>,
     suite_timeout_secs: Option<u64>,
     script_timeout_secs: Option<u64>,
+    script_max_instructions: Option<u64>,
     fail_fast: Option<bool>,
     fail_on_egui_diagnostics: Option<bool>,
     #[serde(rename = "artifact_dir")]
@@ -910,6 +923,9 @@ fn resolve_eval_config(
         script,
         out_dir,
         timeout,
+        max_instructions: cli
+            .script_max_instructions
+            .or_else(|| file_smoke.and_then(|smoke| smoke.script_max_instructions)),
         args,
         module_dir: resolve_optional_path(
             cli.module_dir.as_ref(),
@@ -1015,6 +1031,9 @@ fn resolve_smoke_config(
                 .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
                 .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
         )),
+        max_instructions: cli
+            .script_max_instructions
+            .or_else(|| file_smoke.and_then(|smoke| smoke.script_max_instructions)),
         fail_fast: cli
             .fail_fast
             .or_else(|| file_smoke.and_then(|smoke| smoke.fail_fast))
@@ -1444,6 +1463,8 @@ mod tests {
             "count=4",
             "--arg",
             "enabled=true",
+            "--script-max-instructions",
+            "25000000",
             "--",
             "cargo",
             "run",
@@ -1465,6 +1486,7 @@ mod tests {
             config.suite.args.get("enabled"),
             Some(&ScriptArgValue::Bool(true))
         );
+        assert_eq!(config.suite.max_instructions, Some(25_000_000));
         assert_eq!(
             config.suite.scripts,
             vec![
@@ -1685,6 +1707,8 @@ module_dir = \"smoketest/modules\"
             "tmp/probe.luau",
             "--out-dir",
             "tmp/eval-output",
+            "--script-max-instructions",
+            "30000000",
             "--arg",
             "name=Sky",
             "--arg",
@@ -1700,6 +1724,7 @@ module_dir = \"smoketest/modules\"
         };
         assert_eq!(config.script, current_dir.join("tmp/probe.luau"));
         assert_eq!(config.out_dir, current_dir.join("tmp/eval-output"));
+        assert_eq!(config.max_instructions, Some(30_000_000));
         assert_eq!(
             config.args.get("name"),
             Some(&ScriptArgValue::String("Sky".to_string()))
@@ -1787,6 +1812,7 @@ command = [\"cargo\", \"run\"]
 
 [smoke]
 script_timeout_secs = 7
+script_max_instructions = 20000000
 args = { name = \"File\", count = 4 }
 ",
         )
@@ -1799,6 +1825,7 @@ args = { name = \"File\", count = 4 }
         };
 
         assert_eq!(config.timeout, Some(Duration::from_secs(7)));
+        assert_eq!(config.max_instructions, Some(20_000_000));
         assert_eq!(
             config.args.get("name"),
             Some(&ScriptArgValue::String("Cli".to_string()))

@@ -161,9 +161,11 @@ cargo run --locked -p edev -- eval tmp/probe.luau --out-dir tmp/probe-output --a
 `edev eval` launches a one-shot app process from the configured `[app]` command, uses the
 same `script_eval` engine as smoke scripts, prints the structured outcome JSON to stdout,
 exits non-zero on script failure, and writes returned `ImageRef` JPEGs to the script
-directory or `--out-dir`. It uses `[smoke].script_timeout_secs` and `[smoke].args` as
-defaults when the matching eval CLI flags are omitted, then shuts the app down after the
-eval; it does not attach to an already-running `edev mcp` app.
+directory or `--out-dir`. It uses `[smoke].script_timeout_secs`,
+`[smoke].script_max_instructions`, and `[smoke].args` as defaults when the matching eval CLI
+flags are omitted, then shuts the app down after the eval; it does not attach to an
+already-running `edev mcp` app. The instruction limit is a runaway-script backstop. Increase it
+independently of the wall-clock timeout for intentional long-running stress scripts.
 
 ## Background automation (occluded windows)
 

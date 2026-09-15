@@ -20,6 +20,7 @@ pub use types::{
 };
 
 pub const DEFAULT_SCRIPT_TIMEOUT_MS: u64 = 60_000;
+pub(super) const DEFAULT_SCRIPT_MAX_INSTRUCTIONS: u64 = 10_000_000;
 
 pub(super) static SCRIPT_EVAL_LOCK: LazyLock<AsyncMutex<()>> =
     LazyLock::new(|| AsyncMutex::new(()));

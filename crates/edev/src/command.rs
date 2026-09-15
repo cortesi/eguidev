@@ -480,6 +480,7 @@ pub async fn run_eval_script(
             timeout_ms: config.timeout.map(|duration| duration.as_millis() as u64),
             options: Some(ScriptEvalOptions {
                 source_name: Some(config.script.display().to_string()),
+                max_instructions: config.max_instructions,
                 args: config.args.clone(),
                 modules,
             }),

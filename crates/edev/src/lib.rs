@@ -1534,6 +1534,7 @@ async fn run_smoke_suite(
                 timeout_ms: request.timeout_ms,
                 options: Some(ScriptEvalOptions {
                     source_name: Some(script_path.clone()),
+                    max_instructions: request.max_instructions,
                     args: request.args,
                     modules: modules.clone(),
                 }),
@@ -2215,6 +2216,7 @@ mod tests {
             script: tempdir.path().join("probe.luau"),
             out_dir: tempdir.path().join("eval-out"),
             timeout: Some(Duration::from_millis(1_234)),
+            max_instructions: Some(12_345),
             args: ScriptArgs::from([(
                 "name".to_string(),
                 ScriptArgValue::String("Sky".to_string()),
@@ -2235,6 +2237,10 @@ mod tests {
         let request = &requests[0];
         assert_eq!(request.script, "return args.name");
         assert_eq!(request.timeout_ms, Some(1_234));
+        assert_eq!(
+            request.options.as_ref().expect("options").max_instructions,
+            Some(12_345)
+        );
         assert_eq!(
             request.options.as_ref().expect("options").args.get("name"),
             Some(&ScriptArgValue::String("Sky".to_string()))
@@ -2281,6 +2287,7 @@ mod tests {
                 only: Vec::new(),
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
+                max_instructions: None,
                 fail_fast: false,
                 fail_on_egui_diagnostics: true,
                 run_mode: SuiteRunMode::ONCE,
@@ -2384,6 +2391,7 @@ mod tests {
                 only: Vec::new(),
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
+                max_instructions: None,
                 fail_fast: false,
                 fail_on_egui_diagnostics: true,
                 run_mode: SuiteRunMode::Repeat(2),
@@ -2454,6 +2462,7 @@ mod tests {
                 only: Vec::new(),
                 suite_timeout: Duration::from_secs(10),
                 script_timeout: Some(Duration::from_secs(1)),
+                max_instructions: None,
                 fail_fast: false,
                 fail_on_egui_diagnostics: true,
                 run_mode: SuiteRunMode::ONCE,

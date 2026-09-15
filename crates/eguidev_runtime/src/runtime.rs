@@ -350,20 +350,12 @@ pub async fn eval_script(
     };
     let runtime = Runtime::for_devmcp(devmcp).expect("runtime attached");
     let timeout_ms = timeout_ms.unwrap_or(DEFAULT_SCRIPT_EVAL_TIMEOUT_MS);
-    let ScriptEvalOptions {
-        source_name,
-        args,
-        modules,
-    } = options;
-    let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
     run_script_eval_with_modules(
         inner,
         runtime,
         script_source.to_string(),
         timeout_ms,
-        source_name,
-        args,
-        modules,
+        options,
     )
     .await
 }

@@ -68,6 +68,10 @@ pub type ScriptModules = BTreeMap<String, String>;
 pub struct ScriptEvalOptions {
     /// Optional source name used in diagnostics and error messages.
     pub source_name: Option<String>,
+    /// Maximum Luau instructions before the runaway-script backstop stops
+    /// evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instructions: Option<u64>,
     /// Optional JSON object exposed to the script as the global `args` table.
     #[serde(default)]
     pub args: ScriptArgs,

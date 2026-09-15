@@ -33,6 +33,8 @@ pub struct SuiteConfig {
     pub suite_timeout: Duration,
     /// Per-script timeout. `None` uses the script-eval default.
     pub script_timeout: Option<Duration>,
+    /// Optional Luau instruction backstop applied to every script.
+    pub max_instructions: Option<u64>,
     /// Stop after the first failure.
     pub fail_fast: bool,
     /// Fail scripts that leave egui identity diagnostics undismissed.
@@ -407,6 +409,8 @@ pub struct ScriptRunRequest {
     pub source: String,
     /// Optional per-script timeout in milliseconds.
     pub timeout_ms: Option<u64>,
+    /// Optional Luau instruction backstop.
+    pub max_instructions: Option<u64>,
     /// Suite-wide args passed to the script.
     pub args: ScriptArgs,
 }
@@ -443,6 +447,7 @@ pub fn run_suite(devmcp: &DevMcp, handle: &Handle, config: &SuiteConfig) -> Suit
             request.timeout_ms,
             ScriptEvalOptions {
                 source_name: Some(request.path),
+                max_instructions: request.max_instructions,
                 args: request.args,
                 ..ScriptEvalOptions::default()
             },
@@ -526,6 +531,7 @@ where
                 round,
                 source,
                 timeout_ms: script_timeout_ms(config.script_timeout, suite_deadline),
+                max_instructions: config.max_instructions,
                 args: config.args.clone(),
             });
             let elapsed_ms = script_start.elapsed().as_millis() as u64;
@@ -932,6 +938,7 @@ mod tests {
             only: Vec::new(),
             suite_timeout: Duration::from_secs(10),
             script_timeout: None,
+            max_instructions: None,
             fail_fast: false,
             fail_on_egui_diagnostics: true,
             run_mode: SuiteRunMode::ONCE,

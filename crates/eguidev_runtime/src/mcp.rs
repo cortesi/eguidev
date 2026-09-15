@@ -79,20 +79,12 @@ impl AppMcpServer {
         options: Option<ScriptEvalOptions>,
     ) -> ToolResult<CallToolResult> {
         let timeout_ms = timeout_ms.unwrap_or(script::DEFAULT_SCRIPT_TIMEOUT_MS);
-        let ScriptEvalOptions {
-            source_name,
-            args,
-            modules,
-        } = options.unwrap_or_default();
-        let source_name = source_name.unwrap_or_else(|| "script.luau".to_string());
         let outcome = script::run_script_eval_with_modules(
             Arc::clone(&self.inner),
             Arc::clone(&self.runtime),
             script,
             timeout_ms,
-            source_name,
-            args,
-            modules,
+            options.unwrap_or_default(),
         )
         .await;
         Ok(outcome.to_tool_result())
