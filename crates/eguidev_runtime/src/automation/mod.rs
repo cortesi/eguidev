@@ -3652,6 +3652,58 @@ return { first = catalog[1].name, count = #catalog }"#
     }
 
     #[tokio::test]
+    async fn script_fixture_rejects_late_captures_from_the_previous_fixture_epoch() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("repeated", "Repeated fixture.").ready("status"),
+        ]);
+        let called = Arc::new(AtomicBool::new(false));
+        let called_by_handler = Arc::clone(&called);
+        set_runtime_fixture_handler(&inner, move |_call| {
+            called_by_handler.store(true, AtomicOrdering::Release);
+            fixture_ok()
+        });
+        let previous_epoch = inner.fixture_epoch();
+        let publishing = Arc::clone(&inner);
+        let publisher = tokio::spawn(async move {
+            let ctx = egui::Context::default();
+            discard_output(ctx.run_ui(egui::RawInput::default(), |_| {}));
+            while !called.load(AtomicOrdering::Acquire) {
+                sleep(Duration::from_millis(1)).await;
+            }
+            loop {
+                let viewport = egui::ViewportId::ROOT;
+                publishing.widgets.clear_registry(viewport);
+                publishing
+                    .widgets
+                    .record_widget(viewport, make_entry("status", 1, WidgetRole::Label));
+                publishing.widgets.finalize_registry(viewport);
+                publishing.viewports.capture_input_snapshot(
+                    &ctx,
+                    previous_epoch,
+                    publishing.frame_count() + 1,
+                );
+                publishing.advance_frame();
+                sleep(Duration::from_millis(1)).await;
+            }
+        });
+        let server = DevMcpServer::new(inner);
+        let result = server.script_eval(
+            "return eguidev.fixture('repeated', nil, { timeout_ms = 100, poll_interval_ms = 1 })".to_owned(),
+            Some(TEST_SCRIPT_DEADLINE_MS), None,
+        ).await.expect("script result");
+        publisher.abort();
+        let _stopped = publisher.await;
+        let json = parse_script_eval_json(&result);
+        assert_eq!(
+            json["success"], false,
+            "a stale capture must not make the fixture ready: {json:?}"
+        );
+        assert_eq!(json["error"]["type"], "timeout");
+        assert_eq!(json["error"]["details"]["kind"], "frames");
+    }
+
+    #[tokio::test]
     async fn fixture_waits_for_multiviewport_anchor_capture() {
         let inner = Arc::new(Inner::new());
         let secondary = egui::ViewportId::from_hash_of("fixture.secondary");

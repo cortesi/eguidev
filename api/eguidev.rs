@@ -3683,7 +3683,9 @@ pub mod eguidev {
     /// Wrap one viewport frame and register `container_id` as its root container.
     ///
     /// Call this once for each rendered viewport pass, and render all instrumented
-    /// widgets for that pass inside `add_contents`. If the viewport has a semantic
+    /// widgets for that pass inside `add_contents`. Consume pending fixture state
+    /// inside the closure too, so its frame epoch covers the state being rendered.
+    /// If the viewport has a semantic
     /// name, call `name_viewport` from inside `add_contents` so the active frame is
     /// already installed.
     pub fn frame_scope<R>(

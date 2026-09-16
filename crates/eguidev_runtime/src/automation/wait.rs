@@ -19,6 +19,7 @@ impl DevMcpServer {
         let timeout_ms = timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
         let start_frame = self.inner.frame_count();
         let target_frame = start_frame + count;
+        let fixture_epoch = self.inner.fixture_epoch();
 
         let (matched, _, elapsed_ms, observation) = wait_until_condition(
             &self.inner,
@@ -29,7 +30,16 @@ impl DevMcpServer {
             || async {
                 self.inner.request_repaint_all();
                 let current = self.inner.frame_count();
-                Ok::<_, ToolError>((current >= target_frame, None::<()>))
+                // Finishing an older in-flight frame advances the counter but
+                // cannot establish readiness for the current fixture.
+                let fixture_captured = count == 0
+                    || fixture_epoch == 0
+                    || self
+                        .inner
+                        .viewports
+                        .capture_snapshot(egui::ViewportId::ROOT)
+                        .is_some_and(|capture| capture.fixture_epoch >= fixture_epoch);
+                Ok::<_, ToolError>((current >= target_frame && fixture_captured, None::<()>))
             },
         )
         .await?;

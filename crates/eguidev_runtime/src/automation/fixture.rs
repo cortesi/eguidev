@@ -47,7 +47,6 @@ impl DevMcpServer {
 
         self.inner.clear_all();
         self.inner.dismiss_transient_ui(None);
-        let _fixture_epoch = self.inner.begin_fixture_epoch();
         let result = match self.inner.start_fixture(call) {
             FixtureExecution::Ready(result) => result,
             FixtureExecution::Queued(receiver) => {
@@ -72,6 +71,9 @@ impl DevMcpServer {
                 })
             }
         };
+        // A frame can start while the handler is still publishing its state.
+        // Only frames begun after the handler returns can prove readiness.
+        let _fixture_epoch = self.inner.begin_fixture_epoch();
         self.inner.dismiss_transient_ui(None);
         let response = result.map_err(fixture_error_to_tool)?;
         Ok(FixtureApplyOutcome {
@@ -128,6 +130,45 @@ mod tests {
             .expect("handler");
         let server = DevMcpServer::new(Arc::clone(&inner));
         (server, called)
+    }
+
+    #[tokio::test]
+    async fn frame_started_during_fixture_handler_is_not_a_fresh_fixture_capture() {
+        let inner = Arc::new(Inner::new());
+        inner.fixtures.set_fixtures(vec![
+            FixtureSpec::new("repeated", "Repeated fixture").ready("status"),
+        ]);
+        let observing = Arc::downgrade(&inner);
+        inner
+            .fixtures
+            .set_handler(FixtureHandler::Runtime(Arc::new(move |_call| {
+                // The UI can start another frame before the runtime handler has
+                // published the new fixture selection.
+                observing
+                    .upgrade()
+                    .expect("live registry")
+                    .begin_frame(egui::ViewportId::ROOT);
+                Ok(FixtureResponse::new())
+            })))
+            .expect("runtime fixture handler");
+        let server = DevMcpServer::new(Arc::clone(&inner));
+        server
+            .fixture_apply_internal("repeated", BTreeMap::new(), 1000)
+            .await
+            .expect("fixture applied");
+        let captured_epoch = inner
+            .finish_frame_fixture_epoch(egui::ViewportId::ROOT)
+            .expect("frame started in handler");
+        assert!(
+            captured_epoch < inner.fixture_epoch(),
+            "a frame started before the handler completed must not satisfy fixture readiness"
+        );
+        inner.begin_frame(egui::ViewportId::ROOT);
+        assert_eq!(
+            inner.finish_frame_fixture_epoch(egui::ViewportId::ROOT),
+            Some(inner.fixture_epoch()),
+            "the next frame can observe the completed fixture selection"
+        );
     }
 
     #[tokio::test]
