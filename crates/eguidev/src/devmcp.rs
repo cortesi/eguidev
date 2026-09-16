@@ -97,11 +97,14 @@ impl egui::Plugin for AutomationPlugin {
         };
         swallow_panic("input_injection_plugin", || {
             inner.remember_context(raw_input.viewport_id, ctx);
-            let base_modifiers = ctx.input(|input| input.modifiers);
+            let (base_modifiers, pointer_pos) = ctx.input_for(raw_input.viewport_id, |input| {
+                (input.modifiers, input.pointer.latest_pos())
+            });
             self.devmcp.drain_actions_into_raw_input(
                 inner,
                 raw_input.viewport_id,
                 base_modifiers,
+                pointer_pos,
                 raw_input,
             );
         });
@@ -563,6 +566,7 @@ impl DevMcp {
         inner: &Arc<Inner>,
         viewport_id: egui::ViewportId,
         base_modifiers: egui::Modifiers,
+        previous_pointer_pos: Option<egui::Pos2>,
         raw_input: &mut egui::RawInput,
     ) {
         let actions = inner
@@ -583,9 +587,6 @@ impl DevMcp {
         let mut current_modifiers = base_modifiers;
         let mut modifiers_changed = false;
         let mut force_focus = false;
-        let pointer_moved = actions
-            .iter()
-            .any(|action| matches!(action, InputAction::PointerMove { .. }));
         for action in &actions {
             if let InputAction::Key {
                 pressed, modifiers, ..
@@ -611,7 +612,21 @@ impl DevMcp {
         for action in actions {
             action.apply(raw_input);
         }
-        if !pointer_moved && let Some(pos) = inner.actions.pointer_pos(viewport_id) {
+        // Egui retains the pointer between passes. Restore it only when input
+        // would change it; a redundant move keeps requesting another repaint.
+        let pointer_pos = raw_input
+            .events
+            .iter()
+            .fold(previous_pointer_pos, |pos, event| match event {
+                egui::Event::PointerMoved(pos) | egui::Event::PointerButton { pos, .. } => {
+                    Some(*pos)
+                }
+                egui::Event::PointerGone => None,
+                _ => pos,
+            });
+        if let Some(pos) = inner.actions.pointer_pos(viewport_id)
+            && pointer_pos != Some(pos.into())
+        {
             raw_input.events.push(egui::Event::PointerMoved(pos.into()));
         }
         if modifiers_changed {
@@ -913,6 +928,86 @@ mod inactive_tests {
                 egui::Event::PointerMoved(egui::pos2(12.0, 34.0)),
             ]
         );
+    }
+
+    #[test]
+    fn synthetic_pointer_settles_without_repaint_and_recovers_from_native_input() {
+        let inner = Arc::new(Inner::new());
+        let root = egui::ViewportId::ROOT;
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let positions = [
+            (root, egui::pos2(12.0, 34.0)),
+            (secondary, egui::pos2(56.0, 78.0)),
+        ];
+        for (viewport, pos) in positions {
+            inner.queue_action(viewport, InputAction::PointerMove { pos: pos.into() });
+        }
+        let devmcp = DevMcp::new()
+            .keep_alive(false)
+            .activate_runtime(inner, Arc::new(CountingRuntimeHooks::default()));
+        let ctx = Context::default();
+        ctx.add_plugin(AutomationPlugin {
+            devmcp,
+            output_viewport_id: None,
+        });
+        ctx.set_embed_viewports(false);
+        let render = |viewport_id, events| {
+            let mut input = egui::RawInput {
+                viewport_id,
+                events,
+                ..Default::default()
+            };
+            input.viewports.insert(secondary, Default::default());
+            let mut observed = (Vec::new(), None);
+            let output = ctx.run_ui(input, |ui| {
+                if viewport_id == root {
+                    ui.ctx().show_viewport_deferred(
+                        secondary,
+                        egui::ViewportBuilder::default(),
+                        |_, _| {},
+                    );
+                }
+                observed = ui.input(|input| (input.events.clone(), input.pointer.latest_pos()));
+            });
+            let delay = output.viewport_output[&viewport_id].repaint_delay;
+            output.drop_without_applying_deltas();
+            (observed.0, observed.1, delay)
+        };
+        for (viewport, pos) in positions {
+            let (events, pointer, _) = render(viewport, Vec::new());
+            assert_eq!(events, vec![egui::Event::PointerMoved(pos)]);
+            assert_eq!(pointer, Some(pos));
+        }
+        for pass in 0..4 {
+            for (viewport, pos) in positions {
+                let (events, pointer, delay) = render(viewport, Vec::new());
+                assert!(events.is_empty(), "idle pass injected input: {events:?}");
+                assert_eq!(pointer, Some(pos));
+                if pass == 3 {
+                    assert!(
+                        delay > Duration::ZERO,
+                        "idle pointer requested another frame"
+                    );
+                }
+            }
+        }
+        let restored = positions[1].1;
+        for native in [
+            egui::Event::PointerGone,
+            egui::Event::PointerMoved(egui::pos2(100.0, 100.0)),
+            egui::Event::PointerButton {
+                pos: egui::pos2(200.0, 200.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ] {
+            let (events, pointer, _) = render(secondary, vec![native.clone()]);
+            assert_eq!(events, vec![native, egui::Event::PointerMoved(restored)]);
+            assert_eq!(pointer, Some(restored));
+            assert!(render(secondary, Vec::new()).0.is_empty());
+            assert!(render(root, Vec::new()).0.is_empty());
+        }
     }
 
     #[test]
