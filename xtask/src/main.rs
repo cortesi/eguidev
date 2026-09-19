@@ -1,5 +1,7 @@
 //! Project maintenance tasks for the workspace.
 
+mod cargo_env;
+
 use std::{
     env,
     error::Error,
@@ -215,7 +217,7 @@ fn smoke_with_app_command(
     app_command: Option<&[&str]>,
 ) -> Result<(), Box<dyn Error>> {
     let workspace_root = workspace_root()?;
-    let mut demo_command = Command::new("cargo");
+    let mut demo_command = cargo_env::command("cargo");
     demo_command.current_dir(&workspace_root);
     demo_command.args([
         "run", "--locked", "-q", "-p", "edev", "--bin", "edev", "--", "smoke",
@@ -352,7 +354,7 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
     let workspace_root = workspace_root()?;
     let mut client = Client::new("xtask-smoke", env!("CARGO_PKG_VERSION"))
         .with_request_timeout(Duration::from_secs(120));
-    let mut command = TokioCommand::new("cargo");
+    let mut command = TokioCommand::from(cargo_env::command("cargo"));
     command.current_dir(&workspace_root);
     command.args([
         "run", "--locked", "-q", "-p", "edev", "--bin", "edev", "--", "mcp",
@@ -545,7 +547,11 @@ fn parse_tool_json_text(result: &CallToolResult) -> Result<Value, Box<dyn Error>
 
 /// Run a command and surface failures.
 fn run_command(program: &str, args: &[&str], label: &str) -> Result<(), Box<dyn Error>> {
-    let mut command = Command::new(program);
+    let mut command = if matches!(program, "cargo" | "ncode" | "edev" | "canopyctl") {
+        cargo_env::command(program)
+    } else {
+        Command::new(program)
+    };
     command.args(args);
     run_prepared_command(command, label)
 }
@@ -586,7 +592,7 @@ fn run_prepared_command_with_timeout(
 
 /// Ensure the default `eguidev` build stays free of native runtime crates.
 fn check_default_eguidev_dependency_surface() -> Result<(), Box<dyn Error>> {
-    let output = Command::new("cargo")
+    let output = cargo_env::command("cargo")
         .args(["tree", "--locked", "-e", "normal", "-p", "eguidev"])
         .output()?;
     if !output.status.success() {

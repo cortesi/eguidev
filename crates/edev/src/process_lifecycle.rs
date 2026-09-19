@@ -34,6 +34,8 @@ use super::{
     instance_registry::{self, AppRecord, app_launch_for, read_app_record_for_path},
     recording,
 };
+#[cfg(target_os = "macos")]
+use crate::cargo_env;
 
 #[cfg(target_os = "macos")]
 /// Byte sent before a deliberate outer-launcher shutdown.
@@ -518,7 +520,16 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
         .command
         .first()
         .ok_or_else(|| "app command is empty".to_string())?;
-    let mut command = Command::new(executable);
+    let mut command = if Path::new(executable).file_stem().is_some_and(|name| {
+        matches!(
+            name.to_str(),
+            Some("cargo" | "ncode" | "edev" | "canopyctl")
+        )
+    }) {
+        Command::from(cargo_env::command(executable))
+    } else {
+        Command::new(executable)
+    };
     command
         .args(&config.command[1..])
         .current_dir(&config.working_dir)

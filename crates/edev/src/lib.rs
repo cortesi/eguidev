@@ -1,5 +1,7 @@
 //! Script-first MCP launcher for eguidev.
 
+mod cargo_env;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
