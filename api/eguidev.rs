@@ -2239,6 +2239,9 @@ pub mod internal {
     }
 
     pub mod presentation {
+        /// Private experimental MCP capability used to negotiate app presentation.
+        pub const EXPERIMENTAL_PRESENTATION_CAPABILITY: &str = "eguidev.presentation";
+
         /// Presentation requested for one automation connection or launcher.
 #[derive(Clone, Copy, Debug, Default, Deserialize<'de>, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -2275,9 +2278,6 @@ pub mod internal {
             /// Build the initial status before the runtime health payload is available.
             pub const fn requested(requested_presentation: Presentation) -> Self;
         }
-
-        /// Private experimental MCP capability used to negotiate app presentation.
-        pub const EXPERIMENTAL_PRESENTATION_CAPABILITY: &str = "eguidev.presentation";
     }
 
     pub mod registry {

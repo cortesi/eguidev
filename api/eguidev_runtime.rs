@@ -37,6 +37,10 @@ use serde_core::{de::Deserialize, ser::Serialize};
 use serde_json::Value;
 use tmcp::schema::CallToolResult;
 use tokio::runtime::Handle;
+/// Optional loopback address used for a directly connectable app MCP server.
+#[doc(hidden)]
+pub const MCP_ADDR_ENV: &str = "EGUIDEV_MCP_ADDR";
+
 /// One egui identity diagnostic from a completed viewport pass.
 #[derive(Clone, Debug, Deserialize<'de>, PartialEq, Serialize)]
 pub struct EguiDiagnostic {
@@ -314,10 +318,6 @@ pub async fn eval_script(
 
 /// Return the checked-in Luau definitions that describe the scripting API.
 pub fn script_definitions() -> &'static str;
-
-/// Optional loopback address used for a directly connectable app MCP server.
-#[doc(hidden)]
-pub const MCP_ADDR_ENV: &str = "EGUIDEV_MCP_ADDR";
 
 pub mod smoke {
     //! Smoketest suite runner for Luau scripts against a live DevMCP app.
