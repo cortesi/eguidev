@@ -772,8 +772,8 @@ mod tests {
                 "password",
                 &mut password,
                 TextEditOptions {
-                    multiline: false,
                     password: true,
+                    ..TextEditOptions::default()
                 },
             );
             ui.dev_slider("slider", &mut slider, 0.0..=10.0);
@@ -831,6 +831,80 @@ mod tests {
         let accent = WidgetState::from(widget_by_id(&widgets, "accent"));
         assert_eq!(accent.role, WidgetRole::ColorPicker);
         assert_eq!(accent.value_text, "#409CFFFF");
+    }
+
+    #[test]
+    fn a_text_edit_that_omits_its_value_records_no_text() {
+        const SENTINEL: &str = "sk-sentinel-7f3a";
+        let devmcp = devmcp_enabled();
+        let ctx = Context::default();
+        let raw_input = egui::RawInput::default();
+        let mut masked = SENTINEL.to_owned();
+        let mut omitted = SENTINEL.to_owned();
+        run_panel(&ctx, raw_input, |ctx, ui| {
+            devmcp.begin_frame(ctx);
+            ui.dev_text_edit_with(
+                "masked",
+                &mut masked,
+                TextEditOptions {
+                    password: true,
+                    ..TextEditOptions::default()
+                },
+            );
+            ui.dev_text_edit_with(
+                "omitted",
+                &mut omitted,
+                TextEditOptions {
+                    password: true,
+                    omit_value: true,
+                    ..TextEditOptions::default()
+                },
+            );
+            devmcp.end_frame(ctx, true);
+        });
+
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+        // Masking alone is presentation: the value stays in clear text.
+        let masked = WidgetState::from(widget_by_id(&widgets, "masked"));
+        assert_eq!(masked.value_text, SENTINEL);
+
+        let omitted_entry = widget_by_id(&widgets, "omitted");
+        let omitted = WidgetState::from(omitted_entry);
+        assert_eq!(omitted.role, WidgetRole::TextEdit);
+        assert_eq!(omitted.password, Some(true));
+        assert_eq!(omitted.multiline, Some(false));
+        assert_eq!(omitted.value, None);
+        assert_eq!(omitted.value_text, "");
+        let state = serde_json::to_string(&omitted).expect("widget state");
+        let entry = serde_json::to_string(omitted_entry).expect("registry entry");
+        assert!(!state.contains(SENTINEL), "{state}");
+        assert!(!entry.contains(SENTINEL), "{entry}");
+    }
+
+    #[test]
+    fn text_edit_options_give_the_role_and_the_recorded_value() {
+        let plain = TextEditOptions::default();
+        assert_eq!(
+            plain.recorded_value("text"),
+            Some(WidgetValue::Text("text".to_owned()))
+        );
+        let secret = TextEditOptions {
+            password: true,
+            omit_value: true,
+            ..TextEditOptions::default()
+        };
+        assert_eq!(secret.recorded_value("text"), None);
+        assert!(matches!(
+            secret.role(),
+            WidgetRoleMeta::TextEdit {
+                multiline: false,
+                password: true,
+            }
+        ));
     }
 
     #[test]

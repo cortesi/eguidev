@@ -1176,6 +1176,7 @@ impl DemoApp {
                     TextEditOptions {
                         multiline: false,
                         password: true,
+                        omit_value: false,
                     },
                 );
             });

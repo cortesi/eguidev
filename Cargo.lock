@@ -2475,7 +2475,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "foldhash",
- "pin-project-lite",
  "rmp-serde",
  "ruau-bytecode",
  "ruau-declaration",

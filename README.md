@@ -169,7 +169,10 @@ eguidev::frame_scope(&self.devmcp, ui, "root", |ui| {
 ```
 
 `TextEditOptions.password` masks the field in the UI only. Scripts, dumps, and
-failure bundles still see the cleartext value.
+failure bundles still see the cleartext value. Set `TextEditOptions.omit_value`
+as well for a field that takes a secret: the field then records no value, and a
+script can still type into it. A custom text edit gets the same rules from
+`TextEditOptions::role` and `TextEditOptions::recorded_value`.
 
 **2. Attach the runtime** in one bootstrap location.
 

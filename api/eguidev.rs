@@ -369,7 +369,8 @@ pub trait DevUiExt {
     /// Add a text edit with explicit mode metadata.
     ///
     /// `options.password` masks the field in the UI only. The recorded value
-    /// stays cleartext for scripts, dumps, and failure bundles.
+    /// stays cleartext for scripts, dumps, and failure bundles, unless
+    /// `options.omit_value` leaves it out.
     fn dev_text_edit_with(
         &mut self,
         id: impl Into<String>,
@@ -1260,9 +1261,30 @@ pub struct TextEditOptions {
     pub multiline: bool,
     /// Whether the edit masks its contents in the UI.
     ///
-    /// Masking is presentation only. Automation still records the cleartext
-    /// value in widget state, dumps, script output, and failure bundles.
+    /// Masking is presentation only. Unless `omit_value` is set, automation
+    /// still records the cleartext value in widget state, dumps, script
+    /// output, and failure bundles.
     pub password: bool,
+    /// Whether automation leaves out the value of the field.
+    ///
+    /// The field then records no `WidgetValue`, so widget state, dumps,
+    /// script output, and failure bundles never hold its text. A script can
+    /// still focus the field and type into it. Set it for a field that takes
+    /// a secret, such as a password or an API token.
+    pub omit_value: bool,
+}
+
+impl TextEditOptions {
+    /// Returns the value that automation records for `text`: the text, or
+    /// nothing when `omit_value` is set.
+    pub fn recorded_value(self, text: &str) -> Option<WidgetValue>;
+
+    /// Returns the role metadata of a text edit with these options.
+    ///
+    /// A custom text edit that records itself through `track_response` uses
+    /// it with [`Self::recorded_value`], so it follows the same rules as
+    /// [`DevUiExt::dev_text_edit_with`].
+    pub fn role(self) -> WidgetRoleMeta;
 }
 
 /// A 2D vector in egui coordinates.
