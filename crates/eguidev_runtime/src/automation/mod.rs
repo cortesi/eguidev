@@ -58,7 +58,6 @@ mod fixture;
 mod layout;
 mod query;
 mod results;
-#[path = "../script/mod.rs"]
 pub mod script;
 mod types;
 mod utils;

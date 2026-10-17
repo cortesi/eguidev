@@ -6,11 +6,8 @@ use crate::EdevError;
 
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 mod unsupported;
-#[cfg(all(test, target_os = "macos"))]
-#[path = "unsupported.rs"]
-mod unsupported_for_tests;
 
 #[cfg(target_os = "macos")]
 pub use macos::live_process_group_members;
@@ -297,7 +294,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn unsupported_backend_rejects_recording() {
-        let error = unsupported_for_tests::ensure_supported().expect_err("unsupported platform");
+        let error = unsupported::ensure_supported().expect_err("unsupported platform");
         assert!(
             matches!(error, EdevError::RecordFailed(message) if message.contains("only supported on macOS 15.0 or newer"))
         );
@@ -307,14 +304,14 @@ mod tests {
             title: "Unsupported".to_string(),
             app_process_ids: BTreeSet::new(),
         };
-        let start_result = unsupported_for_tests::start(&request);
+        let start_result = unsupported::start(&request);
         assert!(
             matches!(start_result, Err(EdevError::RecordFailed(message)) if message.contains("only supported on macOS 15.0 or newer"))
         );
-        let stop_result = unsupported_for_tests::NativeRecording.stop();
+        let stop_result = unsupported::NativeRecording.stop();
         assert!(
             matches!(stop_result, Err(EdevError::RecordFailed(message)) if message.contains("only supported on macOS 15.0 or newer"))
         );
-        assert!(unsupported_for_tests::process_group_members(Some(1)).is_empty());
+        assert!(unsupported::process_group_members(Some(1)).is_empty());
     }
 }

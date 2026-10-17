@@ -14,9 +14,9 @@ use ruau::{
     },
 };
 
-const PUBLIC_DECLARATION: &str = include_str!("../../luau/eguidev.d.luau");
+const PUBLIC_DECLARATION: &str = include_str!("../../../luau/eguidev.d.luau");
 #[cfg(test)]
-const PRIVATE_LIBRARY: &str = include_str!("../../luau/eguidev.luau");
+const PRIVATE_LIBRARY: &str = include_str!("../../../luau/eguidev.luau");
 
 static CHECKER_BASE: LazyLock<Result<Checker, CheckFailure>> = LazyLock::new(|| {
     checker_with_definitions(

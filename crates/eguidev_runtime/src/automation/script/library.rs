@@ -3,8 +3,8 @@ use ruau::{
     vm::ModuleBinding,
 };
 
-pub const DECLARATION: &str = include_str!("../../luau/eguidev.d.luau");
-pub const SOURCE: &[u8] = include_bytes!("../../luau/eguidev.luau");
+pub const DECLARATION: &str = include_str!("../../../luau/eguidev.d.luau");
+pub const SOURCE: &[u8] = include_bytes!("../../../luau/eguidev.luau");
 pub const PRIVATE_INPUTS: [&str; 7] = [
     "eguidev.query",
     "eguidev.action",
