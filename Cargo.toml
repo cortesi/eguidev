@@ -9,7 +9,6 @@ rust-version = "1.85"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 license = "MIT"
 repository = "https://github.com/cortesi/eguidev"
-homepage = "https://github.com/cortesi/eguidev"
 readme = "README.md"
 keywords = ["egui", "gui", "automation", "testing", "mcp"]
 
