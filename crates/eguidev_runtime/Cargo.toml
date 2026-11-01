@@ -33,7 +33,7 @@ tmcp = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-tmcp = { workspace = true, features = ["testutils"] }
+tmcp.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
