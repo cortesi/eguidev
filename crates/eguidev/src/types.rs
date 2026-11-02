@@ -1633,6 +1633,77 @@ pub enum WidgetRole {
     Unknown,
 }
 
+impl From<egui::Role> for WidgetRole {
+    /// Classify an egui accessibility role in the eguidev taxonomy.
+    ///
+    /// The taxonomy is coarser than AccessKit, so several roles share one
+    /// entry: each text input role is a text edit, and each progress indicator
+    /// is a progress bar, since egui gives a spinner the same role. A role
+    /// that the taxonomy has no entry for is unknown.
+    fn from(role: egui::Role) -> Self {
+        use egui::Role;
+
+        match role {
+            Role::Button | Role::DefaultButton => Self::Button,
+            Role::Link => Self::Link,
+            Role::Image => Self::Image,
+            Role::Label => Self::Label,
+            Role::TextInput
+            | Role::MultilineTextInput
+            | Role::PasswordInput
+            | Role::SearchInput
+            | Role::EmailInput
+            | Role::UrlInput
+            | Role::PhoneNumberInput => Self::TextEdit,
+            Role::Slider => Self::Slider,
+            Role::CheckBox => Self::Checkbox,
+            Role::ComboBox | Role::EditableComboBox => Self::ComboBox,
+            Role::RadioButton => Self::Radio,
+            Role::SpinButton => Self::DragValue,
+            Role::Switch => Self::Toggle,
+            Role::Splitter => Self::Separator,
+            Role::ScrollView => Self::ScrollArea,
+            Role::DisclosureTriangle => Self::CollapsingHeader,
+            Role::Window | Role::Dialog | Role::AlertDialog => Self::Window,
+            Role::ProgressIndicator => Self::ProgressBar,
+            Role::ColorWell => Self::ColorPicker,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl WidgetRole {
+    /// The egui accessibility role that best describes this entry.
+    ///
+    /// AccessKit has no role for some entries, so they share the role that
+    /// egui itself gives such a widget: a selectable label, a toggle value,
+    /// and a menu button are buttons, and a spinner is a progress indicator.
+    pub fn accesskit_role(&self) -> egui::Role {
+        use egui::Role;
+
+        match self {
+            Self::Button | Self::Selectable | Self::MenuButton => Role::Button,
+            Self::Link => Role::Link,
+            Self::Image => Role::Image,
+            Self::Label => Role::Label,
+            Self::TextEdit => Role::TextInput,
+            Self::Slider => Role::Slider,
+            Self::Checkbox => Role::CheckBox,
+            Self::ComboBox => Role::ComboBox,
+            Self::Radio => Role::RadioButton,
+            Self::DragValue => Role::SpinButton,
+            Self::Toggle => Role::Switch,
+            Self::Separator => Role::Splitter,
+            Self::Spinner | Self::ProgressBar => Role::ProgressIndicator,
+            Self::ScrollArea => Role::ScrollView,
+            Self::CollapsingHeader => Role::DisclosureTriangle,
+            Self::Window => Role::Window,
+            Self::ColorPicker => Role::ColorWell,
+            Self::Unknown => Role::Unknown,
+        }
+    }
+}
+
 /// Captured widget value for stateful controls.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WidgetValue {
@@ -2096,6 +2167,41 @@ impl WidgetRoleMeta {
             }),
         }
     }
+
+    /// The egui accessibility role that best describes this entry. A text
+    /// edit names its multiline or password form.
+    pub fn accesskit_role(&self) -> egui::Role {
+        match self {
+            Self::TextEdit { password: true, .. } => egui::Role::PasswordInput,
+            Self::TextEdit {
+                multiline: true, ..
+            } => egui::Role::MultilineTextInput,
+            _ => self.role().accesskit_role(),
+        }
+    }
+
+    /// Build the entry of an egui accessibility role, when the role carries
+    /// all the metadata that its entry requires.
+    ///
+    /// `range` is the numeric range of the widget, when egui reports one. A
+    /// slider needs it. A scroll area and a combo box need metadata that egui
+    /// does not report, so they and unknown roles give `None`.
+    pub fn from_accesskit(role: egui::Role, range: Option<WidgetRange>) -> Option<Self> {
+        Some(match WidgetRole::from(role) {
+            WidgetRole::Unknown | WidgetRole::ScrollArea | WidgetRole::ComboBox => return None,
+            WidgetRole::Slider => Self::Slider { range: range? },
+            WidgetRole::DragValue => Self::DragValue { range },
+            WidgetRole::Button => Self::Button { selected: None },
+            WidgetRole::Checkbox => Self::Checkbox {
+                indeterminate: None,
+            },
+            WidgetRole::TextEdit => Self::TextEdit {
+                multiline: role == egui::Role::MultilineTextInput,
+                password: role == egui::Role::PasswordInput,
+            },
+            plain => Self::Plain(plain),
+        })
+    }
 }
 
 impl Default for WidgetRoleMeta {
@@ -2173,6 +2279,76 @@ mod tests {
         WidgetRange, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState, WidgetValue,
         validate_viewport_name,
     };
+
+    #[test]
+    fn each_role_survives_a_round_trip_through_its_accesskit_role() {
+        let roles = [
+            WidgetRole::Button,
+            WidgetRole::Link,
+            WidgetRole::Image,
+            WidgetRole::Label,
+            WidgetRole::TextEdit,
+            WidgetRole::Slider,
+            WidgetRole::Checkbox,
+            WidgetRole::ComboBox,
+            WidgetRole::Radio,
+            WidgetRole::DragValue,
+            WidgetRole::Toggle,
+            WidgetRole::Separator,
+            WidgetRole::ScrollArea,
+            WidgetRole::CollapsingHeader,
+            WidgetRole::Window,
+            WidgetRole::ProgressBar,
+            WidgetRole::ColorPicker,
+            WidgetRole::Unknown,
+        ];
+        for role in roles {
+            assert_eq!(WidgetRole::from(role.accesskit_role()), role, "{role:?}");
+        }
+        // AccessKit has no role for these, so they share egui's role.
+        assert_eq!(WidgetRole::Selectable.accesskit_role(), egui::Role::Button);
+        assert_eq!(WidgetRole::MenuButton.accesskit_role(), egui::Role::Button);
+        assert_eq!(
+            WidgetRole::Spinner.accesskit_role(),
+            egui::Role::ProgressIndicator
+        );
+    }
+
+    #[test]
+    fn role_meta_from_accesskit_requires_the_metadata_of_its_entry() {
+        let range = WidgetRange { min: 0.0, max: 1.0 };
+        assert_eq!(
+            WidgetRoleMeta::from_accesskit(egui::Role::Slider, Some(range)),
+            Some(WidgetRoleMeta::Slider { range })
+        );
+        assert_eq!(
+            WidgetRoleMeta::from_accesskit(egui::Role::Slider, None),
+            None
+        );
+        assert_eq!(
+            WidgetRoleMeta::from_accesskit(egui::Role::ComboBox, None),
+            None
+        );
+        assert_eq!(
+            WidgetRoleMeta::from_accesskit(egui::Role::ScrollView, None),
+            None
+        );
+        assert_eq!(WidgetRoleMeta::from_accesskit(egui::Role::Row, None), None);
+        let password = WidgetRoleMeta::from_accesskit(egui::Role::PasswordInput, None)
+            .expect("password input");
+        assert_eq!(
+            password,
+            WidgetRoleMeta::TextEdit {
+                multiline: false,
+                password: true,
+            }
+        );
+        assert_eq!(password.accesskit_role(), egui::Role::PasswordInput);
+        assert_eq!(
+            WidgetRoleMeta::from_accesskit(egui::Role::Label, None),
+            Some(WidgetRoleMeta::Plain(WidgetRole::Label))
+        );
+    }
 
     #[test]
     fn role_meta_projects_role_and_state_for_every_variant() {

@@ -3,13 +3,16 @@
 use std::{
     env,
     error::Error,
-    io,
+    io, mem,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use eframe::{App, egui};
-use egui::{Color32, ColorImage, TextureHandle, TextureOptions, scroll_area::ScrollBarVisibility};
+use egui::{
+    Color32, ColorImage, TextureHandle, TextureOptions,
+    scroll_area::{ScrollBarVisibility, State as ScrollState},
+};
 use eguidev::{
     ButtonOptions, CheckboxOptions, DevMcp, DevScrollAreaExt, DevUiExt, FixtureCall, FixtureError,
     FixtureParam, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec,
@@ -364,6 +367,10 @@ struct DemoState {
     analysis_total: usize,
     /// Games analysed so far. Advances one per frame to model a staged load.
     analysed: usize,
+    /// The id of the root scroll area, from the frame that showed it last.
+    root_scroll_id: Option<egui::Id>,
+    /// Clear the stored state of the root scroll area on the next frame.
+    reset_root_scroll: bool,
 }
 
 /// Application state for the demo app.
@@ -403,6 +410,8 @@ impl DemoState {
             link_click_count: 0,
             overlay_probe_input: String::new(),
             basic_scroll_state: ScrollAreaState::default(),
+            root_scroll_id: None,
+            reset_root_scroll: false,
             show_secondary: true,
             show_occluder: force_occluder,
             force_occluder,
@@ -454,6 +463,7 @@ impl DemoState {
         self.link_click_count = 0;
         self.overlay_probe_input.clear();
         self.basic_scroll_state.reset();
+        self.reset_root_scroll = true;
         self.show_secondary = true;
         self.show_occluder = self.force_occluder;
         self.duplicate_viewport_names = false;
@@ -877,7 +887,14 @@ impl DemoApp {
                 },
             );
 
-            let _root = egui::ScrollArea::vertical()
+            // A fixture starts the root area at its top, with no kinetic
+            // scroll left over from an earlier script.
+            if mem::take(&mut s.reset_root_scroll)
+                && let Some(id) = s.root_scroll_id
+            {
+                ui.ctx().data_mut(|data| data.remove::<ScrollState>(id));
+            }
+            let root = egui::ScrollArea::vertical()
                 .id_salt("basic.root_scroll")
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
                 .dev_show(ui, "basic.root_scroll", |ui| {
@@ -932,6 +949,7 @@ impl DemoApp {
                         format!("Drag offset: {:.1}, {:.1}", s.secondary_drag_offset.x, s.secondary_drag_offset.y),
                     );
                 });
+            s.root_scroll_id = Some(root.id);
         });
     }
 

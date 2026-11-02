@@ -86,8 +86,15 @@ frame transition themselves.
 1. the input hook drains queued actions for that viewport and appends egui events;
 2. egui processes the frame;
 3. the output hook records identity diagnostics;
-4. frame completion captures widget and viewport snapshots, applies viewport commands, wakes
-   waiters and screenshot requests, and requests another repaint while runtime keep-alive is on.
+4. frame completion fills a missing widget role or label from egui's AccessKit node, captures
+   widget and viewport snapshots, applies viewport commands, wakes waiters, and requests another
+   repaint while runtime keep-alive is on.
+
+The context of an attached runtime keeps AccessKit enabled, so egui builds the nodes that step 4
+reads. A screenshot sends one egui command with a callback, and egui answers the callback when it
+paints the next frame. A capture fails at once if egui drops the callback unanswered. When the
+integration shuts down, the plugin's exit hook releases the context and the commands still queued
+for it.
 
 Settle requires input and viewport commands to drain, an action frame to be processed, a clean
 capture, a fresh frame, and the optional app-idle provider to agree. Timeout details identify the

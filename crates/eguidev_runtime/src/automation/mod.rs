@@ -1383,18 +1383,18 @@ mod tests {
     }
 
     #[test]
-    fn native_screenshot_fallback_waits_for_fresh_child_frame() {
+    fn native_screenshot_fallback_waits_for_the_frame_that_answers_the_callback() {
         let child = egui::ViewportId::from_hash_of("child");
 
-        assert!(!should_try_native_screenshot_fallback(child, 10, 10));
+        assert!(!should_try_native_screenshot_fallback(child, 0));
+        assert!(!should_try_native_screenshot_fallback(child, 1));
         assert_eq!(
-            should_try_native_screenshot_fallback(child, 11, 10),
+            should_try_native_screenshot_fallback(child, 2),
             cfg!(target_os = "macos")
         );
         assert!(!should_try_native_screenshot_fallback(
             egui::ViewportId::ROOT,
-            11,
-            10
+            5
         ));
     }
 
@@ -5404,7 +5404,7 @@ return state.scroll_state.offset.y"#
                             ui.label(format!("Row {row}"));
                         }
                     });
-                offset = output.state.unclamped_offset();
+                offset = output.state.clamped_offset();
             });
         }));
 

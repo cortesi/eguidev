@@ -233,6 +233,28 @@ impl Inner {
         self.viewports.remember_viewport_id(viewport_id);
     }
 
+    /// Forget `ctx` when its integration shuts down, with the commands still
+    /// queued for its viewports.
+    ///
+    /// This breaks the reference cycle through the automation plugin, so the
+    /// `Context` can drop. A dropped screenshot command drops its callback,
+    /// which fails the waiting capture at once instead of at its deadline.
+    pub fn release_context(&self, ctx: &Context) {
+        let released = {
+            let mut contexts = lock(&self.contexts, "contexts lock");
+            let released = contexts
+                .iter()
+                .filter(|(_, stored)| *stored == ctx)
+                .map(|(viewport_id, _)| *viewport_id)
+                .collect::<Vec<_>>();
+            contexts.retain(|_, stored| stored != ctx);
+            released
+        };
+        for viewport_id in released {
+            self.actions.clear_viewport(viewport_id);
+        }
+    }
+
     fn apply_automation_options_to_stored_contexts(&self, options: AutomationOptions) {
         let contexts = {
             let contexts = lock(&self.contexts, "contexts lock");
@@ -252,6 +274,11 @@ impl Inner {
         ctx: &Context,
         options: AutomationOptions,
     ) {
+        // The registry reads the role and name of a widget from the AccessKit
+        // node that egui builds for it. egui builds nodes only while AccessKit
+        // is enabled, and eframe disables it when a screen reader leaves, so
+        // enable it on every frame.
+        ctx.enable_accesskit();
         let target_animation_time = if options.animations {
             lock(&self.animation_baselines, "animation baselines lock")
                 .get(&viewport_id)

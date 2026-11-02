@@ -74,9 +74,14 @@
 //! | a scope and its widget together              | [`container`]              |
 //!
 //! `track_*` records something that has an `egui::Response`, so enabled,
-//! focused, and visible state come from egui. `publish_rect_*` publishes
-//! painter-drawn geometry, which has no response, so [`WidgetMeta`] states that
-//! metadata instead.
+//! focused, and visible state come from egui. A `track_*` widget without a
+//! role or a label takes them from the AccessKit node that egui builds for
+//! it, so `track_widget(ui, "go", |ui| ui.button("Go"))` records a button
+//! labelled "Go", and `Response::accessible_name` names an icon button. The
+//! attached runtime enables AccessKit for this. A role that maps to no
+//! [`WidgetRole`] entry, or that lacks metadata its entry needs, stays unknown.
+//! `publish_rect_*` publishes painter-drawn geometry, which has no response, so
+//! [`WidgetMeta`] states that metadata instead.
 //!
 //! Set [`WidgetMeta::visible`] on every widget you record by hand. It defaults
 //! to `false`, and an invisible widget is hidden from the default lookups.

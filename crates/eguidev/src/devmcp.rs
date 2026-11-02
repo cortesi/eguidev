@@ -75,8 +75,8 @@ impl Default for AutomationOptions {
 ///
 /// Holding a `DevMcp` here (which transitively remembers `Context`s through
 /// `Inner::remember_context`) creates a reference cycle with the `Context`
-/// that owns this plugin. That cycle is benign: both live for the process
-/// lifetime and are torn down together at process exit.
+/// that owns this plugin. `on_exit` breaks the cycle when the integration
+/// shuts down, so the `Context` can drop.
 struct AutomationPlugin {
     /// The DevMCP handle whose queued actions should be drained into raw
     /// input for every pass.
@@ -108,6 +108,13 @@ impl egui::Plugin for AutomationPlugin {
                 raw_input,
             );
         });
+    }
+
+    fn on_exit(&mut self, ctx: &Context) {
+        let Some(inner) = self.devmcp.inner() else {
+            return;
+        };
+        swallow_panic("automation_exit_plugin", || inner.release_context(ctx));
     }
 
     fn output_hook(&mut self, ctx: &Context, output: &mut FullOutput) {
@@ -525,6 +532,7 @@ impl DevMcp {
         if ctx.will_discard() {
             return;
         }
+        inner.widgets.apply_accessibility(viewport_id, ctx);
         inner.widgets.finalize_registry(viewport_id);
         let next_frame = inner.frame_count() + 1;
         let fixture_epoch = inner
@@ -1181,6 +1189,49 @@ mod inactive_tests {
 
         assert!(devmcp.context_for(egui::ViewportId::ROOT).is_none());
         assert_eq!(instrument::test_layout_capture_count(), 0);
+    }
+
+    #[test]
+    fn integration_exit_releases_the_context_and_its_queued_commands() {
+        let inner = Arc::new(Inner::new());
+        let hooks: Arc<dyn RuntimeHooks> = Arc::new(CountingRuntimeHooks::default());
+        let devmcp = DevMcp::new().activate_runtime(Arc::clone(&inner), hooks);
+        let ctx = Context::default();
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            let _guard = FrameGuard::new(&devmcp, &ctx);
+            let _response = ui.dev_button("exit.button", "Exit");
+        })
+        .drop_without_applying_deltas();
+        assert!(inner.has_context());
+
+        let callback_dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropFlag(Arc::clone(&callback_dropped));
+        inner.queue_command(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |_| {
+                drop(guard);
+            })),
+        );
+        ctx.on_exit();
+
+        assert!(!inner.has_context());
+        assert!(callback_dropped.load(Ordering::Relaxed));
+        assert!(
+            inner
+                .actions
+                .drain_commands(egui::ViewportId::ROOT)
+                .is_empty()
+        );
+    }
+
+    /// Sets its flag when dropped.
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
     }
 
     #[test]

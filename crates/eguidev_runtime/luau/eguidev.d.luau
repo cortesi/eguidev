@@ -237,7 +237,13 @@ export type WidgetState = {
     child_ids: { string },
     rect: Rect,
     interact_rect: Rect,
+    --- The role that instrumentation declares. A widget recorded from an
+    --- egui response without a role takes the role of its egui
+    --- accessibility node, when that role maps to an entry.
     role: WidgetRole,
+    --- The label that instrumentation declares, or else the accessible name
+    --- that egui gives the widget, such as the text of a button or a name
+    --- from `Response::accessible_name`.
     label: string?,
     --- Cleartext even when `password` is true. Masking is presentation only;
     --- scripts, dumps, and failure bundles see the typed value. A field that

@@ -30,8 +30,8 @@ use std::{
     time::Duration,
 };
 
+use eguidev::WidgetValue;
 pub use eguidev::{DevMcp, Rect, ScrollAreaMeta};
-use eguidev::{DevMcp, Rect, WidgetValue};
 use schemars::JsonSchema;
 use serde_core::{de::Deserialize, ser::Serialize};
 use serde_json::Value;

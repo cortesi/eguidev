@@ -132,20 +132,6 @@ impl Runtime {
         );
     }
 
-    pub(crate) fn record_screenshot_command_sent(
-        &self,
-        inner: &Inner,
-        viewport_id: egui::ViewportId,
-        request_id: Option<u64>,
-    ) {
-        self.screenshots.record_screenshot_command_sent(
-            viewport_id,
-            request_id,
-            inner.verbose_logging(),
-            inner.frame_count(),
-        );
-    }
-
     pub(crate) fn screenshot_debug_snapshot(&self, inner: &Inner) -> ScreenshotDebugSnapshot {
         self.screenshots
             .screenshot_debug_snapshot(inner.verbose_logging(), inner.frame_count())
@@ -210,12 +196,8 @@ impl Runtime {
         request_id: u64,
         viewport_id: egui::ViewportId,
     ) -> egui::ScreenshotCallback {
-        self.screenshots.callback(
-            request_id,
-            viewport_id,
-            inner.verbose_logging(),
-            inner.frame_count(),
-        )
+        self.screenshots
+            .callback(request_id, viewport_id, inner.verbose_logging())
     }
 
     fn finish_frame(&self, inner: &Inner, ctx: &Context) {
@@ -224,8 +206,11 @@ impl Runtime {
         for command in inner.actions.drain_commands(viewport_id) {
             sent_viewport_command = true;
             if let egui::ViewportCommand::Screenshot(_) = &command {
-                let request_id = self.screenshots.take_queued(viewport_id);
-                self.record_screenshot_command_sent(inner, viewport_id, request_id);
+                self.screenshots.record_screenshot_command_sent(
+                    viewport_id,
+                    inner.verbose_logging(),
+                    inner.frame_count(),
+                );
             }
             ctx.send_viewport_cmd(command);
         }

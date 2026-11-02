@@ -82,9 +82,14 @@
 //! | a scope and its widget together              | [`container`]              |
 //!
 //! `track_*` records something that has an `egui::Response`, so enabled,
-//! focused, and visible state come from egui. `publish_rect_*` publishes
-//! painter-drawn geometry, which has no response, so [`WidgetMeta`] states that
-//! metadata instead.
+//! focused, and visible state come from egui. A `track_*` widget without a
+//! role or a label takes them from the AccessKit node that egui builds for
+//! it, so `track_widget(ui, "go", |ui| ui.button("Go"))` records a button
+//! labelled "Go", and `Response::accessible_name` names an icon button. The
+//! attached runtime enables AccessKit for this. A role that maps to no
+//! [`WidgetRole`] entry, or that lacks metadata its entry needs, stays unknown.
+//! `publish_rect_*` publishes painter-drawn geometry, which has no response, so
+//! [`WidgetMeta`] states that metadata instead.
 //!
 //! Set [`WidgetMeta::visible`] on every widget you record by hand. It defaults
 //! to `false`, and an invisible widget is hidden from the default lookups.
@@ -168,7 +173,7 @@ use std::{
 
 use egui::{
     Color32, Context, CursorIcon, Event, Galley, ImageSource, InnerResponse, Key, RawInput,
-    Response, ScrollArea, Ui, ViewportCommand, ViewportId, WidgetText,
+    Response, Role, ScrollArea, Ui, ViewportCommand, ViewportId, WidgetText,
     containers::collapsing_header::CollapsingResponse, data::output::FullOutput,
     scroll_area::ScrollAreaOutput,
 };
@@ -1631,6 +1636,17 @@ pub enum WidgetRole {
     Unknown,
 }
 
+impl WidgetRole {
+    /// The egui accessibility role that best describes this entry.
+    ///
+    /// AccessKit has no role for some entries, so they share the role that
+    /// egui itself gives such a widget: a selectable label, a toggle value,
+    /// and a menu button are buttons, and a spinner is a progress indicator.
+    pub fn accesskit_role(&self) -> Role;
+}
+
+impl From<Role> for WidgetRole {}
+
 #[doc(hidden)]
 impl JsonSchema for WidgetRole {}
 
@@ -1692,6 +1708,18 @@ pub enum WidgetRoleMeta {
 }
 
 impl WidgetRoleMeta {
+    /// The egui accessibility role that best describes this entry. A text
+    /// edit names its multiline or password form.
+    pub fn accesskit_role(&self) -> Role;
+
+    /// Build the entry of an egui accessibility role, when the role carries
+    /// all the metadata that its entry requires.
+    ///
+    /// `range` is the numeric range of the widget, when egui reports one. A
+    /// slider needs it. A scroll area and a combo box need metadata that egui
+    /// does not report, so they and unknown roles give `None`.
+    pub fn from_accesskit(role: Role, range: Option<WidgetRange>) -> Option<Self>;
+
     /// Project the flat taxonomy entry that scripts filter on.
     pub fn role(&self) -> WidgetRole;
 }
@@ -2376,6 +2404,8 @@ pub mod internal {
 
             pub fn has_context(&self) -> bool;
 
+            pub fn has_scroll_override(&self, viewport_id: ViewportId, widget_id: u64) -> bool;
+
             pub fn mark_widget_value_consumer(&self, viewport_id: ViewportId, id: &str);
 
             pub fn new() -> Self;
@@ -2401,6 +2431,14 @@ pub mod internal {
                 id: String,
                 value: WidgetValue,
             );
+
+            /// Forget `ctx` when its integration shuts down, with the commands still
+            /// queued for its viewports.
+            ///
+            /// This breaks the reference cycle through the automation plugin, so the
+            /// `Context` can drop. A dropped screenshot command drops its callback,
+            /// which fails the waiting capture at once instead of at its deadline.
+            pub fn release_context(&self, ctx: &Context);
 
             pub fn remember_context(&self, viewport_id: ViewportId, ctx: &Context);
 
@@ -2709,6 +2747,16 @@ pub mod internal {
         pub struct WidgetRegistry {/* private fields */}
 
         impl WidgetRegistry {
+            /// Fill the missing roles and labels of this frame's response-backed
+            /// entries from the AccessKit nodes that egui built for them.
+            ///
+            /// Call this at the end of the frame, while the pass is still open, so
+            /// that a name that the app set after recording, such as through
+            /// `Response::accessible_name` or `Ui::name_inputs`, counts. An entry keeps
+            /// its role and label when instrumentation supplied them, and egui only
+            /// has nodes while AccessKit is enabled.
+            pub fn apply_accessibility(&self, viewport_id: ViewportId, ctx: &Context);
+
             pub fn child_ids_of(&self, viewport_id: ViewportId, parent_id: &str) -> Vec<String>;
 
             pub fn clear_registry(&self, viewport_id: ViewportId);

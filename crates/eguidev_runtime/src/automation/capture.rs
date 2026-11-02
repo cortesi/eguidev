@@ -273,11 +273,7 @@ async fn capture_screenshot_state(
         .with_details(screenshot_error_details(inner, runtime, viewport_id)));
     }
 
-    let start_frame = inner
-        .viewports
-        .capture_snapshot(viewport_id)
-        .map(|snapshot| snapshot.frame_count)
-        .unwrap_or(0);
+    let start_frame = viewport_frame(inner, viewport_id);
     let request_id = inner.next_request_id();
     let kind_snapshot = kind.clone();
     runtime.insert_screenshot(request_id, ScreenshotState::pending(kind));
@@ -290,7 +286,6 @@ async fn capture_screenshot_state(
         )),
     );
     runtime.record_screenshot_request(inner, request_id, viewport_id, &kind_snapshot);
-    inner.request_repaint_of(viewport_id);
     await_screenshot(
         inner,
         runtime,
@@ -300,6 +295,16 @@ async fn capture_screenshot_state(
         start_frame,
     )
     .await
+}
+
+/// The frame count of the last frame of `viewport_id`, or zero before its
+/// first frame.
+fn viewport_frame(inner: &Inner, viewport_id: egui::ViewportId) -> u64 {
+    inner
+        .viewports
+        .capture_snapshot(viewport_id)
+        .map(|snapshot| snapshot.frame_count)
+        .unwrap_or(0)
 }
 
 async fn ensure_event_loop_active(
@@ -345,6 +350,14 @@ For eframe apps, prefer Renderer::Glow for automation; Wgpu backends can stall i
     Ok(())
 }
 
+/// Wait for the callback of request `request_id`.
+///
+/// The command goes to egui once, and egui answers the callback when it paints
+/// the next frame of the viewport. A deferred viewport always answers. An
+/// immediate child viewport never does, since eframe paints it inside its
+/// parent and does not read its pixels, so on macOS a child viewport that
+/// renders [`CALLBACK_FRAMES`] frames after the command without an answer falls
+/// back to a native window capture.
 async fn await_screenshot(
     inner: &Inner,
     runtime: &Runtime,
@@ -369,13 +382,17 @@ async fn await_screenshot(
     };
 
     let wait_loop = async {
-        let mut last_command_frame = start_frame.saturating_add(1);
-        let outcome = loop {
-            if let Some(state) = runtime.screenshot_state(request_id) {
-                if state.is_ready() {
-                    break ScreenshotWaitOutcome::Ready;
-                }
-            } else {
+        let mut last_frame = start_frame;
+        let mut frames_after_send = 0_u32;
+        loop {
+            // Arm both wake-ups before reading the state, so an answer or a
+            // frame that lands between the read and the wait is not lost.
+            let mut answered = std::pin::pin!(notify.notified());
+            answered.as_mut().enable();
+            let mut frame = std::pin::pin!(runtime.frame_notify().notified());
+            frame.as_mut().enable();
+
+            let Some(state) = runtime.screenshot_state(request_id) else {
                 return Err(ToolError::new(ErrorCode::NotFound, "Unknown request id")
                     .with_details(screenshot_request_details(
                         inner,
@@ -384,20 +401,38 @@ async fn await_screenshot(
                         viewport_id,
                         kind,
                     )));
+            };
+            if state.is_ready() {
+                return Ok(ScreenshotWaitOutcome::Ready);
+            }
+            if state.is_dropped() {
+                return Err(ToolError::new(
+                    ErrorCode::NotActionable,
+                    "egui dropped the screenshot request before the viewport painted. \
+                     The viewport may have closed.",
+                )
+                .with_details(screenshot_request_details(
+                    inner,
+                    runtime,
+                    request_id,
+                    viewport_id,
+                    kind,
+                )));
             }
 
-            let current_frame = inner
-                .viewports
-                .capture_snapshot(viewport_id)
-                .map(|snapshot| snapshot.frame_count)
-                .unwrap_or(0);
-            if should_try_native_screenshot_fallback(viewport_id, current_frame, start_frame) {
+            let current_frame = viewport_frame(inner, viewport_id);
+            if current_frame > last_frame {
+                last_frame = current_frame;
+                if state.sent_frame().is_some_and(|sent| current_frame > sent) {
+                    frames_after_send = frames_after_send.saturating_add(1);
+                }
+            }
+            if should_try_native_screenshot_fallback(viewport_id, frames_after_send) {
                 // A native capture can disagree with the recorded viewport
-                // while a resize settles, so keep retrying
-                // against fresh frames until the screenshot
-                // deadline instead of failing the first attempt.
+                // while a resize settles, so retry it against each fresh frame
+                // until the screenshot deadline.
                 match native_screenshot_fallback(inner, viewport_id, kind) {
-                    Ok(state) => break ScreenshotWaitOutcome::NativeCapture(state),
+                    Ok(state) => return Ok(ScreenshotWaitOutcome::NativeCapture(state)),
                     Err(error) => runtime.log_screenshot(
                         inner,
                         format!(
@@ -406,83 +441,41 @@ async fn await_screenshot(
                         ),
                     ),
                 }
-                inner.request_repaint_of(viewport_id);
             }
-            if current_frame > last_command_frame {
-                inner.queue_command(
-                    viewport_id,
-                    egui::ViewportCommand::Screenshot(runtime.screenshot_callback(
-                        inner,
-                        request_id,
-                        viewport_id,
-                    )),
-                );
-                last_command_frame = current_frame;
-            }
-            if current_frame > start_frame {
-                inner.request_repaint_of(viewport_id);
-            }
+            // egui schedules the frame that answers the command. Each further
+            // request covers a viewport that renders only when asked, such as
+            // an immediate child that waits for the native fallback.
+            inner.request_repaint_of(viewport_id);
             tokio::select! {
-                _ = notify.notified() => {}
-                _ = runtime.frame_notify().notified() => {}
-                _ = sleep(Duration::from_millis(DEFAULT_POLL_INTERVAL_MS)) => {
-                    inner.request_repaint_of(viewport_id);
-                }
+                () = answered => {}
+                () = frame => {}
             }
-        };
-        Ok::<_, ToolError>(outcome)
+        }
     };
 
-    match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
-        Ok(Ok(ScreenshotWaitOutcome::Ready)) => {}
-        Ok(Ok(ScreenshotWaitOutcome::NativeCapture(state))) => {
-            runtime.log_screenshot(
-                inner,
-                format!(
-                    "native fallback succeeded request_id={request_id} viewport={}",
-                    viewport_id_to_string(viewport_id),
-                ),
-            );
-            return Ok(state);
-        }
-        Ok(Err(error)) => return Err(error),
-        Err(_) => {
-            drop(request);
-            let end_frame = inner.frame_count();
-            runtime.log_screenshot(
-                inner,
-                format!(
-                    "timeout request_id={request_id} viewport={} start_frame={start_frame} \
-                 end_frame={end_frame}",
-                    viewport_id_to_string(viewport_id),
-                ),
-            );
-            match native_screenshot_fallback(inner, viewport_id, kind) {
-                Ok(state) => {
-                    runtime.log_screenshot(
-                        inner,
-                        format!(
-                            "native fallback succeeded request_id={request_id} viewport={}",
-                            viewport_id_to_string(viewport_id),
-                        ),
-                    );
-                    return Ok(state);
-                }
-                Err(fallback_error) => {
-                    runtime.log_screenshot(
-                        inner,
-                        format!(
-                            "native fallback failed request_id={request_id} viewport={} error={}",
-                            viewport_id_to_string(viewport_id),
-                            fallback_error,
-                        ),
-                    );
-                    return Err(ToolError::new(
-                        ErrorCode::Timeout,
-                        screenshot_timeout_message(viewport_id, &fallback_error),
-                    )
-                    .with_details(screenshot_timeout_details(
-                        &ScreenshotTimeoutContext {
+    let outcome =
+        match timeout(SCREENSHOT_TIMEOUT, wait_loop).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                drop(request);
+                let end_frame = inner.frame_count();
+                runtime.log_screenshot(
+                    inner,
+                    format!(
+                        "timeout request_id={request_id} viewport={} start_frame={start_frame} \
+                     end_frame={end_frame}",
+                        viewport_id_to_string(viewport_id),
+                    ),
+                );
+                match native_screenshot_fallback(inner, viewport_id, kind) {
+                    Ok(state) => ScreenshotWaitOutcome::NativeCapture(state),
+                    Err(fallback_error) => {
+                        return Err(ToolError::new(
+                            ErrorCode::Timeout,
+                            screenshot_timeout_message(viewport_id, &fallback_error),
+                        )
+                        .with_details(screenshot_timeout_details(&ScreenshotTimeoutContext {
                             inner,
                             runtime,
                             request_id,
@@ -491,34 +484,51 @@ async fn await_screenshot(
                             start_frame,
                             end_frame,
                             fallback_error: &fallback_error,
-                        },
-                    )));
+                        })));
+                    }
                 }
             }
+        };
+
+    match outcome {
+        ScreenshotWaitOutcome::Ready => runtime.take_screenshot(request_id).ok_or_else(|| {
+            ToolError::new(ErrorCode::NotFound, "Unknown request id").with_details(
+                screenshot_request_details_with_frames(
+                    inner,
+                    runtime,
+                    request_id,
+                    viewport_id,
+                    kind,
+                    start_frame,
+                    inner.frame_count(),
+                ),
+            )
+        }),
+        ScreenshotWaitOutcome::NativeCapture(state) => {
+            runtime.log_screenshot(
+                inner,
+                format!(
+                    "native fallback succeeded request_id={request_id} viewport={}",
+                    viewport_id_to_string(viewport_id),
+                ),
+            );
+            Ok(state)
         }
     }
-
-    runtime.take_screenshot(request_id).ok_or_else(|| {
-        ToolError::new(ErrorCode::NotFound, "Unknown request id").with_details(
-            screenshot_request_details_with_frames(
-                inner,
-                runtime,
-                request_id,
-                viewport_id,
-                kind,
-                start_frame,
-                inner.frame_count(),
-            ),
-        )
-    })
 }
 
+/// The frames that a viewport renders after the frame that sent a screenshot
+/// command, by which egui has answered the callback if it ever will. The next
+/// frame paints and answers it, and the frame after that observes the answer.
+const CALLBACK_FRAMES: u32 = 2;
+
+/// Whether a child viewport has rendered enough frames after its command,
+/// without an answer, to justify a native window capture.
 pub(super) fn should_try_native_screenshot_fallback(
     viewport_id: egui::ViewportId,
-    current_frame: u64,
-    start_frame: u64,
+    frames_after_send: u32,
 ) -> bool {
-    native_fallback_applies(viewport_id) && current_frame > start_frame
+    native_fallback_applies(viewport_id) && frames_after_send >= CALLBACK_FRAMES
 }
 
 fn build_screenshot_data(
@@ -646,15 +656,15 @@ pub(super) fn screenshot_timeout_message(
 ) -> String {
     if native_fallback_applies(viewport_id) {
         return format!(
-            "Screenshot deadline exceeded for this child viewport. eguidev retried the macOS \
-             native window capture against fresh frames until the deadline, and the last attempt \
-             failed: {fallback_error}."
+            "Screenshot deadline exceeded for this child viewport. egui did not answer the \
+             screenshot callback, eguidev retried the macOS native window capture against fresh \
+             frames until the deadline, and the last attempt failed: {fallback_error}."
         );
     }
     format!(
-        "Screenshot timed out waiting for a screenshot event. The screenshot command may not have \
-         reached the viewport or the frame did not render. Native screenshot fallback is only \
-         available for child viewports on macOS: {fallback_error}."
+        "Screenshot timed out waiting for egui to answer the screenshot callback. The viewport \
+         did not paint a frame after the command. Native screenshot fallback is only available \
+         for child viewports on macOS: {fallback_error}."
     )
 }
 
@@ -982,6 +992,61 @@ mod tests {
         .expect("completed capture");
 
         assert!(Arc::ptr_eq(&captured.image().expect("image"), &image));
+        assert!(runtime.screenshot_state(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_pending_screenshot_completes_when_its_callback_answers() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        runtime.insert_screenshot(1, ScreenshotState::pending(ScreenshotKind::Viewport));
+        let callback = runtime.screenshot_callback(&inner, 1, egui::ViewportId::ROOT);
+        let mut capture = Box::pin(await_screenshot(
+            &inner,
+            &runtime,
+            1,
+            egui::ViewportId::ROOT,
+            &ScreenshotKind::Viewport,
+            0,
+        ));
+        poll_fn(|cx| {
+            assert!(capture.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        let image = Arc::new(solid_image(2, 2));
+        callback.complete(Arc::clone(&image));
+        let captured = capture.await.expect("answered capture");
+
+        assert!(Arc::ptr_eq(&captured.image().expect("image"), &image));
+        assert!(runtime.screenshot_state(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_screenshot_callback_fails_the_capture() {
+        let inner = Arc::new(Inner::new());
+        let runtime = Runtime::ensure_for_inner(&inner);
+        runtime.insert_screenshot(1, ScreenshotState::pending(ScreenshotKind::Viewport));
+        let callback = runtime.screenshot_callback(&inner, 1, egui::ViewportId::ROOT);
+        let mut capture = Box::pin(await_screenshot(
+            &inner,
+            &runtime,
+            1,
+            egui::ViewportId::ROOT,
+            &ScreenshotKind::Viewport,
+            0,
+        ));
+        poll_fn(|cx| {
+            assert!(capture.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        drop(callback);
+        let error = capture.await.expect_err("dropped capture");
+
+        assert!(error.message().contains("dropped the screenshot request"));
         assert!(runtime.screenshot_state(1).is_none());
     }
 

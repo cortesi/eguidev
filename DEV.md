@@ -145,10 +145,12 @@ tests. Use `eguidev.widget(id)` for a global live reference, or
 Names and exact titles should be unique because ambiguous discovery is an instrumentation fault.
 Use `hex` for exact color equality; `rgba` channels and geometry values are script-facing
 numbers and can be mixed in arithmetic when a visual threshold is clearer than a fixed color.
-On macOS, child-viewport screenshots fall back to Quartz window capture after a fresh child
-frame fails to fulfill the normal egui screenshot event. The fallback needs a recorded
-window title match and macOS Screen Recording permission. Root screenshots use the egui event
-path directly. Use `Viewport:native_screenshot()` to include AppKit chrome in a capture. Use
+A screenshot sends one egui screenshot command, and egui answers its callback when it paints the
+next frame of the viewport. eframe never answers for an immediate child viewport, since it paints
+that viewport inside its parent. On macOS, a child viewport that renders two frames after the
+command without an answer therefore falls back to Quartz window capture. The fallback needs a
+recorded window title match and macOS Screen Recording permission. Root screenshots use the egui
+callback only. Use `Viewport:native_screenshot()` to include AppKit chrome in a capture. Use
 `ViewportState.os_title_visible` to assert native title visibility. Use
 `ViewportState.cursor_icon` after `Widget:hover()` to assert cursor feedback.
 

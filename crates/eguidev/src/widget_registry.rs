@@ -7,13 +7,17 @@ use std::{
     sync::Mutex,
 };
 
+use egui::accesskit;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
     error::{ErrorCode, ToolError},
     registry::{lock, viewport_id_to_string},
-    types::{WidgetLayout, WidgetRef, WidgetRegistryEntry, WidgetRoleMeta, WidgetValue},
+    types::{
+        WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta,
+        WidgetValue,
+    },
     viewports::{ViewportSnapshot, ViewportState},
 };
 
@@ -79,6 +83,9 @@ pub struct WidgetRegistry {
     registry_snapshot: Mutex<HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>>,
     duplicate_explicit_id_fault: Mutex<Option<DuplicateExplicitIdFault>>,
     container_stack: Mutex<HashMap<egui::ViewportId, Vec<String>>>,
+    /// Response-backed entries of the current frame that lack a role or a
+    /// label, by index into the current registry, with their egui ids.
+    accessibility_pending: Mutex<HashMap<egui::ViewportId, Vec<(usize, egui::Id)>>>,
 }
 
 impl Default for WidgetRegistry {
@@ -94,6 +101,7 @@ impl WidgetRegistry {
             registry_snapshot: Mutex::new(HashMap::new()),
             duplicate_explicit_id_fault: Mutex::new(None),
             container_stack: Mutex::new(HashMap::new()),
+            accessibility_pending: Mutex::new(HashMap::new()),
         }
     }
 
@@ -102,6 +110,42 @@ impl WidgetRegistry {
         registry.insert(viewport_id, Vec::new());
         let mut containers = lock(&self.container_stack, "container stack lock");
         containers.insert(viewport_id, Vec::new());
+        lock(&self.accessibility_pending, "accessibility pending lock").remove(&viewport_id);
+    }
+
+    /// Fill the missing roles and labels of this frame's response-backed
+    /// entries from the AccessKit nodes that egui built for them.
+    ///
+    /// Call this at the end of the frame, while the pass is still open, so
+    /// that a name that the app set after recording, such as through
+    /// `Response::accessible_name` or `Ui::name_inputs`, counts. An entry keeps
+    /// its role and label when instrumentation supplied them, and egui only
+    /// has nodes while AccessKit is enabled.
+    pub fn apply_accessibility(&self, viewport_id: egui::ViewportId, ctx: &egui::Context) {
+        let Some(pending) =
+            lock(&self.accessibility_pending, "accessibility pending lock").remove(&viewport_id)
+        else {
+            return;
+        };
+        let found = pending
+            .into_iter()
+            .filter(|(_, id)| ctx.has_accesskit_node(*id))
+            .filter_map(|(index, id)| {
+                ctx.accesskit_node_builder(id, |node| (index, AccessibleInfo::from_node(node)))
+            })
+            .collect::<Vec<_>>();
+        if found.is_empty() {
+            return;
+        }
+        let mut registry = lock(&self.registry_current, "registry lock");
+        let Some(entries) = registry.get_mut(&viewport_id) else {
+            return;
+        };
+        for (index, info) in found {
+            if let Some(entry) = entries.get_mut(index) {
+                info.fill(entry);
+            }
+        }
     }
 
     pub fn finalize_registry(&self, viewport_id: egui::ViewportId) {
@@ -118,8 +162,27 @@ impl WidgetRegistry {
     }
 
     pub fn record_widget(&self, viewport_id: egui::ViewportId, entry: WidgetRegistryEntry) {
+        self.record_widget_with_egui_id(viewport_id, entry, None);
+    }
+
+    /// Record `entry`, and remember `egui_id` for the accessibility fallback
+    /// when the entry lacks a role or a label.
+    fn record_widget_with_egui_id(
+        &self,
+        viewport_id: egui::ViewportId,
+        entry: WidgetRegistryEntry,
+        egui_id: Option<egui::Id>,
+    ) {
+        let needs_fallback = entry.role == WidgetRole::Unknown || entry.label.is_none();
         let mut registry = lock(&self.registry_current, "registry lock");
-        registry.entry(viewport_id).or_default().push(entry);
+        let entries = registry.entry(viewport_id).or_default();
+        if let Some(egui_id) = egui_id.filter(|_| needs_fallback) {
+            lock(&self.accessibility_pending, "accessibility pending lock")
+                .entry(viewport_id)
+                .or_default()
+                .push((entries.len(), egui_id));
+        }
+        entries.push(entry);
     }
 
     pub fn push_container(&self, viewport_id: egui::ViewportId, id: String) {
@@ -284,6 +347,7 @@ pub fn record_widget(
             meta,
             parent_id,
             focused: response.ctx.memory(|mem| mem.has_focus(response.id)),
+            egui_id: Some(response.id),
         },
     );
 }
@@ -312,6 +376,7 @@ pub fn record_rect_meta(
             meta,
             parent_id,
             focused: false,
+            egui_id: None,
         },
     );
 }
@@ -328,6 +393,54 @@ struct WidgetEntryInput<'a> {
     parent_id: Option<String>,
     enabled: bool,
     focused: bool,
+    /// The egui id of a response-backed widget, for the accessibility
+    /// fallback.
+    egui_id: Option<egui::Id>,
+}
+
+/// The role and name that egui's AccessKit node gives a widget.
+struct AccessibleInfo {
+    /// The entry of the node's role, when the role carries all the metadata
+    /// that its entry requires.
+    role: Option<WidgetRoleMeta>,
+    /// The accessible name: the node's label, or the value of a label node,
+    /// which egui names by its text.
+    name: Option<String>,
+}
+
+impl AccessibleInfo {
+    fn from_node(node: &accesskit::Node) -> Self {
+        let range = node
+            .min_numeric_value()
+            .zip(node.max_numeric_value())
+            .map(|(min, max)| WidgetRange { min, max });
+        let name = node
+            .label()
+            .or_else(|| {
+                (node.role() == egui::Role::Label)
+                    .then(|| node.value())
+                    .flatten()
+            })
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+        Self {
+            role: WidgetRoleMeta::from_accesskit(node.role(), range),
+            name,
+        }
+    }
+
+    /// Fill the role and the label that `entry` lacks.
+    fn fill(self, entry: &mut WidgetRegistryEntry) {
+        if entry.role == WidgetRole::Unknown
+            && let Some(role) = self.role
+        {
+            entry.role = role.role();
+            entry.role_state = role.state();
+        }
+        if entry.label.is_none() {
+            entry.label = self.name;
+        }
+    }
 }
 
 /// Map one egui layer order onto a comparable paint rank, where a larger value
@@ -373,6 +486,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         parent_id,
         enabled,
         focused,
+        egui_id,
     } = input;
     let value = normalize_widget_value(meta.value);
     let data = normalize_widget_data(meta.data);
@@ -403,7 +517,7 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         focused,
         covered,
     };
-    widgets.record_widget(viewport_id, entry);
+    widgets.record_widget_with_egui_id(viewport_id, entry, egui_id);
 }
 
 fn normalize_widget_data(data: Option<Value>) -> Option<Value> {

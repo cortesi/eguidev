@@ -335,8 +335,8 @@ impl ScrollAreaState {
         // Use our extension trait method
         let output = scroll_area.dev_show_viewport(ui, id, add_contents);
         let effective_offset = State::load(ui.ctx(), output.id)
-            .map(|state| state.unclamped_offset())
-            .unwrap_or(output.state.unclamped_offset());
+            .map(|state| state.clamped_offset())
+            .unwrap_or(output.state.clamped_offset());
         self.offset = effective_offset;
         self.pending_offset = requested_offset.filter(|offset| {
             let outstanding = (effective_offset - *offset).length_sq() > 0.25;
@@ -429,12 +429,18 @@ fn scroll_area_key(id: &str) -> egui::Id {
 
 /// Take the offset that automation queued for the scroll area that eguidev
 /// records as `id`, from the frame that recorded it last.
+///
+/// The area's stored state is cleared first: the builder offset moves the area,
+/// but leaves the velocity of a kinetic scroll, which would carry it past the
+/// requested offset.
 pub fn take_scroll_area_override(ui: &egui::Ui, id: &str) -> Option<egui::Vec2> {
     let inner = active_inner()?;
-    let widget_id = ui
+    let scroll_id = ui
         .ctx()
-        .data(|data| data.get_temp::<u64>(scroll_area_key(id)))?;
-    inner.take_scroll_override(ui.ctx().viewport_id(), widget_id)
+        .data(|data| data.get_temp::<egui::Id>(scroll_area_key(id)))?;
+    let offset = inner.take_scroll_override(ui.ctx().viewport_id(), scroll_id.value())?;
+    ui.ctx().data_mut(|data| data.remove::<State>(scroll_id));
+    Some(offset)
 }
 
 pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &ScrollAreaOutput<R>) {
@@ -451,7 +457,7 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
         // A queued offset applies when the area shows next, through the
         // builder, so the next frame finds the native id of the area here.
         ui.ctx()
-            .data_mut(|data| data.insert_temp(scroll_area_key(&id), widget_id));
+            .data_mut(|data| data.insert_temp(scroll_area_key(&id), output.id));
         if inner.has_scroll_override(viewport_id, widget_id) {
             inner.request_repaint();
         }
@@ -461,7 +467,7 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
             &response,
             WidgetMeta {
                 role: WidgetRoleMeta::ScrollArea {
-                    offset: output.state.unclamped_offset().into(),
+                    offset: output.state.clamped_offset().into(),
                     viewport_size: output.inner_rect.size().into(),
                     content_size: output.content_size.into(),
                 },
@@ -673,6 +679,62 @@ mod tests {
             .widgets
             .widget_list(egui::ViewportId::ROOT);
         assert!(widget_by_id(&widgets, "custom").layout.is_some());
+    }
+
+    #[test]
+    fn tracked_widgets_take_a_missing_role_and_label_from_egui() {
+        let devmcp = devmcp_enabled();
+        let ctx = Context::default();
+        let mut value = 4.0_f32;
+        let mut query = String::new();
+        // The first frame enables AccessKit, so egui builds nodes from the
+        // second frame on.
+        for _ in 0..2 {
+            run_panel(&ctx, egui::RawInput::default(), |ctx, ui| {
+                devmcp.begin_frame(ctx);
+                track_widget(ui, "plain.button", |ui| ui.button("Go"));
+                track_widget(ui, "icon.button", |ui| {
+                    ui.button("\u{1F50D}").accessible_name("Search")
+                });
+                track_widget(ui, "plain.slider", |ui| {
+                    ui.add(egui::Slider::new(&mut value, 0.0..=10.0))
+                });
+                ui.name_inputs("Query", |ui| {
+                    track_widget(ui, "named.edit", |ui| ui.text_edit_singleline(&mut query));
+                });
+                track_widget_with_meta(
+                    ui,
+                    "explicit.label",
+                    WidgetRoleMeta::Plain(WidgetRole::Label),
+                    Some("Explicit".to_string()),
+                    None,
+                    |ui| ui.button("Other"),
+                );
+                devmcp.end_frame(ctx, true);
+            });
+        }
+        let widgets = devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT);
+
+        let button = widget_by_id(&widgets, "plain.button");
+        assert_eq!(button.role, WidgetRole::Button);
+        assert_eq!(button.label.as_deref(), Some("Go"));
+        assert_eq!(
+            widget_by_id(&widgets, "icon.button").label.as_deref(),
+            Some("Search")
+        );
+        let slider = widget_by_id(&widgets, "plain.slider");
+        assert_eq!(slider.role, WidgetRole::Slider);
+        assert!(matches!(slider.role_state, Some(RoleState::Slider { .. })));
+        let edit = widget_by_id(&widgets, "named.edit");
+        assert_eq!(edit.role, WidgetRole::TextEdit);
+        assert_eq!(edit.label.as_deref(), Some("Query"));
+        let explicit = widget_by_id(&widgets, "explicit.label");
+        assert_eq!(explicit.role, WidgetRole::Label);
+        assert_eq!(explicit.label.as_deref(), Some("Explicit"));
     }
 
     #[test]
