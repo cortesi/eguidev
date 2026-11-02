@@ -82,6 +82,9 @@ impl InputAction {
                     unit: egui::MouseWheelUnit::Point,
                     delta: delta.into(),
                     phase: egui::TouchPhase::Move,
+                    // An automation scroll moves by its delta at once, as a
+                    // wheel does, with no momentum.
+                    source: egui::MouseWheelSource::Wheel,
                     modifiers: modifiers.into(),
                 });
             }

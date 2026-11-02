@@ -633,7 +633,7 @@ impl DemoApp {
             let drag_rect = rect.translate(s.root_drag_offset);
             let response = ui.interact(
                 drag_rect,
-                egui::Id::new("basic.drag.region"),
+                egui::Id::unique("basic.drag.region"),
                 egui::Sense::drag(),
             );
             if response.dragged() {
@@ -1271,7 +1271,7 @@ impl DemoApp {
             let drag_rect = rect.translate(s.secondary_drag_offset);
             let response = ui.interact(
                 drag_rect,
-                egui::Id::new("secondary_drag_region"),
+                egui::Id::unique("secondary_drag_region"),
                 egui::Sense::drag(),
             );
             if response.dragged() {
@@ -1501,7 +1501,7 @@ impl App for DemoApp {
             });
             let mut open = s.widget_window_open;
             if let Some(window) = egui::Window::new("Widget Surface Window")
-                .id(egui::Id::new("basic.window.surface"))
+                .id(egui::Id::unique("basic.window.surface"))
                 .open(&mut open)
                 .default_pos(egui::pos2(540.0, 24.0))
                 .default_size(egui::vec2(220.0, 320.0))

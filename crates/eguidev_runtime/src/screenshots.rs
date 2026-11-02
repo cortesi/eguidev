@@ -113,18 +113,45 @@ pub struct ScreenshotDebugSnapshot {
     pub debug: ScreenshotDebugState,
 }
 
-#[derive(Debug)]
+/// The screenshot requests and their debug state. Clones share the state, so
+/// the callback of each request can mark it ready from the render thread.
+#[derive(Debug, Clone)]
 pub struct ScreenshotManager {
-    screenshots: Mutex<HashMap<u64, ScreenshotState>>,
-    screenshot_debug: Mutex<ScreenshotDebugState>,
+    screenshots: Arc<Mutex<HashMap<u64, ScreenshotState>>>,
+    screenshot_debug: Arc<Mutex<ScreenshotDebugState>>,
+    /// The request of the last callback of each viewport, which the frame that
+    /// sends its command reports.
+    queued: Arc<Mutex<HashMap<egui::ViewportId, u64>>>,
 }
 
 impl ScreenshotManager {
     pub(crate) fn new() -> Self {
         Self {
-            screenshots: Mutex::new(HashMap::new()),
-            screenshot_debug: Mutex::new(ScreenshotDebugState::default()),
+            screenshots: Arc::new(Mutex::new(HashMap::new())),
+            screenshot_debug: Arc::new(Mutex::new(ScreenshotDebugState::default())),
+            queued: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Take the request of the last callback of `viewport_id`.
+    pub(crate) fn take_queued(&self, viewport_id: egui::ViewportId) -> Option<u64> {
+        lock(&self.queued, "screenshot queue lock").remove(&viewport_id)
+    }
+
+    /// The callback of screenshot request `request_id` of `viewport_id`. It
+    /// marks the request ready when the image arrives.
+    pub(crate) fn callback(
+        &self,
+        request_id: u64,
+        viewport_id: egui::ViewportId,
+        enabled: bool,
+        frame_count: u64,
+    ) -> egui::ScreenshotCallback {
+        lock(&self.queued, "screenshot queue lock").insert(viewport_id, request_id);
+        let manager = self.clone();
+        egui::ScreenshotCallback::new(move |image| {
+            manager.receive_screenshot(request_id, viewport_id, &image, enabled, frame_count);
+        })
     }
 
     pub(crate) fn screenshot_state(&self, request_id: u64) -> Option<ScreenshotState> {
@@ -157,59 +184,40 @@ impl ScreenshotManager {
         }
     }
 
-    pub(crate) fn capture_screenshot_events(
+    /// Mark request `request_id` ready with `image`, and record the event.
+    fn receive_screenshot(
         &self,
-        events: &[egui::Event],
+        request_id: u64,
+        viewport_id: egui::ViewportId,
+        image: &Arc<egui::ColorImage>,
         enabled: bool,
         frame_count: u64,
     ) {
-        for event in events {
-            let egui::Event::Screenshot {
-                viewport_id,
-                user_data,
-                image,
-            } = event
-            else {
-                continue;
-            };
-            let request_id = user_data
-                .data
-                .as_ref()
-                .and_then(|data| data.downcast_ref::<u64>())
-                .copied();
-            let matched = request_id
-                .map(|request_id| self.mark_screenshot_ready(request_id, Arc::clone(image)))
-                .unwrap_or(false);
-            let has_user_data = request_id.is_some();
-            let mut debug = lock(&self.screenshot_debug, "screenshot debug lock");
-            debug.events_seen += 1;
-            if has_user_data {
-                if matched {
-                    debug.events_matched += 1;
-                } else {
-                    debug.events_unknown_request += 1;
-                }
-            } else {
-                debug.events_missing_user_data += 1;
-            }
-            self.log_screenshot(
-                enabled,
-                format!(
-                    "event received request_id={request_id:?} viewport={} matched={matched} \
-                     user_data={has_user_data} size={:?} frame={frame_count}",
-                    viewport_id_to_string(*viewport_id),
-                    image.size,
-                ),
-            );
-            debug.last_event = Some(ScreenshotDebugEvent {
-                request_id,
-                viewport_id: viewport_id_to_string(*viewport_id),
-                frame_count,
-                matched,
-                has_user_data,
-                image_size: Some(image.size),
-            });
+        let matched = self.mark_screenshot_ready(request_id, Arc::clone(image));
+        let mut debug = lock(&self.screenshot_debug, "screenshot debug lock");
+        debug.events_seen += 1;
+        if matched {
+            debug.events_matched += 1;
+        } else {
+            debug.events_unknown_request += 1;
         }
+        self.log_screenshot(
+            enabled,
+            format!(
+                "event received request_id={request_id} viewport={} matched={matched} \
+                 size={:?} frame={frame_count}",
+                viewport_id_to_string(viewport_id),
+                image.size,
+            ),
+        );
+        debug.last_event = Some(ScreenshotDebugEvent {
+            request_id: Some(request_id),
+            viewport_id: viewport_id_to_string(viewport_id),
+            frame_count,
+            matched,
+            has_user_data: true,
+            image_size: Some(image.size),
+        });
     }
 
     pub(crate) fn record_screenshot_request(
@@ -299,7 +307,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capture_screenshot_events_marks_ready_from_raw_input() {
+    fn a_screenshot_callback_marks_its_request_ready() {
         let manager = ScreenshotManager::new();
         let request_id = 42_u64;
         manager.insert_screenshot(
@@ -308,13 +316,9 @@ mod tests {
         );
 
         let image = Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]));
-        let event = egui::Event::Screenshot {
-            viewport_id: egui::ViewportId::ROOT,
-            user_data: egui::UserData::new(request_id),
-            image: Arc::clone(&image),
-        };
-        let events = [event];
-        manager.capture_screenshot_events(&events, true, 0);
+        manager
+            .callback(request_id, egui::ViewportId::ROOT, true, 0)
+            .complete(Arc::clone(&image));
 
         let state = manager
             .screenshot_state(request_id)
@@ -326,32 +330,24 @@ mod tests {
         assert_eq!(snapshot.debug.events_seen, 1);
         assert_eq!(snapshot.debug.events_matched, 1);
         assert_eq!(snapshot.debug.events_unknown_request, 0);
-        assert_eq!(snapshot.debug.events_missing_user_data, 0);
         let last_event = snapshot.debug.last_event.expect("last event");
         assert_eq!(last_event.request_id, Some(request_id));
         assert!(last_event.matched);
     }
 
     #[test]
-    fn capture_screenshot_events_records_missing_user_data() {
+    fn a_screenshot_callback_of_an_unknown_request_is_recorded() {
         let manager = ScreenshotManager::new();
-
         let image = Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::WHITE]));
-        let event = egui::Event::Screenshot {
-            viewport_id: egui::ViewportId::ROOT,
-            user_data: egui::UserData::default(),
-            image,
-        };
-        let events = [event];
-        manager.capture_screenshot_events(&events, true, 0);
+        manager
+            .callback(7, egui::ViewportId::ROOT, true, 0)
+            .complete(image);
 
         let snapshot = manager.screenshot_debug_snapshot(true, 0);
         assert_eq!(snapshot.debug.events_seen, 1);
-        assert_eq!(snapshot.debug.events_missing_user_data, 1);
+        assert_eq!(snapshot.debug.events_unknown_request, 1);
         assert_eq!(snapshot.debug.events_matched, 0);
-        assert_eq!(snapshot.debug.events_unknown_request, 0);
         let last_event = snapshot.debug.last_event.expect("last event");
-        assert!(last_event.request_id.is_none());
         assert!(!last_event.matched);
     }
 

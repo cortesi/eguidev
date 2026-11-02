@@ -587,8 +587,10 @@ async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
         .map_err(|error| format!("configure ownership pipe: {error}"))?;
     set_cloexec(ownership.as_raw_fd(), true)
         .map_err(|error| format!("protect ownership pipe: {error}"))?;
-    let ownership =
-        AsyncFd::new(ownership).map_err(|error| format!("register ownership pipe: {error}"))?;
+    // SAFETY: the `OwnedFd` keeps the pipe open for as long as the `AsyncFd`
+    // owns it, and always returns the same descriptor.
+    let ownership = unsafe { AsyncFd::register(ownership) }
+        .map_err(|error| format!("register ownership pipe: {}", error.into_parts().1))?;
 
     let managed = spawn_managed_app(&config).await?;
     let ManagedApp {
@@ -1019,7 +1021,10 @@ impl ProcessGroupObserver {
             return Err(io::Error::last_os_error());
         }
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        let queue = AsyncFd::with_interest(fd, Interest::READABLE)?;
+        // SAFETY: the `OwnedFd` keeps the queue open for as long as the
+        // `AsyncFd` owns it, and always returns the same descriptor.
+        let queue = unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) }
+            .map_err(|error| error.into_parts().1)?;
         Ok(Self { queue })
     }
 

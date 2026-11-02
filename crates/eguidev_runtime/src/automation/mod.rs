@@ -4634,7 +4634,7 @@ return state.scroll_state.offset.y"#
         for _ in 0..2 {
             inner.widgets.clear_registry(viewport_id);
             discard_output(ctx.run_ui(raw_input(), |ui| {
-                let card = egui::Area::new(egui::Id::new("floating.card"))
+                let card = egui::Area::new(egui::Id::unique("floating.card"))
                     .order(egui::Order::Middle)
                     .fixed_pos(egui::pos2(0.0, 0.0))
                     .show(ui.ctx(), |ui| {
@@ -5404,7 +5404,7 @@ return state.scroll_state.offset.y"#
                             ui.label(format!("Row {row}"));
                         }
                     });
-                offset = output.state.offset;
+                offset = output.state.unclamped_offset();
             });
         }));
 

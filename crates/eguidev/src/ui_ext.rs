@@ -900,7 +900,11 @@ impl DevScrollAreaExt for egui::ScrollArea {
         add_contents: impl FnOnce(&mut egui::Ui, egui::Rect) -> R,
     ) -> ScrollAreaOutput<R> {
         let id = id.into();
-        let output = self.show_viewport(ui, |ui, rect| {
+        let scroll_area = match super::instrument::take_scroll_area_override(ui, &id) {
+            Some(offset) => self.scroll_offset(offset),
+            None => self,
+        };
+        let output = scroll_area.show_viewport(ui, |ui, rect| {
             let _guard = super::instrument::begin_container(ui, id.clone());
             add_contents(ui, rect)
         });

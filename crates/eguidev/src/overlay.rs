@@ -169,7 +169,8 @@ impl OverlayManager {
         if overlays.is_empty() {
             return;
         }
-        let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("eguidev.overlay"));
+        let layer =
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("eguidev.overlay"));
         let painter = ctx.layer_painter(layer);
         for ((viewport_id, _), overlay) in overlays.iter() {
             if *viewport_id != ctx.viewport_id() {
@@ -216,7 +217,7 @@ impl OverlayManager {
         }
         let layer = egui::LayerId::new(
             egui::Order::Foreground,
-            egui::Id::new("eguidev.overlay.debug"),
+            egui::Id::unique("eguidev.overlay.debug"),
         );
         let painter = ctx.layer_painter(layer);
         let options = config.options.clone();

@@ -485,6 +485,11 @@ impl Inner {
         self.request_repaint_of(viewport_id);
     }
 
+    pub fn has_scroll_override(&self, viewport_id: egui::ViewportId, widget_id: u64) -> bool {
+        lock(&self.scroll_overrides, "scroll overrides lock")
+            .contains_key(&ScrollAreaKey::new(viewport_id, widget_id))
+    }
+
     pub fn take_scroll_override(
         &self,
         viewport_id: egui::ViewportId,

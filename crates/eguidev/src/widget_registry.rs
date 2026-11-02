@@ -297,7 +297,7 @@ pub fn record_rect_meta(
 ) {
     let viewport_id = ui.ctx().viewport_id();
     let parent_id = widgets.current_container(viewport_id);
-    let native_id = egui::Id::new(id.as_str()).value();
+    let native_id = egui::Id::unique(id.as_str()).value();
     record_widget_entry(
         widgets,
         WidgetEntryInput {
@@ -963,7 +963,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         let show_card = |ui: &mut egui::Ui| -> egui::LayerId {
-            egui::Area::new(egui::Id::new("floating.card"))
+            egui::Area::new(egui::Id::unique("floating.card"))
                 .order(egui::Order::Middle)
                 .fixed_pos(egui::pos2(10.0, 10.0))
                 .show(ui.ctx(), |ui| {

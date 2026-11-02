@@ -335,8 +335,8 @@ impl ScrollAreaState {
         // Use our extension trait method
         let output = scroll_area.dev_show_viewport(ui, id, add_contents);
         let effective_offset = State::load(ui.ctx(), output.id)
-            .map(|state| state.offset)
-            .unwrap_or(output.state.offset);
+            .map(|state| state.unclamped_offset())
+            .unwrap_or(output.state.unclamped_offset());
         self.offset = effective_offset;
         self.pending_offset = requested_offset.filter(|offset| {
             let outstanding = (effective_offset - *offset).length_sq() > 0.25;
@@ -421,6 +421,22 @@ pub fn test_layout_capture_count() -> usize {
     TEST_LAYOUT_CAPTURE_COUNT.with(Cell::get)
 }
 
+/// The key of the native id of the scroll area that eguidev records as `id`,
+/// in the temporary data of the context.
+fn scroll_area_key(id: &str) -> egui::Id {
+    egui::Id::unique(("eguidev.scroll_area", id))
+}
+
+/// Take the offset that automation queued for the scroll area that eguidev
+/// records as `id`, from the frame that recorded it last.
+pub fn take_scroll_area_override(ui: &egui::Ui, id: &str) -> Option<egui::Vec2> {
+    let inner = active_inner()?;
+    let widget_id = ui
+        .ctx()
+        .data(|data| data.get_temp::<u64>(scroll_area_key(id)))?;
+    inner.take_scroll_override(ui.ctx().viewport_id(), widget_id)
+}
+
 pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &ScrollAreaOutput<R>) {
     let response = ui.interact(output.inner_rect, output.id, egui::Sense::hover());
     let Some(inner) = active_inner() else {
@@ -432,11 +448,11 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
     swallow_panic("record_scroll_area", || {
         let viewport_id = response.ctx.viewport_id();
         let widget_id = response.id.value();
-        let override_offset = inner.take_scroll_override(viewport_id, widget_id);
-        if let Some(offset) = override_offset {
-            let mut state = State::load(ui.ctx(), output.id).unwrap_or_default();
-            state.offset = offset;
-            state.store(ui.ctx(), output.id);
+        // A queued offset applies when the area shows next, through the
+        // builder, so the next frame finds the native id of the area here.
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(scroll_area_key(&id), widget_id));
+        if inner.has_scroll_override(viewport_id, widget_id) {
             inner.request_repaint();
         }
         record_widget(
@@ -445,7 +461,7 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
             &response,
             WidgetMeta {
                 role: WidgetRoleMeta::ScrollArea {
-                    offset: output.state.offset.into(),
+                    offset: output.state.unclamped_offset().into(),
                     viewport_size: output.inner_rect.size().into(),
                     content_size: output.content_size.into(),
                 },

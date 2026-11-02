@@ -861,8 +861,8 @@ mod inactive_tests {
             ctx.run_ui(input(viewport_id), |ui| {
                 let pass_context = ui.ctx().clone();
                 let _guard = FrameGuard::new(&devmcp, &pass_context);
-                let edit_id = egui::Id::new((viewport_id, "edit"));
-                let popup_id = egui::Id::new((viewport_id, "popup"));
+                let edit_id = egui::Id::unique((viewport_id, "edit"));
+                let popup_id = egui::Id::unique((viewport_id, "popup"));
                 let mut text = String::new();
                 let edit = ui.add(egui::TextEdit::singleline(&mut text).id(edit_id));
                 let anchor = ui.button("Open");

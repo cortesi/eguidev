@@ -2888,7 +2888,7 @@ mod tests {
         #[cfg(debug_assertions)]
         ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let id = egui::Id::new("duplicate");
+            let id = egui::Id::unique("duplicate");
             ui.ctx().check_for_id_clash(
                 id,
                 egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)),

@@ -283,7 +283,11 @@ async fn capture_screenshot_state(
     runtime.insert_screenshot(request_id, ScreenshotState::pending(kind));
     inner.queue_command(
         viewport_id,
-        egui::ViewportCommand::Screenshot(egui::UserData::new(request_id)),
+        egui::ViewportCommand::Screenshot(runtime.screenshot_callback(
+            inner,
+            request_id,
+            viewport_id,
+        )),
     );
     runtime.record_screenshot_request(inner, request_id, viewport_id, &kind_snapshot);
     inner.request_repaint_of(viewport_id);
@@ -407,7 +411,11 @@ async fn await_screenshot(
             if current_frame > last_command_frame {
                 inner.queue_command(
                     viewport_id,
-                    egui::ViewportCommand::Screenshot(egui::UserData::new(request_id)),
+                    egui::ViewportCommand::Screenshot(runtime.screenshot_callback(
+                        inner,
+                        request_id,
+                        viewport_id,
+                    )),
                 );
                 last_command_frame = current_frame;
             }

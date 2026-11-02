@@ -203,12 +203,19 @@ impl Runtime {
         Ok(())
     }
 
-    fn capture_screenshot_events(&self, inner: &Inner, events: &[egui::Event]) {
-        self.screenshots.capture_screenshot_events(
-            events,
+    /// The callback of screenshot request `request_id` of `viewport_id`.
+    pub(crate) fn screenshot_callback(
+        &self,
+        inner: &Inner,
+        request_id: u64,
+        viewport_id: egui::ViewportId,
+    ) -> egui::ScreenshotCallback {
+        self.screenshots.callback(
+            request_id,
+            viewport_id,
             inner.verbose_logging(),
             inner.frame_count(),
-        );
+        )
     }
 
     fn finish_frame(&self, inner: &Inner, ctx: &Context) {
@@ -216,12 +223,8 @@ impl Runtime {
         let mut sent_viewport_command = false;
         for command in inner.actions.drain_commands(viewport_id) {
             sent_viewport_command = true;
-            if let egui::ViewportCommand::Screenshot(user_data) = &command {
-                let request_id = user_data
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.downcast_ref::<u64>())
-                    .copied();
+            if let egui::ViewportCommand::Screenshot(_) = &command {
+                let request_id = self.screenshots.take_queued(viewport_id);
                 self.record_screenshot_command_sent(inner, viewport_id, request_id);
             }
             ctx.send_viewport_cmd(command);
@@ -268,10 +271,6 @@ impl Runtime {
 impl RuntimeHooks for RuntimeHooksImpl {
     fn as_any(&self) -> &(dyn Any + Send + Sync) {
         self
-    }
-
-    fn on_raw_input(&self, inner: &Inner, events: &[egui::Event]) {
-        self.runtime.capture_screenshot_events(inner, events);
     }
 
     fn on_frame_end(&self, inner: &Inner, ctx: &Context) {
