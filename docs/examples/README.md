@@ -69,9 +69,11 @@ Checked-in smoke coverage now has two layers:
   invocation unless `--suite-timeout-secs` is provided.
 - `edev smoke --bundle` writes failure bundles under `tmp/edev-bundles`, or use
   `edev smoke --bundle-dir PATH` to choose the directory. Each failed script gets a deterministic
-  directory with `meta.json`, `failure.txt`, full tree dumps, diagnostics, viewport screenshots,
-  app stderr, and captured app stdout. Repeated runs include the round in the bundle directory and
-  `meta.json`. The bundle also retains the failed script plus configured Luau modules.
+  directory with `meta.json`, `failure.txt`, full tree dumps, diagnostics, and viewport
+  screenshots. The bundle also retains the failed script plus configured Luau modules. Repeated
+  runs include the round in the bundle directory and `meta.json`. The run writes the app stderr
+  and stdout once, as `app.stderr.log` and `app.stdout.log` beside the bundles, and each
+  `meta.json` names them. A run first removes the bundles of the run before it.
 - `edev smoke smoketest/*.luau` or `edev smoke path/to/ad_hoc_probe.luau` runs explicit scripts in
   the order provided, so you can use normal shell expansion or quick one-off probes outside the
   configured suite.

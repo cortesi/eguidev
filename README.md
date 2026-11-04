@@ -115,7 +115,9 @@ Use these flags while you write a suite:
 - `--module-dir DIR` overrides the shared Luau module directory.
 - `--repeat N` and `--until-fail N` find intermittent failures across rounds.
 - `--bundle` writes a failure bundle for each failure. A bundle holds the tree
-  dump, diagnostics, screenshots, script logs, and app output.
+  dump, diagnostics, screenshots, and script logs. The app output of the run
+  sits once beside the bundles, and a run removes the bundles of the run
+  before it.
 
 Each script result includes the egui `id_clash` and `rect_changed_id` warnings
 that no script dismissed. `edev smoke` fails on these warnings by default, so an

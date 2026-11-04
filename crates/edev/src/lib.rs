@@ -82,8 +82,8 @@ use config::{
     SmokeConfig,
 };
 use failure_bundle::{
-    BundleContext, FailureBundleScript, image_extension, pretty_json, safe_file_component,
-    write_failure_bundle,
+    BundleContext, FailureBundleScript, image_extension, pretty_json, prune_previous_bundles,
+    safe_file_component, write_failure_bundle,
 };
 use fixture_projection::{FIXTURE_APPLY_SCRIPT, FIXTURE_LIST_SCRIPT, parse_fixture_list};
 use session::AppSession;
@@ -1581,6 +1581,11 @@ async fn run_smoke_suite(
     bundle_context: Option<BundleContext>,
 ) -> Result<SuiteResult, EdevError> {
     let modules = load_script_modules(config.module_dir.as_deref())?;
+    if let Some(context) = bundle_context.as_ref()
+        && let Err(error) = prune_previous_bundles(&context.dir)
+    {
+        eprintln!("edev: failed to remove the failure bundles of an earlier run: {error}");
+    }
     Ok(run_suite_with(
         &config.suite,
         |request: ScriptRunRequest| {
@@ -2422,13 +2427,15 @@ mod tests {
         assert!(script_dir.join("tree.txt").is_file());
         assert!(script_dir.join("diagnostics.json").is_file());
         assert_eq!(
-            fs::read_to_string(script_dir.join("app.stderr.log")).expect("stderr"),
+            fs::read_to_string(bundle_dir.join("app.stderr.log")).expect("stderr"),
             "app stderr\n"
         );
         assert_eq!(
-            fs::read_to_string(script_dir.join("app.stdout.log")).expect("stdout"),
+            fs::read_to_string(bundle_dir.join("app.stdout.log")).expect("stdout"),
             "app stdout\n"
         );
+        assert!(!script_dir.join("app.stderr.log").exists());
+        assert!(!script_dir.join("app.stdout.log").exists());
         assert_eq!(
             fs::read(script_dir.join("viewport-root.jpg")).expect("viewport image"),
             b"jpeg"
@@ -2439,13 +2446,25 @@ mod tests {
         assert_eq!(meta["script"]["args"]["name"], "Sky");
         assert_eq!(meta["fixtures"][0]["name"], "basic.default");
         assert_eq!(meta["fixtures"][0]["params"]["offset"], 180);
+        assert_eq!(meta["app_output"]["stderr"], "../app.stderr.log");
+        assert_eq!(meta["app_output"]["stdout"], "../app.stdout.log");
 
+        // A second run removes each bundle of the first run and keeps a
+        // folder that is not a bundle.
         fs::write(script_dir.join("stale.txt"), "stale").expect("write stale");
+        let renamed = bundle_dir.join("20_renamed-00000000");
+        fs::create_dir_all(&renamed).expect("create stale bundle");
+        fs::write(renamed.join("meta.json"), "{}").expect("write stale meta");
+        fs::write(renamed.join("failure.txt"), "old").expect("write stale failure");
+        let notes = bundle_dir.join("notes");
+        fs::create_dir_all(&notes).expect("create notes");
         let second = run_smoke_suite(Arc::clone(&app.client), &config, Some(context))
             .await
             .expect("second smoke suite");
         assert_eq!(second.failed(), 1);
         assert!(!script_dir.join("stale.txt").exists());
+        assert!(!renamed.exists(), "a bundle of an earlier run is removed");
+        assert!(notes.is_dir(), "a folder that is not a bundle stays");
         assert_eq!(requests.lock().expect("requests").len(), 6);
     }
 
@@ -2516,7 +2535,10 @@ mod tests {
             .expect("meta json");
             assert_eq!(meta["script"]["path"], "10_fail.luau");
             assert_eq!(meta["script"]["round"].as_u64(), Some(u64::from(round)));
+            assert!(!script_dir.join("app.stderr.log").exists());
         }
+        assert!(bundle_dir.join("app.stderr.log").is_file());
+        assert!(bundle_dir.join("app.stdout.log").is_file());
     }
 
     #[tokio::test(flavor = "multi_thread")]

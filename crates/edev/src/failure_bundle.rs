@@ -40,6 +40,11 @@ pub fn stable_hash8(value: &str) -> String {
 
 use super::*;
 
+/// The app stderr tail of a run, written once at the bundle root.
+pub const RUN_STDERR_LOG: &str = "app.stderr.log";
+/// The app stdout tail of a run, written once at the bundle root.
+pub const RUN_STDOUT_LOG: &str = "app.stdout.log";
+
 /// Inputs retained by an active app session for deterministic failure
 /// collection.
 #[derive(Clone)]
@@ -231,12 +236,14 @@ pub async fn write_failure_bundle(
     fs::write(bundle_dir.join("script.luau"), script_source)?;
     write_bundle_modules(&bundle_dir, modules)?;
     fs::write(bundle_dir.join("failure.txt"), failure_text(outcome)?)?;
+    // One copy of the output tail serves each bundle of the run. Each failure
+    // refreshes it, so it holds the output up to the latest failure.
     fs::write(
-        bundle_dir.join("app.stderr.log"),
+        context.dir.join(RUN_STDERR_LOG),
         snapshot_output(&context.stderr_buffer),
     )?;
     fs::write(
-        bundle_dir.join("app.stdout.log"),
+        context.dir.join(RUN_STDOUT_LOG),
         snapshot_output(&context.stdout_buffer),
     )?;
 
@@ -422,6 +429,32 @@ fn append_collection_error(bundle_dir: &Path, message: impl AsRef<str>) -> Resul
     Ok(())
 }
 
+/// Remove the bundles and the output tail of an earlier run, so that the bundle
+/// root holds only the bundles of this run. Only a directory that holds the
+/// `meta.json` and `failure.txt` of a bundle is removed.
+pub fn prune_previous_bundles(dir: &Path) -> Result<(), EdevError> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir()
+            && path.join("meta.json").is_file()
+            && path.join("failure.txt").is_file()
+        {
+            fs::remove_dir_all(&path)?;
+        }
+    }
+    for name in [RUN_STDERR_LOG, RUN_STDOUT_LOG] {
+        match fs::remove_file(dir.join(name)) {
+            Err(error) if error.kind() != std_io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Replace a deterministic bundle directory with an empty directory.
 pub fn replace_dir(path: &Path) -> Result<(), EdevError> {
     if path.is_dir() {
@@ -462,6 +495,10 @@ pub fn bundle_meta(
             "cwd": context.launch.cwd.display().to_string(),
         },
         "eguidev_version": env!("CARGO_PKG_VERSION"),
+        "app_output": {
+            "stderr": format!("../{RUN_STDERR_LOG}"),
+            "stdout": format!("../{RUN_STDOUT_LOG}"),
+        },
         "failure": {
             "message": script_eval_error_message(outcome.error.as_ref(), "script failed"),
             "details": outcome.error.as_ref().and_then(|error| error.details.clone()),
