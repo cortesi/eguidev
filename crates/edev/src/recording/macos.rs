@@ -5,7 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     ptr::NonNull,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, PoisonError, mpsc},
 };
 
 use block2::RcBlock;
@@ -63,26 +63,17 @@ define_class!(
     unsafe impl SCRecordingOutputDelegate for RecordingDelegate {
         #[unsafe(method(recordingOutputDidStartRecording:))]
         fn recording_started(&self, _recording_output: &SCRecordingOutput) {
-            self.events()
-                .lock()
-                .expect("events lock")
-                .push(RecordingEvent::Started);
+            record_event(self.events(), RecordingEvent::Started);
         }
 
         #[unsafe(method(recordingOutput:didFailWithError:))]
         fn recording_failed(&self, _recording_output: &SCRecordingOutput, error: &NSError) {
-            self.events()
-                .lock()
-                .expect("events lock")
-                .push(RecordingEvent::Failed(error.to_string()));
+            record_event(self.events(), RecordingEvent::Failed(error.to_string()));
         }
 
         #[unsafe(method(recordingOutputDidFinishRecording:))]
         fn recording_finished(&self, _recording_output: &SCRecordingOutput) {
-            self.events()
-                .lock()
-                .expect("events lock")
-                .push(RecordingEvent::Finished);
+            record_event(self.events(), RecordingEvent::Finished);
         }
     }
 );
@@ -426,9 +417,18 @@ fn recording_error(error: &NSError) -> EdevError {
     EdevError::RecordFailed(error.to_string())
 }
 
+/// Record one delegate event. A delegate callback runs inside an Objective-C
+/// call, where a panic aborts the process, so a poisoned lock keeps its data.
+fn record_event(events: &Mutex<Vec<RecordingEvent>>, event: RecordingEvent) {
+    events
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(event);
+}
+
 /// Return the first native delegate failure observed so far.
 fn delegate_failure(events: &Arc<Mutex<Vec<RecordingEvent>>>) -> Option<EdevError> {
-    let events = events.lock().ok()?;
+    let events = events.lock().unwrap_or_else(PoisonError::into_inner);
     events.iter().find_map(|event| match event {
         RecordingEvent::Failed(message) => Some(EdevError::RecordFailed(message.clone())),
         RecordingEvent::Started | RecordingEvent::Finished => None,
@@ -441,9 +441,32 @@ mod tests {
         mem::MaybeUninit,
         os::unix::process::CommandExt,
         process::{Command, Stdio},
+        thread,
     };
 
-    use super::{ProcFilter, live_process_group_members, processes};
+    use super::{
+        Arc, Mutex, ProcFilter, RecordingEvent, delegate_failure, live_process_group_members,
+        processes, record_event,
+    };
+
+    #[test]
+    fn delegate_events_survive_a_poisoned_lock() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let poisoner = Arc::clone(&events);
+        let panicked = thread::spawn(move || {
+            let _guard = poisoner.lock().expect("events lock");
+            panic!("poison the events lock");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(events.is_poisoned());
+
+        record_event(&events, RecordingEvent::Failed("disk full".to_string()));
+
+        assert!(
+            delegate_failure(&events).is_some_and(|error| error.to_string().contains("disk full"))
+        );
+    }
 
     #[test]
     fn live_process_group_members_exclude_defunct_children() {
