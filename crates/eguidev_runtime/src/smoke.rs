@@ -922,9 +922,10 @@ mod tests {
     use tokio::runtime::Builder;
 
     use super::{
-        MIN_SCRIPT_TIME, ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, SuiteRunMode,
-        collect_suite_paths, collect_suite_scripts, discover_suite_scripts, normalize_path,
-        run_suite, run_suite_with, script_timeout_ms,
+        MIN_SCRIPT_TIME, NaturalChunk, ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult,
+        SuiteRunMode, collect_suite_paths, collect_suite_scripts, discover_suite_scripts,
+        natural_key, normalize_path, run_suite, run_suite_with, script_failure_summary,
+        script_timeout_ms,
     };
     use crate::{
         DevMcp, EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
@@ -1684,6 +1685,51 @@ return true
         );
 
         drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn natural_key_orders_numbers_by_value_and_before_text() {
+        assert_eq!(
+            natural_key("a10b"),
+            vec![
+                NaturalChunk::Text("a"),
+                NaturalChunk::Number(10, 2),
+                NaturalChunk::Text("b"),
+            ]
+        );
+        let mut names = vec!["10_b.luau", "9_a.luau", "basic", "010_c.luau", "100_d.luau"];
+        names.sort_by_key(|name| natural_key(name));
+        assert_eq!(
+            names,
+            vec!["9_a.luau", "10_b.luau", "010_c.luau", "100_d.luau", "basic"]
+        );
+        // A run of digits beyond u64 keeps a total order.
+        assert_eq!(
+            natural_key("99999999999999999999"),
+            vec![NaturalChunk::Number(u64::MAX, 20)]
+        );
+    }
+
+    #[test]
+    fn script_failure_summary_names_the_location_and_the_diagnostics() {
+        let mut outcome = failure_outcome("boom");
+        outcome.error.as_mut().expect("error").location = Some(crate::ScriptLocation {
+            line: 4,
+            column: None,
+        });
+        assert_eq!(script_failure_summary(&outcome), "boom at:4:1");
+
+        outcome.error = None;
+        assert_eq!(
+            script_failure_summary(&outcome),
+            "script failed without an error payload"
+        );
+
+        let mut outcome = failure_outcome("boom");
+        outcome.egui_diagnostics = diagnostic_batch(0);
+        let summary = script_failure_summary(&outcome);
+        assert!(summary.starts_with("boom; "), "{summary}");
+        assert!(summary.contains("rect_changed_id"), "{summary}");
     }
 
     #[test]
