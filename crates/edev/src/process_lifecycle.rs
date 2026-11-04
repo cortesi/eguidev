@@ -309,6 +309,8 @@ struct SupervisorConfig {
     env: BTreeMap<String, String>,
     /// Outer launcher PID.
     launcher_pid: u32,
+    /// Start time of the outer launcher.
+    launcher_start_time: Option<instance_registry::ProcessStartTime>,
     /// Collision-safe outer launcher identity.
     launcher_token: String,
     /// Collision-safe app launch identity.
@@ -383,6 +385,7 @@ async fn spawn_supervised_with_executable(
         command: config.command.clone(),
         env: config.env.clone(),
         launcher_pid: process::id(),
+        launcher_start_time: launch.launcher_start_time,
         launcher_token: launch.launcher_token.clone(),
         launch_id: launch.launch_id.clone(),
         app_record_path: launch.entry_path.clone(),
@@ -558,6 +561,7 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
         launch_id: config.launch_id.clone(),
         entry_path: config.app_record_path.clone(),
         launcher_pid: config.launcher_pid,
+        launcher_start_time: config.launcher_start_time,
         launcher_token: config.launcher_token.clone(),
         working_dir: config.working_dir.clone(),
     };

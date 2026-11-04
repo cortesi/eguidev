@@ -28,6 +28,9 @@ static NEXT_LAUNCH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 struct LauncherMetadata {
     /// PID of the owning edev process.
     launcher_pid: u32,
+    /// Start time of the owning edev process, used to reject a reused PID.
+    #[serde(default)]
+    launcher_start_time: Option<ProcessStartTime>,
     /// Collision-safe identity for this exact launcher lifetime.
     launcher_token: String,
     /// Canonical working directory associated with the launcher.
@@ -41,10 +44,16 @@ pub struct AppRecord {
     pub launch_id: String,
     /// PID of the outer edev launcher.
     pub launcher_pid: u32,
+    /// Start time of the outer edev launcher, used to reject a reused PID.
+    #[serde(default)]
+    pub launcher_start_time: Option<ProcessStartTime>,
     /// Collision-safe identity of the outer edev launcher.
     pub launcher_token: String,
     /// PID of the supervisor that owns this record.
     pub supervisor_pid: u32,
+    /// Start time of the supervisor, used to reject a reused PID.
+    #[serde(default)]
+    pub supervisor_start_time: Option<ProcessStartTime>,
     /// Process group ID containing the managed app, never the supervisor.
     pub app_process_group_id: i32,
     /// Start time of the app process-group leader, used to reject reused PGIDs.
@@ -72,6 +81,8 @@ pub struct AppLaunch {
     pub entry_path: PathBuf,
     /// Launcher PID that will be stored in the app record.
     pub launcher_pid: u32,
+    /// Launcher start time that will be stored in the app record.
+    pub launcher_start_time: Option<ProcessStartTime>,
     /// Launcher identity that will be stored in the app record.
     pub launcher_token: String,
     /// Working directory that will be stored in the app record.
@@ -79,7 +90,8 @@ pub struct AppLaunch {
 }
 
 impl AppLaunch {
-    /// Build the record metadata after both child PIDs are known.
+    /// Build the record metadata after both child PIDs are known. The record
+    /// takes the start time of the supervisor from the live process.
     pub fn record(
         &self,
         supervisor_pid: u32,
@@ -89,8 +101,10 @@ impl AppLaunch {
         AppRecord {
             launch_id: self.launch_id.clone(),
             launcher_pid: self.launcher_pid,
+            launcher_start_time: self.launcher_start_time,
             launcher_token: self.launcher_token.clone(),
             supervisor_pid,
+            supervisor_start_time: pid_start_time(supervisor_pid),
             app_process_group_id,
             app_group_leader_start_time,
             working_dir: self.working_dir.clone(),
@@ -117,6 +131,7 @@ impl InstanceRegistry {
 
         let metadata = LauncherMetadata {
             launcher_pid: process::id(),
+            launcher_start_time: pid_start_time(process::id()),
             launcher_token: next_launch_id(process::id()),
             working_dir,
         };
@@ -163,6 +178,7 @@ pub fn app_launch_for(working_dir: &Path, launcher_pid: u32) -> Result<AppLaunch
         entry_path: registry_dir.join(format!("{APP_PREFIX}{launch_id}.json")),
         launch_id,
         launcher_pid,
+        launcher_start_time: launcher.launcher_start_time,
         launcher_token: launcher.launcher_token,
         working_dir: working_dir.to_path_buf(),
     })
@@ -234,7 +250,7 @@ pub fn remove_launcher_record_if_dead(
     path: &Path,
     expected: &AppRecord,
 ) -> Result<bool, io::Error> {
-    if is_process_alive(expected.launcher_pid) {
+    if recorded_process_is_alive(expected.launcher_pid, expected.launcher_start_time) {
         return Ok(false);
     }
     remove_launcher_record_if_matches(path, expected)
@@ -295,7 +311,9 @@ fn cleanup_stale_launcher(path: &Path) -> Result<(), EdevError> {
         }
         Err(error) => return Err(EdevError::Io(error)),
     };
-    if metadata.launcher_pid != process::id() && !is_process_alive(metadata.launcher_pid) {
+    if metadata.launcher_pid != process::id()
+        && !recorded_process_is_alive(metadata.launcher_pid, metadata.launcher_start_time)
+    {
         remove_file_if_exists(path).map_err(EdevError::Io)?;
     }
     Ok(())
@@ -311,7 +329,9 @@ fn cleanup_stale_app(path: &Path) -> Result<(), EdevError> {
         }
         Err(error) => return Err(EdevError::Io(error)),
     };
-    if !is_process_alive(metadata.launcher_pid) && !is_process_alive(metadata.supervisor_pid) {
+    if !recorded_process_is_alive(metadata.launcher_pid, metadata.launcher_start_time)
+        && !recorded_process_is_alive(metadata.supervisor_pid, metadata.supervisor_start_time)
+    {
         if recorded_app_group_is_current(&metadata) {
             terminate_process_group(Some(metadata.app_process_group_id));
         }
@@ -381,6 +401,17 @@ pub fn process_start_time(pid: i32) -> Option<ProcessStartTime> {
 /// Process start-time identity is not used by non-macOS launchers.
 pub fn process_start_time(_pid: i32) -> Option<ProcessStartTime> {
     None
+}
+
+/// Read the start-time identity of one live process by its unsigned PID.
+fn pid_start_time(pid: u32) -> Option<ProcessStartTime> {
+    i32::try_from(pid).ok().and_then(process_start_time)
+}
+
+/// Return true when a recorded process is alive and, when the record holds a
+/// start time, is the same process. A reused PID then reads as dead.
+fn recorded_process_is_alive(pid: u32, start_time: Option<ProcessStartTime>) -> bool {
+    is_process_alive(pid) && start_time.is_none_or(|recorded| pid_start_time(pid) == Some(recorded))
 }
 
 /// Confirm that a recorded process group still belongs to the original app
@@ -527,8 +558,10 @@ mod tests {
         let record = AppRecord {
             launch_id: launch.launch_id.clone(),
             launcher_pid: u32::MAX,
+            launcher_start_time: None,
             launcher_token: launch.launcher_token.clone(),
             supervisor_pid: u32::MAX,
+            supervisor_start_time: None,
             app_process_group_id: i32::MAX,
             app_group_leader_start_time: None,
             working_dir: launch.working_dir.clone(),
@@ -554,6 +587,7 @@ mod tests {
         let launcher_path = launcher_record_path(tempdir.path(), process::id());
         let newer = LauncherMetadata {
             launcher_pid: process::id(),
+            launcher_start_time: None,
             launcher_token: "newer-launcher-token".to_string(),
             working_dir: tempdir.path().to_path_buf(),
         };
@@ -594,8 +628,10 @@ mod tests {
         let record = AppRecord {
             launch_id: "ready-test".to_string(),
             launcher_pid: process::id(),
+            launcher_start_time: Some(start_time),
             launcher_token: "launcher".to_string(),
             supervisor_pid: process::id(),
+            supervisor_start_time: Some(start_time),
             app_process_group_id: i32::try_from(process::id()).expect("current pid"),
             app_group_leader_start_time: Some(start_time),
             working_dir: PathBuf::from("/"),
@@ -616,5 +652,62 @@ mod tests {
             ..record
         };
         assert!(!recorded_app_group_is_current(&mismatched));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_reused_pid_reads_as_a_dead_owner() {
+        use std::os::unix::process::parent_id;
+
+        let tempdir = test_tempdir();
+        // The parent process is alive, but the records name another process
+        // that once held its PID.
+        let parent = parent_id();
+        let current = pid_start_time(parent).expect("parent start time");
+        let reused = ProcessStartTime {
+            seconds: current.seconds.saturating_sub(1),
+            microseconds: current.microseconds,
+        };
+        assert!(recorded_process_is_alive(parent, Some(current)));
+        assert!(recorded_process_is_alive(parent, None));
+        assert!(!recorded_process_is_alive(parent, Some(reused)));
+
+        let registry_dir = tempdir.path().join(REGISTRY_DIR_NAME);
+        fs::create_dir_all(&registry_dir).expect("registry dir");
+        let launcher_path = registry_dir.join(format!("{LAUNCHER_PREFIX}{parent}.json"));
+        let launcher = LauncherMetadata {
+            launcher_pid: parent,
+            launcher_start_time: Some(reused),
+            launcher_token: "dead-launcher".to_string(),
+            working_dir: tempdir.path().to_path_buf(),
+        };
+        write_json(&launcher_path, &launcher).expect("write launcher record");
+        cleanup_stale_launcher(&launcher_path).expect("cleanup launcher");
+        assert!(!launcher_path.exists(), "a reused launcher PID is stale");
+
+        let app_path = registry_dir.join(format!("{APP_PREFIX}reused.json"));
+        let record = AppRecord {
+            launch_id: "reused".to_string(),
+            launcher_pid: parent,
+            launcher_start_time: Some(reused),
+            launcher_token: "dead-launcher".to_string(),
+            supervisor_pid: parent,
+            supervisor_start_time: Some(reused),
+            app_process_group_id: i32::MAX,
+            app_group_leader_start_time: None,
+            working_dir: tempdir.path().to_path_buf(),
+        };
+        write_app_record(&app_path, &record).expect("write app record");
+        cleanup_stale_app(&app_path).expect("cleanup app");
+        assert!(!app_path.exists(), "an app record of reused PIDs is stale");
+
+        let live = AppRecord {
+            launcher_start_time: Some(current),
+            supervisor_start_time: Some(current),
+            ..record
+        };
+        write_app_record(&app_path, &live).expect("write live app record");
+        cleanup_stale_app(&app_path).expect("cleanup live app");
+        assert!(app_path.exists(), "an app record of live owners stays");
     }
 }
