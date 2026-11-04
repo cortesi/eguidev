@@ -80,7 +80,8 @@ command = [
 # Wall-clock deadline for the entire suite, in seconds.
 # Repeated smoke runs share this whole-invocation deadline; use
 # `edev smoke --suite-timeout-secs N` for long `--repeat` / `--until-fail`
-# sessions.
+# sessions. A script that would start with less than one second of the suite
+# left is skipped.
 # suite_timeout_secs = 600
 
 # Per-script timeout, in seconds.

@@ -322,6 +322,9 @@ pub fn script_definitions() -> &'static str;
 pub mod smoke {
     //! Smoketest suite runner for Luau scripts against a live DevMCP app.
 
+    /// Least time of the suite that a script needs to start.
+    pub const MIN_SCRIPT_TIME: Duration = _;
+
     /// Result of a single script execution.
     #[derive(Clone, Debug, PartialEq)]
     pub struct ScriptResult {
@@ -385,7 +388,8 @@ pub mod smoke {
         /// Discovery glob filters matched against display paths. Empty means all
         /// discovered scripts. Cannot be combined with explicit `scripts`.
         pub only: Vec<String>,
-        /// Wall-clock deadline for the entire suite.
+        /// Wall-clock deadline for the entire suite. A script that would start
+        /// with less than `MIN_SCRIPT_TIME` of the suite left is skipped.
         pub suite_timeout: Duration,
         /// Per-script timeout. `None` uses the script-eval default.
         pub script_timeout: Option<Duration>,
@@ -429,7 +433,9 @@ pub mod smoke {
         /// Count passing scripts.
         pub fn passed(&self) -> usize;
 
-        /// Render suite results as printable lines.
+        /// Render suite results as printable lines. A failed script prints its
+        /// logs, diagnostics, and details as evidence. A passed script prints
+        /// them only when `verbose` is set.
         pub fn render_lines(&self, verbose: bool) -> Vec<String>;
 
         /// Count skipped scripts.

@@ -23,7 +23,7 @@ Native embedded runtime for `eguidev`.
 - Publish: crates.io
 - Workspace dependencies: eguidev
 - Workspace dependents: edev, eguidev_demo, xtask
-- Items: 45
+- Items: 46
 - Exposes: eguidev, schemars, serde_core, serde_json, tmcp, tokio
 
 ## edev

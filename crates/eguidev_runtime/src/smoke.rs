@@ -29,7 +29,8 @@ pub struct SuiteConfig {
     /// Discovery glob filters matched against display paths. Empty means all
     /// discovered scripts. Cannot be combined with explicit `scripts`.
     pub only: Vec<String>,
-    /// Wall-clock deadline for the entire suite.
+    /// Wall-clock deadline for the entire suite. A script that would start
+    /// with less than `MIN_SCRIPT_TIME` of the suite left is skipped.
     pub suite_timeout: Duration,
     /// Per-script timeout. `None` uses the script-eval default.
     pub script_timeout: Option<Duration>,
@@ -324,12 +325,15 @@ impl SuiteResult {
             .count()
     }
 
-    /// Render suite results as printable lines.
+    /// Render suite results as printable lines. A failed script prints its
+    /// logs, diagnostics, and details as evidence. A passed script prints
+    /// them only when `verbose` is set.
     pub fn render_lines(&self, verbose: bool) -> Vec<String> {
         let mut lines = Vec::new();
         let show_rounds = self.requested_rounds > 1;
         for script in &self.results {
-            if verbose {
+            let evidence = verbose || script.status == ScriptStatus::Fail;
+            if evidence {
                 lines.extend(
                     script.logs.iter().map(|log| {
                         format!("LOG: {}", serde_json::to_string(log).unwrap_or_default())
@@ -363,7 +367,7 @@ impl SuiteResult {
                         script.elapsed_ms,
                         message
                     ));
-                    if verbose && let Some(details) = &script.details {
+                    if let Some(details) = &script.details {
                         lines.extend(details.lines().map(|line| format!("DETAIL: {line}")));
                     }
                 }
@@ -491,7 +495,11 @@ where
     for round in 1..=round_limit {
         let round_start = Instant::now();
         for (index, script) in scripts.iter().enumerate() {
-            if suite_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // A script that starts just before the deadline would fail with a
+            // timeout that reads as a defect of the script.
+            if suite_deadline.is_some_and(|deadline| {
+                deadline.saturating_duration_since(Instant::now()) < MIN_SCRIPT_TIME
+            }) {
                 append_skipped(
                     &mut results,
                     round,
@@ -644,6 +652,9 @@ fn append_skipped(
             .map(|path| ScriptResult::skip(round, path.display_path.clone(), reason.into())),
     );
 }
+
+/// Least time of the suite that a script needs to start.
+pub const MIN_SCRIPT_TIME: Duration = Duration::from_secs(1);
 
 fn duration_to_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
@@ -911,7 +922,7 @@ mod tests {
     use tokio::runtime::Builder;
 
     use super::{
-        ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, SuiteRunMode,
+        MIN_SCRIPT_TIME, ScriptRunRequest, ScriptStatus, SuiteConfig, SuiteResult, SuiteRunMode,
         collect_suite_paths, collect_suite_scripts, discover_suite_scripts, normalize_path,
         run_suite, run_suite_with, script_timeout_ms,
     };
@@ -1451,7 +1462,7 @@ return true
         let result = run_suite_with(
             &{
                 let mut config = suite_config(suite_dir);
-                config.suite_timeout = Duration::from_millis(40);
+                config.suite_timeout = Duration::from_secs(3);
                 config.script_timeout = Some(Duration::from_secs(60));
                 config
             },
@@ -1463,7 +1474,37 @@ return true
 
         assert!(result.success());
         let timeout_ms = seen.expect("timeout");
-        assert!(timeout_ms <= 40, "{timeout_ms}");
+        assert!(timeout_ms <= 3_000, "{timeout_ms}");
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn a_script_is_skipped_when_less_than_a_second_of_the_suite_is_left() {
+        let root = test_root("a_script_is_skipped_when_less_than_a_second_of_the_suite_is_left");
+        let suite_dir = root.join("suite");
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&suite_dir).expect("create suite dir");
+        fs::write(suite_dir.join("10_late.luau"), "return true").expect("write script");
+
+        let mut ran = false;
+        let result = run_suite_with(
+            &{
+                let mut config = suite_config(suite_dir);
+                config.suite_timeout = MIN_SCRIPT_TIME / 2;
+                config
+            },
+            |_request: ScriptRunRequest| {
+                ran = true;
+                Ok(success_outcome())
+            },
+        );
+
+        assert!(!ran, "a late script must not start");
+        assert_eq!(result.skipped(), 1);
+        assert_eq!(
+            result.results[0].message.as_deref(),
+            Some("suite deadline exceeded before test started")
+        );
         drop(fs::remove_dir_all(&root));
     }
 
@@ -1643,6 +1684,40 @@ return true
         );
 
         drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn render_lines_shows_the_evidence_of_a_failed_script_only() {
+        let result = SuiteResult {
+            results: vec![
+                super::ScriptResult::pass(
+                    1,
+                    "10_pass.luau".to_string(),
+                    12,
+                    vec!["passed log".to_string()],
+                ),
+                super::ScriptResult::fail_with_details(
+                    1,
+                    "20_fail.luau".to_string(),
+                    18,
+                    "boom".to_string(),
+                    vec!["failed log".to_string()],
+                    Some("{\n  \"kind\": \"widget\"\n}".to_string()),
+                ),
+            ],
+            rounds: Vec::new(),
+            requested_rounds: 1,
+            elapsed_ms: 30,
+        };
+
+        let lines = result.render_lines(false);
+        assert!(lines.iter().any(|line| line == "LOG: \"failed log\""));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "DETAIL:   \"kind\": \"widget\"")
+        );
+        assert!(!lines.iter().any(|line| line.contains("passed log")));
     }
 
     #[test]
