@@ -132,28 +132,6 @@ local function freezeOwned(value: any, seen: any?): any
     return table.freeze(value)
 end
 
-local function freezeSnapshot(value: any, seen: any?): any
-    if type(value) ~= "table" then
-        return value
-    end
-    local visited: any = seen or {}
-    if visited[value] then
-        return value
-    end
-    visited[value] = true
-    for key, child in pairs(value) do
-        freezeSnapshot(key, visited)
-        freezeSnapshot(child, visited)
-    end
-    for index = 1, #value do
-        freezeSnapshot(value[index], visited)
-    end
-    if getmetatable(value) == nil and not table.isfrozen(value) then
-        table.freeze(value)
-    end
-    return value
-end
-
 local kernel = table.freeze({
     query = query,
     action = action,
@@ -1041,8 +1019,6 @@ table.freeze(captureMethods)
 
 local function capture(): Capture
     local result = kernel.query.capture()
-    freezeSnapshot(result.__widgets)
-    freezeSnapshot(result.__viewports)
     return table.freeze(setmetatable(result, captureMethods)) :: Capture
 end
 

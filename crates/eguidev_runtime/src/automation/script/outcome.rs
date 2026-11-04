@@ -50,6 +50,7 @@ pub(super) async fn finalize_outcome(
     mut outcome: ScriptEvalOutcome,
 ) -> ScriptEvalOutcome {
     runtime.restore_automation_options();
+    runtime.drop_captures();
     let (batch, barrier_error) = runtime.finish_egui_diagnostics().await;
     outcome.egui_diagnostics = batch;
     outcome.timing.total_ms = runtime.elapsed_ms();

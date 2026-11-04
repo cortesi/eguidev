@@ -32,6 +32,30 @@
 --   the MCP response.
 -- - The sandbox has no filesystem or network access. It can import only named
 --   modules that the caller supplies.
+--
+-- The outcome of a script is one JSON object:
+-- - `success`: whether the script completed. A thrown value, a failed check of
+--   the source, and a failure of the outcome itself make it false.
+-- - `value`: the JSON form of the returned value, when the script succeeded.
+-- - `images`: the `ImageRef` values reachable from `value`, each with the index
+--   of its MCP image content block.
+-- - `logs`, `assertions`, and `fixtures`: what the script recorded, in order.
+-- - `timing`: `compile_ms`, `exec_ms`, and `total_ms`.
+-- - `egui_diagnostics`: the identity warnings that the script did not dismiss.
+-- - `error`, when the script failed: `type`, `message`, `code`, `location`,
+--   `backtrace`, and `details`. The details of a widget failure hold its
+--   `target`.
+--
+-- `error.code` is one `ErrorCode` for an Eguidev failure, or one of these codes
+-- of the outcome:
+-- - `parse_failed` and `typecheck_failed`: the source did not pass its check.
+--   `internal_failed`: the checker itself failed.
+-- - `diagnostic_barrier_timeout`: the egui diagnostics of a targeted viewport
+--   did not complete before the outcome.
+-- - `response_too_large`: the returned images hold more than 48 MiB.
+-- - `egui_diagnostics`: a smoke run failed a script that left identity
+--   warnings.
+-- A thrown string or a failure of the Luau runtime has no code.
 
 export type Pos = {
     x: number,
@@ -170,7 +194,10 @@ declare class Widget
     ) -> WidgetState?
 
     read viewport: (self: Widget) -> Viewport?
+    --- Throws `not_found` for a widget that is absent from the latest capture,
+    --- where `state()` returns `nil`.
     read parent: (self: Widget) -> Widget?
+    --- Throws `not_found` for a widget that is absent from the latest capture.
     read children: (self: Widget) -> { Widget }
 
     --- Clicks the widget's interact-rect center. Fails with `not_actionable`
@@ -382,8 +409,10 @@ export type TreeDiff = {
     viewports_removed: { string },
 }
 
---- An immutable, immediate registry snapshot. `diff()` compares this baseline
---- with registry state at the time of the call.
+--- An immutable, immediate registry snapshot. The app keeps the snapshot for
+--- the evaluation, and the table holds only its frame, so a capture of a large
+--- tree costs no marshaling. `diff()` compares this baseline with registry
+--- state at the time of the call.
 export type Capture = {
     frame: number,
     diff: (self: Capture, options: DiffOptions?) -> TreeDiff,

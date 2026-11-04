@@ -4557,13 +4557,14 @@ local anyCap: any = cap
 local frameOk = pcall(function()
     anyCap.frame = 1
 end)
-local nestedOk = pcall(function()
-    anyCap.__widgets[1].id = "mutated"
+local idOk = pcall(function()
+    anyCap.__capture_id = 0
 end)
 local diff = cap:diff()
 return {
     frame_ok = frameOk,
-    nested_ok = nestedOk,
+    id_ok = idOk,
+    widget_table = anyCap.__widgets == nil,
     change_count = #diff.changes,
 }
 "#
@@ -4577,10 +4578,43 @@ return {
             outcome.value,
             Some(json!({
                 "frame_ok": false,
-                "nested_ok": false,
+                "id_ok": false,
+                "widget_table": true,
                 "change_count": 0,
             }))
         );
+    }
+
+    #[test]
+    fn a_diff_of_a_tree_above_the_marshal_budget_resolves_in_rust() {
+        // Each widget state marshals as dozens of nodes, so this tree is far
+        // above the 1,048,576 nodes that Ruau marshals in one call.
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        let widgets = 60_000_u64;
+        for index in 0..widgets {
+            inner.widgets.record_widget(
+                viewport_id,
+                make_entry(&format!("row.{index}"), index + 1, WidgetRole::Label),
+            );
+        }
+        inner.widgets.finalize_registry(viewport_id);
+
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local before = eguidev.capture()
+local diff = before:diff()
+return #diff.changes"#
+                .to_string(),
+            30_000,
+            "large-diff.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{:?}", outcome.error);
+        assert_eq!(outcome.value, Some(json!(0)));
     }
 
     #[test]
