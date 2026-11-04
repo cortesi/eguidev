@@ -569,9 +569,11 @@ export type ScrollToOptions = {
 --- Raise `max_dimension` to the captured pixel size to stop the reduction and
 --- keep a large window as legible as a small one. Reduction averages the
 --- source pixels, so a thumbnail keeps its text readable.
---- Every returned image travels in one response. `png` is exact but can be
---- more than ten times larger on gradients, so reserve it for small captures
---- and keep `jpeg` for full viewports.
+--- Every returned image travels in one response, and the images of one result
+--- hold at most 48 MiB once encoded. A larger result fails the script with
+--- the outcome code `response_too_large`. `png` is exact but can be more than
+--- ten times larger on gradients, so reserve it for small captures and keep
+--- `jpeg` for full viewports.
 export type ScreenshotOptions = {
     format: ("jpeg" | "png")?,
     --- Largest long edge in whole pixels. Zero keeps the captured size.

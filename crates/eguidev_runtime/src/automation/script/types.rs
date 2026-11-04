@@ -11,6 +11,11 @@ use crate::{
 
 pub(super) type ScriptResult<T> = Result<T, ScriptErrorInfo>;
 
+/// Largest size of the encoded images of one script result. tmcp refuses a
+/// frame of 64 MiB or more and then closes the connection, so a larger result
+/// fails the script and keeps the connection.
+const MAX_RESULT_IMAGE_BYTES: usize = 48 * 1024 * 1024;
+
 /// Scalar value that can be injected into the global Luau `args` table.
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
@@ -244,6 +249,10 @@ pub struct ScriptEvalOutcome {
 
 impl ScriptEvalOutcome {
     pub(crate) fn to_tool_result(&self) -> CallToolResult {
+        let (images, bytes) = self.encoded_images();
+        if bytes > MAX_RESULT_IMAGE_BYTES {
+            return self.too_large(images, bytes).to_tool_result();
+        }
         let mut result = match CallToolResult::new().with_json_text(self) {
             Ok(result) => result,
             Err(error) => {
@@ -269,6 +278,48 @@ impl ScriptEvalOutcome {
             result = result.with_content(block.clone());
         }
         result
+    }
+
+    /// Count the image blocks of the result and their encoded bytes.
+    fn encoded_images(&self) -> (usize, usize) {
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image(image) => Some(image.data.len()),
+                _ => None,
+            })
+            .fold((0, 0), |(count, bytes), size| (count + 1, bytes + size))
+    }
+
+    /// Replace a result whose images exceed `MAX_RESULT_IMAGE_BYTES` with a
+    /// failure that keeps the evidence of the evaluation.
+    fn too_large(&self, images: usize, bytes: usize) -> Self {
+        Self {
+            success: false,
+            value: None,
+            images: None,
+            logs: self.logs.clone(),
+            assertions: self.assertions.clone(),
+            fixtures: self.fixtures.clone(),
+            timing: self.timing.clone(),
+            error: Some(ScriptErrorInfo {
+                error_type: "runtime".to_string(),
+                message: format!(
+                    "The script returned {images} images with {bytes} encoded bytes, above the \
+                     limit of {MAX_RESULT_IMAGE_BYTES} bytes. Return fewer or smaller images."
+                ),
+                location: None,
+                backtrace: None,
+                code: Some("response_too_large".to_string()),
+                details: Some(serde_json::json!({
+                    "images": images,
+                    "bytes": bytes,
+                    "limit": MAX_RESULT_IMAGE_BYTES,
+                })),
+            }),
+            egui_diagnostics: self.egui_diagnostics.clone(),
+            content: Vec::new(),
+        }
     }
 
     pub(crate) fn error_only(error: ScriptErrorInfo) -> Self {
@@ -343,8 +394,41 @@ impl ImageReferenceCollector {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use tmcp::schema::{ContentBlock, ImageContent};
 
-    use super::{ScriptArgValue, ScriptEvalOptions};
+    use super::{MAX_RESULT_IMAGE_BYTES, ScriptArgValue, ScriptEvalOptions, ScriptEvalOutcome};
+
+    #[test]
+    fn an_oversized_result_fails_the_script_and_drops_its_images() {
+        let mut outcome: ScriptEvalOutcome = serde_json::from_value(json!({
+            "success": true,
+            "value": { "shot": { "type": "image_ref", "id": "image-1" } },
+            "logs": ["captured"],
+            "assertions": [],
+            "timing": { "compile_ms": 0, "exec_ms": 0, "total_ms": 0 },
+        }))
+        .expect("outcome");
+        let half = "A".repeat(MAX_RESULT_IMAGE_BYTES / 2 + 1);
+        outcome.content = vec![
+            ContentBlock::Image(ImageContent::new(half.clone(), "image/jpeg")),
+            ContentBlock::Image(ImageContent::new(half, "image/jpeg")),
+        ];
+
+        let result = outcome.to_tool_result();
+
+        assert_eq!(result.content.len(), 1, "only the outcome text remains");
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("expected the outcome text");
+        };
+        let failed: ScriptEvalOutcome = serde_json::from_str(&text.text).expect("outcome json");
+        assert!(!failed.success);
+        assert_eq!(failed.logs, vec!["captured".to_string()]);
+        let error = failed.error.expect("error");
+        assert_eq!(error.code.as_deref(), Some("response_too_large"));
+        let details = error.details.expect("details");
+        assert_eq!(details["images"], json!(2));
+        assert_eq!(details["bytes"], json!(MAX_RESULT_IMAGE_BYTES + 2));
+    }
 
     #[test]
     fn script_eval_options_default_maps_to_empty() {
