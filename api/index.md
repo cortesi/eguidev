@@ -35,7 +35,7 @@ Script-first MCP launcher for eguidev.
 - Binaries: edev, edev_test_app
 - Workspace dependencies: eguidev, eguidev_runtime
 - Workspace dependents: none
-- Items: 2
+- Items: 3
 - Exposes: tmcp
 
 ## Binary-only packages

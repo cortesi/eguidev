@@ -123,6 +123,15 @@ intermittent identity bug cannot pass unnoticed. To keep the warnings without a
 failure, set `[smoke] fail_on_egui_diagnostics = false`. A script that causes a
 warning on purpose can consume it with `Viewport:egui_diagnostics()`.
 
+`edev` exits with 0 when a command succeeds. Each failure has its own exit
+code, so that a caller can tell a failed script from a failed run:
+
+- 1: a smoke suite, a script evaluation, or a fixture failed.
+- 2: the arguments or the `.edev.toml` file are invalid.
+- 3: the run failed outside the scripts. The app did not start, or its
+  shutdown was forced, or MCP, I/O, the instance registry, or the recording
+  failed.
+
 `edev record OUT.mov` runs the same suite and records the app window. This
 command works only on macOS. It uses ScreenCaptureKit directly, not an external
 recorder program, and writes H.264 video at the native pixel resolution of the

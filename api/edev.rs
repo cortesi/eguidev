@@ -46,6 +46,17 @@ pub enum EdevError {
     ForcedShutdown(String),
 }
 
+impl EdevError {
+    /// Return the process exit code that reports this error, so that a caller
+    /// can tell a failed script from a failed run:
+    ///
+    /// - 1: a smoke suite, a script evaluation, or a fixture failed.
+    /// - 2: the arguments or the configuration file are invalid.
+    /// - 3: the run failed outside the scripts: the app start, a forced
+    ///   shutdown, MCP, I/O, the instance registry, or the recording.
+    pub fn exit_code(&self) -> u8;
+}
+
 impl From<std::io::Error> for EdevError {}
 
 impl From<tmcp::Error> for EdevError {}

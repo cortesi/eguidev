@@ -277,9 +277,13 @@ async fn wait_for_initial_capture_refresh(
     timeout: Option<Duration>,
 ) -> Result<(), EdevError> {
     let timeout_ms = timeout.map(|duration| duration.as_millis() as u64);
-    let outcome = call_script_eval(client, WAIT_FOR_CAPTURE_SCRIPT, timeout_ms)
-        .await
-        .map_err(EdevError::RecordFailed)?;
+    let outcome = call_script_eval(
+        client,
+        WAIT_FOR_CAPTURE_SCRIPT,
+        timeout_ms,
+        EdevError::RecordFailed,
+    )
+    .await?;
     if outcome.success {
         Ok(())
     } else {
@@ -304,9 +308,13 @@ async fn root_viewport_title(
     timeout: Option<Duration>,
 ) -> Result<String, EdevError> {
     let timeout_ms = timeout.map(|duration| duration.as_millis() as u64);
-    let outcome = call_script_eval(client, ROOT_VIEWPORT_TITLE_SCRIPT, timeout_ms)
-        .await
-        .map_err(EdevError::RecordFailed)?;
+    let outcome = call_script_eval(
+        client,
+        ROOT_VIEWPORT_TITLE_SCRIPT,
+        timeout_ms,
+        EdevError::RecordFailed,
+    )
+    .await?;
     if !outcome.success {
         return Err(EdevError::RecordFailed(script_eval_error_message(
             outcome.error.as_ref(),
@@ -401,8 +409,7 @@ async fn run_dump_script(
             }),
         },
     )
-    .await
-    .map_err(EdevError::EvalFailed)?;
+    .await?;
     let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
     if !outcome.success {
         return Err(EdevError::EvalFailed(script_eval_error_message(
@@ -487,8 +494,7 @@ pub async fn run_eval_script(
             }),
         },
     )
-    .await
-    .map_err(EdevError::EvalFailed)?;
+    .await?;
     let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
     let image_files = write_eval_images(config, &result, &outcome)?;
     let output = eval_output_value(&outcome, &image_files)?;
@@ -596,8 +602,7 @@ async fn eval_fixture_apply(
             }),
         },
     )
-    .await
-    .map_err(EdevError::FixtureFailed)?;
+    .await?;
     let outcome = parse_script_eval_outcome(&result).map_err(EdevError::FixtureFailed)?;
     if outcome.success {
         Ok(outcome)
@@ -780,12 +785,14 @@ pub async fn start_app_client(
     }
 }
 
-/// Call `script_eval` on the connected app and parse the outcome.
+/// Call `script_eval` on the connected app and parse the outcome. A transport
+/// failure is an MCP error, and `failure` wraps an outcome that does not parse.
 async fn call_script_eval(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     script: &str,
     timeout_ms: Option<u64>,
-) -> Result<ScriptEvalOutcome, String> {
+    failure: fn(String) -> EdevError,
+) -> Result<ScriptEvalOutcome, EdevError> {
     let result = call_script_eval_result(
         client,
         ScriptEvalRequest {
@@ -795,7 +802,7 @@ async fn call_script_eval(
         },
     )
     .await?;
-    parse_script_eval_outcome(&result)
+    parse_script_eval_outcome(&result).map_err(failure)
 }
 
 /// Call the app-side `script_eval` tool and preserve all returned content
@@ -803,13 +810,10 @@ async fn call_script_eval(
 pub async fn call_script_eval_result(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     request: ScriptEvalRequest,
-) -> Result<CallToolResult, String> {
+) -> Result<CallToolResult, McpError> {
     let request = script_eval_request_value(request);
     let client = client.lock().await;
-    client
-        .call_tool("script_eval".to_string(), request)
-        .await
-        .map_err(|error| error.to_string())
+    client.call_tool("script_eval".to_string(), request).await
 }
 
 /// Decode image content blocks from the eval result into deterministic files.
@@ -893,13 +897,14 @@ async fn eval_fixture_script(
     script: &str,
     fallback_message: &str,
 ) -> Result<ScriptEvalOutcome, EdevError> {
-    match call_script_eval(client, script, None).await {
-        Ok(outcome) if outcome.success => Ok(outcome),
-        Ok(outcome) => Err(EdevError::FixtureFailed(script_eval_error_message(
+    let outcome = call_script_eval(client, script, None, EdevError::FixtureFailed).await?;
+    if outcome.success {
+        Ok(outcome)
+    } else {
+        Err(EdevError::FixtureFailed(script_eval_error_message(
             outcome.error.as_ref(),
             fallback_message,
-        ))),
-        Err(message) => Err(EdevError::FixtureFailed(message)),
+        )))
     }
 }
 
