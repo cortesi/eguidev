@@ -27,9 +27,8 @@ interaction, waits, and verification inside Luau scripts.
 
 ## Input Injection
 
-- Test the script-facing input surface: `click`, `hover`, `drag`,
-  `drag_relative`, `drag_to`, `scroll`, `scroll_to`, `key`, `paste`, and
-  `type_text`. Can you simulate complex interactions like drag-and-drop or
+- Test the script-facing input surface: `click`, `hover`, `drag_relative`,
+  `drag_to`, `scroll`, `scroll_to`, `key`, `paste`, and `type_text`. Can you simulate complex interactions like drag-and-drop or
   keyboard shortcuts?
 - Test key delivery with modifiers (ctrl, shift, alt, command). Do keyboard
   shortcuts work correctly?

@@ -35,8 +35,8 @@ use super::{
     outcome::{build_error_outcome, build_success_outcome, finalize_outcome},
     runtime::ScriptRuntime,
     types::{
-        ScriptArgs, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptLocation,
-        ScriptModules, ScriptPosition, ScriptResult, ScriptTiming,
+        ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome, ScriptLocation, ScriptModules,
+        ScriptPosition, ScriptResult, ScriptTiming,
     },
     value::{script_args_to_json, script_return_value_from_json_values, script_value_from_json},
 };
@@ -74,7 +74,7 @@ fn run_script_eval_blocking(
     script: String,
     timeout_ms: u64,
     source_name: String,
-    args: ScriptArgs,
+    args: super::types::ScriptArgs,
 ) -> ScriptEvalOutcome {
     run_script_eval_blocking_with_modules(
         inner,
@@ -170,7 +170,7 @@ async fn run_script_eval_local(
     let runtime_capabilities = RuntimeCapabilities::default();
 
     let (module, _surface) = EguidevModule {
-        args: script_args_to_luau_json(&args),
+        args: script_args_to_json(&args),
         runtime: Arc::clone(&script_runtime),
         declaration: library::DECLARATION.to_string(),
     }
@@ -279,10 +279,6 @@ async fn run_script_eval_local(
         }
     };
     finalize_outcome(&script_runtime, outcome).await
-}
-
-fn script_args_to_luau_json(args: &ScriptArgs) -> Value {
-    script_args_to_json(args)
 }
 
 fn load(

@@ -82,12 +82,3 @@ Checked-in smoke coverage now has two layers:
 
 The suite still requires a GUI-capable environment. The demo uses the native eframe windowing
 stack, so this is not a headless smoke path.
-
-Record manual verification runs here when needed.
-
-- 2026-01-23: Launched the demo app via
-  `cargo run --locked -p eguidev_demo` using the glow renderer. The process was manually
-  interrupted because this environment does not support interactive GUI verification.
-- 2026-01-25: Used `script_eval` against the demo app to call
-  `secondary:resize()` (640x480 then 900x700). `secondary:wait()` matched and
-  `secondary:state()` reported updated inner and outer sizes.

@@ -14,8 +14,6 @@ writing. `ncode test` runs the test lane.
 
 ## Documentation Comments in `.d.luau`
 
-## Documentation Comments in `.d.luau`
-
 Good doc comments explain *why* and *how*, not *what* — the signature already says what.
 
 - **Never recapitulate the signature.** Don't restate parameter names, types, or return

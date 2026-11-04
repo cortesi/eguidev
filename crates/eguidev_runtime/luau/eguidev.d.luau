@@ -212,7 +212,8 @@ declare class Widget
 
     read text_measure: (self: Widget) -> TextMeasure
     read layout_issues: (self: Widget) -> { LayoutIssue }
-    --- Waits for a fresh screenshot and crops it to the widget.
+    --- Waits for a fresh screenshot and crops it to the interaction rectangle
+    --- of the widget, `interact_rect`.
     read screenshot: (self: Widget, options: ScreenshotOptions?) -> ImageRef
     --- Waits for one fresh screenshot. Positions are logical offsets from the
     --- widget rectangle's minimum point.

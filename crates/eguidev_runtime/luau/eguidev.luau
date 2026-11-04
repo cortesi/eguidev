@@ -891,7 +891,10 @@ function viewportMethods.expect(
             { cause = stateOrError, expected = wanted }
         )
         else nil
-    recordExpectation(ok, `Viewport({self.id}) expectation`)
+    recordExpectation(
+        ok,
+        if ok then `Viewport({self.id}) expectation` else `Viewport({self.id}) expectation failed`
+    )
     if not ok then
         error(failure, 0)
     end

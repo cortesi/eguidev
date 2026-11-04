@@ -22,7 +22,7 @@ pub fn script_api_catalog() -> &'static ScriptApiCatalog {
     SCRIPT_CATALOG.get_or_init(|| {
         ScriptApiCatalog::new(
             ScriptApiGuide {
-                introduction: "Discover the checked Eguidev API before you automate an instrumented app. The `eguidev` table is global; imports and host I/O are unavailable.".to_owned(),
+                introduction: "Discover the checked Eguidev API before you automate an instrumented app. The `eguidev` table is global. `require` loads only the named modules that the caller supplies, and host I/O is unavailable.".to_owned(),
                 tasks: vec![
                     ScriptApiTask {
                         name: "Find widgets".to_owned(),
