@@ -505,7 +505,7 @@ mod tests {
             explicit_id: true,
             native_id: 1,
             viewport_id: "root".to_string(),
-            layer_id: "layer".to_string(),
+            layer_id: egui::LayerId::background(),
             layer_order: 0,
             rect,
             interact_rect: rect,
@@ -911,7 +911,7 @@ mod tests {
             rect(20.0, 20.0, 120.0, 60.0),
             true,
         );
-        window.layer_id = "window_layer".to_string();
+        window.layer_id = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("window_layer"));
         window.parent_id = None;
 
         let registry = vec![panel, window];

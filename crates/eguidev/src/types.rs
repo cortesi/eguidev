@@ -2790,7 +2790,7 @@ mod tests {
                 explicit_id: true,
                 native_id: 1,
                 viewport_id: "root".to_string(),
-                layer_id: "background".to_string(),
+                layer_id: egui::LayerId::background(),
                 layer_order: 0,
                 rect,
                 interact_rect: rect,
@@ -2842,6 +2842,11 @@ mod tests {
     }
 }
 
+/// The layer of an entry that serde builds, which holds no layer.
+fn background_layer() -> egui::LayerId {
+    egui::LayerId::background()
+}
+
 /// Widget registry entry captured per frame.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WidgetRegistryEntry {
@@ -2857,11 +2862,11 @@ pub struct WidgetRegistryEntry {
     pub native_id: u64,
     /// Viewport id string.
     pub viewport_id: String,
-    /// Layer id rendered as a stable string (internal use only, e.g. debug
-    /// overlay).
-    #[serde(skip_serializing, skip_deserializing)]
+    /// Layer of the widget (internal use only, e.g. the debug overlay and
+    /// dumps, which format it).
+    #[serde(skip, default = "background_layer")]
     #[schemars(skip)]
-    pub layer_id: String,
+    pub layer_id: egui::LayerId,
     /// Paint order of the widget's layer, where a larger value paints later
     /// (internal use only).
     #[serde(skip_serializing, skip_deserializing)]

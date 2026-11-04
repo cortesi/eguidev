@@ -7,6 +7,7 @@ use egui::{collapsing_header::CollapsingResponse, scroll_area::ScrollAreaOutput}
 use crate::{
     instrument::{active_inner, capture_layout, container, swallow_panic},
     overlay::parse_css_hex,
+    registry::Inner,
     types::{WidgetRange, WidgetRole, WidgetRoleMeta, WidgetValue},
     widget_registry::{WidgetMeta, record_widget},
 };
@@ -62,6 +63,16 @@ impl TextEditOptions {
     /// nothing when `omit_value` is set.
     pub fn recorded_value(self, text: &str) -> Option<WidgetValue> {
         (!self.omit_value).then(|| WidgetValue::Text(text.to_owned()))
+    }
+
+    /// Build the egui text edit that these options describe.
+    fn builder(self, text: &mut String) -> egui::TextEdit<'_> {
+        if self.multiline {
+            egui::TextEdit::multiline(text)
+        } else {
+            egui::TextEdit::singleline(text)
+        }
+        .password(self.password)
     }
 }
 
@@ -286,10 +297,14 @@ impl DevUiExt for egui::Ui {
         id: impl Into<String>,
         text: impl Into<egui::WidgetText>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.button(text);
+        };
         let id = id.into();
         let (text, label) = widget_text_parts(text);
         let response = self.button(text);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -306,10 +321,14 @@ impl DevUiExt for egui::Ui {
         text: impl Into<egui::WidgetText>,
         options: ButtonOptions,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::Button::new(text).selected(options.selected));
+        };
         let id = id.into();
         let (text, label) = widget_text_parts(text);
         let response = self.add(egui::Button::new(text).selected(options.selected));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -327,10 +346,14 @@ impl DevUiExt for egui::Ui {
         id: impl Into<String>,
         text: impl Into<egui::WidgetText>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.link(text);
+        };
         let id = id.into();
         let (text, label) = widget_text_parts(text);
         let response = self.link(text);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -342,10 +365,14 @@ impl DevUiExt for egui::Ui {
     }
 
     fn dev_hyperlink(&mut self, id: impl Into<String>, url: impl ToString) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.hyperlink(url);
+        };
         let id = id.into();
         let url = url.to_string();
         let response = self.hyperlink(url.clone());
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -362,11 +389,15 @@ impl DevUiExt for egui::Ui {
         label: impl Into<egui::WidgetText>,
         url: impl ToString,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.hyperlink_to(label, url);
+        };
         let id = id.into();
         let (label, text) = widget_text_parts(label);
         let url = url.to_string();
         let response = self.hyperlink_to(label, url.clone());
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -383,10 +414,14 @@ impl DevUiExt for egui::Ui {
         description: impl Into<String>,
         source: impl Into<egui::ImageSource<'a>>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.image(source);
+        };
         let id = id.into();
         let description = description.into();
         let response = self.image(source);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -402,10 +437,14 @@ impl DevUiExt for egui::Ui {
         id: impl Into<String>,
         text: impl Into<egui::WidgetText>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.label(text);
+        };
         let id = id.into();
         let (text, label) = widget_text_parts(text);
         let response = self.label(text);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -422,13 +461,17 @@ impl DevUiExt for egui::Ui {
         value: &mut bool,
         text: impl Into<egui::WidgetText>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.checkbox(value, text);
+        };
         let id = id.into();
-        if let Some(updated) = take_bool_override(self, &id) {
+        if let Some(updated) = take_bool_override(&inner, self, &id) {
             *value = updated;
         }
         let (text, label) = widget_text_parts(text);
         let response = self.checkbox(value, text);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -448,14 +491,18 @@ impl DevUiExt for egui::Ui {
         text: impl Into<egui::WidgetText>,
         options: CheckboxOptions,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::Checkbox::new(value, text).indeterminate(options.indeterminate));
+        };
         let id = id.into();
-        if let Some(updated) = take_bool_override(self, &id) {
+        if let Some(updated) = take_bool_override(&inner, self, &id) {
             *value = updated;
         }
         let (text, label) = widget_text_parts(text);
         let response =
             self.add(egui::Checkbox::new(value, text).indeterminate(options.indeterminate));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -478,18 +525,16 @@ impl DevUiExt for egui::Ui {
         text: &mut String,
         options: TextEditOptions,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(options.builder(text));
+        };
         let id = id.into();
-        if let Some(updated) = take_text_override(self, &id) {
+        if let Some(updated) = take_text_override(&inner, self, &id) {
             *text = updated;
         }
-        let builder = if options.multiline {
-            egui::TextEdit::multiline(text)
-        } else {
-            egui::TextEdit::singleline(text)
-        }
-        .password(options.password);
-        let response = self.add(builder);
+        let response = self.add(options.builder(text));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -506,13 +551,17 @@ impl DevUiExt for egui::Ui {
         value: &mut f32,
         range: RangeInclusive<f32>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::Slider::new(value, range));
+        };
         let id = id.into();
         let range_meta = widget_range_from_f32(&range);
-        if let Some(updated) = take_float_override(self, &id) {
+        if let Some(updated) = take_float_override(&inner, self, &id) {
             *value = updated;
         }
         let response = self.add(egui::Slider::new(value, range));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -530,31 +579,18 @@ impl DevUiExt for egui::Ui {
         selected: &mut usize,
         options: &[T],
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return show_combo_box(self, &label.into(), selected, options);
+        };
         let id = id.into();
-        if let Some(updated) = take_usize_override(self, &id) {
+        if let Some(updated) = take_usize_override(&inner, self, &id) {
             *selected = updated;
         }
         let label_text = label.into();
         let option_labels = options.iter().map(ToString::to_string).collect::<Vec<_>>();
-        let len = options.len();
-        if len == 0 || *selected >= len {
-            *selected = 0;
-        }
-        let response = if len == 0 {
-            egui::ComboBox::from_label(label_text.as_str())
-                .selected_text("")
-                .show_ui(self, |_| {})
-                .response
-        } else {
-            let selected_text = options
-                .get(*selected)
-                .map(ToString::to_string)
-                .unwrap_or_default();
-            egui::ComboBox::from_label(label_text.as_str())
-                .selected_text(selected_text)
-                .show_index(self, selected, len, |index| options[index].to_string())
-        };
+        let response = show_combo_box(self, &label_text, selected, options);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -568,12 +604,16 @@ impl DevUiExt for egui::Ui {
     }
 
     fn dev_drag_value(&mut self, id: impl Into<String>, value: &mut f32) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::DragValue::new(value));
+        };
         let id = id.into();
-        if let Some(updated) = take_float_override(self, &id) {
+        if let Some(updated) = take_float_override(&inner, self, &id) {
             *value = updated;
         }
         let response = self.add(egui::DragValue::new(value));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -590,13 +630,17 @@ impl DevUiExt for egui::Ui {
         value: &mut f32,
         range: RangeInclusive<f32>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::DragValue::new(value).range(range));
+        };
         let id = id.into();
         let range_meta = widget_range_from_f32(&range);
-        if let Some(updated) = take_float_override(self, &id) {
+        if let Some(updated) = take_float_override(&inner, self, &id) {
             *value = updated;
         }
         let response = self.add(egui::DragValue::new(value).range(range));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -610,12 +654,16 @@ impl DevUiExt for egui::Ui {
     }
 
     fn dev_drag_value_i32(&mut self, id: impl Into<String>, value: &mut i32) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::DragValue::new(value));
+        };
         let id = id.into();
-        if let Some(updated) = take_i32_override(self, &id) {
+        if let Some(updated) = take_i32_override(&inner, self, &id) {
             *value = updated;
         }
         let response = self.add(egui::DragValue::new(value));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -632,13 +680,17 @@ impl DevUiExt for egui::Ui {
         value: &mut i32,
         range: RangeInclusive<i32>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.add(egui::DragValue::new(value).range(range));
+        };
         let id = id.into();
         let range_meta = widget_range_from_i32(&range);
-        if let Some(updated) = take_i32_override(self, &id) {
+        if let Some(updated) = take_i32_override(&inner, self, &id) {
             *value = updated;
         }
         let response = self.add(egui::DragValue::new(value).range(range));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -672,13 +724,17 @@ impl DevUiExt for egui::Ui {
         selected: &mut bool,
         text: impl Into<egui::WidgetText>,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.toggle_value(selected, text);
+        };
         let id = id.into();
-        if let Some(updated) = take_bool_override(self, &id) {
+        if let Some(updated) = take_bool_override(&inner, self, &id) {
             *selected = updated;
         }
         let (text, label) = widget_text_parts(text);
         let response = self.toggle_value(selected, text);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -698,7 +754,7 @@ impl DevUiExt for egui::Ui {
     ) -> egui::Response {
         record_choice_widget(
             self,
-            id.into(),
+            id,
             current,
             alternative,
             text,
@@ -716,7 +772,7 @@ impl DevUiExt for egui::Ui {
     ) -> egui::Response {
         record_choice_widget(
             self,
-            id.into(),
+            id,
             current,
             alternative,
             text,
@@ -726,9 +782,13 @@ impl DevUiExt for egui::Ui {
     }
 
     fn dev_separator(&mut self, id: impl Into<String>) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.separator();
+        };
         let id = id.into();
         let response = self.separator();
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -740,9 +800,13 @@ impl DevUiExt for egui::Ui {
     }
 
     fn dev_spinner(&mut self, id: impl Into<String>) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.spinner();
+        };
         let id = id.into();
         let response = self.spinner();
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -763,9 +827,17 @@ impl DevUiExt for egui::Ui {
         progress: f32,
         options: ProgressBarOptions,
     ) -> egui::Response {
-        let id = id.into();
         let progress = progress.clamp(0.0, 1.0);
         let mut widget = egui::ProgressBar::new(progress);
+        let Some(inner) = active_inner() else {
+            if let Some(text) = options.text {
+                widget = widget.text(text);
+            } else if options.show_percentage {
+                widget = widget.show_percentage();
+            }
+            return self.add(widget);
+        };
+        let id = id.into();
         let label = if let Some(text) = options.text {
             widget = widget.text(text.clone());
             Some(text)
@@ -777,6 +849,7 @@ impl DevUiExt for egui::Ui {
         };
         let response = self.add(widget);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -792,12 +865,16 @@ impl DevUiExt for egui::Ui {
         id: impl Into<String>,
         color: &mut egui::Color32,
     ) -> egui::Response {
+        let Some(inner) = active_inner() else {
+            return self.color_edit_button_srgba(color);
+        };
         let id = id.into();
-        if let Some(updated) = take_color_override(self, &id) {
+        if let Some(updated) = take_color_override(&inner, self, &id) {
             *color = updated;
         }
         let response = self.color_edit_button_srgba(color);
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &response,
@@ -814,11 +891,15 @@ impl DevUiExt for egui::Ui {
         text: impl Into<egui::WidgetText>,
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> egui::InnerResponse<Option<R>> {
+        let Some(inner) = active_inner() else {
+            return self.menu_button(text, |ui| container(ui, String::new(), add_contents));
+        };
         let id = id.into();
         let menu_tag = format!("{id}.menu");
         let (text, label) = widget_text_parts(text);
         let output = self.menu_button(text, |ui| container(ui, menu_tag, add_contents));
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &output.response,
@@ -837,7 +918,17 @@ impl DevUiExt for egui::Ui {
         add_contents: impl FnOnce(&mut Self) -> R,
     ) -> CollapsingResponse<R> {
         let id = id.into();
-        if let Some(updated) = take_bool_override(self, &id) {
+        let Some(inner) = active_inner() else {
+            let output = egui::CollapsingHeader::new(heading)
+                .id_salt(id.as_str())
+                .open(Some(*open))
+                .show(self, |ui| container(ui, String::new(), add_contents));
+            if output.header_response.clicked() {
+                *open = !*open;
+            }
+            return output;
+        };
+        if let Some(updated) = take_bool_override(&inner, self, &id) {
             *open = updated;
         }
         let mut open_state = *open;
@@ -852,6 +943,7 @@ impl DevUiExt for egui::Ui {
         }
         *open = open_state;
         record_widget_with_layout(
+            &inner,
             self,
             id,
             &output.header_response,
@@ -899,6 +991,9 @@ impl DevScrollAreaExt for egui::ScrollArea {
         id: impl Into<String>,
         add_contents: impl FnOnce(&mut egui::Ui, egui::Rect) -> R,
     ) -> ScrollAreaOutput<R> {
+        if active_inner().is_none() {
+            return self.show_viewport(ui, add_contents);
+        }
         let id = id.into();
         let scroll_area = match super::instrument::take_scroll_area_override(ui, &id) {
             Some(offset) => self.scroll_offset(offset),
@@ -920,9 +1015,41 @@ impl DevScrollAreaExt for egui::ScrollArea {
 /// a settable value but never consume queued overrides.
 pub fn take_widget_value_override(ui: &egui::Ui, id: &str) -> Option<WidgetValue> {
     let inner = active_inner()?;
+    take_override(&inner, ui, id)
+}
+
+/// Mark `id` as a consumer of queued value overrides, and take its queued
+/// override.
+fn take_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<WidgetValue> {
     let viewport_id = ui.ctx().viewport_id();
     inner.mark_widget_value_consumer(viewport_id, id);
     inner.take_widget_value_update(viewport_id, id)
+}
+
+/// Show a combo box, and keep `selected` within the options.
+fn show_combo_box<T: ToString>(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: &mut usize,
+    options: &[T],
+) -> egui::Response {
+    let len = options.len();
+    if len == 0 || *selected >= len {
+        *selected = 0;
+    }
+    if len == 0 {
+        return egui::ComboBox::from_label(label)
+            .selected_text("")
+            .show_ui(ui, |_| {})
+            .response;
+    }
+    let selected_text = options
+        .get(*selected)
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    egui::ComboBox::from_label(label)
+        .selected_text(selected_text)
+        .show_index(ui, selected, len, |index| options[index].to_string())
 }
 
 fn widget_text_parts(text: impl Into<egui::WidgetText>) -> (egui::WidgetText, String) {
@@ -931,45 +1058,45 @@ fn widget_text_parts(text: impl Into<egui::WidgetText>) -> (egui::WidgetText, St
     (text, label)
 }
 
-fn take_bool_override(ui: &egui::Ui, id: &str) -> Option<bool> {
-    match take_widget_value_override(ui, id) {
+fn take_bool_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<bool> {
+    match take_override(inner, ui, id) {
         Some(WidgetValue::Bool(updated)) => Some(updated),
         _ => None,
     }
 }
 
-fn take_text_override(ui: &egui::Ui, id: &str) -> Option<String> {
-    match take_widget_value_override(ui, id) {
+fn take_text_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<String> {
+    match take_override(inner, ui, id) {
         Some(WidgetValue::Text(updated)) => Some(updated),
         _ => None,
     }
 }
 
-fn take_color_override(ui: &egui::Ui, id: &str) -> Option<egui::Color32> {
-    match take_widget_value_override(ui, id) {
+fn take_color_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<egui::Color32> {
+    match take_override(inner, ui, id) {
         Some(WidgetValue::Text(updated)) => parse_color_hex(&updated),
         _ => None,
     }
 }
 
-fn take_float_override(ui: &egui::Ui, id: &str) -> Option<f32> {
-    match take_widget_value_override(ui, id) {
+fn take_float_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<f32> {
+    match take_override(inner, ui, id) {
         Some(WidgetValue::Float(updated)) => Some(updated as f32),
         Some(WidgetValue::Int(updated)) => Some(updated as f32),
         _ => None,
     }
 }
 
-fn take_i32_override(ui: &egui::Ui, id: &str) -> Option<i32> {
-    match take_widget_value_override(ui, id) {
+fn take_i32_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<i32> {
+    match take_override(inner, ui, id) {
         Some(WidgetValue::Int(updated)) => i32::try_from(updated).ok(),
         Some(WidgetValue::Float(updated)) => Some(updated as i32),
         _ => None,
     }
 }
 
-fn take_usize_override(ui: &egui::Ui, id: &str) -> Option<usize> {
-    match take_widget_value_override(ui, id) {
+fn take_usize_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<usize> {
+    match take_override(inner, ui, id) {
         Some(WidgetValue::Int(updated)) => usize::try_from(updated).ok(),
         Some(WidgetValue::Float(updated)) => Some(updated as usize),
         _ => None,
@@ -978,7 +1105,7 @@ fn take_usize_override(ui: &egui::Ui, id: &str) -> Option<usize> {
 
 fn record_choice_widget<V>(
     ui: &mut egui::Ui,
-    id: String,
+    id: impl Into<String>,
     current: &mut V,
     alternative: V,
     text: impl Into<egui::WidgetText>,
@@ -988,14 +1115,19 @@ fn record_choice_widget<V>(
 where
     V: PartialEq + Clone,
 {
+    let Some(inner) = active_inner() else {
+        return add_widget(ui, current, alternative, text.into());
+    };
+    let id = id.into();
     let (text, label) = widget_text_parts(text);
     let selected_value = alternative.clone();
-    if take_bool_override(ui, &id).is_some_and(|updated| updated) {
+    if take_bool_override(&inner, ui, &id).is_some_and(|updated| updated) {
         *current = alternative.clone();
     }
     let response = add_widget(ui, current, alternative, text);
     let selected = *current == selected_value;
     record_widget_with_layout(
+        &inner,
         ui,
         id,
         &response,
@@ -1009,6 +1141,7 @@ where
 /// Record a standard widget with consistent metadata, visibility, and active
 /// context lookup.
 fn record_widget_with_layout(
+    inner: &Inner,
     ui: &egui::Ui,
     id: String,
     response: &egui::Response,
@@ -1016,9 +1149,6 @@ fn record_widget_with_layout(
     label: Option<String>,
     value: Option<WidgetValue>,
 ) {
-    let Some(inner) = active_inner() else {
-        return;
-    };
     let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
     let layout = Some(capture_layout(ui, response));
     swallow_panic("record_widget_with_layout", || {

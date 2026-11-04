@@ -157,7 +157,11 @@ impl DevMcpServer {
             Some(viewport_id),
             None,
             || async {
-                self.inner.request_repaint_all();
+                // The poll repaints the target viewport. An immediate child
+                // viewport paints inside its parent, so the root repaints too.
+                if viewport_id != egui::ViewportId::ROOT {
+                    self.inner.request_repaint();
+                }
                 let report = settle_report(
                     &self.inner,
                     viewport_id,

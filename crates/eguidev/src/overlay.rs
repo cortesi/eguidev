@@ -279,7 +279,7 @@ impl OverlayManager {
             if options.show_labels {
                 let mut label = widget.id.clone();
                 if mode == OverlayDebugMode::Layers {
-                    label = format!("{label} [{}]", widget.layer_id);
+                    label = format!("{label} [{:?}]", widget.layer_id);
                 }
                 if options.show_sizes {
                     let size = rect_size(widget.rect);

@@ -2,6 +2,7 @@
 #![allow(missing_docs)]
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     mem,
     sync::Mutex,
@@ -500,8 +501,8 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         id,
         explicit_id: true,
         native_id,
-        viewport_id: viewport_id_to_string(viewport_id),
-        layer_id: format!("{layer_id:?}"),
+        viewport_id: viewport_id_string(viewport_id),
+        layer_id,
         layer_order: layer_paint_order(layer_id.order),
         rect: rect.into(),
         interact_rect: interact_rect.into(),
@@ -518,6 +519,24 @@ fn record_widget_entry(widgets: &WidgetRegistry, input: WidgetEntryInput<'_>) {
         covered,
     };
     widgets.record_widget_with_egui_id(viewport_id, entry, egui_id);
+}
+
+thread_local! {
+    /// The string of each viewport that this thread recorded, so that a frame
+    /// formats each viewport once.
+    static VIEWPORT_ID_STRINGS: RefCell<HashMap<egui::ViewportId, String>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Return the string of a viewport, formatted once for each thread.
+fn viewport_id_string(viewport_id: egui::ViewportId) -> String {
+    VIEWPORT_ID_STRINGS.with(|strings| {
+        strings
+            .borrow_mut()
+            .entry(viewport_id)
+            .or_insert_with(|| viewport_id_to_string(viewport_id))
+            .clone()
+    })
 }
 
 fn normalize_widget_data(data: Option<Value>) -> Option<Value> {
@@ -549,12 +568,12 @@ fn normalize_widget_value(value: Option<WidgetValue>) -> Option<WidgetValue> {
 
     match value {
         Some(WidgetValue::Text(text)) => {
-            let mut chars = text.chars();
-            if chars.clone().count() <= MAX_TEXT_CHARS {
+            // Walk the text only to the bound, not to its end.
+            if text.char_indices().nth(MAX_TEXT_CHARS).is_none() {
                 return Some(WidgetValue::Text(text));
             }
             let keep = MAX_TEXT_CHARS.saturating_sub(TRUNCATION_SUFFIX.chars().count());
-            let mut truncated = chars.by_ref().take(keep).collect::<String>();
+            let mut truncated = text.chars().take(keep).collect::<String>();
             truncated.push_str(TRUNCATION_SUFFIX);
             Some(WidgetValue::Text(truncated))
         }
@@ -1025,7 +1044,7 @@ mod tests {
                 explicit_id: true,
                 native_id: 1,
                 viewport_id: "root".to_string(),
-                layer_id: "background".to_string(),
+                layer_id: egui::LayerId::background(),
                 layer_order: 0,
                 rect,
                 interact_rect: rect,

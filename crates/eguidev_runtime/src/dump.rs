@@ -224,7 +224,7 @@ fn build_widget_dump(
             .flatten(),
         scroll,
         range,
-        layer: (fields == DumpFields::Full).then(|| widget.layer_id.clone()),
+        layer: (fields == DumpFields::Full).then(|| format!("{:?}", widget.layer_id)),
         children: children
             .get(&Some(entry.key.clone()))
             .into_iter()

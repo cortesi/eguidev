@@ -6,7 +6,7 @@ use std::{
     fmt,
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -44,7 +44,11 @@ pub struct Inner {
     contexts: Mutex<HashMap<egui::ViewportId, Context>>,
     animation_baselines: Mutex<HashMap<egui::ViewportId, f32>>,
     widget_value_updates: Mutex<HashMap<WidgetValueKey, WidgetValueUpdate>>,
-    widget_value_consumers: Mutex<HashSet<WidgetValueKey>>,
+    /// The count of `widget_value_updates`, so that a frame with no queued
+    /// override takes none without a lock.
+    pending_value_updates: AtomicUsize,
+    /// The IDs of the custom widgets of each viewport that consume overrides.
+    widget_value_consumers: Mutex<HashMap<egui::ViewportId, HashSet<String>>>,
     scroll_overrides: Mutex<HashMap<ScrollAreaKey, EguiVec2>>,
     frame_fixture_epochs: Mutex<HashMap<egui::ViewportId, u64>>,
     frame_depth: Mutex<HashMap<egui::ViewportId, u32>>,
@@ -124,7 +128,8 @@ impl Inner {
             contexts: Mutex::new(HashMap::new()),
             animation_baselines: Mutex::new(HashMap::new()),
             widget_value_updates: Mutex::new(HashMap::new()),
-            widget_value_consumers: Mutex::new(HashSet::new()),
+            pending_value_updates: AtomicUsize::new(0),
+            widget_value_consumers: Mutex::new(HashMap::new()),
             scroll_overrides: Mutex::new(HashMap::new()),
             frame_fixture_epochs: Mutex::new(HashMap::new()),
             frame_depth: Mutex::new(HashMap::new()),
@@ -175,10 +180,12 @@ impl Inner {
     pub fn dismiss_transient_ui(&self, viewport_id: Option<egui::ViewportId>) {
         if let Some(viewport_id) = viewport_id {
             self.actions.clear_viewport(viewport_id);
-            lock(&self.widget_value_updates, "widget value update lock")
-                .retain(|key, _| key.viewport_id != viewport_id);
-            lock(&self.widget_value_consumers, "widget value consumers lock")
-                .retain(|key| key.viewport_id != viewport_id);
+            {
+                let mut updates = lock(&self.widget_value_updates, "widget value update lock");
+                updates.retain(|key, _| key.viewport_id != viewport_id);
+                self.count_pending_value_updates(&updates);
+            }
+            lock(&self.widget_value_consumers, "widget value consumers lock").remove(&viewport_id);
             lock(&self.scroll_overrides, "scroll overrides lock")
                 .retain(|key, _| key.viewport_id != viewport_id);
             self.overlays.clear_viewport_overlays(viewport_id);
@@ -198,7 +205,7 @@ impl Inner {
             return;
         }
         self.actions.clear_all();
-        lock(&self.widget_value_updates, "widget value update lock").clear();
+        self.clear_widget_value_updates();
         lock(&self.widget_value_consumers, "widget value consumers lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         self.overlays.clear_transient_state();
@@ -344,35 +351,64 @@ impl Inner {
             .capture_snapshot(viewport_id)
             .map(|snapshot| snapshot.frame_count)
             .unwrap_or_else(|| self.frame_count());
+        let consumer_seen = lock(&self.widget_value_consumers, "widget value consumers lock")
+            .get(&viewport_id)
+            .is_some_and(|ids| ids.contains(&id));
         let key = WidgetValueKey::new(viewport_id, id);
-        let consumer_seen =
-            lock(&self.widget_value_consumers, "widget value consumers lock").contains(&key);
-        let mut updates = lock(&self.widget_value_updates, "widget value update lock");
-        updates.insert(
-            key,
-            WidgetValueUpdate {
-                value,
-                queued_frame,
-                consumer_seen,
-            },
-        );
+        {
+            let mut updates = lock(&self.widget_value_updates, "widget value update lock");
+            updates.insert(
+                key,
+                WidgetValueUpdate {
+                    value,
+                    queued_frame,
+                    consumer_seen,
+                },
+            );
+            self.count_pending_value_updates(&updates);
+        }
         self.request_repaint_of(viewport_id);
     }
 
+    /// Record that the custom widget `id` consumes value overrides. A known
+    /// consumer costs a lookup and no allocation.
     pub fn mark_widget_value_consumer(&self, viewport_id: egui::ViewportId, id: &str) {
-        lock(&self.widget_value_consumers, "widget value consumers lock")
-            .insert(WidgetValueKey::new(viewport_id, id));
+        let mut consumers = lock(&self.widget_value_consumers, "widget value consumers lock");
+        let ids = consumers.entry(viewport_id).or_default();
+        if !ids.contains(id) {
+            ids.insert(id.to_owned());
+        }
     }
 
+    /// Take the queued override of `id`. A frame with no queued override
+    /// returns at once.
     pub fn take_widget_value_update(
         &self,
         viewport_id: egui::ViewportId,
         id: &str,
     ) -> Option<WidgetValue> {
+        if self.pending_value_updates.load(Ordering::Acquire) == 0 {
+            return None;
+        }
         let mut updates = lock(&self.widget_value_updates, "widget value update lock");
-        updates
+        let value = updates
             .remove(&WidgetValueKey::new(viewport_id, id))
-            .map(|update| update.value)
+            .map(|update| update.value);
+        self.count_pending_value_updates(&updates);
+        value
+    }
+
+    /// Publish the count of queued overrides, under the lock of the queue.
+    fn count_pending_value_updates(&self, updates: &HashMap<WidgetValueKey, WidgetValueUpdate>) {
+        self.pending_value_updates
+            .store(updates.len(), Ordering::Release);
+    }
+
+    /// Drop every queued override.
+    fn clear_widget_value_updates(&self) {
+        let mut updates = lock(&self.widget_value_updates, "widget value update lock");
+        updates.clear();
+        self.count_pending_value_updates(&updates);
     }
 
     pub fn clear_widget_value_update_if_matches(
@@ -388,6 +424,7 @@ impl Inner {
             .is_some_and(|update| &update.value == value)
         {
             updates.remove(&key);
+            self.count_pending_value_updates(&updates);
         }
     }
 
@@ -553,7 +590,7 @@ impl Inner {
     }
 
     pub fn clear_all(&self) {
-        lock(&self.widget_value_updates, "widget values lock").clear();
+        self.clear_widget_value_updates();
         lock(&self.widget_value_consumers, "widget value consumers lock").clear();
         lock(&self.scroll_overrides, "scroll overrides lock").clear();
         self.actions.clear_all();

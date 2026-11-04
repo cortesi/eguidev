@@ -5413,7 +5413,7 @@ return { id = ready.widget.id, viewport = widget.__viewport_id }
             explicit_id: true,
             native_id,
             viewport_id: "root".to_string(),
-            layer_id: "layer".to_string(),
+            layer_id: egui::LayerId::background(),
             layer_order: 0,
             rect,
             interact_rect: rect,
