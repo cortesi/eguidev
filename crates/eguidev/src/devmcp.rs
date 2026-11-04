@@ -273,13 +273,27 @@ impl DevMcp {
     }
 
     /// Register fixture metadata for discovery and validation.
-    pub fn fixtures(self, fixtures: impl IntoIterator<Item = FixtureSpec>) -> Self {
+    ///
+    /// Returns an `invalid_fixture` configuration error, and registers
+    /// nothing, when a spec is not valid.
+    pub fn fixtures(
+        self,
+        fixtures: impl IntoIterator<Item = FixtureSpec>,
+    ) -> Result<Self, DevMcpConfigError> {
         let fixtures: Vec<_> = fixtures.into_iter().collect();
+        for fixture in &fixtures {
+            fixture.validate(true).map_err(|error| {
+                DevMcpConfigError::new(
+                    "invalid_fixture",
+                    format!("invalid fixture {}: {error}", fixture.name),
+                )
+            })?;
+        }
         *lock(&self.shared.fixtures, "devmcp fixtures lock") = fixtures.clone();
         if let Some(inner) = self.inner() {
             inner.fixtures.set_fixtures(fixtures);
         }
-        self
+        Ok(self)
     }
 
     /// Register the fixture handler, to run on the automation thread.
@@ -1320,15 +1334,25 @@ mod inactive_tests {
     }
 
     #[test]
+    fn fixtures_refuse_an_invalid_spec_without_registering_it() {
+        let invalid = FixtureSpec::new("", "A fixture without a name");
+        let error = DevMcp::new()
+            .fixtures([invalid])
+            .expect_err("an invalid fixture is refused");
+        assert_eq!(error.code, "invalid_fixture");
+    }
+
+    #[test]
     fn clone_shares_configuration() {
         let a = DevMcp::new();
         let b = a.clone();
-        let spec = FixtureSpec::new("shared.fixture", "Shared");
+        let spec = FixtureSpec::new("shared.fixture", "Shared").ready("shared.status");
         let b = b
             .verbose_logging(true)
             .keep_alive(false)
             .on_shutdown(|| {})
-            .fixtures([spec]);
+            .fixtures([spec])
+            .expect("valid fixtures");
         let a = a.animations(true);
 
         assert!(a.verbose_logging_enabled());

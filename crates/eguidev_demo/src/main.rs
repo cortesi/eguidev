@@ -150,7 +150,7 @@ fn build_devmcp(state: &Arc<Mutex<DemoState>>) -> MainResult<DevMcp> {
     let runtime_diagnostic_state = Arc::clone(state);
     let ui_diagnostic_state = Arc::clone(state);
     let devmcp = DevMcp::new()
-        .fixtures(demo_fixtures())
+        .fixtures(demo_fixtures())?
         .on_fixture_ui(move |_ctx, call| {
             let mut s = fixture_state.lock().expect("demo state lock");
             s.apply_fixture(call)

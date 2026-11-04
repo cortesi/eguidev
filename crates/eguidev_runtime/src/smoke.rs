@@ -1040,6 +1040,7 @@ mod tests {
                 FixtureSpec::new("emit.id_clash", "Emit one real egui ID clash warning.")
                     .ready("unused-by-fixture-raw"),
             ])
+            .expect("valid fixtures")
             .on_fixture_runtime(move |_call| {
                 runtime.egui_diagnostics().record_output(
                     "root".to_string(),

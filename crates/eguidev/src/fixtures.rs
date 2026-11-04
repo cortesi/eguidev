@@ -115,13 +115,9 @@ impl FixtureManager {
         }
     }
 
-    /// Replace the registered fixture catalog.
+    /// Replace the registered fixture catalog. `DevMcp::fixtures` validates
+    /// each spec before it reaches the catalog.
     pub fn set_fixtures(&self, fixtures: Vec<FixtureSpec>) {
-        for fixture in &fixtures {
-            if let Err(error) = fixture.validate(true) {
-                panic!("invalid fixture {}: {error}", fixture.name);
-            }
-        }
         let mut stored = lock(&self.fixtures, "fixtures lock");
         *stored = fixtures;
     }
