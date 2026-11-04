@@ -143,7 +143,9 @@ async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
     finish_smoke_run(result, shutdown_result, config.verbose_output)
 }
 
-/// Finish a smoke command with the historical failure precedence.
+/// Finish a smoke command. A suite failure takes precedence over a shutdown
+/// error. A shutdown error, a forced shutdown included, fails a suite that
+/// passed.
 fn finish_smoke_run(
     result: Result<SuiteResult, EdevError>,
     shutdown_result: Result<(), EdevError>,
@@ -154,14 +156,13 @@ fn finish_smoke_run(
             for line in summary.render_lines(verbose_output) {
                 println!("{line}");
             }
+            if summary.success() {
+                return shutdown_result;
+            }
             if let Err(error) = shutdown_result {
                 eprintln!("edev: shutdown failed: {error}");
             }
-            if summary.success() {
-                Ok(())
-            } else {
-                Err(EdevError::SmokeFailed("smoke suite failed".to_string()))
-            }
+            Err(EdevError::SmokeFailed("smoke suite failed".to_string()))
         }
         Err(error) => {
             if let Err(shutdown_error) = shutdown_result {
@@ -969,14 +970,19 @@ mod tests {
 
     use super::*;
 
-    fn failed_suite() -> SuiteResult {
+    /// Build a one-script suite that passed or failed.
+    fn suite(passed: bool) -> SuiteResult {
         SuiteResult {
             results: vec![ScriptResult {
                 round: 1,
-                path: "10_fail.luau".to_string(),
-                status: ScriptStatus::Fail,
+                path: "10_script.luau".to_string(),
+                status: if passed {
+                    ScriptStatus::Pass
+                } else {
+                    ScriptStatus::Fail
+                },
                 elapsed_ms: 5,
-                message: Some("boom".to_string()),
+                message: (!passed).then(|| "boom".to_string()),
                 logs: Vec::new(),
                 fixtures: Vec::new(),
                 egui_diagnostics: eguidev_runtime::EguiDiagnosticBatch::default(),
@@ -988,16 +994,32 @@ mod tests {
         }
     }
 
+    /// Return the error of a forced shutdown.
+    fn forced_shutdown() -> Result<(), EdevError> {
+        Err(EdevError::ForcedShutdown("deadline expired".to_string()))
+    }
+
     #[test]
     fn finish_smoke_run_keeps_suite_failure_through_forced_shutdown() {
-        let result = finish_smoke_run(
-            Ok(failed_suite()),
-            Err(EdevError::AppStart("forced".to_string())),
-            false,
-        );
+        let result = finish_smoke_run(Ok(suite(false)), forced_shutdown(), false);
         assert!(
             matches!(result, Err(EdevError::SmokeFailed(_))),
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn finish_smoke_run_fails_a_passed_suite_after_forced_shutdown() {
+        let result = finish_smoke_run(Ok(suite(true)), forced_shutdown(), false);
+        assert!(
+            matches!(result, Err(EdevError::ForcedShutdown(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn finish_smoke_run_passes_a_passed_suite_after_graceful_shutdown() {
+        let result = finish_smoke_run(Ok(suite(true)), Ok(()), false);
+        assert!(result.is_ok(), "{result:?}");
     }
 }
