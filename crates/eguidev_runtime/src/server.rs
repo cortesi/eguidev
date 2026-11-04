@@ -9,7 +9,8 @@ use tokio::runtime::Builder;
 
 use crate::{mcp::AppMcpServer, registry::Inner, runtime::Runtime};
 
-/// Optional loopback address used for a directly connectable app MCP server.
+/// The path of the Unix domain socket at which the app serves its MCP server.
+/// Edev names a new path for each launch.
 pub const MCP_ADDR_ENV: &str = "EGUIDEV_MCP_ADDR";
 
 #[cfg(test)]
@@ -34,16 +35,28 @@ pub fn start_server(inner: Arc<Inner>, runtime_state: Arc<Runtime>, addr: String
         };
         let server =
             Server::new(move || AppMcpServer::new(Arc::clone(&inner), Arc::clone(&runtime_state)));
-        let result: tmcp::Result<()> = runtime.block_on(async move {
-            let _server = server.serve_tcp(addr).await?;
-            pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok(())
-        });
+        let result: tmcp::Result<()> = runtime.block_on(serve(server, addr));
         if let Err(error) = result {
             eprintln!("eguidev: MCP server failed: {error}");
         }
     });
+}
+
+/// Serve the app MCP server at the socket path `addr`, mode 0600, until the
+/// process ends.
+#[cfg(unix)]
+async fn serve(server: Server, addr: String) -> tmcp::Result<()> {
+    let _server = server.serve_unix(addr).await?;
+    pending::<()>().await;
+    Ok(())
+}
+
+/// Report that the app endpoint needs a Unix domain socket.
+#[cfg(not(unix))]
+async fn serve(_server: Server, _addr: String) -> tmcp::Result<()> {
+    Err(tmcp::Error::InvalidConfiguration(
+        "the eguidev app endpoint needs a Unix domain socket".to_string(),
+    ))
 }
 
 #[cfg(test)]

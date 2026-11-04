@@ -150,8 +150,9 @@ claude mcp add eguidev -- edev mcp
 ```
 
 The launcher supplies four tools: `start`, `stop`, `restart`, and `status`. A
-successful lifecycle result includes the direct endpoint of the app, and the app
-serves `script_api` and `script_eval` at that endpoint. The agent surface is a
+successful lifecycle result includes the direct endpoint of the app: a Unix
+domain socket that only its owner can reach. The app serves `script_api` and
+`script_eval` at that endpoint. The agent surface is a
 complete script, not fine-grained RPC, so one call can set up, interact, assert,
 and report in one round trip.
 

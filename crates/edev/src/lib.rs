@@ -10,11 +10,13 @@ use std::{
     fs::{self, DirEntry},
     future::{Future, pending},
     io as std_io,
-    net::{Ipv4Addr, TcpListener},
     path::{MAIN_SEPARATOR, Path, PathBuf},
     pin::Pin,
-    process::ExitStatus,
-    sync::{Arc, Mutex},
+    process::{self, ExitStatus},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -628,10 +630,13 @@ struct AppProcess {
     app_record: Option<AppRecord>,
     /// Per-launch ownership writer held only by this outer AppProcess.
     ownership_writer: Option<process_lifecycle::OwnershipWriter>,
-    /// Connected MCP client speaking to the app over its direct TCP endpoint.
+    /// Connected MCP client speaking to the app over its socket.
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
-    /// Direct loopback MCP endpoint shared with external callers.
+    /// Path of the Unix domain socket of the app, shared with external
+    /// callers.
     mcp_endpoint: String,
+    /// The socket file, which the launcher removes when the app ends.
+    mcp_socket: Option<SocketFile>,
     /// Background task streaming stdout.
     stdout_task: Option<JoinHandle<()>>,
     /// Background task streaming stderr.
@@ -686,6 +691,7 @@ impl AppProcess {
             self.ownership_writer.take();
         }
         self.remove_app_record();
+        self.mcp_socket.take();
         if let Some(task) = self.stderr_task.take() {
             let _wait_result = task.await;
         }
@@ -750,7 +756,7 @@ impl AppProcess {
             })?;
         Some(AppConnectionDescriptor {
             launch_id,
-            transport: "tcp",
+            transport: "unix",
             endpoint: self.mcp_endpoint.clone(),
         })
     }
@@ -1002,14 +1008,14 @@ fn client_capabilities(presentation: Presentation) -> ClientCapabilities {
     )
 }
 
-/// Spawn the app and connect an MCP client to its direct loopback endpoint.
+/// Spawn the app and connect an MCP client to its Unix domain socket.
 async fn spawn_app(
     config: &LaunchConfig,
     log_state: LogState,
 ) -> Result<AppProcess, AppStartError> {
-    let mcp_endpoint = allocate_mcp_endpoint().map_err(|error| {
-        AppStartError::Other(format!("allocate direct app MCP endpoint: {error}"))
-    })?;
+    let mcp_socket = SocketFile::allocate(&config.cwd)
+        .map_err(|error| AppStartError::Other(format!("allocate the app MCP socket: {error}")))?;
+    let mcp_endpoint = mcp_socket.path.display().to_string();
     let mut direct_config = config.clone();
     direct_config.env.insert(
         eguidev_runtime::MCP_ADDR_ENV.to_string(),
@@ -1153,6 +1159,7 @@ async fn spawn_app(
         ownership_writer,
         client: Arc::new(AsyncMutex::new(client)),
         mcp_endpoint,
+        mcp_socket: Some(mcp_socket),
         stdout_task: Some(stdout_task),
         stderr_task: Some(stderr_task),
         stderr_buffer,
@@ -1180,10 +1187,47 @@ async fn fail_startup_handshake(
     AppStartError::StartupFailed(format_startup_output(error, &output))
 }
 
-/// Reserve an unused loopback address for the next app server.
-fn allocate_mcp_endpoint() -> std_io::Result<String> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    Ok(listener.local_addr()?.to_string())
+/// Longest socket path that `sun_path` of every supported platform holds,
+/// with its terminating NUL. macOS bounds `sun_path` at 104 bytes.
+const MAX_SOCKET_PATH: usize = 103;
+
+/// The socket path of one launch. Dropping it removes the socket file, which
+/// the app created.
+#[derive(Debug)]
+struct SocketFile {
+    /// Path of the socket.
+    path: PathBuf,
+}
+
+impl SocketFile {
+    /// Name a new socket path for one launch below the instance registry of
+    /// `cwd`, or below the temporary directory when that path would exceed
+    /// the `sun_path` bound.
+    fn allocate(cwd: &Path) -> std_io::Result<Self> {
+        static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+        let name = format!("mcp-{}-{sequence}.sock", process::id());
+        let registry = cwd.join(instance_registry::REGISTRY_DIR_NAME);
+        let path = registry.join(&name);
+        let path = if path.as_os_str().len() <= MAX_SOCKET_PATH {
+            fs::create_dir_all(&registry)?;
+            path
+        } else {
+            let digest = failure_bundle::stable_hash8(&path.display().to_string());
+            env::temp_dir().join(format!("edev-{digest}-{sequence}.sock"))
+        };
+        match fs::remove_file(&path) {
+            Err(error) if error.kind() != std_io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        Ok(Self { path })
+    }
+}
+
+impl Drop for SocketFile {
+    fn drop(&mut self) {
+        let _removed = fs::remove_file(&self.path);
+    }
 }
 
 /// Connect to a newly launched app, including time spent in an app build
@@ -1202,7 +1246,7 @@ async fn connect_app_client(
         let mut client = tmcp::Client::new("edev", env!("CARGO_PKG_VERSION"))
             .with_capabilities(client_capabilities(presentation))
             .with_request_timeout(request_timeout);
-        match client.connect_tcp(endpoint.to_string()).await {
+        match connect_endpoint(&mut client, endpoint).await {
             Ok(_) => return Ok(client),
             Err(error) => {
                 if process_lifecycle::spawned_process_exited(process)
@@ -1217,6 +1261,26 @@ async fn connect_app_client(
             }
         }
     }
+}
+
+/// Connect a client to the socket of an app.
+#[cfg(unix)]
+async fn connect_endpoint(
+    client: &mut tmcp::Client<()>,
+    endpoint: &str,
+) -> Result<InitializeResult, McpError> {
+    client.connect_unix(endpoint).await
+}
+
+/// Report that the app endpoint needs a Unix domain socket.
+#[cfg(not(unix))]
+async fn connect_endpoint(
+    _client: &mut tmcp::Client<()>,
+    _endpoint: &str,
+) -> Result<InitializeResult, McpError> {
+    Err(McpError::InvalidConfiguration(
+        "the eguidev app endpoint needs a Unix domain socket".to_string(),
+    ))
 }
 
 /// Combine the handshake error with any captured stderr for diagnostics.
@@ -2908,7 +2972,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
-            mcp_endpoint: "127.0.0.1:1".to_string(),
+            mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
+            mcp_socket: None,
             stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -2947,7 +3012,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
-            mcp_endpoint: "127.0.0.1:1".to_string(),
+            mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
+            mcp_socket: None,
             stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -3036,7 +3102,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
-            mcp_endpoint: "127.0.0.1:1".to_string(),
+            mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
+            mcp_socket: None,
             stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -3079,7 +3146,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
-            mcp_endpoint: "127.0.0.1:1".to_string(),
+            mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
+            mcp_socket: None,
             stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -3122,7 +3190,8 @@ mod tests {
             app_record: None,
             ownership_writer: None,
             client: Arc::new(AsyncMutex::new(client)),
-            mcp_endpoint: "127.0.0.1:1".to_string(),
+            mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
+            mcp_socket: None,
             stdout_task: None,
             stderr_task: None,
             stderr_buffer: Arc::new(Mutex::new(Vec::new())),

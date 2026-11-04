@@ -565,11 +565,15 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
         launcher_token: config.launcher_token.clone(),
         working_dir: config.working_dir.clone(),
     };
-    let record = launch.record(
+    let mut record = launch.record(
         process::id(),
         process_group_id,
         instance_registry::process_start_time(process_group_id),
     );
+    record.mcp_socket = config
+        .env
+        .get(eguidev_runtime::MCP_ADDR_ENV)
+        .map(PathBuf::from);
     if let Err(error) = instance_registry::write_app_record(&config.app_record_path, &record) {
         terminate_unobserved_app(&mut child, Some(process_group_id)).await;
         return Err(format!("write app record: {error}"));

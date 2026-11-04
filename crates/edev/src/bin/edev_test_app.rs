@@ -1,9 +1,10 @@
 //! Headless stand-in for a managed app, used by edev process-lifecycle tests.
 //!
 //! It answers the launcher handshake and the `script_eval` readiness probe over
-//! a direct TCP endpoint, then stays alive until the supervisor
-//! terminates its process group. It opens no window, so lifecycle tests never
-//! put a window on the developer's desktop. Only smoketests run a real app.
+//! the Unix domain socket that edev names, then stays alive until the
+//! supervisor terminates its process group. It opens no window, so lifecycle
+//! tests never put a window on the developer's desktop. Only smoketests run a
+//! real app.
 
 use std::{env, future::pending, sync::Arc};
 
@@ -157,7 +158,7 @@ fn main() -> tmcp::Result<()> {
             shutdown: Arc::clone(&server_shutdown),
             close_mode,
         })
-        .serve_tcp(addr)
+        .serve_unix(addr)
         .await?;
         shutdown.notified().await;
         Ok(())

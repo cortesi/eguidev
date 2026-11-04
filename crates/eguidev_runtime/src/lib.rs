@@ -149,8 +149,8 @@ mod tests {
             McpEndpoint::Invalid(_)
         ));
         assert_eq!(
-            mcp_endpoint_from(Some(OsStr::new("127.0.0.1:9000"))),
-            McpEndpoint::Valid("127.0.0.1:9000".to_string())
+            mcp_endpoint_from(Some(OsStr::new("/tmp/edev-test.sock"))),
+            McpEndpoint::Valid("/tmp/edev-test.sock".to_string())
         );
     }
 
@@ -160,7 +160,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
 
         assert!(matches!(
-            mcp_endpoint_from(Some(OsStr::from_bytes(b"127.0.0.1:\xff"))),
+            mcp_endpoint_from(Some(OsStr::from_bytes(b"/tmp/edev-\xff.sock"))),
             McpEndpoint::Invalid(_)
         ));
     }

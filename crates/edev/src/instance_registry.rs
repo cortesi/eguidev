@@ -61,6 +61,9 @@ pub struct AppRecord {
     pub app_group_leader_start_time: Option<ProcessStartTime>,
     /// Working directory used for the launch.
     pub working_dir: PathBuf,
+    /// The Unix domain socket of the app, which a stale cleanup removes.
+    #[serde(default)]
+    pub mcp_socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +111,7 @@ impl AppLaunch {
             app_process_group_id,
             app_group_leader_start_time,
             working_dir: self.working_dir.clone(),
+            mcp_socket: None,
         }
     }
 }
@@ -334,6 +338,9 @@ fn cleanup_stale_app(path: &Path) -> Result<(), EdevError> {
     {
         if recorded_app_group_is_current(&metadata) {
             terminate_process_group(Some(metadata.app_process_group_id));
+        }
+        if let Some(socket) = &metadata.mcp_socket {
+            remove_file_if_exists(socket).map_err(EdevError::Io)?;
         }
         remove_file_if_exists(path).map_err(EdevError::Io)?;
     }
@@ -565,6 +572,7 @@ mod tests {
             app_process_group_id: i32::MAX,
             app_group_leader_start_time: None,
             working_dir: launch.working_dir.clone(),
+            mcp_socket: None,
         };
         write_app_record(&launch.entry_path, &record).expect("write app record");
 
@@ -635,6 +643,7 @@ mod tests {
             app_process_group_id: i32::try_from(process::id()).expect("current pid"),
             app_group_leader_start_time: Some(start_time),
             working_dir: PathBuf::from("/"),
+            mcp_socket: None,
         };
         assert!(recorded_app_group_is_current(&record));
 
@@ -696,6 +705,7 @@ mod tests {
             app_process_group_id: i32::MAX,
             app_group_leader_start_time: None,
             working_dir: tempdir.path().to_path_buf(),
+            mcp_socket: None,
         };
         write_app_record(&app_path, &record).expect("write app record");
         cleanup_stale_app(&app_path).expect("cleanup app");

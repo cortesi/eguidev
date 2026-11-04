@@ -46,8 +46,8 @@ ncode test
 
 Only smoketests launch a real app, so only they put a window on the desktop. Tests in this lane must
 stay headless. Lifecycle tests that need a managed app process launch the `edev_test_app` binary,
-which serves the app side of the launcher handshake over a reserved loopback endpoint and opens no
-window.
+which serves the app side of the launcher handshake over the Unix domain socket that Edev names, and
+opens no window.
 
 On Linux, launcher death kills only the direct child (`PR_SET_PDEATHSIG`). A
 `cargo run` app is a grandchild and survives `SIGKILL` of `edev`. Prefer a

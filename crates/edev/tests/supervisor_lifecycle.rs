@@ -8,7 +8,7 @@ mod tests {
         error::Error,
         fs,
         io::{self, Write},
-        os::fd::AsRawFd,
+        os::{fd::AsRawFd, unix::fs::PermissionsExt},
         path::{Path, PathBuf},
         process::{self, ExitStatus, Stdio},
     };
@@ -240,10 +240,21 @@ mod tests {
         assert!(launcher_record_path.exists());
 
         let start = client.call_tool("start", json!({})).await?;
-        assert_eq!(
-            start.structured_content.as_ref().map(|value| &value["ok"]),
-            Some(&json!(true))
+        let started = start
+            .structured_content
+            .as_ref()
+            .ok_or("start did not include structured content")?;
+        assert_eq!(started["ok"], json!(true));
+        // The launcher and the app talk over a socket that only the owner can
+        // reach.
+        assert_eq!(started["report"]["connection"]["transport"], "unix");
+        let socket = PathBuf::from(
+            started["report"]["connection"]["endpoint"]
+                .as_str()
+                .ok_or("start did not report the app socket")?,
         );
+        let socket_mode = fs::metadata(&socket)?.permissions().mode();
+        assert_eq!(socket_mode & 0o777, 0o600, "{}", socket.display());
         let status = client.call_tool("status", json!({})).await?;
         let status = status
             .structured_content
@@ -290,6 +301,7 @@ mod tests {
             !record_path.exists(),
             "normal stop should remove the exact managed-app record"
         );
+        assert!(!socket.exists(), "normal stop should remove the app socket");
         assert!(
             launcher_record_path.exists(),
             "normal stop must preserve the outer launcher record"

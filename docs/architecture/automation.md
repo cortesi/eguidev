@@ -14,8 +14,14 @@ Eguidev separates app instrumentation, in-process automation, and external proce
 The app MCP server lists `script_eval`, `script_api`, and launcher-only `app_close`. Agents must
 not call `app_close`. Edev owns `stop` and `restart`. The Edev launcher MCP server lists exactly
 `start`, `stop`, `restart`, and `status`. It never forwards app tools. Successful lifecycle
-results include a descriptor with the launch id, transport, and direct app MCP endpoint. A caller
-connects to that endpoint for scripting.
+results include a descriptor with the launch id, the transport `unix`, and the direct app MCP
+endpoint. A caller connects to that endpoint for scripting.
+
+The endpoint is a Unix domain socket. Edev names a new socket path for each launch below
+`.edev-instances/`, or below the temporary directory when the path would exceed the 104 bytes of
+`sun_path` on macOS, and passes it in `EGUIDEV_MCP_ADDR`. The app binds the socket with mode 0600,
+so that no other local user can drive `script_eval`. Edev removes the socket when the app ends, and
+the cleanup of a stale instance removes the socket of its record.
 
 The CLI performs that sequence internally through one app session: register the launcher, start
 the process, connect to the returned app endpoint, run the command, and shut down with the original

@@ -403,7 +403,7 @@ async fn smoke_edev_transport(verbose: bool) -> Result<(), Box<dyn Error>> {
             .ok_or_else(|| format!("start did not return an app endpoint: {start_payload}"))?;
         let mut app_client = Client::new("xtask-smoke-app", env!("CARGO_PKG_VERSION"))
             .with_request_timeout(Duration::from_secs(120));
-        app_client.connect_tcp(endpoint.to_string()).await?;
+        app_client.connect_unix(endpoint).await?;
         let app_tools = app_client.list_tools(None).await?;
         for expected in ["script_eval", "script_api"] {
             if !app_tools.tools.iter().any(|tool| tool.name == expected) {
