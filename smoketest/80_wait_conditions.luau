@@ -110,9 +110,15 @@ assert(type(err) == "table", "wait errors should be structured tables")
 local waitError = err :: any
 assert(waitError.code == "timeout", "wait errors should carry the stable timeout code")
 assert(
-    string.find(waitError.message, "Timed out waiting for widget predicate", 1, true) ~= nil,
+    string.find(
+        waitError.message,
+        "waiting for widget basic.missing.timeout to match the predicate",
+        1,
+        true
+    ) ~= nil,
     waitError.message
 )
+assert(waitError.target.id == "basic.missing.timeout", "wait errors should name their widget")
 
 return {
     conditions_tested = 16,

@@ -1,5 +1,8 @@
 #![allow(clippy::result_large_err)]
 
+#[cfg(test)]
+use std::{cell::RefCell, collections::BTreeSet};
+
 use serde_json::{Map, Value};
 
 use super::{super::OverlayDebugModeName, types::ScriptErrorInfo};
@@ -59,12 +62,34 @@ pub(super) fn parse_rect(value: &Value) -> Result<Rect, ScriptErrorInfo> {
     })
 }
 
-pub(super) fn map_value<'a>(map: Option<&'a Map<String, Value>>, key: &str) -> Option<&'a Value> {
-    map.and_then(|map| map.get(key))
+#[cfg(test)]
+thread_local! {
+    /// The option keys that the runtime read on this thread, for the test that
+    /// keeps the declaration and the runtime in step.
+    static READ_KEYS: RefCell<BTreeSet<String>> = const { RefCell::new(BTreeSet::new()) };
 }
 
-pub(super) fn map_has_any(map: &Map<String, Value>, keys: &[&str]) -> bool {
-    keys.iter().any(|key| map.contains_key(*key))
+/// Return the option keys that the runtime read on this thread since the last
+/// call.
+#[cfg(test)]
+pub(super) fn take_read_keys() -> BTreeSet<String> {
+    READ_KEYS.with(|keys| keys.take())
+}
+
+/// Record each key of an option table that a serde parse read as a whole.
+#[cfg(test)]
+pub(super) fn record_table_reads(map: &Map<String, Value>) {
+    READ_KEYS.with(|keys| keys.borrow_mut().extend(map.keys().cloned()));
+}
+
+/// Read one key of an option table. Each option read of the runtime goes
+/// through this function.
+pub(super) fn map_value<'a>(map: Option<&'a Map<String, Value>>, key: &str) -> Option<&'a Value> {
+    #[cfg(test)]
+    READ_KEYS.with(|keys| {
+        keys.borrow_mut().insert(key.to_string());
+    });
+    map.and_then(|map| map.get(key))
 }
 
 pub(super) fn parse_optional_string(
@@ -163,30 +188,16 @@ pub(super) fn parse_optional_vec2(
     }
 }
 
+/// Parse the `modifiers` table of an option table, as `RawInputEvent` does.
 pub(super) fn parse_modifiers(
     map: Option<&Map<String, Value>>,
-) -> Result<Modifiers, ScriptErrorInfo> {
-    let Some(map) = map else {
-        return Ok(Modifiers::default());
-    };
-    if let Some(value) = map.get("modifiers") {
-        let modifiers = as_object(value, "modifiers must be a map")?;
-        return parse_modifiers_map(Some(modifiers));
+) -> Result<Option<Modifiers>, ScriptErrorInfo> {
+    match map_value(map, "modifiers") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value(value.clone())
+            .map(Some)
+            .map_err(|error| type_error(format!("invalid modifiers: {error}"))),
     }
-    parse_modifiers_map(Some(map))
-}
-
-fn parse_modifiers_map(map: Option<&Map<String, Value>>) -> Result<Modifiers, ScriptErrorInfo> {
-    let ctrl = parse_optional_bool(map, "ctrl")?.unwrap_or(false);
-    let shift = parse_optional_bool(map, "shift")?.unwrap_or(false);
-    let alt = parse_optional_bool(map, "alt")?.unwrap_or(false);
-    let command = parse_optional_bool(map, "command")?.unwrap_or(false);
-    Ok(Modifiers {
-        ctrl,
-        shift,
-        alt,
-        command,
-    })
 }
 
 pub(super) fn parse_pointer_button(value: &Value) -> Result<PointerButton, ScriptErrorInfo> {

@@ -20,10 +20,10 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   than soft `{ matched = false }` success results.
 
 3. Keyboard target routing
-- `key` accepts an optional `target` parameter to resolve + focus before delivery.
-- `type_text` uses the action timeout for its explicit focus handshake.
-- Targeted delivery emits typed routing failures:
-  `target_not_focusable`, `focus_not_acquired`, `target_detached`.
+- `type_text`, and `key` with a `target`, click a widget that lacks the keyboard focus. They then
+  wait within the action timeout until the widget takes the focus, before they deliver input.
+- A routing failure is `not_actionable`. Its message names the cause: the widget is not
+  focusable, does not take or keep the focus, or detaches.
 
 4. Settle waits
 - `Viewport:settle()` returns a `SettleReport` with phase status for input drain,

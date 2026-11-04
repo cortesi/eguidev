@@ -758,6 +758,47 @@ pub fn viewport_snapshot_json(snapshot: &ViewportSnapshot) -> Value {
     })
 }
 
+/// Name a widget in a failure message: its ID, and its viewport when the
+/// failure knows it.
+pub fn widget_identity(id: &str, viewport_id: Option<&str>) -> String {
+    match viewport_id {
+        Some(viewport_id) => format!("{id} in viewport {viewport_id}"),
+        None => id.to_string(),
+    }
+}
+
+/// Build the message of a widget wait that timed out. `condition` is a verb
+/// phrase, such as `to take keyboard focus`.
+pub fn widget_wait_timeout_message(
+    id: &str,
+    viewport_id: Option<&str>,
+    condition: &str,
+    timeout_ms: u64,
+    observation: &WaitObservation,
+) -> String {
+    wait_timeout_message(
+        format!(
+            "Timed out after {timeout_ms}ms waiting for widget {} {condition}",
+            widget_identity(id, viewport_id)
+        ),
+        observation,
+    )
+}
+
+/// Add the widget target to the details of an error, in the shape of the
+/// declared `ErrorTarget`. The script error and the outcome then name the
+/// widget.
+pub fn with_widget_target(mut details: Value, id: &str, viewport_id: Option<&str>) -> Value {
+    if let Some(map) = details.as_object_mut() {
+        let mut target = json!({ "kind": "widget", "id": id });
+        if let Some(viewport_id) = viewport_id {
+            target["viewport_id"] = Value::from(viewport_id);
+        }
+        map.insert("target".to_string(), target);
+    }
+    details
+}
+
 pub fn wait_timeout_details(
     kind: &str,
     elapsed_ms: u64,

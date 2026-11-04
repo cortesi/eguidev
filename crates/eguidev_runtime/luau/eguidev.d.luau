@@ -186,6 +186,9 @@ declare class Widget
     --- covering widget.
     read hover: (self: Widget, options: HoverOptions?) -> ()
     read focus: (self: Widget, options: ActionOptions?) -> ()
+    --- Clicks a widget that lacks the keyboard focus, then waits within the
+    --- action timeout until it takes the focus. Fails with `not_actionable`
+    --- when it does not.
     read type_text: (self: Widget, text: string, options: TypeTextOptions?) -> ()
     read set_value: (self: Widget, value: WidgetValue, options: ActionOptions?) -> ()
     --- A position uses viewport-local logical points. A widget target must be
@@ -195,7 +198,7 @@ declare class Widget
     read drag_relative: (self: Widget, target: Vec, options: DragOptions?) -> ()
     --- Scroll-area widgets apply an offset override and ignore modifiers.
     --- Offset is clamped to `[0, max_offset]`. Other roles inject a pointer scroll.
-    read scroll: (self: Widget, delta: Vec, options: ActionOptions?) -> ()
+    read scroll: (self: Widget, delta: Vec, options: ScrollOptions?) -> ()
     read scroll_to: (self: Widget, options: ScrollToOptions) -> ()
     --- Unless settle is false, waits until each scrolled area reports the
     --- requested offset on two consecutive captures, then until the target
@@ -485,6 +488,8 @@ export type ClickOptions = {
     button: "primary" | "secondary" | "middle"?,
     --- Defaults to 1 and accepts values from 1 through 3.
     click_count: number?,
+    --- Held down for the click.
+    modifiers: Modifiers?,
 }
 
 --- Populated fields use AND. An empty filter includes visible and invisible
@@ -537,6 +542,16 @@ export type DragOptions = {
     settle: boolean?,
     --- Normalized within the source widget from 0 to 1. Defaults to the center.
     from: Vec?,
+    --- Held down for the drag.
+    modifiers: Modifiers?,
+}
+
+export type ScrollOptions = {
+    timeout_ms: number?,
+    poll_interval_ms: number?,
+    settle: boolean?,
+    --- Held down for a pointer scroll.
+    modifiers: Modifiers?,
 }
 
 --- Targets a scroll area. `offset` takes precedence over `align`; at least one
@@ -569,6 +584,9 @@ export type KeyOptions = {
     settle: boolean?,
     --- At most 1000. Defaults to 1.
     repeat_count: number?,
+    --- Clicks a target that lacks the keyboard focus, then waits within
+    --- `timeout_ms` until it takes the focus. Fails with `not_actionable`
+    --- when it does not.
     target: Widget?,
 }
 
@@ -874,6 +892,8 @@ export type ErrorCode =
 export type ErrorTarget = {
     kind: "widget" | "viewport" | "fixture" | "diagnostic",
     id: string,
+    --- The viewport of a widget target, when the failure knows it.
+    viewport_id: string?,
 }
 
 --- A public failure throws this frozen table. `pcall` can catch it. An

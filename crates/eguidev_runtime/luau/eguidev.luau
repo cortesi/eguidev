@@ -37,11 +37,11 @@ type ActionKernel = {
     viewport_input: (viewport: any, event: RawInputEvent) -> (),
     widget_show_highlight: (widget: any, color: string) -> any,
     widget_clear_highlight: (widget: any) -> (),
-    widget_show_debug_overlay: (widget: any, mode: any?, options: any?) -> (),
+    widget_show_debug_overlay: (widget: any, options: any?) -> (),
     widget_clear_debug_overlay: (widget: any) -> (),
     viewport_show_highlight: (viewport: any, rect: Rect, color: string) -> any,
     viewport_clear_highlights: (viewport: any) -> (),
-    viewport_show_debug_overlay: (viewport: any, mode: any?, options: any?) -> (),
+    viewport_show_debug_overlay: (viewport: any, options: any?) -> (),
     viewport_clear_debug_overlay: (viewport: any) -> (),
 }
 
@@ -446,12 +446,13 @@ local function widgetConditionMatches(state: WidgetState?, condition: WidgetCond
     return true
 end
 
+-- Rust appends this verb phrase to the widget identity of a timeout message.
 local function widgetConditionDescription(condition: WidgetCondition): string
     if condition.actionable == true then
-        return "interaction-ready and uncovered condition; call scroll_into_view() first for "
+        return "to become interaction-ready and uncovered; call scroll_into_view() first for "
             .. "clipping, or close the overlay that covers the widget"
     end
-    return "condition"
+    return "to match the condition"
 end
 
 local function viewportConditionMatches(state: ViewportState?, condition: ViewportCondition): boolean
@@ -587,7 +588,7 @@ function widgetMethods.wait(
     end
     local priorScroll: ScrollAreaMeta? = nil
     local description = if type(condition) == "function"
-        then "predicate"
+        then "to match the predicate"
         else widgetConditionDescription(condition :: WidgetCondition)
     local state = kernel.wait.widget_wait(scopedWidgetTarget(self), function(rawState: any?): boolean
         local currentState = freezeState(rawState) :: WidgetState?
@@ -730,7 +731,7 @@ end
 
 function widgetMethods.focus(self: Widget, options: ActionOptions?)
     local startedMs = os.clock() * 1000
-    self:wait({ present = true, visible = true, enabled = true }, options)
+    self:wait({ actionable = true }, options)
     kernel.action.widget_focus(scopedWidgetTarget(self), remainingActionOptions(options, startedMs))
 end
 
@@ -785,7 +786,7 @@ function widgetMethods.drag_relative(self: Widget, target: Vec, options: DragOpt
     )
 end
 
-function widgetMethods.scroll(self: Widget, delta: Vec, options: ActionOptions?)
+function widgetMethods.scroll(self: Widget, delta: Vec, options: ScrollOptions?)
     local startedMs = os.clock() * 1000
     self:wait({ actionable = true }, options)
     kernel.action.widget_scroll(
@@ -843,8 +844,7 @@ function widgetMethods.clear_highlight(self: Widget)
 end
 
 function widgetMethods.show_debug_overlay(self: Widget, options: DebugOverlayOptions?)
-    local mode = if options ~= nil then options.mode else nil
-    kernel.action.widget_show_debug_overlay(scopedWidgetTarget(self), mode, options)
+    kernel.action.widget_show_debug_overlay(scopedWidgetTarget(self), options)
 end
 
 function widgetMethods.clear_debug_overlay(self: Widget)
@@ -1019,8 +1019,7 @@ function viewportMethods.clear_highlights(self: Viewport)
 end
 
 function viewportMethods.show_debug_overlay(self: Viewport, options: DebugOverlayOptions?)
-    local mode = if options ~= nil then options.mode else nil
-    kernel.action.viewport_show_debug_overlay(self, mode, options)
+    kernel.action.viewport_show_debug_overlay(self, options)
 end
 
 function viewportMethods.clear_debug_overlay(self: Viewport)

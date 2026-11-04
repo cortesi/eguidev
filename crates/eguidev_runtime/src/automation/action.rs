@@ -92,6 +92,15 @@ pub(super) fn resize_commands(
     Ok(commands)
 }
 
+/// Return the start of a drag: the normalized `from` position within the
+/// source widget, or its center.
+fn drag_start(widget: &WidgetRegistryEntry, from: Option<Vec2>) -> Result<Pos2, ToolError> {
+    resolve_relative_pos(
+        widget.interact_rect,
+        from.unwrap_or(Vec2 { x: 0.5, y: 0.5 }),
+    )
+}
+
 impl DevMcpServer {
     pub(super) fn resolve_widget_for_pointer(
         &self,
@@ -183,11 +192,14 @@ impl DevMcpServer {
         Ok(())
     }
 
+    /// Click a widget that lacks the keyboard focus, and wait until it takes
+    /// the focus.
     pub(super) async fn focus_widget_for_keyboard(
         &self,
         viewport_id: Option<String>,
         target: &WidgetRef,
-        timeout_ms: Option<u64>,
+        timeout_ms: u64,
+        poll_interval_ms: Option<u64>,
     ) -> Result<(WidgetRegistryEntry, egui::ViewportId), ToolError> {
         let (widget, viewport_id) = self
             .resolve_widget_for_pointer(viewport_id.as_deref(), target)
@@ -203,20 +215,29 @@ impl DevMcpServer {
         }
         let click_pos = widget.interact_rect.center();
         queue_primary_click(&self.inner, viewport_id, click_pos);
-        let Some(timeout_ms) = timeout_ms else {
-            return Ok((widget, viewport_id));
-        };
         let viewport_id_str = viewport_id_to_string(viewport_id);
         self.wait_for_widget_state(
             Some(viewport_id_str.clone()),
             target.clone(),
             Some(timeout_ms),
-            None,
+            poll_interval_ms,
             "to take keyboard focus",
             |widget| widget.is_some_and(|widget| widget.focused),
         )
         .await
-        .map_err(|error| ToolError::new(ErrorCode::NotActionable, error.message))?;
+        .map_err(|error| {
+            let details = error
+                .structured
+                .as_ref()
+                .and_then(|structured| structured.get("error"))
+                .and_then(|error| error.get("details"))
+                .cloned();
+            let focus_error = ToolError::new(ErrorCode::NotActionable, error.message);
+            match details {
+                Some(details) => focus_error.with_details(details),
+                None => focus_error,
+            }
+        })?;
         match resolve_widget(&self.inner, Some(viewport_id_str.as_str()), target) {
             Ok(focused_widget) if focused_widget.focused => Ok((focused_widget, viewport_id)),
             Ok(_) => Err(ToolError::new(
@@ -527,12 +548,13 @@ impl DevMcpServer {
         &self,
         viewport_id: Option<String>,
         target: WidgetRef,
+        from: Option<Vec2>,
         to: Pos2,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
         let (widget, viewport_id) =
             self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
-        let start = widget.interact_rect.center();
+        let start = drag_start(&widget, from)?;
         queue_drag(
             &self.inner,
             viewport_id,
@@ -554,8 +576,7 @@ impl DevMcpServer {
     ) -> ToolResult<()> {
         let (widget, viewport_id) =
             self.resolve_widget_for_pointer(viewport_id.as_deref(), &target)?;
-        let start_relative = from.unwrap_or(Vec2 { x: 0.5, y: 0.5 });
-        let start = resolve_relative_pos(widget.interact_rect, start_relative)?;
+        let start = drag_start(&widget, from)?;
         let end = resolve_relative_pos(widget.interact_rect, to)?;
         queue_drag(
             &self.inner,
@@ -572,6 +593,7 @@ impl DevMcpServer {
         &self,
         viewport_id: Option<String>,
         from: WidgetRef,
+        start: Option<Vec2>,
         to: WidgetRef,
         modifiers: Option<Modifiers>,
     ) -> ToolResult<()> {
@@ -586,7 +608,7 @@ impl DevMcpServer {
             .into());
         }
         let viewport_id = from_viewport;
-        let start = from_widget.interact_rect.center();
+        let start = drag_start(&from_widget, start)?;
         let end = to_widget.interact_rect.center();
         queue_drag(
             &self.inner,

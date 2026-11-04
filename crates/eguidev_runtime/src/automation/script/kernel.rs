@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -855,7 +856,8 @@ impl EguidevModule {
                     let value = runtime
                         .fixture_apply(pos, args.name, args.params)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -875,10 +877,7 @@ impl EguidevModule {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .diagnostic(pos, name)
-                        .await
-                        .map_err(host_script_error)?;
+                    let value = runtime.diagnostic(pos, name).await.or_raise(&ctx).await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -892,7 +891,7 @@ impl EguidevModule {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime.diagnostics(pos).await.map_err(host_script_error)?;
+                    let value = runtime.diagnostics(pos).await.or_raise(&ctx).await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -921,7 +920,8 @@ impl EguidevModule {
                     let value = runtime
                         .viewports_list(pos, None)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -956,7 +956,8 @@ impl EguidevModule {
                     let value = runtime
                         .egui_diagnostics(pos, viewport.id)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -973,7 +974,8 @@ impl EguidevModule {
                     runtime
                         .clear_egui_diagnostics(pos, viewport.id)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     Ok(HostReturn::default())
                 }
             }),
@@ -1014,7 +1016,8 @@ impl EguidevModule {
                             },
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1036,7 +1039,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1054,7 +1058,8 @@ impl EguidevModule {
                     let value = runtime
                         .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1076,7 +1081,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1099,7 +1105,8 @@ impl EguidevModule {
                                 options.as_ref().and_then(Value::as_object),
                             )
                             .await
-                            .map_err(host_script_error)?;
+                            .or_raise(&ctx)
+                            .await?;
                         ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                             .await
                     }
@@ -1123,7 +1130,8 @@ impl EguidevModule {
                                 options.as_ref().and_then(Value::as_object),
                             )
                             .await
-                            .map_err(host_script_error)?;
+                            .or_raise(&ctx)
+                            .await?;
                         ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                             .await
                     }
@@ -1141,7 +1149,8 @@ impl EguidevModule {
                     let value = runtime
                         .viewport_input(pos, &args.value, args.receiver.id)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1158,7 +1167,8 @@ impl EguidevModule {
                     let value = runtime
                         .viewport_resize(pos, &args.value, args.receiver.id)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1176,7 +1186,8 @@ impl EguidevModule {
                     let value = runtime
                         .screenshot(pos, Some(&target), Some(&args.value))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1193,7 +1204,8 @@ impl EguidevModule {
                     let value = runtime
                         .native_screenshot(pos, args.receiver.id, Some(&args.value))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1210,7 +1222,8 @@ impl EguidevModule {
                     let value = runtime
                         .sample_pixels(pos, &args.value, Some(args.receiver.id))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1227,7 +1240,8 @@ impl EguidevModule {
                     let value = runtime
                         .check_layout(pos, Some(viewport.id))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1243,11 +1257,14 @@ impl EguidevModule {
                     async move {
                         let pos = script_position_from_context(&ctx).await?;
                         let rect = super::parse::parse_rect(&args.value)
-                            .map_err(|error| host_script_error(type_error(error.message)))?;
+                            .map_err(|error| type_error(error.message))
+                            .or_raise(&ctx)
+                            .await?;
                         let value = runtime
                             .show_highlight_rect(pos, Some(args.receiver.id), rect, args.text)
                             .await
-                            .map_err(host_script_error)?;
+                            .or_raise(&ctx)
+                            .await?;
                         ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                             .await
                     }
@@ -1265,7 +1282,8 @@ impl EguidevModule {
                     let value = runtime
                         .clear_highlights(pos, Some(viewport.id))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1275,7 +1293,7 @@ impl EguidevModule {
         builder.async_function(
             "viewport_show_debug_overlay",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOverlayArgs| {
+            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
@@ -1283,12 +1301,12 @@ impl EguidevModule {
                         .show_debug_overlay(
                             pos,
                             Some(args.receiver.id),
-                            args.mode.as_ref(),
                             args.options.as_ref().and_then(Value::as_object),
                             None,
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1305,7 +1323,8 @@ impl EguidevModule {
                     let value = runtime
                         .clear_debug_overlay(pos, Some(viewport.id))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1336,7 +1355,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1358,7 +1378,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1381,7 +1402,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1403,7 +1425,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1426,7 +1449,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1449,7 +1473,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1472,7 +1497,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1495,7 +1521,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1518,7 +1545,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1540,7 +1568,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1562,7 +1591,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1579,7 +1609,8 @@ impl EguidevModule {
                     let value = runtime
                         .text_measure(pos, &receiver.value)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1596,7 +1627,8 @@ impl EguidevModule {
                     let value = runtime
                         .check_layout_widget(pos, &receiver.value, receiver.viewport_id)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1613,7 +1645,8 @@ impl EguidevModule {
                     let value = runtime
                         .screenshot(pos, Some(&args.receiver.value), Some(&args.value))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1635,7 +1668,8 @@ impl EguidevModule {
                             &args.value,
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1658,7 +1692,8 @@ impl EguidevModule {
                             &args.ny,
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1680,7 +1715,8 @@ impl EguidevModule {
                             args.value,
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1697,7 +1733,8 @@ impl EguidevModule {
                     let value = runtime
                         .clear_widget_highlight(pos, &receiver.value, receiver.viewport_id)
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1707,7 +1744,7 @@ impl EguidevModule {
         builder.async_function(
             "widget_show_debug_overlay",
             ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOverlayArgs| {
+            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
                 let runtime = Arc::clone(&runtime);
                 async move {
                     let pos = script_position_from_context(&ctx).await?;
@@ -1715,12 +1752,12 @@ impl EguidevModule {
                         .show_debug_overlay(
                             pos,
                             None,
-                            args.mode.as_ref(),
                             args.options.as_ref().and_then(Value::as_object),
                             Some(args.receiver.widget_ref()),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1737,7 +1774,8 @@ impl EguidevModule {
                     let value = runtime
                         .clear_widget_debug_overlay(pos, widget.widget_ref())
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1769,7 +1807,8 @@ impl EguidevModule {
                             },
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1791,7 +1830,8 @@ impl EguidevModule {
                             options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -1829,7 +1869,8 @@ impl EguidevModule {
                     runtime
                         .wait_for_fresh_capture(pos, options.0.as_ref().and_then(Value::as_object))
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     Ok(HostReturn::default())
                 }
             }),
@@ -1850,7 +1891,8 @@ impl EguidevModule {
                             args.options.as_ref().and_then(Value::as_object),
                         )
                         .await
-                        .map_err(host_script_error)?;
+                        .or_raise(&ctx)
+                        .await?;
                     ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
                         .await
                 }
@@ -2096,39 +2138,6 @@ impl<'s> FromLuaMulti<'s> for ViewportValueStringArgs {
     }
 }
 
-struct ViewportOverlayArgs {
-    receiver: ViewportReceiver,
-    mode: Option<Value>,
-    options: Option<Value>,
-}
-
-impl<'s> FromLuaMulti<'s> for ViewportOverlayArgs {
-    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
-        let mut values = values.into_vec();
-        if !(1..=3).contains(&values.len()) {
-            return Err(RuntimeError::runtime(format!(
-                "show_debug_overlay expected self, optional mode, and optional options, got {} arguments",
-                values.len()
-            )));
-        }
-        let receiver = ViewportReceiver::from_lua(values.remove(0), scope)?;
-        let mode = optional_json_value(
-            scope,
-            if values.is_empty() {
-                None
-            } else {
-                Some(values.remove(0))
-            },
-        )?;
-        let options = optional_json_value(scope, values.pop())?;
-        Ok(Self {
-            receiver,
-            mode,
-            options,
-        })
-    }
-}
-
 struct ViewportPredicateArgs {
     receiver: ViewportReceiver,
     predicate: StashedClosure,
@@ -2278,39 +2287,6 @@ impl<'s> FromLuaMulti<'s> for WidgetGridArgs {
         let nx = JsonArg::from_lua(values.remove(0), scope)?.0;
         let ny = JsonArg::from_lua(values.remove(0), scope)?.0;
         Ok(Self { receiver, nx, ny })
-    }
-}
-
-struct WidgetOverlayArgs {
-    receiver: WidgetReceiver,
-    mode: Option<Value>,
-    options: Option<Value>,
-}
-
-impl<'s> FromLuaMulti<'s> for WidgetOverlayArgs {
-    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
-        let mut values = values.into_vec();
-        if !(1..=3).contains(&values.len()) {
-            return Err(RuntimeError::runtime(format!(
-                "show_debug_overlay expected self, optional mode, and optional options, got {} arguments",
-                values.len()
-            )));
-        }
-        let receiver = WidgetReceiver::from_lua(values.remove(0), scope)?;
-        let mode = optional_json_value(
-            scope,
-            if values.is_empty() {
-                None
-            } else {
-                Some(values.remove(0))
-            },
-        )?;
-        let options = optional_json_value(scope, values.pop())?;
-        Ok(Self {
-            receiver,
-            mode,
-            options,
-        })
     }
 }
 
@@ -2624,7 +2600,7 @@ fn configure_host<'s>(
     let options = optional_json_arg(scope, "configure", args)?;
     runtime
         .configure(pos, options.as_ref().and_then(Value::as_object))
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     Ok(MultiValue::new())
 }
 
@@ -2635,7 +2611,9 @@ fn fixtures_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     no_args("fixtures", args)?;
     let pos = script_position_from_caller(scope);
-    let value = runtime.fixtures(pos).map_err(host_script_error)?;
+    let value = runtime
+        .fixtures(pos)
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2652,7 +2630,9 @@ fn dump_host<'s>(
         Some(Value::Object(map)) => Some(map),
         Some(_) => return Err(RuntimeError::runtime("dump expected an options table")),
     };
-    let value = runtime.dump(pos, options).map_err(host_script_error)?;
+    let value = runtime
+        .dump(pos, options)
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2669,7 +2649,9 @@ fn dump_text_host<'s>(
         Some(Value::Object(map)) => Some(map),
         Some(_) => return Err(RuntimeError::runtime("dump_text expected an options table")),
     };
-    let value = runtime.dump_text(pos, options).map_err(host_script_error)?;
+    let value = runtime
+        .dump_text(pos, options)
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2684,7 +2666,7 @@ fn viewport_widget_list_host<'s>(
     inject_viewport_id(viewport_id, &mut options);
     let value = runtime
         .widget_list(pos, options.as_ref().and_then(Value::as_object))
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2698,7 +2680,7 @@ fn viewport_state_host<'s>(
     let viewport_id = viewport_self(scope, "state", args)?;
     let value = runtime
         .viewport_state(pos, viewport_id)
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2714,7 +2696,7 @@ fn viewport_widget_at_point_host<'s>(
     inject_viewport_id(viewport_id, &mut options);
     let value = runtime
         .widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object))
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2729,7 +2711,7 @@ fn widget_viewport_host<'s>(
     let viewport_id = receiver.viewport_id.as_deref().unwrap_or("root");
     let value = runtime
         .viewport_handle(pos, viewport_id)
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2743,7 +2725,7 @@ fn widget_state_host<'s>(
     let target = widget_self(scope, "state", args)?;
     let value = runtime
         .widget_state(pos, &target)
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2757,7 +2739,7 @@ fn widget_parent_host<'s>(
     let target = widget_self(scope, "parent", args)?;
     let value = runtime
         .widget_parent(pos, &target)
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2771,7 +2753,7 @@ fn widget_children_host<'s>(
     let target = widget_self(scope, "children", args)?;
     let value = runtime
         .widget_children(pos, &target)
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2784,12 +2766,14 @@ fn assert_host<'s>(
     let values = args.into_vec();
     let pos = script_position_from_caller(scope);
     let Some(condition) = values.first().copied() else {
-        return Err(host_script_error(
+        return Err(scoped_host_error(
+            scope,
             runtime.type_error(pos, "assert expected a boolean condition"),
         ));
     };
     let condition = from_scoped_value::<bool>(scope, condition).map_err(|error| {
-        host_script_error(
+        scoped_host_error(
+            scope,
             runtime.type_error(pos, format!("assert condition must be boolean: {error}")),
         )
     })?;
@@ -2799,7 +2783,8 @@ fn assert_host<'s>(
         .map(|message| from_scoped_value::<String>(scope, message))
         .transpose()
         .map_err(|error| {
-            host_script_error(
+            scoped_host_error(
+                scope,
                 runtime.type_error(pos, format!("assert message must be string: {error}")),
             )
         })?;
@@ -2821,7 +2806,9 @@ fn capture_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     no_args("capture", args)?;
     let pos = script_position_from_caller(scope);
-    let value = runtime.capture(pos).map_err(host_script_error)?;
+    let value = runtime
+        .capture(pos)
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -2835,7 +2822,7 @@ fn capture_diff_host<'s>(
     let (capture, options) = capture_self_and_options(scope, "diff", args)?;
     let value = runtime
         .capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object))
-        .map_err(host_script_error)?;
+        .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }
@@ -3095,15 +3082,87 @@ fn script_position_from_location(location: Option<SourceLocation>) -> ScriptPosi
         .unwrap_or_default()
 }
 
-fn host_script_error(info: ScriptErrorInfo) -> RuntimeError {
+/// Raise the failure of a runtime call as the script-visible table of the
+/// declared `Error` type. `details` and its `target` are Luau tables when the
+/// VM can build them, and the details fall back to JSON text otherwise. The
+/// whole error rides along as the payload, for the outcome.
+fn host_error_table(
+    info: ScriptErrorInfo,
+    details: Option<OwnedValue>,
+    target: Option<OwnedValue>,
+) -> RuntimeError {
     let mut fields = vec![ScriptErrorField::new("error_type", info.error_type.clone())];
     if let Some(code) = info.code.clone() {
         fields.push(ScriptErrorField::new("code", code));
     }
-    if let Some(details) = info.details.as_ref() {
-        fields.push(ScriptErrorField::new("details", details.to_string()));
+    match (details, info.details.as_ref()) {
+        (Some(details), _) => fields.push(ScriptErrorField::new("details", details)),
+        (None, Some(details)) => fields.push(ScriptErrorField::new("details", details.to_string())),
+        (None, None) => {}
+    }
+    if let Some(target) = target {
+        fields.push(ScriptErrorField::new("target", target));
     }
     RuntimeError::structured(info.message.clone(), fields).with_payload(info)
+}
+
+/// Return the error target that the details of an error name.
+fn error_target(info: &ScriptErrorInfo) -> Option<&Value> {
+    info.details.as_ref()?.get("target")
+}
+
+/// Build one field value of an error table in a VM scope.
+fn scoped_error_value(scope: &Scope<'_>, value: &Value) -> Result<OwnedValue, RuntimeError> {
+    let value = json_to_scoped_value_with_options(scope, value, JsonDecodeOptions::typed())?;
+    scope.owned_value(value)
+}
+
+/// Raise the failure of a borrowed host call, which holds its VM scope.
+fn scoped_host_error(scope: &Scope<'_>, info: ScriptErrorInfo) -> RuntimeError {
+    let details = info
+        .details
+        .as_ref()
+        .and_then(|details| scoped_error_value(scope, details).ok());
+    let target = error_target(&info).and_then(|target| scoped_error_value(scope, target).ok());
+    host_error_table(info, details, target)
+}
+
+/// Build one field value of an error table through the VM scope of an async
+/// host call.
+async fn async_error_value(ctx: &AsyncHostContext, value: Option<Value>) -> Option<OwnedValue> {
+    let value = value?;
+    ctx.scope(move |scope| scoped_error_value(scope, &value))
+        .await
+        .ok()
+}
+
+/// Raise the failure of a runtime call through the VM scope of its async
+/// host call.
+trait RaiseInScope<T> {
+    /// Return the value, or raise the error as a script-visible table.
+    fn or_raise(
+        self,
+        ctx: &AsyncHostContext,
+    ) -> impl Future<Output = Result<T, RuntimeError>> + Send;
+}
+
+impl<T: Send> RaiseInScope<T> for ScriptResult<T> {
+    fn or_raise(
+        self,
+        ctx: &AsyncHostContext,
+    ) -> impl Future<Output = Result<T, RuntimeError>> + Send {
+        let ctx = ctx.clone();
+        async move {
+            match self {
+                Ok(value) => Ok(value),
+                Err(info) => {
+                    let details = async_error_value(&ctx, info.details.clone()).await;
+                    let target = async_error_value(&ctx, error_target(&info).cloned()).await;
+                    Err(host_error_table(info, details, target))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3170,8 +3229,8 @@ mod tests {
         registry::{Inner, viewport_id_to_string},
         runtime::{self, Runtime},
         types::{
-            FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, WidgetRegistryEntry,
-            WidgetRole, WidgetRoleMeta, WidgetValue,
+            FixtureParam, FixtureResponse, FixtureSpec, Pos2, Rect, RoleState, Vec2,
+            WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetValue,
         },
     };
 
@@ -3509,6 +3568,108 @@ end)
         assert!(outcome.assertions[0].message.contains("expectation failed"));
     }
 
+    /// Build a registry that holds one covered button in the root viewport.
+    fn covered_button_inner() -> Arc<Inner> {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        let mut entry = make_entry("covered.button", 1, WidgetRole::Button);
+        entry.covered = true;
+        inner.widgets.record_widget(viewport_id, entry);
+        inner.widgets.finalize_registry(viewport_id);
+        inner
+    }
+
+    #[test]
+    fn timed_out_click_names_its_widget() {
+        let inner = covered_button_inner();
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("covered.button"):click({ timeout_ms = 20, poll_interval_ms = 1 })"#
+                .to_string(),
+            1_000,
+            "click.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(!outcome.success, "{outcome:?}");
+        let error = outcome.error.expect("click error");
+        assert_eq!(error.code.as_deref(), Some("timeout"));
+        assert!(
+            error
+                .message
+                .contains("waiting for widget covered.button in viewport root to become"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.details.as_ref().map(|details| &details["target"]),
+            Some(&json!({ "kind": "widget", "id": "covered.button", "viewport_id": "root" })),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn focus_waits_until_the_widget_is_actionable() {
+        // A covered widget is present, visible, and enabled, but a click to
+        // focus it would reach the covering layer.
+        let inner = covered_button_inner();
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"eguidev.widget("covered.button"):focus({ timeout_ms = 20, poll_interval_ms = 1 })"#
+                .to_string(),
+            1_000,
+            "focus.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        let error = outcome.error.expect("focus error");
+        assert_eq!(error.code.as_deref(), Some("timeout"), "{error:?}");
+        assert!(
+            error
+                .message
+                .contains("to become interaction-ready and uncovered"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn rust_errors_carry_target_and_details_tables() {
+        let inner = covered_button_inner();
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local ok, err = pcall(function()
+    eguidev.widget("covered.button"):click({ timeout_ms = 20, poll_interval_ms = 1 })
+end)
+local failure = err :: any
+return {
+    ok = ok,
+    code = failure.code,
+    target = failure.target,
+    details = type(failure.details),
+    elapsed = type(failure.details.elapsed_ms),
+}"#
+            .to_string(),
+            1_000,
+            "click-pcall.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "ok": false,
+                "code": "timeout",
+                "target": { "kind": "widget", "id": "covered.button", "viewport_id": "root" },
+                "details": "table",
+                "elapsed": "number",
+            }))
+        );
+    }
+
     #[test]
     fn initial_ruau_slice_runs_assert_widget_exists() {
         let inner = Arc::new(Inner::new());
@@ -3821,9 +3982,10 @@ return {
         inner
             .widgets
             .record_widget(viewport_id, make_entry("checkbox", 2, WidgetRole::Checkbox));
-        inner
-            .widgets
-            .record_widget(viewport_id, make_entry("input", 3, WidgetRole::TextEdit));
+        // No frame runs, so the input holds the focus that type_text confirms.
+        let mut input = make_entry("input", 3, WidgetRole::TextEdit);
+        input.focused = true;
+        inner.widgets.record_widget(viewport_id, input);
         inner.widgets.finalize_registry(viewport_id);
 
         let runtime = Runtime::ensure_for_inner(&inner);
@@ -4808,6 +4970,53 @@ return true
     }
 
     #[test]
+    fn keyboard_actions_confirm_focus_within_the_action_timeout() {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("field", 1, WidgetRole::TextEdit));
+        inner.widgets.finalize_registry(viewport_id);
+
+        // No frame runs, so the field never takes the focus. Each action must
+        // fail at its own timeout: the script deadline is shorter than the
+        // old fixed focus wait of 5 seconds.
+        let runtime = Runtime::ensure_for_inner(&inner);
+        let outcome = run_script_eval_blocking(
+            inner,
+            runtime,
+            r#"local field = eguidev.widget("field")
+local typed, typed_error = pcall(function()
+    field:type_text("abc", { timeout_ms = 40, poll_interval_ms = 1, settle = false })
+end)
+local keyed, key_error = pcall(function()
+    eguidev.root:key("a", { target = field, timeout_ms = 40, poll_interval_ms = 1, settle = false })
+end)
+return {
+    typed = typed,
+    typed_code = (typed_error :: any).code,
+    keyed = keyed,
+    key_code = (key_error :: any).code,
+}"#
+            .to_string(),
+            2_000,
+            "keyboard-focus.luau".to_string(),
+            ScriptArgs::default(),
+        );
+        assert!(outcome.success, "{outcome:?}");
+        assert_eq!(
+            outcome.value,
+            Some(json!({
+                "typed": false,
+                "typed_code": "not_actionable",
+                "keyed": false,
+                "key_code": "not_actionable",
+            }))
+        );
+    }
+
+    #[test]
     fn fixture_catalog_keeps_viewport_scoped_targets() {
         let inner = Arc::new(Inner::new());
         let secondary = egui::ViewportId::from_hash_of("fixture.list.secondary");
@@ -4874,6 +5083,328 @@ return { id = ready.widget.id, viewport = widget.__viewport_id }
             Ok(())
         })
         .expect("sample arrays add and multiply as numbers");
+    }
+
+    /// Return the fields of a declared table type, and of each type that it
+    /// intersects.
+    fn declared_fields(name: &str) -> BTreeSet<String> {
+        let source = crate::script_definitions();
+        let marker = format!("export type {name} =");
+        let start = source
+            .find(&marker)
+            .unwrap_or_else(|| panic!("no declared type {name}"));
+        let body = &source[start + marker.len()..];
+        let open = body.find('{').expect("a table type");
+        let mut fields = BTreeSet::new();
+        for part in body[..open].split('&').map(str::trim) {
+            if !part.is_empty() {
+                fields.extend(declared_fields(part));
+            }
+        }
+        let mut depth = 0;
+        for line in body[open..].lines() {
+            let trimmed = line.trim();
+            if depth == 1
+                && !trimmed.starts_with("--")
+                && let Some((field, _)) = trimmed.split_once(':')
+                && field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                fields.insert(field.to_string());
+            }
+            depth += line.matches('{').count();
+            depth -= line.matches('}').count();
+            if depth == 0 {
+                break;
+            }
+        }
+        fields
+    }
+
+    /// Build a registry with a button, a focused text field, and a scroll area.
+    fn option_parity_inner() -> Arc<Inner> {
+        let inner = Arc::new(Inner::new());
+        let viewport_id = egui::ViewportId::ROOT;
+        inner.widgets.clear_registry(viewport_id);
+        inner
+            .widgets
+            .record_widget(viewport_id, make_entry("button", 1, WidgetRole::Button));
+        let mut field = make_entry("field", 2, WidgetRole::TextEdit);
+        field.focused = true;
+        inner.widgets.record_widget(viewport_id, field);
+        let mut scroll = make_entry("scroll", 3, WidgetRole::ScrollArea);
+        scroll.role_state = Some(RoleState::ScrollArea {
+            offset: Vec2 { x: 0.0, y: 0.0 },
+            viewport_size: Vec2 { x: 10.0, y: 10.0 },
+            content_size: Vec2 { x: 10.0, y: 100.0 },
+        });
+        inner.widgets.record_widget(viewport_id, scroll);
+        inner.widgets.finalize_registry(viewport_id);
+        inner
+    }
+
+    #[test]
+    fn each_host_function_reads_the_declared_option_fields() {
+        // Each case calls one public function with every declared field of
+        // its option type. The keys that the private library consumes or adds
+        // for a case are not compared.
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "WaitOptions",
+                r#"button:wait({ actionable = true }, { timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "ActionOptions",
+                r#"button:focus({ timeout_ms = 50, poll_interval_ms = 1, settle = false })"#,
+                &[],
+            ),
+            (
+                "ClickOptions",
+                r#"button:click({
+    timeout_ms = 50, poll_interval_ms = 1, settle = false,
+    button = "primary", click_count = 1, modifiers = { ctrl = true },
+})"#,
+                &[],
+            ),
+            (
+                "HoverOptions",
+                r#"button:hover({
+    timeout_ms = 50, poll_interval_ms = 1, settle = false,
+    position = { x = 0.5, y = 0.5 }, duration_ms = 0,
+})"#,
+                &[],
+            ),
+            (
+                "TypeTextOptions",
+                r#"field:type_text("a", {
+    timeout_ms = 50, poll_interval_ms = 1, settle = false, clear = true, enter = true,
+})"#,
+                &[],
+            ),
+            (
+                "DragOptions",
+                r#"button:drag_relative({ x = 0.5, y = 0.5 }, {
+    timeout_ms = 50, poll_interval_ms = 1, settle = false,
+    from = { x = 0.5, y = 0.5 }, modifiers = { shift = true },
+})"#,
+                &[],
+            ),
+            (
+                "ScrollOptions",
+                r#"button:scroll({ x = 0, y = 1 }, {
+    timeout_ms = 50, poll_interval_ms = 1, settle = false, modifiers = { ctrl = true },
+})"#,
+                &[],
+            ),
+            (
+                "ScrollToOptions",
+                r#"scroll:scroll_to({
+    timeout_ms = 50, poll_interval_ms = 1, settle = false,
+    offset = { x = 0, y = 0 }, align = "top",
+})"#,
+                &[],
+            ),
+            (
+                "KeyOptions",
+                r#"eguidev.root:key("a", {
+    timeout_ms = 50, poll_interval_ms = 1, settle = false, repeat_count = 1, target = field,
+})"#,
+                &[],
+            ),
+            (
+                "ResizeOptions",
+                r#"eguidev.root:resize({
+    timeout_ms = 50, poll_interval_ms = 1, settle = true,
+    inner_size = { x = 100, y = 100 }, min_size = { x = 10, y = 10 },
+    max_size = { x = 200, y = 200 }, increments = { x = 1, y = 1 }, resizable = true,
+})"#,
+                &[],
+            ),
+            (
+                "DebugOverlayOptions",
+                r##"eguidev.root:show_debug_overlay({
+    mode = "bounds", show_labels = true, show_sizes = true, label_font_size = 10,
+    bounds_color = "#00ff00", clip_color = "#ff0000", overlap_color = "#ffff00",
+})"##,
+                &[],
+            ),
+            (
+                "ScreenshotOptions",
+                r#"eguidev.root:screenshot({ format = "jpeg", max_dimension = 0 })"#,
+                &[],
+            ),
+            (
+                "DumpOptions",
+                r#"eguidev.dump({
+    viewport = eguidev.root, root = button, include_invisible = true, fields = "full",
+})"#,
+                &[],
+            ),
+            (
+                "DiffOptions",
+                r#"eguidev.capture():diff({ move_epsilon = 0.5, include_invisible = true, id_prefix = "b" })"#,
+                &[],
+            ),
+            (
+                "WidgetQuery",
+                r#"eguidev.widgets({
+    role = "button", id_prefix = "b", label = "b", label_contains = "b", visible = true,
+    enabled = true, focused = false, selected = false, covered = false,
+    viewport = eguidev.root,
+})"#,
+                &["viewport", "include_invisible"],
+            ),
+            (
+                "ScriptOptions",
+                r#"eguidev.configure({
+    timeout_ms = 50, poll_interval_ms = 1, settle = true, animations = false,
+})"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"button:wait({ present = false }, { timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"eguidev.root:wait(function(_) return false end, { timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"eguidev.root:settle({ timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"eguidev.root:wait_capture({ timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"eguidev.wait(function() return false end, { timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"eguidev.wait_frames(1, { timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "WaitOptions",
+                r#"eguidev.wait_viewport({ name = "none" }, { timeout_ms = 50, poll_interval_ms = 1 })"#,
+                &[],
+            ),
+            (
+                "ActionOptions",
+                r#"button:set_value(true, { timeout_ms = 50, poll_interval_ms = 1, settle = true })"#,
+                &[],
+            ),
+            (
+                "ActionOptions",
+                r#"button:scroll_into_view({ timeout_ms = 50, poll_interval_ms = 1, settle = true })"#,
+                &[],
+            ),
+            (
+                "ActionOptions",
+                r#"eguidev.root:dismiss_popups({ timeout_ms = 50, poll_interval_ms = 1, settle = true })"#,
+                &[],
+            ),
+            (
+                "ActionOptions",
+                r#"eguidev.root:paste("a", { timeout_ms = 50, poll_interval_ms = 1, settle = true })"#,
+                &[],
+            ),
+            (
+                "ActionOptions",
+                r#"eguidev.root:focus({ timeout_ms = 50, poll_interval_ms = 1, settle = true })"#,
+                &[],
+            ),
+            (
+                "DragOptions",
+                r#"button:drag_to({ x = 1, y = 1 }, {
+    timeout_ms = 50, poll_interval_ms = 1, settle = false,
+    from = { x = 0.5, y = 0.5 }, modifiers = { shift = true },
+})"#,
+                &[],
+            ),
+            (
+                "DragOptions",
+                r#"button:drag_to(field, {
+    timeout_ms = 50, poll_interval_ms = 1, settle = false,
+    from = { x = 0.5, y = 0.5 }, modifiers = { shift = true },
+})"#,
+                &[],
+            ),
+            (
+                "ScreenshotOptions",
+                r#"button:screenshot({ format = "jpeg", max_dimension = 0 })"#,
+                &[],
+            ),
+            (
+                "ScreenshotOptions",
+                r#"eguidev.root:native_screenshot({ format = "jpeg", max_dimension = 0 })"#,
+                &[],
+            ),
+            (
+                "DebugOverlayOptions",
+                r##"button:show_debug_overlay({
+    mode = "bounds", show_labels = true, show_sizes = true, label_font_size = 10,
+    bounds_color = "#00ff00", clip_color = "#ff0000", overlap_color = "#ffff00",
+})"##,
+                &[],
+            ),
+            (
+                "WidgetFilter",
+                r#"eguidev.root:widgets({
+    role = "button", id_prefix = "b", label = "b", label_contains = "b", visible = true,
+    enabled = true, focused = false, selected = false, covered = false,
+})"#,
+                &["include_invisible"],
+            ),
+            (
+                "DumpOptions",
+                r#"eguidev.dump_text({
+    viewport = eguidev.root, root = button, include_invisible = true, fields = "full",
+})"#,
+                &[],
+            ),
+        ];
+        // The private library adds the viewport of a receiver to its options.
+        let internal = ["viewport_id"];
+        for (type_name, call, library_keys) in cases {
+            let inner = option_parity_inner();
+            let runtime = Runtime::ensure_for_inner(&inner);
+            super::super::parse::take_read_keys();
+            let outcome = run_script_eval_blocking(
+                inner,
+                runtime,
+                format!(
+                    "local button = eguidev.widget(\"button\")\n\
+                     local field = eguidev.widget(\"field\")\n\
+                     local scroll = eguidev.widget(\"scroll\")\n\
+                     local _ = {{ button, field, scroll }}\n\
+                     pcall(function()\n{call}\nend)\n"
+                ),
+                2_000,
+                format!("{type_name}.luau"),
+                ScriptArgs::default(),
+            );
+            assert!(outcome.success, "{type_name}: {outcome:?}");
+            let compared = |key: &String| {
+                !internal.contains(&key.as_str()) && !library_keys.contains(&key.as_str())
+            };
+            let read = super::super::parse::take_read_keys()
+                .into_iter()
+                .filter(compared)
+                .collect::<BTreeSet<_>>();
+            let declared = declared_fields(type_name)
+                .into_iter()
+                .filter(compared)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(read, declared, "{type_name}");
+        }
     }
 
     fn make_entry(id: &str, native_id: u64, role: WidgetRole) -> WidgetRegistryEntry {

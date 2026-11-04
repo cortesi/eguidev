@@ -7,6 +7,7 @@ local WAIT: WaitOptions = { timeout_ms = 4000, poll_interval_ms = 16 }
 local ACT: ActionOptions = { settle = true }
 local CLICK: ClickOptions = { settle = true }
 local DRAG: DragOptions = { settle = true }
+local SCROLL: ScrollOptions = { settle = true }
 
 -- Widget waits.
 local submit = eguidev.widget("basic.submit")
@@ -50,7 +51,7 @@ eguidev.widget("basic.name"):type_text("Rain", { settle = true, clear = true })
 eguidev.widget("basic.intensity"):set_value(50, ACT)
 eguidev.widget("basic.drag"):drag_relative({ x = 0.1, y = 0 }, DRAG)
 eguidev.widget("basic.drag"):drag_to(eguidev.widget("basic.submit"), DRAG)
-eguidev.widget("basic.scroll"):scroll({ x = 0, y = -20 }, ACT)
+eguidev.widget("basic.scroll"):scroll({ x = 0, y = -20 }, SCROLL)
 eguidev.widget("basic.scroll"):scroll_to({ align = "top", settle = true })
 eguidev.widget("basic.scroll.row.20"):scroll_into_view(ACT)
 

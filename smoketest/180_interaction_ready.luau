@@ -64,5 +64,12 @@ assert(
     string.find(click_error.message, "scroll_into_view", 1, true) ~= nil,
     "the click timeout should name the remedy: " .. tostring(click_err)
 )
+assert(
+    string.find(click_error.message, "widget basic.scroll.row.40 in viewport root", 1, true)
+        ~= nil,
+    "the click timeout should name the widget and its viewport: " .. tostring(click_err)
+)
+assert(click_error.target.kind == "widget", "the click timeout should carry its target")
+assert(click_error.target.id == "basic.scroll.row.40", "the target should be the clicked row")
 
 return { row = ready.viewport_id .. "/" .. ready.id }

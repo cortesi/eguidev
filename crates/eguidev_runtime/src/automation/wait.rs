@@ -281,14 +281,23 @@ impl DevMcpServer {
             return Ok(widget);
         }
 
-        let mut details = wait_timeout_details(
-            "widget",
-            elapsed_ms,
-            widget.as_ref(),
-            None,
-            None,
-            None,
-            &observation,
+        let viewport = widget
+            .as_ref()
+            .map(|widget| widget.viewport_id.as_str())
+            .or(viewport_id.as_deref())
+            .or(target.viewport_id.as_deref());
+        let mut details = with_widget_target(
+            wait_timeout_details(
+                "widget",
+                elapsed_ms,
+                widget.as_ref(),
+                None,
+                None,
+                None,
+                &observation,
+            ),
+            &target.id,
+            viewport,
         );
         if widget.is_none()
             && let Err(error) = resolve_wait_widget(&self.inner, viewport_id.as_deref(), &target)
@@ -298,10 +307,7 @@ impl DevMcpServer {
 
         Err(ToolError::new(
             ErrorCode::Timeout,
-            wait_timeout_message(
-                format!("Timed out waiting for widget {condition} after {timeout_ms}ms"),
-                &observation,
-            ),
+            widget_wait_timeout_message(&target.id, viewport, condition, timeout_ms, &observation),
         )
         .with_details(details)
         .into())
