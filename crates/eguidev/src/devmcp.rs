@@ -1,5 +1,4 @@
 //! DevMCP instrumentation helpers and public API.
-#![allow(missing_docs)]
 
 use std::{
     any::Any,
@@ -35,20 +34,31 @@ enum DevMcpState {
     Active(Arc<Inner>),
 }
 
+/// The callbacks through which an attached runtime observes each frame of the
+/// app. The instrumentation calls them on the UI thread.
 pub trait RuntimeHooks: Send + Sync {
+    /// Return the runtime, so that its owner can downcast it.
     fn as_any(&self) -> &(dyn Any + Send + Sync);
 
+    /// Observe the raw input events of a frame before egui handles them.
     fn on_raw_input(&self, _inner: &Inner, _events: &[egui::Event]) {}
 
+    /// Observe the end of a frame of a viewport.
     fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
 
+    /// Observe the egui output of a completed frame of a viewport.
     fn on_egui_output(&self, _inner: &Inner, _viewport_id: egui::ViewportId, _output: &FullOutput) {
     }
 }
 
+/// The options that apply while a runtime automates the app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AutomationOptions {
+    /// Whether the runtime requests a repaint after each frame, so that waits
+    /// see fresh frames. Defaults to true.
     pub keep_alive: bool,
+    /// Whether egui animations run. Defaults to false, so that frames are
+    /// deterministic.
     pub animations: bool,
 }
 
@@ -196,6 +206,7 @@ impl DevMcp {
     }
 
     /// Enable or disable verbose internal logging for DevMCP operations.
+    #[must_use]
     pub fn verbose_logging(self, verbose_logging: bool) -> Self {
         self.shared
             .verbose_logging
@@ -207,6 +218,7 @@ impl DevMcp {
     }
 
     /// Configure runtime-owned automation behavior.
+    #[must_use]
     pub fn automation_options(self, options: AutomationOptions) -> Self {
         *lock(
             &self.shared.automation_options,
@@ -220,6 +232,7 @@ impl DevMcp {
 
     /// Enable or disable runtime repaint keep-alive while automation is
     /// attached.
+    #[must_use]
     pub fn keep_alive(self, keep_alive: bool) -> Self {
         let options = {
             let mut options = lock(
@@ -236,6 +249,7 @@ impl DevMcp {
     }
 
     /// Enable or disable egui animations while automation is attached.
+    #[must_use]
     pub fn animations(self, animations: bool) -> Self {
         let options = {
             let mut options = lock(
@@ -257,6 +271,7 @@ impl DevMcp {
     /// shutdown. The handler must publish its request to the application's
     /// lifecycle owner and return immediately. If no handler is registered,
     /// Eguidev closes the root viewport.
+    #[must_use]
     pub fn on_shutdown<F>(self, handler: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -433,6 +448,7 @@ impl DevMcp {
     }
 
     #[doc(hidden)]
+    #[must_use]
     pub fn activate_runtime(mut self, inner: Arc<Inner>, hooks: Arc<dyn RuntimeHooks>) -> Self {
         inner.set_runtime_hooks(hooks);
         inner.set_verbose_logging(self.shared.verbose_logging.load(Ordering::Relaxed));

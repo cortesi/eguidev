@@ -191,15 +191,21 @@ pub fn publish_rect_container(
 }
 
 /// RAII guard that pops a container scope when dropped.
+#[must_use = "dropping the guard ends the container scope"]
 pub struct ContainerGuard {
+    /// The registry of an active runtime, or `None` when instrumentation is
+    /// inert.
     inner: Option<Arc<Inner>>,
+    /// The viewport whose container stack holds the scope.
     viewport_id: egui::ViewportId,
+    /// The ID that the guard pushed, so that it pops its own scope.
+    id: String,
 }
 
 impl Drop for ContainerGuard {
     fn drop(&mut self) {
         if let Some(inner) = &self.inner {
-            inner.widgets.pop_container(self.viewport_id);
+            inner.widgets.pop_container(self.viewport_id, &self.id);
         }
     }
 }
@@ -222,10 +228,19 @@ fn begin_container_with_inner(
     id: impl Into<String>,
 ) -> ContainerGuard {
     let viewport_id = ui.ctx().viewport_id();
-    if let Some(inner) = inner.as_ref() {
-        inner.widgets.push_container(viewport_id, id.into());
+    let id = match inner.as_ref() {
+        Some(inner) => {
+            let id = id.into();
+            inner.widgets.push_container(viewport_id, id.clone());
+            id
+        }
+        None => String::new(),
+    };
+    ContainerGuard {
+        inner,
+        viewport_id,
+        id,
     }
-    ContainerGuard { inner, viewport_id }
 }
 
 /// Run a closure within a container scope with an explicit id.

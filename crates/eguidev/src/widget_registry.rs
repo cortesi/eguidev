@@ -55,6 +55,7 @@ pub struct WidgetMeta {
 
 impl WidgetMeta {
     /// Attach structured app-domain data from any serializable value.
+    #[must_use]
     pub fn with_data<T: Serialize>(self, data: T) -> Self {
         let data =
             serde_json::to_value(data).unwrap_or_else(|error| widget_data_error_value(&error));
@@ -191,10 +192,14 @@ impl WidgetRegistry {
         stack.entry(viewport_id).or_default().push(id);
     }
 
-    pub fn pop_container(&self, viewport_id: egui::ViewportId) {
+    /// Pop the container scope `id`. A guard that drops out of order then
+    /// still removes its own scope, and leaves the scopes of other guards.
+    pub fn pop_container(&self, viewport_id: egui::ViewportId, id: &str) {
         let mut stack = lock(&self.container_stack, "container stack lock");
-        if let Some(stack) = stack.get_mut(&viewport_id) {
-            stack.pop();
+        if let Some(stack) = stack.get_mut(&viewport_id)
+            && let Some(index) = stack.iter().rposition(|scope| scope == id)
+        {
+            stack.remove(index);
         }
     }
 

@@ -180,13 +180,13 @@ pub use crate::{
         publish_rect_meta, track_response, track_widget, track_widget_with_meta,
     },
     types::{
-        ActionOptions, DragOptions, FixtureCall, FixtureError, FixtureParam, FixtureParams,
-        FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, ParamKind, PointerButton,
-        Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState, ScrollAlign,
-        ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
-        ViewportSelParseError, WaitOptions, WidgetCondition, WidgetFont, WidgetLayout, WidgetRange,
-        WidgetRef, WidgetRole, WidgetRoleMeta, WidgetState, WidgetTextLayout, WidgetTextLine,
-        WidgetValue,
+        ActionOptions, DataCondition, DragOptions, FixtureCall, FixtureError, FixtureParam,
+        FixtureParams, FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, Modifiers,
+        ParamKind, PointerButton, Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions,
+        RoleState, ScrollAlign, ScrollAreaMeta, ScrollAtCondition, Vec2, ViewportCondition,
+        ViewportNameError, ViewportSel, ViewportSelParseError, WaitOptions, WidgetCondition,
+        WidgetFont, WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole,
+        WidgetRoleMeta, WidgetState, WidgetTextLayout, WidgetTextLine, WidgetValue,
     },
     ui_ext::{
         ButtonOptions, CheckboxOptions, DevScrollAreaExt, DevUiExt, ProgressBarOptions,
@@ -205,11 +205,13 @@ pub mod internal {
     }
 
     pub mod diagnostics {
-        pub use crate::diagnostics::{DiagnosticExecution, DiagnosticRegistry};
+        pub use crate::diagnostics::{DiagnosticExecution, DiagnosticReceiver, DiagnosticRegistry};
     }
 
     pub mod fixtures {
-        pub use crate::fixtures::{FixtureExecution, FixtureHandler};
+        pub use crate::fixtures::{
+            FixtureExecution, FixtureHandler, FixtureManager, UiFixtureReceiver,
+        };
     }
 
     pub mod idle {

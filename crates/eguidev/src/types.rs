@@ -712,11 +712,13 @@ impl FixtureSpec {
     }
 
     /// Add a visible-widget precondition checked before fixture application.
+    #[must_use]
     pub fn precondition(self, widget_id: impl Into<String>) -> Self {
         self.push_precondition(widget_id.into(), None, WidgetCondition::visible())
     }
 
     /// Add a visible-widget precondition scoped to a viewport.
+    #[must_use]
     pub fn precondition_in(
         self,
         widget_id: impl Into<String>,
@@ -730,11 +732,13 @@ impl FixtureSpec {
     }
 
     /// Add an exact-value precondition checked before fixture application.
+    #[must_use]
     pub fn precondition_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
         self.push_precondition(widget_id.into(), None, WidgetCondition::value(value))
     }
 
     /// Add an exact-value precondition scoped to a viewport.
+    #[must_use]
     pub fn precondition_value_in(
         self,
         widget_id: impl Into<String>,
@@ -749,11 +753,13 @@ impl FixtureSpec {
     }
 
     /// Add a visible-widget ready condition.
+    #[must_use]
     pub fn ready(self, widget_id: impl Into<String>) -> Self {
         self.push_ready(widget_id.into(), None, WidgetCondition::visible())
     }
 
     /// Add a visible-widget ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_in(self, widget_id: impl Into<String>, viewport: impl Into<ViewportSel>) -> Self {
         self.push_ready(
             widget_id.into(),
@@ -763,11 +769,13 @@ impl FixtureSpec {
     }
 
     /// Add an exact-label ready condition.
+    #[must_use]
     pub fn ready_label(self, widget_id: impl Into<String>, text: impl Into<String>) -> Self {
         self.push_ready(widget_id.into(), None, WidgetCondition::label(text))
     }
 
     /// Add an exact-label ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_label_in(
         self,
         widget_id: impl Into<String>,
@@ -782,11 +790,13 @@ impl FixtureSpec {
     }
 
     /// Add an exact-value ready condition.
+    #[must_use]
     pub fn ready_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self {
         self.push_ready(widget_id.into(), None, WidgetCondition::value(value))
     }
 
     /// Add an exact-value ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_value_in(
         self,
         widget_id: impl Into<String>,
@@ -801,11 +811,13 @@ impl FixtureSpec {
     }
 
     /// Add a scroll-readiness condition.
+    #[must_use]
     pub fn ready_scroll(self, widget_id: impl Into<String>) -> Self {
         self.push_ready(widget_id.into(), None, WidgetCondition::scroll_ready())
     }
 
     /// Add a scroll-readiness condition scoped to a viewport.
+    #[must_use]
     pub fn ready_scroll_in(
         self,
         widget_id: impl Into<String>,
@@ -819,6 +831,7 @@ impl FixtureSpec {
     }
 
     /// Add a scroll-position ready condition.
+    #[must_use]
     pub fn ready_scroll_at(
         self,
         widget_id: impl Into<String>,
@@ -833,6 +846,7 @@ impl FixtureSpec {
     }
 
     /// Add a scroll-position ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_scroll_at_in(
         self,
         widget_id: impl Into<String>,
@@ -848,6 +862,7 @@ impl FixtureSpec {
     }
 
     /// Add a widget-data ready condition.
+    #[must_use]
     pub fn ready_data(
         self,
         widget_id: impl Into<String>,
@@ -862,6 +877,7 @@ impl FixtureSpec {
     }
 
     /// Add a widget-data ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_data_in(
         self,
         widget_id: impl Into<String>,
@@ -877,12 +893,14 @@ impl FixtureSpec {
     }
 
     /// Add a typed fixture parameter.
+    #[must_use]
     pub fn param(mut self, param: FixtureParam) -> Self {
         self.params.push(param);
         self
     }
 
     /// Add a fixture tag used by CLI/docs output.
+    #[must_use]
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
         self
@@ -1079,12 +1097,14 @@ impl FixtureParam {
     }
 
     /// Set this parameter's default value.
+    #[must_use]
     pub fn default(mut self, value: impl Into<WidgetValue>) -> Self {
         self.default = Some(self.normalize_literal(value.into()));
         self
     }
 
     /// Restrict this parameter to exact choices.
+    #[must_use]
     pub fn choices<I, V>(mut self, values: I) -> Self
     where
         I: IntoIterator<Item = V>,
@@ -1099,6 +1119,7 @@ impl FixtureParam {
     }
 
     /// Set an inclusive numeric range.
+    #[must_use]
     pub fn range(mut self, min: f64, max: f64) -> Self {
         self.min = Some(min);
         self.max = Some(max);
@@ -1296,12 +1317,14 @@ impl FixtureResponse {
     }
 
     /// Add a handler-returned value.
+    #[must_use]
     pub fn value(mut self, name: impl Into<String>, value: impl Into<WidgetValue>) -> Self {
         self.values.insert(name.into(), value.into());
         self
     }
 
     /// Add a handler-returned dynamic ready.
+    #[must_use]
     pub fn ready(mut self, ready: FixtureTargetSpec) -> Self {
         self.ready.push(ready);
         self
@@ -1319,6 +1342,7 @@ impl FixtureError {
     }
 
     /// Attach structured error details.
+    #[must_use]
     pub fn details<T: serde::Serialize>(mut self, details: T) -> Self {
         self.details = serde_json::to_value(details).ok();
         self
@@ -1539,6 +1563,7 @@ impl FixtureTargetSpec {
     }
 
     /// Scope this ready to a viewport selector.
+    #[must_use]
     pub fn in_viewport(mut self, viewport: impl Into<ViewportSel>) -> Self {
         self.viewport_id = Some(viewport.into().to_selector_string());
         self

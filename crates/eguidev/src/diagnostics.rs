@@ -54,6 +54,7 @@ impl DiagnosticError {
     }
 
     /// Attach structured error details.
+    #[must_use]
     pub fn with_details(mut self, details: Value) -> Self {
         self.details = Some(details);
         self

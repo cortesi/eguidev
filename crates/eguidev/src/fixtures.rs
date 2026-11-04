@@ -105,6 +105,12 @@ pub struct FixtureManager {
     pending_ui: Mutex<VecDeque<UiFixtureRequest>>,
 }
 
+impl Default for FixtureManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FixtureManager {
     /// Create a new fixture manager with no fixtures or handler.
     pub fn new() -> Self {
