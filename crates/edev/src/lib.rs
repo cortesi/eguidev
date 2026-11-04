@@ -186,6 +186,10 @@ pub enum EdevError {
     /// Managed app teardown required forced process cleanup.
     #[error("app shutdown was forced: {0}")]
     ForcedShutdown(String),
+    /// The script runtime of a started app did not answer the readiness
+    /// probe within the request timeout.
+    #[error("app start timed out: {0}")]
+    StartTimeout(String),
 }
 
 impl EdevError {
@@ -205,7 +209,8 @@ impl EdevError {
             | Self::AppStart(_)
             | Self::RecordFailed(_)
             | Self::InstanceRegistry(_)
-            | Self::ForcedShutdown(_) => 3,
+            | Self::ForcedShutdown(_)
+            | Self::StartTimeout(_) => 3,
         }
     }
 }
@@ -488,19 +493,36 @@ impl State {
         }
         match spawned {
             Ok(app) => {
-                if let Err(output) = probe_script_eval_ready(&app.client).await {
-                    let shutdown = app.shutdown().await;
-                    self.last_shutdown = Some(shutdown);
-                    self.status = AppStatus::StartupFailed {
-                        output: output.clone(),
-                    };
-                    self.log_edev(format!("{} failed during app startup", action.as_str()));
-                    return Ok(LifecycleStartStatus::StartupFailed(output));
+                match probe_script_eval_ready(&app.client, self.config.request_timeout).await {
+                    Ok(()) => {
+                        self.status = AppStatus::Running;
+                        self.app = Some(app);
+                        self.log_edev(format!("{} completed", action.as_str()));
+                        Ok(LifecycleStartStatus::Running)
+                    }
+                    Err(ProbeFailure::Failed(output)) => {
+                        let shutdown = app.shutdown().await;
+                        self.last_shutdown = Some(shutdown);
+                        self.status = AppStatus::StartupFailed {
+                            output: output.clone(),
+                        };
+                        self.log_edev(format!("{} failed during app startup", action.as_str()));
+                        Ok(LifecycleStartStatus::StartupFailed(output))
+                    }
+                    Err(ProbeFailure::Timeout(message)) => {
+                        // A slow script runtime is not a defect of the app, so
+                        // a later start needs no
+                        // restart.
+                        let shutdown = app.shutdown().await;
+                        self.last_shutdown = Some(shutdown);
+                        self.status = AppStatus::NotRunning;
+                        self.log_edev(format!(
+                            "{} timed out during the readiness probe",
+                            action.as_str()
+                        ));
+                        Err(EdevError::StartTimeout(message))
+                    }
                 }
-                self.status = AppStatus::Running;
-                self.app = Some(app);
-                self.log_edev(format!("{} completed", action.as_str()));
-                Ok(LifecycleStartStatus::Running)
             }
             Err(AppStartError::StartupFailed(output)) => {
                 self.status = AppStatus::StartupFailed {
@@ -1472,6 +1494,11 @@ impl ServerHandler for EdevServer {
                         &output,
                         start.elapsed(),
                     ),
+                    Err(EdevError::StartTimeout(message)) => lifecycle_failed(
+                        ErrorKind::StartTimeout,
+                        format!("App start timed out: {message}. Call start again."),
+                        start.elapsed(),
+                    ),
                     Err(error) => lifecycle_failed(
                         ErrorKind::StartFailed,
                         format!("Start failed: {error}"),
@@ -1518,6 +1545,13 @@ impl ServerHandler for EdevServer {
                         lifecycle_startup_failed(
                             "App startup failed. Fix the issue and call restart again.",
                             &output,
+                            start.elapsed(),
+                        )
+                    }
+                    UnlockedRestart::Done(Err(EdevError::StartTimeout(message))) => {
+                        lifecycle_failed(
+                            ErrorKind::StartTimeout,
+                            format!("App start timed out: {message}. Call restart again."),
                             start.elapsed(),
                         )
                     }
@@ -1616,11 +1650,25 @@ fn script_eval_request_value(request: ScriptEvalRequest) -> Arguments {
     Arguments::from_struct(request).expect("script eval request should serialize")
 }
 
+/// Failure of the readiness probe of a started app.
+#[derive(Debug)]
+enum ProbeFailure {
+    /// The script runtime did not answer within the request timeout.
+    Timeout(String),
+    /// The script runtime answered with a failure.
+    Failed(String),
+}
+
 /// Probe the app's `script_eval` tool to confirm the script runtime is ready.
-async fn probe_script_eval_ready(client: &Arc<AsyncMutex<tmcp::Client<()>>>) -> Result<(), String> {
+/// The first evaluation can wait for a cold type checker, so the probe gets
+/// the whole request timeout.
+async fn probe_script_eval_ready(
+    client: &Arc<AsyncMutex<tmcp::Client<()>>>,
+    timeout: Duration,
+) -> Result<(), ProbeFailure> {
     let request = script_eval_request_value(ScriptEvalRequest {
         script: "return true".to_string(),
-        timeout_ms: Some(1_000),
+        timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
         options: None,
     });
     let result = {
@@ -1628,18 +1676,25 @@ async fn probe_script_eval_ready(client: &Arc<AsyncMutex<tmcp::Client<()>>>) -> 
         client
             .call_tool("script_eval".to_string(), request)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| match error {
+                McpError::Timeout { .. } => ProbeFailure::Timeout(error.to_string()),
+                error => ProbeFailure::Failed(error.to_string()),
+            })?
     };
-    let outcome = parse_script_eval_outcome(&result)?;
+    let outcome = parse_script_eval_outcome(&result).map_err(ProbeFailure::Failed)?;
     if outcome.success {
-        Ok(())
+        return Ok(());
+    }
+    let error = outcome.error.as_ref();
+    let message = error
+        .map(|error| error.message.clone())
+        .unwrap_or_else(|| "script_eval readiness probe failed".to_string());
+    if error.is_some_and(|error| {
+        error.error_type == "timeout" || error.code.as_deref() == Some("timeout")
+    }) {
+        Err(ProbeFailure::Timeout(message))
     } else {
-        let message = outcome
-            .error
-            .as_ref()
-            .map(|error| error.message.as_str())
-            .unwrap_or("script_eval readiness probe failed");
-        Err(message.to_string())
+        Err(ProbeFailure::Failed(message))
     }
 }
 
@@ -1798,6 +1853,8 @@ enum ErrorKind {
     RestartFailed,
     /// Startup failed before the app became ready.
     StartupFailed,
+    /// The script runtime did not answer the readiness probe in time.
+    StartTimeout,
 }
 
 /// Build a structured tool error result.
@@ -1847,6 +1904,7 @@ impl ErrorKind {
             Self::StopFailed => "stop_failed",
             Self::RestartFailed => "restart_failed",
             Self::StartupFailed => "startup_failed",
+            Self::StartTimeout => "start_timeout",
         }
     }
 }
@@ -2879,6 +2937,95 @@ mod tests {
         (app, handle)
     }
 
+    /// Answer each readiness probe with a script timeout.
+    struct ProbeTimeoutServer;
+
+    #[async_trait]
+    impl ServerHandler for ProbeTimeoutServer {
+        async fn initialize(
+            &self,
+            _context: &ServerCtx,
+            _protocol_version: ProtocolVersion,
+            _capabilities: ClientCapabilities,
+            _client_info: Implementation,
+        ) -> tmcp::Result<InitializeResult> {
+            Ok(InitializeResult::new("probe-timeout"))
+        }
+
+        async fn list_tools(
+            &self,
+            _context: &ServerCtx,
+            _cursor: Option<Cursor>,
+        ) -> tmcp::Result<ListToolsResult> {
+            Ok(ListToolsResult::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _context: &ServerCtx,
+            name: String,
+            _arguments: Option<Arguments>,
+            _task: Option<TaskMetadata>,
+        ) -> tmcp::Result<CallToolResponse> {
+            if name == "app_close" {
+                return Ok(successful_app_close_result().into());
+            }
+            Ok(CallToolResult::new()
+                .with_json_text(serde_json::json!({
+                    "success": false,
+                    "logs": [],
+                    "assertions": [],
+                    "timing": { "compile_ms": 0, "exec_ms": 0, "total_ms": 0 },
+                    "error": {
+                        "type": "timeout",
+                        "message": "Script timed out after 120000ms",
+                        "code": "timeout",
+                    },
+                }))
+                .expect("timeout outcome")
+                .into())
+        }
+    }
+
+    async fn make_probe_timeout_app() -> (AppProcess, ServerHandle) {
+        let ((server_reader, server_writer), (client_reader, client_writer)) = {
+            let (sr, sw, cr, cw) = make_duplex_pair();
+            ((sr, sw), (cr, cw))
+        };
+
+        let server = Server::new(|| ProbeTimeoutServer);
+        let handle = ServerHandle::from_stream(server, server_reader, server_writer)
+            .await
+            .expect("server handle");
+
+        let mut client = Client::new("test", "0.1.0");
+        client
+            .connect_stream_raw(client_reader, client_writer)
+            .await
+            .expect("connect");
+        client.init().await.expect("init");
+
+        let app = AppProcess {
+            child: None,
+            process_group_id: None,
+            supervisor_pid: None,
+            supervisor_exit_task: None,
+            app_launch: None,
+            app_record: None,
+            ownership_writer: None,
+            client: Arc::new(AsyncMutex::new(client)),
+            mcp_endpoint: "127.0.0.1:1".to_string(),
+            stdout_task: None,
+            stderr_task: None,
+            stderr_buffer: Arc::new(Mutex::new(Vec::new())),
+            stdout_buffer: Arc::new(Mutex::new(Vec::new())),
+            log_state: LogState::new(false),
+            shutdown_grace: Duration::from_secs(30),
+        };
+
+        (app, handle)
+    }
+
     async fn make_recording_eval_app(
         requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
     ) -> (AppProcess, ServerHandle) {
@@ -3092,6 +3239,44 @@ mod tests {
 
         assert!(matches!(status, LifecycleStartStatus::StartupFailed(_)));
         assert!(matches!(state.status, AppStatus::StartupFailed { .. }));
+        assert!(state.app.is_none());
+    }
+
+    #[tokio::test]
+    async fn readiness_probe_gets_the_request_timeout() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (app, _handle) = make_recording_eval_app(Arc::clone(&requests)).await;
+        let tempdir = test_tempdir();
+        let mut state = make_state(&tempdir);
+
+        let status = state
+            .restart_with(|_, _| Box::pin(async move { Ok(app) }))
+            .await
+            .expect("restart");
+
+        assert!(matches!(status, LifecycleStartStatus::Running));
+        let requests = requests.lock().expect("requests");
+        assert_eq!(
+            requests.first().and_then(|request| request.timeout_ms),
+            Some(APP_REQUEST_TIMEOUT.as_millis() as u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_reports_a_readiness_probe_timeout_as_a_timeout() {
+        let (app, _handle) = make_probe_timeout_app().await;
+        let tempdir = test_tempdir();
+        let mut state = make_state(&tempdir);
+
+        let result = state
+            .restart_with(|_, _| Box::pin(async move { Ok(app) }))
+            .await;
+
+        assert!(
+            matches!(result, Err(EdevError::StartTimeout(ref message)) if message.contains("timed out")),
+            "{result:?}"
+        );
+        assert!(matches!(state.status, AppStatus::NotRunning));
         assert!(state.app.is_none());
     }
 
@@ -3419,6 +3604,7 @@ mod tests {
             EdevError::RecordFailed(text()),
             EdevError::InstanceRegistry(text()),
             EdevError::ForcedShutdown(text()),
+            EdevError::StartTimeout(text()),
         ] {
             assert_eq!(error.exit_code(), 3, "{error}");
         }

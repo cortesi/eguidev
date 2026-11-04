@@ -44,6 +44,10 @@ pub enum EdevError {
     /// Managed app teardown required forced process cleanup.
     #[error("app shutdown was forced: {0}")]
     ForcedShutdown(String),
+    /// The script runtime of a started app did not answer the readiness
+    /// probe within the request timeout.
+    #[error("app start timed out: {0}")]
+    StartTimeout(String),
 }
 
 impl EdevError {
