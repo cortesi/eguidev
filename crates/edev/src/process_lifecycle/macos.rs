@@ -1,106 +1,14 @@
-//! Private platform launch and cleanup abstraction for edev.
+//! The macOS supervisor, which owns the app process group of one launch.
 
-#[cfg(target_os = "macos")]
-use std::{
-    collections::BTreeMap,
-    env, fs,
-    io::{Read, Write},
-    mem,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
-    path::{Path, PathBuf},
-    ptr,
-};
-use std::{
-    ffi::{OsStr, OsString},
-    io,
-    process::{self, ExitStatus, Stdio},
-};
+use super::*;
 
-#[cfg(target_os = "macos")]
-use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
-use tokio::{
-    io::{AsyncRead, AsyncWrite, Interest, copy, stderr, stdout, unix::AsyncFd},
-    task::{JoinError, spawn_blocking},
-};
-use tokio::{
-    process::{Child, ChildStderr, ChildStdout, Command},
-    task::JoinHandle,
-};
-
-use super::{LaunchConfig, LogState, instance_registry::AppLaunch};
-#[cfg(target_os = "macos")]
-use super::{
-    instance_registry::{self, AppRecord, app_launch_for, read_app_record_for_path},
-    recording,
-};
-#[cfg(target_os = "macos")]
-use crate::cargo_env;
-
-#[cfg(target_os = "macos")]
 /// Byte sent before a deliberate outer-launcher shutdown.
-const NORMAL_SHUTDOWN_MARKER: u8 = b'N';
-
-/// Process resources returned by one platform launch.
-pub struct SpawnedProcess {
-    /// App or supervisor stdout, captured by the outer launcher.
-    pub stdout: Option<ChildStdout>,
-    /// App or supervisor stderr, captured by the outer launcher.
-    pub stderr: Option<ChildStderr>,
-    /// Direct app child on platforms without a supervisor.
-    pub child: Option<Child>,
-    /// App process group id, excluding the supervisor.
-    pub process_group_id: Option<i32>,
-    /// Supervisor PID when the platform launch uses one.
-    pub supervisor_pid: Option<u32>,
-    /// Task that owns and reaps the supervisor child.
-    pub supervisor_exit_task: Option<JoinHandle<io::Result<ExitStatus>>>,
-    /// Write endpoint held only by the outer AppProcess.
-    pub ownership_writer: Option<OwnershipWriter>,
-    /// Exact launch identity used by the supervisor registry record.
-    pub app_launch: Option<AppLaunch>,
-}
+pub(super) const NORMAL_SHUTDOWN_MARKER: u8 = b'N';
 
 /// Per-launch ownership writer.
-#[cfg(target_os = "macos")]
 pub type OwnershipWriter = OwnedFd;
 
-/// No ownership endpoint is needed on platforms with parent-death signaling.
-#[cfg(not(target_os = "macos"))]
-pub type OwnershipWriter = ();
-
-/// Start one managed app through the platform-specific process boundary.
-pub async fn spawn(config: &LaunchConfig, log_state: LogState) -> Result<SpawnedProcess, String> {
-    #[cfg(target_os = "macos")]
-    {
-        spawn_supervised(config, log_state).await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        spawn_direct(config, log_state).await
-    }
-}
-
-/// Shut down a process whose MCP handshake failed before AppProcess was built.
-pub async fn shutdown_spawned(mut process: SpawnedProcess, log_state: &LogState) {
-    #[cfg(target_os = "macos")]
-    {
-        close_ownership_writer(&mut process.ownership_writer, log_state);
-        if let Some(task) = process.supervisor_exit_task.take() {
-            let _result = task.await;
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        terminate_process_group(process.process_group_id, log_state);
-        if let Some(mut child) = process.child.take() {
-            let _result = child.wait().await;
-        }
-    }
-}
-
 /// Return whether a newly spawned app boundary exited before its MCP handshake.
-#[cfg(target_os = "macos")]
 pub fn spawned_process_exited(process: &SpawnedProcess) -> Result<bool, String> {
     Ok(process
         .supervisor_exit_task
@@ -108,237 +16,45 @@ pub fn spawned_process_exited(process: &SpawnedProcess) -> Result<bool, String> 
         .is_some_and(JoinHandle::is_finished))
 }
 
-/// Return whether a newly spawned app boundary exited before its MCP handshake.
-#[cfg(not(target_os = "macos"))]
-pub fn spawned_process_exited(process: &mut SpawnedProcess) -> Result<bool, String> {
-    process
-        .child
-        .as_mut()
-        .map(Child::try_wait)
-        .transpose()
-        .map(|status| status.flatten().is_some())
-        .map_err(|error| format!("inspect app process during startup: {error}"))
-}
-
-/// Close the outer ownership endpoint, marking a deliberate shutdown first.
-pub fn close_ownership_writer(writer: &mut Option<OwnershipWriter>, log_state: &LogState) {
-    #[cfg(target_os = "macos")]
-    {
-        let Some(writer) = writer.take() else {
-            return;
-        };
-        if let Err(error) = write_normal_shutdown_marker(&writer) {
-            log_state.record_line(&format!("edev: failed to mark normal shutdown: {error}"));
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = log_state;
-        writer.take();
-    }
-}
-
-/// Fetch the process group id from a spawned direct child.
-#[cfg(not(target_os = "macos"))]
-pub fn process_group_id(child: &Child) -> Option<i32> {
-    child.id().and_then(|id| i32::try_from(id).ok())
-}
-
-/// Configure child process behavior for cleanup and termination.
-pub fn configure_child_process(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-    }
-    #[cfg(all(unix, target_os = "linux"))]
-    {
-        let parent_pid = libc::pid_t::try_from(process::id()).ok();
-        unsafe {
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if let Some(parent_pid) = parent_pid
-                    && libc::getppid() != parent_pid
-                {
-                    return Err(io::Error::other("parent process changed before exec"));
-                }
-                Ok(())
-            });
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = command;
-    }
-}
-
-/// Terminate an app process group for a last-resort cleanup path.
-pub fn terminate_process_group(process_group_id: Option<i32>, log_state: &LogState) {
-    #[cfg(unix)]
-    {
-        if let Some(pgid) = process_group_id
-            && let Err(error) = kill_process_group(pgid)
-        {
-            log_state.record_line(&format!(
-                "edev: failed to kill process group {pgid}: {error}"
-            ));
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (process_group_id, log_state);
-    }
-}
-
-/// Send SIGKILL to one process group, tolerating an already-empty group.
-#[cfg(unix)]
-pub fn kill_process_group(process_group_id: i32) -> io::Result<()> {
-    if unsafe { libc::killpg(process_group_id, libc::SIGKILL) } == 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
-    } else {
-        Err(error)
-    }
-}
-
-/// Kill one supervisor process for the last-resort outer teardown path.
-pub fn terminate_supervisor(supervisor_pid: Option<u32>, log_state: &LogState) {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = supervisor_pid.and_then(|pid| i32::try_from(pid).ok()) {
-            let result = unsafe { libc::kill(pid, libc::SIGKILL) };
-            if result != 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    log_state
-                        .record_line(&format!("edev: failed to kill supervisor {pid}: {error}"));
-                }
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (supervisor_pid, log_state);
-    }
-}
-
-/// Detect the hidden supervisor invocation without exposing it through clap
-/// help.
-pub fn is_supervisor_invocation(args: &[OsString]) -> bool {
-    args.get(1)
-        .is_some_and(|arg| arg == OsStr::new("__edev_supervisor"))
-}
-
-/// Run the hidden supervisor entry point.
-pub async fn run_hidden_supervisor(args: &[OsString]) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let fd = args
-            .get(3)
-            .filter(|_| args.get(2).is_some_and(|flag| flag == "--config-fd"))
-            .ok_or_else(|| "supervisor requires --config-fd <fd>".to_string())?;
-        let fd = fd
-            .to_str()
-            .ok_or_else(|| "supervisor config fd is not UTF-8".to_string())?
-            .parse::<RawFd>()
-            .map_err(|error| format!("invalid supervisor config fd: {error}"))?;
-        let config = read_supervisor_config(fd).await?;
-        run_supervisor(config).await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = args;
-        Err("the edev supervisor is only available on macOS".to_string())
-    }
-}
-
-/// Spawn the current app command directly on platforms with parent-death
-/// support.
-#[cfg(not(target_os = "macos"))]
-async fn spawn_direct(
-    config: &LaunchConfig,
-    log_state: LogState,
-) -> Result<SpawnedProcess, String> {
-    log_state.record_line("edev: spawning app");
-    let mut command = config.app_command();
-    command.kill_on_drop(true);
-    configure_child_process(&mut command);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to spawn app command: {error}"))?;
-    log_state.record_line("edev: app process spawned");
-    let process_group_id = process_group_id(&child);
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture app stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture app stderr".to_string())?;
-
-    Ok(SpawnedProcess {
-        stdout: Some(stdout),
-        stderr: Some(stderr),
-        child: Some(child),
-        process_group_id,
-        supervisor_pid: None,
-        supervisor_exit_task: None,
-        ownership_writer: None,
-        app_launch: None,
-    })
-}
-
-#[cfg(target_os = "macos")]
 #[derive(Debug, Serialize, Deserialize)]
 /// Serialized launch data passed only to the hidden supervisor child.
-struct SupervisorConfig {
+pub(super) struct SupervisorConfig {
     /// Working directory for the app command.
-    working_dir: PathBuf,
+    pub(super) working_dir: PathBuf,
     /// Full app argv.
-    command: Vec<String>,
+    pub(super) command: Vec<String>,
     /// Extra app environment.
-    env: BTreeMap<String, String>,
+    pub(super) env: BTreeMap<String, String>,
     /// Outer launcher PID.
-    launcher_pid: u32,
+    pub(super) launcher_pid: u32,
     /// Start time of the outer launcher.
-    launcher_start_time: Option<instance_registry::ProcessStartTime>,
+    pub(super) launcher_start_time: Option<instance_registry::ProcessStartTime>,
     /// Collision-safe outer launcher identity.
-    launcher_token: String,
+    pub(super) launcher_token: String,
     /// Collision-safe app launch identity.
-    launch_id: String,
+    pub(super) launch_id: String,
     /// Exact app record path.
-    app_record_path: PathBuf,
+    pub(super) app_record_path: PathBuf,
     /// Inherited read endpoint for the outer ownership pipe.
-    ownership_fd: RawFd,
+    pub(super) ownership_fd: RawFd,
 }
 
-#[cfg(target_os = "macos")]
 /// App resources owned by one running supervisor.
-struct ManagedApp {
+pub(super) struct ManagedApp {
     /// Direct app child reaped by the supervisor.
-    child: Child,
+    pub(super) child: Child,
     /// Process group containing the app and all descendants.
-    process_group_id: i32,
+    pub(super) process_group_id: i32,
     /// Exact metadata written for this app launch.
-    record: AppRecord,
+    pub(super) record: AppRecord,
     /// App stdout used by the app-to-outer relay.
-    stdout: ChildStdout,
+    pub(super) stdout: ChildStdout,
     /// App stderr used by the app-to-outer relay.
-    stderr: ChildStderr,
+    pub(super) stderr: ChildStderr,
 }
 
-#[cfg(target_os = "macos")]
 /// Read supervisor configuration from the private inherited pipe.
-async fn read_supervisor_config(fd: RawFd) -> Result<SupervisorConfig, String> {
+pub(super) async fn read_supervisor_config(fd: RawFd) -> Result<SupervisorConfig, String> {
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     set_cloexec(fd.as_raw_fd(), true)
         .map_err(|error| format!("protect supervisor config pipe: {error}"))?;
@@ -356,9 +72,8 @@ async fn read_supervisor_config(fd: RawFd) -> Result<SupervisorConfig, String> {
         .map_err(|error| format!("decode supervisor configuration: {error}"))
 }
 
-#[cfg(target_os = "macos")]
 /// Spawn the supervisor and retain only its outer-owned lifecycle endpoints.
-async fn spawn_supervised(
+pub(super) async fn spawn_supervised(
     config: &LaunchConfig,
     log_state: LogState,
 ) -> Result<SpawnedProcess, String> {
@@ -367,9 +82,8 @@ async fn spawn_supervised(
     spawn_supervised_with_executable(config, log_state, executable).await
 }
 
-#[cfg(target_os = "macos")]
 /// Spawn one supervisor using an explicit executable.
-async fn spawn_supervised_with_executable(
+pub(super) async fn spawn_supervised_with_executable(
     config: &LaunchConfig,
     log_state: LogState,
     executable: PathBuf,
@@ -475,16 +189,17 @@ async fn spawn_supervised_with_executable(
     })
 }
 
-#[cfg(target_os = "macos")]
 /// Kill and reap a supervisor before its lifecycle task is available.
-async fn terminate_unobserved_supervisor(supervisor: &mut Child) {
+pub(super) async fn terminate_unobserved_supervisor(supervisor: &mut Child) {
     let _start_kill_result = supervisor.start_kill();
     let _wait_result = supervisor.wait().await;
 }
 
-#[cfg(target_os = "macos")]
 /// Wait for the supervisor and recover an exact record if it died unexpectedly.
-async fn monitor_supervisor_exit(mut child: Child, record_path: PathBuf) -> io::Result<ExitStatus> {
+pub(super) async fn monitor_supervisor_exit(
+    mut child: Child,
+    record_path: PathBuf,
+) -> io::Result<ExitStatus> {
     let status = child.wait().await?;
     let Some(record) = read_app_record_for_path(&record_path)? else {
         return Ok(status);
@@ -493,9 +208,11 @@ async fn monitor_supervisor_exit(mut child: Child, record_path: PathBuf) -> io::
     Ok(status)
 }
 
-#[cfg(target_os = "macos")]
 /// Recover a group left behind by an abruptly dead supervisor.
-async fn recover_after_supervisor_exit(record_path: &Path, record: &AppRecord) -> io::Result<()> {
+pub(super) async fn recover_after_supervisor_exit(
+    record_path: &Path,
+    record: &AppRecord,
+) -> io::Result<()> {
     let observer = ProcessGroupObserver::new()?;
     if instance_registry::recorded_app_group_is_current(record)
         && !recording::live_process_group_members(record.app_process_group_id).is_empty()
@@ -516,9 +233,8 @@ async fn recover_after_supervisor_exit(record_path: &Path, record: &AppRecord) -
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 /// Spawn the app group, capture stdio, and install its exact registry record.
-async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, String> {
+pub(super) async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, String> {
     let executable = config
         .command
         .first()
@@ -587,9 +303,8 @@ async fn spawn_managed_app(config: &SupervisorConfig) -> Result<ManagedApp, Stri
     })
 }
 
-#[cfg(target_os = "macos")]
 /// Execute the app command inside a new group and relay stdout and stderr.
-async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
+pub(super) async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
     let ownership = unsafe { OwnedFd::from_raw_fd(config.ownership_fd) };
     set_nonblocking(ownership.as_raw_fd())
         .map_err(|error| format!("configure ownership pipe: {error}"))?;
@@ -712,9 +427,8 @@ async fn run_supervisor(config: SupervisorConfig) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Kill and reap an app before its process-group observer is available.
-async fn terminate_unobserved_app(app: &mut Child, process_group_id: Option<i32>) {
+pub(super) async fn terminate_unobserved_app(app: &mut Child, process_group_id: Option<i32>) {
     if process_group_id.is_some() {
         terminate_process_group_without_logging(process_group_id);
     } else {
@@ -723,9 +437,8 @@ async fn terminate_unobserved_app(app: &mut Child, process_group_id: Option<i32>
     let _result = app.wait().await;
 }
 
-#[cfg(target_os = "macos")]
 /// Relay one asynchronous byte stream.
-async fn relay<R, W>(mut reader: R, mut writer: W) -> io::Result<u64>
+pub(super) async fn relay<R, W>(mut reader: R, mut writer: W) -> io::Result<u64>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -733,18 +446,16 @@ where
     copy(&mut reader, &mut writer).await
 }
 
-#[cfg(target_os = "macos")]
 /// Decode one relay task result.
-fn relay_join_result(result: Result<io::Result<u64>, JoinError>) -> Result<(), String> {
+pub(super) fn relay_join_result(result: Result<io::Result<u64>, JoinError>) -> Result<(), String> {
     result
         .map_err(|error| format!("relay task failed: {error}"))?
         .map(|_| ())
         .map_err(|error| format!("stdio relay failed: {error}"))
 }
 
-#[cfg(target_os = "macos")]
 /// Decode and await the direct app child wait task.
-async fn wait_for_child(
+pub(super) async fn wait_for_child(
     task: &mut JoinHandle<io::Result<ExitStatus>>,
 ) -> Result<ExitStatus, String> {
     task.await
@@ -752,18 +463,16 @@ async fn wait_for_child(
         .map_err(|error| format!("app wait failed: {error}"))
 }
 
-#[cfg(target_os = "macos")]
 /// Await one relay task when it is still active.
-async fn await_relay(task: &mut JoinHandle<io::Result<u64>>, active: &mut bool) {
+pub(super) async fn await_relay(task: &mut JoinHandle<io::Result<u64>>, active: &mut bool) {
     if *active {
         let _result = task.await;
         *active = false;
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Stop relay tasks after a group-level cleanup path.
-async fn abort_relays(
+pub(super) async fn abort_relays(
     stdout: &mut JoinHandle<io::Result<u64>>,
     stderr: &mut JoinHandle<io::Result<u64>>,
     stdout_active: bool,
@@ -779,23 +488,21 @@ async fn abort_relays(
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Stdio relay tasks and their completion state for one supervisor.
-struct RelayTasks {
+pub(super) struct RelayTasks {
     /// App stdout to outer stdout relay.
-    stdout: JoinHandle<io::Result<u64>>,
+    pub(super) stdout: JoinHandle<io::Result<u64>>,
     /// App stderr to outer stderr relay.
-    stderr: JoinHandle<io::Result<u64>>,
+    pub(super) stderr: JoinHandle<io::Result<u64>>,
     /// Whether the stdout relay is still pending.
-    stdout_active: bool,
+    pub(super) stdout_active: bool,
     /// Whether the stderr relay is still pending.
-    stderr_active: bool,
+    pub(super) stderr_active: bool,
 }
 
-#[cfg(target_os = "macos")]
 impl RelayTasks {
     /// Start stdout and stderr supervisor relay tasks.
-    fn new(stdout_reader: ChildStdout, stderr_reader: ChildStderr) -> Self {
+    pub(super) fn new(stdout_reader: ChildStdout, stderr_reader: ChildStderr) -> Self {
         Self {
             stdout: tokio::spawn(relay(stdout_reader, stdout())),
             stderr: tokio::spawn(relay(stderr_reader, stderr())),
@@ -805,7 +512,7 @@ impl RelayTasks {
     }
 
     /// Wait until ownership, the app child, or a relay requires cleanup.
-    async fn wait_for_trigger(
+    pub(super) async fn wait_for_trigger(
         &mut self,
         ownership: &AsyncFd<OwnedFd>,
         child: &mut JoinHandle<io::Result<ExitStatus>>,
@@ -841,7 +548,7 @@ impl RelayTasks {
     }
 
     /// Drain natural output or abort all remaining relays after forced cleanup.
-    async fn finish(&mut self, app_exited_naturally: bool) {
+    pub(super) async fn finish(&mut self, app_exited_naturally: bool) {
         if app_exited_naturally {
             await_relay(&mut self.stdout, &mut self.stdout_active).await;
             await_relay(&mut self.stderr, &mut self.stderr_active).await;
@@ -857,9 +564,8 @@ impl RelayTasks {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Event emitted by the supervisor's owner, child, or relay paths.
-enum SupervisorTrigger {
+pub(super) enum SupervisorTrigger {
     /// Outer ownership writer reached EOF or failed.
     Owner(io::Result<OwnerExit>),
     /// Direct app child exited.
@@ -868,19 +574,17 @@ enum SupervisorTrigger {
     Relay(String),
 }
 
-#[cfg(target_os = "macos")]
 /// Classification of an ownership channel close.
 #[derive(Debug, Clone, Copy)]
-enum OwnerExit {
+pub(super) enum OwnerExit {
     /// The outer launcher explicitly marked a deliberate shutdown.
     Normal,
     /// The channel closed without the deliberate-shutdown marker.
     Abnormal,
 }
 
-#[cfg(target_os = "macos")]
 /// Wait for the normal marker or bare EOF on the dedicated owner pipe.
-async fn wait_for_owner_eof(owner: &AsyncFd<OwnedFd>) -> io::Result<OwnerExit> {
+pub(super) async fn wait_for_owner_eof(owner: &AsyncFd<OwnedFd>) -> io::Result<OwnerExit> {
     let mut saw_marker = false;
     let mut saw_unexpected_data = false;
     loop {
@@ -904,9 +608,8 @@ async fn wait_for_owner_eof(owner: &AsyncFd<OwnedFd>) -> io::Result<OwnerExit> {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Read one owner message byte from the pipe without blocking.
-fn read_owner_fd(fd: RawFd) -> io::Result<Option<u8>> {
+pub(super) fn read_owner_fd(fd: RawFd) -> io::Result<Option<u8>> {
     let mut byte = [0_u8; 1];
     loop {
         let result = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), byte.len()) };
@@ -930,9 +633,8 @@ fn read_owner_fd(fd: RawFd) -> io::Result<Option<u8>> {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Write the deliberate-shutdown marker before closing the owner endpoint.
-fn write_normal_shutdown_marker(writer: &OwnedFd) -> io::Result<()> {
+pub(super) fn write_normal_shutdown_marker(writer: &OwnedFd) -> io::Result<()> {
     loop {
         let result = unsafe {
             libc::write(
@@ -957,7 +659,6 @@ fn write_normal_shutdown_marker(writer: &OwnedFd) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Create a pipe whose ends remain close-on-exec until a child clears its
 /// reader.
 pub fn create_inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
@@ -974,7 +675,6 @@ pub fn create_inherited_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok((reader, writer))
 }
 
-#[cfg(target_os = "macos")]
 /// Set or clear close-on-exec for one file descriptor.
 pub fn set_cloexec(fd: RawFd, enabled: bool) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
@@ -992,9 +692,8 @@ pub fn set_cloexec(fd: RawFd, enabled: bool) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 /// Configure one inherited pipe for readiness-based EOF detection.
-fn set_nonblocking(fd: RawFd) -> io::Result<()> {
+pub(super) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
@@ -1005,22 +704,19 @@ fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 /// Terminate an app process group without requiring a launcher log state.
-fn terminate_process_group_without_logging(process_group_id: Option<i32>) {
+pub(super) fn terminate_process_group_without_logging(process_group_id: Option<i32>) {
     if let Some(pgid) = process_group_id {
         let _result = kill_process_group(pgid);
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Observe process exits using kqueue rather than polling.
 pub struct ProcessGroupObserver {
     /// Tokio-registered kqueue descriptor.
-    queue: AsyncFd<OwnedFd>,
+    pub(super) queue: AsyncFd<OwnedFd>,
 }
 
-#[cfg(target_os = "macos")]
 impl ProcessGroupObserver {
     /// Create an empty process-exit observer.
     pub fn new() -> io::Result<Self> {
@@ -1037,7 +733,7 @@ impl ProcessGroupObserver {
     }
 
     /// Register current members of one process group for exit notifications.
-    fn watch_group(&self, process_group_id: i32) -> io::Result<()> {
+    pub(super) fn watch_group(&self, process_group_id: i32) -> io::Result<()> {
         for pid in recording::live_process_group_members(process_group_id) {
             let _exists = self.watch_pid(pid)?;
         }
@@ -1079,7 +775,7 @@ impl ProcessGroupObserver {
     }
 
     /// Wait for all observed process-group members to disappear.
-    async fn wait_until_group_empty(&self, process_group_id: i32) -> io::Result<()> {
+    pub(super) async fn wait_until_group_empty(&self, process_group_id: i32) -> io::Result<()> {
         self.wait_until_pids_exit(|| recording::live_process_group_members(process_group_id))
             .await
     }
@@ -1120,9 +816,8 @@ impl ProcessGroupObserver {
     }
 }
 
-#[cfg(target_os = "macos")]
 /// Read and consume one or more pending kqueue events.
-fn read_kqueue(fd: RawFd) -> io::Result<usize> {
+pub(super) fn read_kqueue(fd: RawFd) -> io::Result<usize> {
     let mut events = [unsafe { mem::zeroed::<libc::kevent>() }; 32];
     let timeout = libc::timespec {
         tv_sec: 0,
@@ -1145,180 +840,4 @@ fn read_kqueue(fd: RawFd) -> io::Result<usize> {
         return Err(io::Error::from(io::ErrorKind::WouldBlock));
     }
     Ok(result as usize)
-}
-
-#[cfg(test)]
-#[cfg(target_os = "macos")]
-mod tests {
-    use std::{
-        ffi::CString,
-        fs::{self, File},
-        io::{BufRead, BufReader},
-        os::{fd::FromRawFd, unix::fs::PermissionsExt},
-        path::PathBuf,
-        sync::{Arc, Barrier, mpsc},
-        thread,
-        time::Duration,
-    };
-
-    use eguidev::internal::presentation::Presentation;
-    use tempfile::Builder;
-    use tokio::runtime;
-
-    use super::*;
-
-    fn test_tempdir() -> tempfile::TempDir {
-        fs::create_dir_all("tmp").expect("create tmp");
-        Builder::new()
-            .prefix("edev-lifecycle-test-")
-            .tempdir_in("tmp")
-            .expect("tempdir")
-    }
-
-    fn test_config(cwd: PathBuf) -> LaunchConfig {
-        LaunchConfig {
-            cwd,
-            command: vec!["/usr/bin/true".to_string()],
-            env: Default::default(),
-            presentation: Presentation::Background,
-            shutdown_grace: Duration::from_secs(30),
-            verbose: false,
-            request_timeout: crate::APP_REQUEST_TIMEOUT,
-        }
-    }
-
-    fn is_cloexec(fd: RawFd) -> bool {
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        assert!(flags >= 0, "read fd flags");
-        flags & libc::FD_CLOEXEC != 0
-    }
-
-    #[test]
-    fn inherited_pipe_ends_remain_cloexec_in_the_parent() {
-        let (reader, writer) = create_inherited_pipe().expect("pipe");
-        assert!(is_cloexec(reader.as_raw_fd()));
-        assert!(is_cloexec(writer.as_raw_fd()));
-    }
-
-    #[test]
-    fn concurrent_supervisor_launches_do_not_retain_private_pipe_endpoints() {
-        const LAUNCHES: usize = 4;
-
-        let tempdir = test_tempdir();
-        let _registry =
-            instance_registry::InstanceRegistry::register(&test_config(tempdir.path().into()))
-                .expect("register launcher");
-        let script = tempdir.path().join("config-reader.sh");
-        fs::write(
-            &script,
-            concat!(
-                "#!/bin/sh\nset -eu\nfd=\"$3\"\n",
-                "payload=$(eval \"cat <&$fd\")\n",
-                "owner_fd=$(printf '%s\\n' \"$payload\" | ",
-                "sed -n 's/.*\"ownership_fd\":\\([0-9][0-9]*\\).*/\\1/p')\n",
-                "test -n \"$owner_fd\"\n",
-                "printf '%s\\n' \"$$\" > \"$PWD/ready\"\n",
-                "eval \"cat <&$owner_fd\" >/dev/null\n",
-            ),
-        )
-        .expect("write helper");
-        let mut permissions = fs::metadata(&script)
-            .expect("helper metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&script, permissions).expect("make helper executable");
-
-        let ready_path = tempdir.path().join("ready");
-        let ready_c_path =
-            CString::new(ready_path.as_os_str().as_encoded_bytes()).expect("ready path");
-        assert_eq!(
-            unsafe { libc::mkfifo(ready_c_path.as_ptr(), 0o600) },
-            0,
-            "create ready fifo"
-        );
-        let ready_fd = unsafe { libc::open(ready_c_path.as_ptr(), libc::O_RDWR) };
-        assert!(ready_fd >= 0, "open ready fifo");
-        let ready_file = unsafe { File::from_raw_fd(ready_fd) };
-
-        let barrier = Arc::new(Barrier::new(LAUNCHES + 1));
-        thread::scope(|scope| {
-            let mut handles = Vec::new();
-            let mut shutdown_senders = Vec::new();
-            let mut completion_receivers = Vec::new();
-            for _ in 0..LAUNCHES {
-                let barrier = Arc::clone(&barrier);
-                let cwd = tempdir.path().to_path_buf();
-                let executable = script.clone();
-                let (shutdown_sender, shutdown_receiver) = mpsc::channel();
-                let (completion_sender, completion_receiver) = mpsc::channel();
-                shutdown_senders.push(shutdown_sender);
-                completion_receivers.push(completion_receiver);
-                handles.push(scope.spawn(move || {
-                    let runtime = runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("runtime");
-                    runtime.block_on(async move {
-                        barrier.wait();
-                        let config = test_config(cwd);
-                        let mut process = spawn_supervised_with_executable(
-                            &config,
-                            LogState::new(false),
-                            executable,
-                        )
-                        .await
-                        .expect("spawn supervisor");
-                        process.stdout.take();
-                        process.stderr.take();
-                        shutdown_receiver.recv().expect("shutdown signal");
-                        shutdown_spawned(process, &LogState::new(false)).await;
-                        completion_sender.send(()).expect("completion receiver");
-                    });
-                }));
-            }
-
-            barrier.wait();
-            let (ready_sender, ready_receiver) = mpsc::channel();
-            let ready_handle = scope.spawn(move || {
-                let mut reader = BufReader::new(ready_file);
-                let mut lines = Vec::new();
-                let result = (|| {
-                    for _ in 0..LAUNCHES {
-                        let mut line = String::new();
-                        reader
-                            .read_line(&mut line)
-                            .map_err(|error| error.to_string())?;
-                        if line.is_empty() {
-                            return Err(
-                                "ready fifo closed before all launches reported".to_string()
-                            );
-                        }
-                        lines.push(line);
-                    }
-                    Ok::<_, String>(lines)
-                })();
-                ready_sender.send(result).expect("ready receiver");
-            });
-            let ready_result = ready_receiver
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|_| "concurrent launches retained a config reader".to_string())
-                .expect("concurrent launches should read private config pipes")
-                .expect("all supervisors should read their config");
-            assert_eq!(ready_result.len(), LAUNCHES);
-
-            for (shutdown_sender, completion_receiver) in
-                shutdown_senders.into_iter().zip(completion_receivers)
-            {
-                shutdown_sender.send(()).expect("launch worker");
-                completion_receiver
-                    .recv_timeout(Duration::from_secs(5))
-                    .expect("a sibling launch retained the ownership writer");
-            }
-
-            for handle in handles {
-                handle.join().expect("launch worker");
-            }
-            ready_handle.join().expect("ready reader");
-        });
-    }
 }

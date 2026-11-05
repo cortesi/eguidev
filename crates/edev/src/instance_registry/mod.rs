@@ -8,11 +8,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(target_os = "macos")]
-use libproc::{bsd_info::BSDInfo, proc_pid::pidinfo};
 use serde::{Deserialize, Serialize};
 
 use super::{EdevError, LaunchConfig};
+
+mod identity;
+
+pub use identity::*;
 
 /// Directory used to store instance metadata entries per working directory.
 pub const REGISTRY_DIR_NAME: &str = ".edev-instances";
@@ -394,42 +396,6 @@ fn write_atomic_payload(path: &Path, payload: &[u8]) -> Result<(), io::Error> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-/// Read the start-time identity of one live process.
-pub fn process_start_time(pid: i32) -> Option<ProcessStartTime> {
-    let info = pidinfo::<BSDInfo>(pid, 0).ok()?;
-    Some(ProcessStartTime {
-        seconds: info.pbi_start_tvsec,
-        microseconds: info.pbi_start_tvusec,
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-/// Process start-time identity is not used by non-macOS launchers.
-pub fn process_start_time(_pid: i32) -> Option<ProcessStartTime> {
-    None
-}
-
-/// Read the start-time identity of one live process by its unsigned PID.
-fn pid_start_time(pid: u32) -> Option<ProcessStartTime> {
-    i32::try_from(pid).ok().and_then(process_start_time)
-}
-
-/// Return true when a recorded process is alive and, when the record holds a
-/// start time, is the same process. A reused PID then reads as dead.
-fn recorded_process_is_alive(pid: u32, start_time: Option<ProcessStartTime>) -> bool {
-    is_process_alive(pid) && start_time.is_none_or(|recorded| pid_start_time(pid) == Some(recorded))
-}
-
-/// Confirm that a recorded process group still belongs to the original app
-/// leader.
-pub fn recorded_app_group_is_current(record: &AppRecord) -> bool {
-    record
-        .app_group_leader_start_time
-        .zip(process_start_time(record.app_process_group_id))
-        .is_some_and(|(recorded, current)| recorded == current)
-}
-
 /// Remove a file, tolerating not-found races.
 fn remove_file_if_exists(path: &Path) -> Result<(), io::Error> {
     match fs::remove_file(path) {
@@ -437,43 +403,6 @@ fn remove_file_if_exists(path: &Path) -> Result<(), io::Error> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-#[cfg(target_os = "macos")]
-/// Return true when a process with the provided pid appears alive.
-pub fn is_process_alive(pid: u32) -> bool {
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-    // The launcher is a same-user process, so BSD info remains available
-    // throughout its life.
-    pidinfo::<BSDInfo>(pid, 0).is_ok_and(|info| info.pbi_status != libc::SZOMB)
-}
-
-#[cfg(all(feature = "test-app", target_os = "macos"))]
-/// Return whether `pid` is alive under the production liveness definition.
-pub fn process_is_alive(pid: i32) -> bool {
-    u32::try_from(pid).is_ok_and(is_process_alive)
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-/// Return true when a process with the provided pid appears alive.
-fn is_process_alive(pid: u32) -> bool {
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-    let result = unsafe { libc::kill(pid, 0) };
-    if result == 0 {
-        return true;
-    }
-    let error = io::Error::last_os_error();
-    !matches!(error.raw_os_error(), Some(libc::ESRCH))
-}
-
-#[cfg(not(unix))]
-/// Process liveness checks are conservative on non-unix platforms.
-fn is_process_alive(_pid: u32) -> bool {
-    true
 }
 
 #[cfg(unix)]
