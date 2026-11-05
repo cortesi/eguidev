@@ -777,6 +777,66 @@ struct DeclaredModuleBuilder<'a> {
 }
 
 impl DeclaredModuleBuilder<'_> {
+    /// Register an async call of the hidden table `table` that returns the JSON
+    /// value of one runtime call.
+    fn json_call<A, F, Fut>(
+        &mut self,
+        name: &str,
+        table: &'static str,
+        runtime: &Arc<ScriptRuntime>,
+        call: F,
+    ) where
+        A: for<'s> FromLuaMulti<'s> + Send + 'static,
+        F: Fn(Arc<ScriptRuntime>, ScriptPosition, A) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = ScriptResult<Value>> + Send + 'static,
+    {
+        let runtime = Arc::clone(runtime);
+        self.async_function(
+            name,
+            ModuleBinding::hidden(table),
+            async_host_fn(move |ctx: AsyncHostContext, args: A| {
+                let runtime = Arc::clone(&runtime);
+                let call = call.clone();
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    let value = call(runtime, pos, args).await.or_raise(&ctx).await?;
+                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
+                        .await
+                }
+            }),
+        );
+    }
+
+    /// Register an async call of the hidden table `table` that returns
+    /// nothing, whatever the runtime call returns.
+    fn unit_call<A, F, Fut, T>(
+        &mut self,
+        name: &str,
+        table: &'static str,
+        runtime: &Arc<ScriptRuntime>,
+        call: F,
+    ) where
+        A: for<'s> FromLuaMulti<'s> + Send + 'static,
+        F: Fn(Arc<ScriptRuntime>, ScriptPosition, A) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = ScriptResult<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let runtime = Arc::clone(runtime);
+        self.async_function(
+            name,
+            ModuleBinding::hidden(table),
+            async_host_fn(move |ctx: AsyncHostContext, args: A| {
+                let runtime = Arc::clone(&runtime);
+                let call = call.clone();
+                async move {
+                    let pos = script_position_from_context(&ctx).await?;
+                    call(runtime, pos, args).await.or_raise(&ctx).await?;
+                    Ok(HostReturn::default())
+                }
+            }),
+        );
+    }
+
     fn borrowed_function<F>(&mut self, name: &str, binding: ModuleBinding, function: F)
     where
         F: for<'s> Fn(&Scope<'s>, MultiValue<'s>) -> Result<MultiValue<'s>, RuntimeError>
@@ -841,23 +901,13 @@ impl EguidevModule {
             ModuleBinding::hidden("eguidev.record"),
             move |scope, args| configure_host(&runtime, scope, args),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "apply",
-            ModuleBinding::hidden("eguidev.fixture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: FixtureArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .fixture_apply(pos, args.name, args.params)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.fixture",
+            &self.runtime,
+            |runtime, pos, args: FixtureArgs| async move {
+                runtime.fixture_apply(pos, args.name, args.params).await
+            },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.borrowed_function(
@@ -865,33 +915,17 @@ impl EguidevModule {
             ModuleBinding::hidden("eguidev.fixture"),
             move |scope, args| fixtures_host(&runtime, scope, &args),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "get",
-            ModuleBinding::hidden("eguidev.diagnostic"),
-            async_host_fn(move |ctx: AsyncHostContext, name: String| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime.diagnostic(pos, name).await.or_raise(&ctx).await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.diagnostic",
+            &self.runtime,
+            |runtime, pos, name: String| async move { runtime.diagnostic(pos, name).await },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "all",
-            ModuleBinding::hidden("eguidev.diagnostic"),
-            async_host_fn(move |ctx: AsyncHostContext, (): ()| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime.diagnostics(pos).await.or_raise(&ctx).await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.diagnostic",
+            &self.runtime,
+            |runtime, pos, (): ()| async move { runtime.diagnostics(pos).await },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.borrowed_function(
@@ -905,23 +939,11 @@ impl EguidevModule {
             ModuleBinding::hidden("eguidev.query"),
             move |scope, args| dump_text_host(&runtime, scope, args),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_list",
-            ModuleBinding::hidden("eguidev.query"),
-            async_host_fn(move |ctx: AsyncHostContext, (): ()| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .viewports_list(pos, None)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.query",
+            &self.runtime,
+            |runtime, pos, (): ()| async move { runtime.viewports_list(pos, None).await },
         );
     }
 
@@ -941,40 +963,21 @@ impl EguidevModule {
             ModuleBinding::hidden("eguidev.query"),
             move |scope, args| viewport_state_host(&runtime, scope, args),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "egui",
-            ModuleBinding::hidden("eguidev.diagnostic"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .egui_diagnostics(pos, viewport.id)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.diagnostic",
+            &self.runtime,
+            |runtime, pos, viewport: ViewportReceiver| async move {
+                runtime.egui_diagnostics(pos, viewport.id).await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.unit_call(
             "clear_egui",
-            ModuleBinding::hidden("eguidev.diagnostic"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    runtime
-                        .clear_egui_diagnostics(pos, viewport.id)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    Ok(HostReturn::default())
-                }
-            }),
+            "eguidev.diagnostic",
+            &self.runtime,
+            |runtime, pos, viewport: ViewportReceiver| async move {
+                runtime.clear_egui_diagnostics(pos, viewport.id).await
+            },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.borrowed_function(
@@ -1019,229 +1022,127 @@ impl EguidevModule {
                 }
             }),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_focus",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .focus_window(
-                            pos,
-                            args.receiver.id,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .focus_window(
+                        pos,
+                        args.receiver.id,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_settle",
-            ModuleBinding::hidden("eguidev.wait"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.wait",
+            &self.runtime,
+            |runtime, pos, args: ViewportOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .wait_for_settle(pos, options.as_ref().and_then(Value::as_object))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_dismiss_popups",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .viewport_dismiss_popups(
-                            pos,
-                            Some(args.receiver.id),
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .viewport_dismiss_popups(
+                        pos,
+                        Some(args.receiver.id),
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_key",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(
-                move |ctx: AsyncHostContext, args: ViewportStringOptionsArgs| {
-                    let runtime = Arc::clone(&runtime);
-                    async move {
-                        let pos = script_position_from_context(&ctx).await?;
-                        let options = args.options_with_viewport();
-                        let value = runtime
-                            .action_key(
-                                pos,
-                                args.value,
-                                options.as_ref().and_then(Value::as_object),
-                            )
-                            .await
-                            .or_raise(&ctx)
-                            .await?;
-                        ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                            .await
-                    }
-                },
-            ),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportStringOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_key(pos, args.value, options.as_ref().and_then(Value::as_object))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_paste",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(
-                move |ctx: AsyncHostContext, args: ViewportStringOptionsArgs| {
-                    let runtime = Arc::clone(&runtime);
-                    async move {
-                        let pos = script_position_from_context(&ctx).await?;
-                        let options = args.options_with_viewport();
-                        let value = runtime
-                            .action_paste(
-                                pos,
-                                args.value,
-                                options.as_ref().and_then(Value::as_object),
-                            )
-                            .await
-                            .or_raise(&ctx)
-                            .await?;
-                        ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                            .await
-                    }
-                },
-            ),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportStringOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_paste(pos, args.value, options.as_ref().and_then(Value::as_object))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_input",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .viewport_input(pos, &args.value, args.receiver.id)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportValueArgs| async move {
+                runtime
+                    .viewport_input(pos, &args.value, args.receiver.id)
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_resize",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .viewport_resize(pos, &args.value, args.receiver.id)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportValueArgs| async move {
+                runtime
+                    .viewport_resize(pos, &args.value, args.receiver.id)
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_screenshot",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let target = serde_json::json!({ "viewport_id": args.receiver.id });
-                    let value = runtime
-                        .screenshot(pos, Some(&target), Some(&args.value))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, args: ViewportValueArgs| async move {
+                let target = serde_json::json!({ "viewport_id": args.receiver.id });
+                runtime
+                    .screenshot(pos, Some(&target), Some(&args.value))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_native_screenshot",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .native_screenshot(pos, args.receiver.id, Some(&args.value))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, args: ViewportValueArgs| async move {
+                runtime
+                    .native_screenshot(pos, args.receiver.id, Some(&args.value))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_sample_pixels",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .sample_pixels(pos, &args.value, Some(args.receiver.id))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, args: ViewportValueArgs| async move {
+                runtime
+                    .sample_pixels(pos, &args.value, Some(args.receiver.id))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_layout_issues",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .check_layout(pos, Some(viewport.id))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, viewport: ViewportReceiver| async move {
+                runtime.check_layout(pos, Some(viewport.id)).await
+            },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
@@ -1267,64 +1168,36 @@ impl EguidevModule {
                 },
             ),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_clear_highlights",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .clear_highlights(pos, Some(viewport.id))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, viewport: ViewportReceiver| async move {
+                runtime.clear_highlights(pos, Some(viewport.id)).await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_show_debug_overlay",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: ViewportOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .show_debug_overlay(
-                            pos,
-                            Some(args.receiver.id),
-                            args.options.as_ref().and_then(Value::as_object),
-                            None,
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: ViewportOptionsArgs| async move {
+                runtime
+                    .show_debug_overlay(
+                        pos,
+                        Some(args.receiver.id),
+                        args.options.as_ref().and_then(Value::as_object),
+                        None,
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "viewport_clear_debug_overlay",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, viewport: ViewportReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .clear_debug_overlay(pos, Some(viewport.id))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, viewport: ViewportReceiver| async move {
+                runtime.clear_debug_overlay(pos, Some(viewport.id)).await
+            },
         );
     }
 
@@ -1335,447 +1208,285 @@ impl EguidevModule {
             ModuleBinding::hidden("eguidev.query"),
             move |scope, args| widget_viewport_host(&runtime, scope, args),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_click",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_click(
-                            pos,
-                            &args.receiver.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_click(
+                        pos,
+                        &args.receiver.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_hover",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_hover(
-                            pos,
-                            &args.receiver.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_hover(
+                        pos,
+                        &args.receiver.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_type_text",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetTextOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_type(
-                            pos,
-                            &args.receiver.value,
-                            args.text,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetTextOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_type(
+                        pos,
+                        &args.receiver.value,
+                        args.text,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_focus",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_focus(
-                            pos,
-                            &args.receiver.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_focus(
+                        pos,
+                        &args.receiver.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_set_value",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .widget_set_value(
-                            pos,
-                            &args.receiver.value,
-                            &args.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetValueOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .widget_set_value(
+                        pos,
+                        &args.receiver.value,
+                        &args.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_drag_position",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_drag(
-                            pos,
-                            &args.receiver.value,
-                            &args.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetValueOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_drag(
+                        pos,
+                        &args.receiver.value,
+                        &args.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_drag_relative",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetDragRelativeArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_drag_relative(
-                            pos,
-                            &args.receiver.value,
-                            &args.relative,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetDragRelativeArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_drag_relative(
+                        pos,
+                        &args.receiver.value,
+                        &args.relative,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_drag_to",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetDragToArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_drag_to_widget(
-                            pos,
-                            &args.receiver.value,
-                            &args.target.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetDragToArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_drag_to_widget(
+                        pos,
+                        &args.receiver.value,
+                        &args.target.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_scroll",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_scroll(
-                            pos,
-                            &args.receiver.value,
-                            &args.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetValueOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_scroll(
+                        pos,
+                        &args.receiver.value,
+                        &args.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_scroll_to",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_scroll_to(
-                            pos,
-                            &args.receiver.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_scroll_to(
+                        pos,
+                        &args.receiver.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_scroll_into_view",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .action_scroll_into_view(
-                            pos,
-                            &args.receiver.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .action_scroll_into_view(
+                        pos,
+                        &args.receiver.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_text_measure",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, receiver: WidgetReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .text_measure(pos, &receiver.value)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, receiver: WidgetReceiver| async move {
+                runtime.text_measure(pos, &receiver.value).await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_layout_issues",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, receiver: WidgetReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .check_layout_widget(pos, &receiver.value, receiver.viewport_id)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, receiver: WidgetReceiver| async move {
+                runtime
+                    .check_layout_widget(pos, &receiver.value, receiver.viewport_id)
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_screenshot",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .screenshot(pos, Some(&args.receiver.value), Some(&args.value))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, args: WidgetValueArgs| async move {
+                runtime
+                    .screenshot(pos, Some(&args.receiver.value), Some(&args.value))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_sample_pixels",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetValueArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .widget_sample_pixels(
-                            pos,
-                            &args.receiver.value,
-                            args.receiver.viewport_id,
-                            &args.value,
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, args: WidgetValueArgs| async move {
+                runtime
+                    .widget_sample_pixels(
+                        pos,
+                        &args.receiver.value,
+                        args.receiver.viewport_id,
+                        &args.value,
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_sample_grid",
-            ModuleBinding::hidden("eguidev.capture"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetGridArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .widget_sample_grid(
-                            pos,
-                            &args.receiver.value,
-                            args.receiver.viewport_id,
-                            &args.nx,
-                            &args.ny,
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.capture",
+            &self.runtime,
+            |runtime, pos, args: WidgetGridArgs| async move {
+                runtime
+                    .widget_sample_grid(
+                        pos,
+                        &args.receiver.value,
+                        args.receiver.viewport_id,
+                        &args.nx,
+                        &args.ny,
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_show_highlight",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetStringArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .show_highlight_widget(
-                            pos,
-                            &args.receiver.value,
-                            args.receiver.viewport_id,
-                            args.value,
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetStringArgs| async move {
+                runtime
+                    .show_highlight_widget(
+                        pos,
+                        &args.receiver.value,
+                        args.receiver.viewport_id,
+                        args.value,
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_clear_highlight",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, receiver: WidgetReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .clear_widget_highlight(pos, &receiver.value, receiver.viewport_id)
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, receiver: WidgetReceiver| async move {
+                runtime
+                    .clear_widget_highlight(pos, &receiver.value, receiver.viewport_id)
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_show_debug_overlay",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .show_debug_overlay(
-                            pos,
-                            None,
-                            args.options.as_ref().and_then(Value::as_object),
-                            Some(args.receiver.widget_ref()),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                runtime
+                    .show_debug_overlay(
+                        pos,
+                        None,
+                        args.options.as_ref().and_then(Value::as_object),
+                        Some(args.receiver.widget_ref()),
+                    )
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_clear_debug_overlay",
-            ModuleBinding::hidden("eguidev.action"),
-            async_host_fn(move |ctx: AsyncHostContext, widget: WidgetReceiver| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let value = runtime
-                        .clear_widget_debug_overlay(pos, widget.widget_ref())
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.action",
+            &self.runtime,
+            |runtime, pos, widget: WidgetReceiver| async move {
+                runtime
+                    .clear_widget_debug_overlay(pos, widget.widget_ref())
+                    .await
+            },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.async_function(
@@ -1810,28 +1521,20 @@ impl EguidevModule {
                 }
             }),
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "widget_wait_absent",
-            ModuleBinding::hidden("eguidev.wait"),
-            async_host_fn(move |ctx: AsyncHostContext, args: WidgetOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let options = args.options_with_viewport();
-                    let value = runtime
-                        .wait_for_widget_absent(
-                            pos,
-                            &args.receiver.value,
-                            options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.wait",
+            &self.runtime,
+            |runtime, pos, args: WidgetOptionsArgs| async move {
+                let options = args.options_with_viewport();
+                runtime
+                    .wait_for_widget_absent(
+                        pos,
+                        &args.receiver.value,
+                        options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.borrowed_function(
@@ -1854,45 +1557,31 @@ impl EguidevModule {
     }
 
     fn register_script_utility_globals(&self, builder: &mut DeclaredModuleBuilder<'_>) {
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.unit_call(
             "capture",
-            ModuleBinding::hidden("eguidev.wait"),
-            async_host_fn(move |ctx: AsyncHostContext, options: OptionalJsonArg| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    runtime
-                        .wait_for_fresh_capture(pos, options.0.as_ref().and_then(Value::as_object))
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    Ok(HostReturn::default())
-                }
-            }),
+            "eguidev.wait",
+            &self.runtime,
+            |runtime, pos, options: OptionalJsonArg| async move {
+                runtime
+                    .wait_for_fresh_capture(pos, options.0.as_ref().and_then(Value::as_object))
+                    .await
+            },
         );
-        let runtime = Arc::clone(&self.runtime);
-        builder.async_function(
+        builder.json_call(
             "frames",
-            ModuleBinding::hidden("eguidev.wait"),
-            async_host_fn(move |ctx: AsyncHostContext, args: FrameCountOptionsArgs| {
-                let runtime = Arc::clone(&runtime);
-                async move {
-                    let pos = script_position_from_context(&ctx).await?;
-                    let count = optional_luau_number_to_json(args.count)?;
-                    let value = runtime
-                        .wait_for_frames(
-                            pos,
-                            &count,
-                            args.options.as_ref().and_then(Value::as_object),
-                        )
-                        .await
-                        .or_raise(&ctx)
-                        .await?;
-                    ctx.json_host_return_with_options(value, JsonDecodeOptions::typed())
-                        .await
-                }
-            }),
+            "eguidev.wait",
+            &self.runtime,
+            |runtime, pos, args: FrameCountOptionsArgs| async move {
+                let count = optional_luau_number_to_json(args.count)
+                    .map_err(|error| ruau_runtime_error_info(&error))?;
+                runtime
+                    .wait_for_frames(
+                        pos,
+                        &count,
+                        args.options.as_ref().and_then(Value::as_object),
+                    )
+                    .await
+            },
         );
         let runtime = Arc::clone(&self.runtime);
         builder.borrowed_function(
