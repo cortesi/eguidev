@@ -273,12 +273,20 @@ pub async fn connect_app_client(
                     return Err(error);
                 }
                 if Instant::now() >= deadline {
-                    return Err(error);
+                    return Err(connect_timeout_error(endpoint, APP_CONNECT_TIMEOUT, &error));
                 }
                 sleep(Duration::from_millis(25)).await;
             }
         }
     }
+}
+
+/// Name the socket and the timeout of a start that never connected.
+fn connect_timeout_error(endpoint: &str, timeout: Duration, error: &McpError) -> McpError {
+    McpError::Transport(format!(
+        "the app did not open its socket {endpoint} within {} seconds; last connect error: {error}",
+        timeout.as_secs()
+    ))
 }
 
 /// Connect a client to the socket of an app.
@@ -338,5 +346,23 @@ pub fn append_tail_capped(buffer: &Arc<Mutex<Vec<u8>>>, bytes: &[u8]) {
     if data.len() > APP_LOG_TAIL_LIMIT + APP_LOG_TAIL_TRIM_SLACK {
         let drop_len = data.len() - APP_LOG_TAIL_LIMIT;
         data.drain(..drop_len);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_timeout_error_names_socket_and_timeout() {
+        let error = connect_timeout_error(
+            "/tmp/app.sock",
+            Duration::from_secs(120),
+            &McpError::Transport("IO error: No such file or directory".to_string()),
+        );
+        let text = error.to_string();
+        assert!(text.contains("/tmp/app.sock"), "{text}");
+        assert!(text.contains("120 seconds"), "{text}");
+        assert!(text.contains("No such file or directory"), "{text}");
     }
 }
