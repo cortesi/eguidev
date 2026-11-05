@@ -91,3 +91,65 @@ impl DevMcpServer {
         filter_viewport_snapshots(&self.inner, viewport_id).map_err(Into::into)
     }
 }
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments mirror the script-facing widget query fields"
+)]
+pub fn collect_widget_list(
+    inner: &Inner,
+    viewport_id: Option<String>,
+    include_invisible: Option<bool>,
+    role: Option<WidgetRole>,
+    id_prefix: Option<&str>,
+    label: Option<&str>,
+    label_contains: Option<&str>,
+    visible: Option<bool>,
+    enabled: Option<bool>,
+    focused: Option<bool>,
+    selected: Option<bool>,
+    covered: Option<bool>,
+) -> ToolResult<Vec<WidgetRegistryEntry>> {
+    ensure_automation_ready(inner)?;
+    let viewport_id = resolve_viewport_id(inner, viewport_id)?;
+    let mut widgets = inner.widgets.widget_list(viewport_id);
+    let include_invisible = include_invisible.unwrap_or(false) || visible == Some(false);
+    if !include_invisible {
+        widgets.retain(|entry| entry.visible);
+    }
+    if let Some(visible) = visible {
+        widgets.retain(|entry| entry.visible == visible);
+    }
+    if let Some(enabled) = enabled {
+        widgets.retain(|entry| entry.enabled == enabled);
+    }
+    if let Some(focused) = focused {
+        widgets.retain(|entry| entry.focused == focused);
+    }
+    if let Some(selected) = selected {
+        widgets.retain(|entry| entry.selected() == Some(selected));
+    }
+    if let Some(covered) = covered {
+        widgets.retain(|entry| entry.covered == covered);
+    }
+    if let Some(role) = role {
+        widgets.retain(|entry| entry.role == role);
+    }
+
+    if let Some(prefix) = id_prefix {
+        widgets.retain(|entry| entry.id.starts_with(prefix));
+    }
+    if let Some(label) = label {
+        widgets.retain(|entry| entry.label.as_deref() == Some(label));
+    }
+    if let Some(needle) = label_contains {
+        widgets.retain(|entry| {
+            entry
+                .label
+                .as_deref()
+                .is_some_and(|label| label.contains(needle))
+        });
+    }
+
+    Ok(widgets)
+}

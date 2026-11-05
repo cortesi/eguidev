@@ -317,3 +317,181 @@ impl DevMcpServer {
         .into())
     }
 }
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct SettleReport {
+    pub settled: bool,
+    pub elapsed_ms: u64,
+    pub phases: Vec<SettlePhaseStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct SettlePhaseStatus {
+    pub phase: SettlePhase,
+    pub complete: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlePhase {
+    InputDrained,
+    CommandsDrained,
+    ActionFrameProcessed,
+    CleanCapture,
+    FreshFrame,
+    AppIdle,
+}
+
+impl SettlePhase {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::InputDrained => "input_drained",
+            Self::CommandsDrained => "commands_drained",
+            Self::ActionFrameProcessed => "action_frame_processed",
+            Self::CleanCapture => "clean_capture",
+            Self::FreshFrame => "fresh_frame",
+            Self::AppIdle => "app_idle",
+        }
+    }
+}
+
+pub(super) fn settle_report(
+    inner: &Inner,
+    viewport_id: egui::ViewportId,
+    start_capture: u64,
+    start_frame: u64,
+    elapsed_ms: u64,
+) -> SettleReport {
+    let capture = inner.viewports.capture_snapshot(viewport_id);
+    let capture_frame = capture.map(|snapshot| snapshot.frame_count);
+    let observed_new_capture = capture_frame.is_some_and(|frame| frame > start_capture);
+    let target_viewport_closed =
+        viewport_id != egui::ViewportId::ROOT && !inner.viewports.is_live_viewport(viewport_id);
+    let observed_settle_frame = observed_new_capture;
+    let pending_actions = inner.actions.pending_action_count(viewport_id);
+    let pending_commands = inner.actions.pending_command_count(viewport_id);
+    let last_action_frame = inner.last_action_frame.load(Ordering::Relaxed);
+    let processed_last_action = inner.frame_count() > last_action_frame;
+    let action_stats = inner.actions.stats(viewport_id);
+    let observed_clean_action_frame = action_stats.last_drain_frame.is_none_or(|frame| {
+        capture_frame.is_some_and(|capture_frame| capture_frame > frame.saturating_add(1))
+    });
+
+    let mut phases = vec![
+        SettlePhaseStatus {
+            phase: SettlePhase::InputDrained,
+            complete: pending_actions == 0,
+            detail: if pending_actions == 0 {
+                "no pending input actions".to_string()
+            } else {
+                format!("{pending_actions} input action(s) pending")
+            },
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::CommandsDrained,
+            complete: pending_commands == 0,
+            detail: if pending_commands == 0 {
+                "no pending viewport commands".to_string()
+            } else {
+                format!("{pending_commands} viewport command(s) pending")
+            },
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::ActionFrameProcessed,
+            complete: processed_last_action,
+            detail: format!(
+                "last action frame {last_action_frame}, current frame {}",
+                inner.frame_count()
+            ),
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::CleanCapture,
+            complete: observed_clean_action_frame || target_viewport_closed,
+            detail: if target_viewport_closed {
+                "target viewport closed after action drain".to_string()
+            } else {
+                format!(
+                    "last drain frame {}, latest capture {}",
+                    action_stats
+                        .last_drain_frame
+                        .map(|frame| frame.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    capture_frame
+                        .map(|frame| frame.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            },
+        },
+        SettlePhaseStatus {
+            phase: SettlePhase::FreshFrame,
+            complete: observed_settle_frame || target_viewport_closed,
+            detail: if target_viewport_closed {
+                "target viewport closed during wait".to_string()
+            } else {
+                format!(
+                    "start frame {start_frame}, current frame {}, start capture {start_capture}, latest capture {}",
+                    inner.frame_count(),
+                    capture_frame
+                        .map(|frame| frame.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )
+            },
+        },
+    ];
+
+    if let Some(idle) = inner.idle.status() {
+        phases.push(SettlePhaseStatus {
+            phase: SettlePhase::AppIdle,
+            complete: idle.idle,
+            detail: idle.detail,
+        });
+    }
+
+    let settled = phases.iter().all(|phase| phase.complete);
+    SettleReport {
+        settled,
+        elapsed_ms,
+        phases,
+    }
+}
+
+pub(super) fn settle_timeout_message(timeout_ms: u64, report: &SettleReport) -> String {
+    let incomplete = report
+        .phases
+        .iter()
+        .filter(|phase| !phase.complete)
+        .map(|phase| format!("{} ({})", phase.phase.as_str(), phase.detail))
+        .collect::<Vec<_>>();
+    if incomplete.is_empty() {
+        format!("Timed out waiting for UI to settle after {timeout_ms}ms")
+    } else {
+        format!(
+            "Timed out waiting for UI to settle after {timeout_ms}ms; incomplete: {}",
+            incomplete.join(", ")
+        )
+    }
+}
+
+pub(super) fn settle_timeout_details(
+    elapsed_ms: u64,
+    viewport: Option<&ViewportSnapshot>,
+    start_capture: u64,
+    end_capture: Option<u64>,
+    observation: &WaitObservation,
+    report: &SettleReport,
+) -> Value {
+    let mut details = wait_timeout_details(
+        "settle",
+        elapsed_ms,
+        None,
+        viewport,
+        Some(start_capture),
+        end_capture,
+        observation,
+    );
+    if let Some(map) = details.as_object_mut() {
+        map.insert("phases".to_string(), json!(report.phases));
+    }
+    details
+}

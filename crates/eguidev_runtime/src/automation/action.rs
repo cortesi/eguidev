@@ -808,3 +808,166 @@ fn log_pointer_cover(inner: &Inner, viewport_id: egui::ViewportId, pos: Pos2, ta
         );
     }
 }
+
+pub(super) fn reveal_axis(
+    current: f32,
+    viewport_min: f32,
+    viewport_size: f32,
+    item_min: f32,
+    item_max: f32,
+    max_offset: f32,
+) -> f32 {
+    let content_min = current + (item_min - viewport_min);
+    let content_max = current + (item_max - viewport_min);
+    let mut target = current;
+    if content_min < current {
+        target = content_min;
+    } else if content_max > current + viewport_size {
+        target = content_max - viewport_size;
+    }
+    target.clamp(0.0, max_offset.max(0.0))
+}
+
+pub(super) fn scroll_area_target_offset(
+    scroll_area: &WidgetRegistryEntry,
+    target: &WidgetRegistryEntry,
+) -> Option<Vec2> {
+    let scroll = scroll_state(scroll_area)?;
+    let current: egui::Vec2 = scroll.offset.into();
+    Some(Vec2 {
+        x: reveal_axis(
+            current.x,
+            scroll_area.rect.min.x,
+            scroll.viewport_size.x,
+            target.rect.min.x,
+            target.rect.max.x,
+            scroll.max_offset.x,
+        ),
+        y: reveal_axis(
+            current.y,
+            scroll_area.rect.min.y,
+            scroll.viewport_size.y,
+            target.rect.min.y,
+            target.rect.max.y,
+            scroll.max_offset.y,
+        ),
+    })
+}
+
+pub(super) fn egui_pointer_button(button: PointerButton) -> egui::PointerButton {
+    match button {
+        PointerButton::Primary => egui::PointerButton::Primary,
+        PointerButton::Secondary => egui::PointerButton::Secondary,
+        PointerButton::Middle => egui::PointerButton::Middle,
+    }
+}
+
+/// Fraction of the widget that survives clipping, or 1.0 with no layout
+/// metadata.
+pub(super) fn widget_visible_fraction(widget: &WidgetRegistryEntry) -> f32 {
+    widget
+        .layout
+        .as_ref()
+        .map_or(1.0, |layout| layout.visible_fraction)
+}
+
+/// Whether a widget exists in a state that could accept an interaction, apart
+/// from coverage by another layer.
+///
+/// This predicate alone governs the poll that `scroll_into_view` runs.
+/// Scrolling cannot uncover a widget sitting under a fixed overlay, so a poll
+/// that also required [`WidgetRegistryEntry::covered`] to be false would spin
+/// until timeout for a script that scrolls such a widget into view only to
+/// read it. Pointer admission and the Luau `actionable` condition require
+/// [`pointer_ready`] instead, which adds the coverage check.
+pub fn interaction_ready(widget: &WidgetRegistryEntry) -> bool {
+    widget.visible && widget.enabled && widget_visible_fraction(widget) > 0.0
+}
+
+/// Whether a widget can accept a pointer action right now.
+///
+/// This adds the coverage check to [`interaction_ready`]: a widget under
+/// another egui layer would route a pointer event to that layer instead, so
+/// pointer admission and the Luau `actionable` condition both require this.
+pub fn pointer_ready(widget: &WidgetRegistryEntry) -> bool {
+    interaction_ready(widget) && !widget.covered
+}
+
+/// Remedy named by the invisible-interaction error and by its `hint` detail.
+pub const INTERACTION_READY_HINT: &str =
+    "call wait({ actionable = true }) after scroll_into_view(), or check clipping";
+
+/// Remedy named by the covered-widget error and by its `hint` detail.
+pub const COVERED_HINT: &str =
+    "close or fold the overlay that covers this widget before interacting with it";
+
+pub(super) fn invisible_interaction_error(
+    inner: &Inner,
+    widget: &WidgetRegistryEntry,
+    viewport_id: egui::ViewportId,
+) -> Option<ToolError> {
+    if interaction_ready(widget) {
+        return None;
+    }
+    let viewport = viewport_snapshot_for(inner, viewport_id);
+    let reason = if !widget.visible {
+        "widget is not visible"
+    } else if !widget.enabled {
+        "widget is not enabled"
+    } else {
+        "widget visible_fraction is 0"
+    };
+    Some(
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!(
+                "Cannot interact with widget {:?}: {reason}; {INTERACTION_READY_HINT}",
+                widget.id
+            ),
+        )
+        .with_details(json!({
+            "reason": "invisible_interaction",
+            "hint": INTERACTION_READY_HINT,
+            "widget": WidgetState::from(widget),
+            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
+                json!({
+                    "id": viewport_id_to_string(viewport_id),
+                })
+            }),
+            "layout": widget.layout.clone(),
+        })),
+    )
+}
+
+/// Error returned when a pointer action targets a widget that
+/// [`interaction_ready`] admits but another egui layer covers.
+pub(super) fn covered_interaction_error(
+    inner: &Inner,
+    widget: &WidgetRegistryEntry,
+    viewport_id: egui::ViewportId,
+) -> Option<ToolError> {
+    if !widget.covered {
+        return None;
+    }
+    let viewport = viewport_snapshot_for(inner, viewport_id);
+    Some(
+        ToolError::new(
+            ErrorCode::NotActionable,
+            format!(
+                "Cannot interact with widget {:?}: another layer covers it; {COVERED_HINT}",
+                widget.id
+            ),
+        )
+        .with_details(json!({
+            "reason": "covered",
+            "hint": COVERED_HINT,
+            "widget": WidgetState::from(widget),
+            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
+                json!({
+                    "id": viewport_id_to_string(viewport_id),
+                })
+            }),
+            "layout": widget.layout.clone(),
+        })),
+    )
+}

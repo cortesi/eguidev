@@ -920,6 +920,325 @@ fn crop_image(
     }))
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct PixelSample {
+    pub(super) position: Pos2,
+    pub(super) physical: [usize; 2],
+    pub(super) rgba: [u8; 4],
+    pub(super) hex: String,
+}
+
+pub(super) fn sample_color_image(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    positions: &[Pos2],
+) -> Result<Vec<PixelSample>, ToolError> {
+    if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
+        return Err(ToolError::new(
+            ErrorCode::Internal,
+            "Invalid pixels_per_point for pixel sampling",
+        ));
+    }
+    positions
+        .iter()
+        .map(|position| sample_color_pixel(image, pixels_per_point, *position))
+        .collect()
+}
+
+pub(super) fn sample_color_pixel(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    position: Pos2,
+) -> Result<PixelSample, ToolError> {
+    let physical_x = (position.x * pixels_per_point).floor();
+    let physical_y = (position.y * pixels_per_point).floor();
+    if !physical_x.is_finite() || !physical_y.is_finite() {
+        return Err(ToolError::new(
+            ErrorCode::InvalidArgument,
+            "Sample position must be finite",
+        ));
+    }
+    if physical_x < 0.0
+        || physical_y < 0.0
+        || physical_x >= image.size[0] as f32
+        || physical_y >= image.size[1] as f32
+    {
+        return Err(ToolError::new(
+            ErrorCode::InvalidArgument,
+            "Sample position is outside the captured image",
+        )
+        .with_details(json!({
+            "position": position,
+            "physical": [physical_x, physical_y],
+            "image_size": image.size,
+            "pixels_per_point": pixels_per_point,
+        })));
+    }
+    let x = physical_x as usize;
+    let y = physical_y as usize;
+    let pixel = image.pixels[y * image.size[0] + x];
+    let rgba = pixel.to_array();
+    Ok(PixelSample {
+        position,
+        physical: [x, y],
+        rgba,
+        hex: format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            rgba[0], rgba[1], rgba[2], rgba[3]
+        ),
+    })
+}
+
+pub(super) fn sample_widget_relative_pixels(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    widget: &WidgetRegistryEntry,
+    viewport_name: Option<&str>,
+    positions: &[Pos2],
+) -> Result<Vec<PixelSample>, ToolError> {
+    ensure_valid_pixels_per_point(pixels_per_point)?;
+    let visible_rect = widget_visible_rect(widget, image, pixels_per_point);
+    positions
+        .iter()
+        .map(|position| {
+            let absolute = Pos2 {
+                x: widget.rect.min.x + position.x,
+                y: widget.rect.min.y + position.y,
+            };
+            if !position.x.is_finite()
+                || !position.y.is_finite()
+                || !point_in_rect_exclusive(absolute, widget.rect)
+            {
+                return Err(widget_sample_error(
+                    ErrorCode::InvalidArgument,
+                    "Sample position is outside the widget rect",
+                    widget,
+                    visible_rect,
+                    viewport_name,
+                    pixels_per_point,
+                    json!({
+                        "position": position,
+                        "absolute_position": absolute,
+                    }),
+                ));
+            }
+            sample_widget_absolute_pixel(
+                image,
+                pixels_per_point,
+                widget,
+                visible_rect,
+                viewport_name,
+                *position,
+                absolute,
+            )
+        })
+        .collect()
+}
+
+pub(super) fn sample_widget_grid(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    widget: &WidgetRegistryEntry,
+    viewport_name: Option<&str>,
+    nx: usize,
+    ny: usize,
+) -> Result<Vec<PixelSample>, ToolError> {
+    ensure_valid_pixels_per_point(pixels_per_point)?;
+    let visible_rect = widget_visible_rect(widget, image, pixels_per_point).ok_or_else(|| {
+        widget_sample_error(
+            ErrorCode::NotActionable,
+            "Widget is not visible enough to sample",
+            widget,
+            None,
+            viewport_name,
+            pixels_per_point,
+            json!({}),
+        )
+    })?;
+    let sample_rect = inset_sampling_rect(visible_rect).ok_or_else(|| {
+        widget_sample_error(
+            ErrorCode::NotActionable,
+            "Widget visible area is too small to sample",
+            widget,
+            Some(visible_rect),
+            viewport_name,
+            pixels_per_point,
+            json!({}),
+        )
+    })?;
+    let capacity = nx.checked_mul(ny).ok_or_else(|| {
+        ToolError::new(ErrorCode::InvalidArgument, "sample_grid nx * ny overflowed")
+    })?;
+    let mut samples = Vec::with_capacity(capacity);
+    for y in grid_axis(sample_rect.min.y, sample_rect.max.y, ny) {
+        for x in grid_axis(sample_rect.min.x, sample_rect.max.x, nx) {
+            let absolute = Pos2 { x, y };
+            let relative = Pos2 {
+                x: absolute.x - widget.rect.min.x,
+                y: absolute.y - widget.rect.min.y,
+            };
+            samples.push(sample_widget_absolute_pixel(
+                image,
+                pixels_per_point,
+                widget,
+                Some(visible_rect),
+                viewport_name,
+                relative,
+                absolute,
+            )?);
+        }
+    }
+    Ok(samples)
+}
+
+pub(super) fn sample_widget_absolute_pixel(
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+    widget: &WidgetRegistryEntry,
+    visible_rect: Option<Rect>,
+    viewport_name: Option<&str>,
+    relative_position: Pos2,
+    absolute_position: Pos2,
+) -> Result<PixelSample, ToolError> {
+    let physical_x = (absolute_position.x * pixels_per_point).floor();
+    let physical_y = (absolute_position.y * pixels_per_point).floor();
+    if !physical_x.is_finite()
+        || !physical_y.is_finite()
+        || physical_x < 0.0
+        || physical_y < 0.0
+        || physical_x >= image.size[0] as f32
+        || physical_y >= image.size[1] as f32
+    {
+        return Err(widget_sample_error(
+            ErrorCode::InvalidArgument,
+            "Sample position is outside the captured image",
+            widget,
+            visible_rect,
+            viewport_name,
+            pixels_per_point,
+            json!({
+                "position": relative_position,
+                "absolute_position": absolute_position,
+                "physical": [physical_x, physical_y],
+                "image_size": image.size,
+            }),
+        ));
+    }
+    let x = physical_x as usize;
+    let y = physical_y as usize;
+    let pixel = image.pixels[y * image.size[0] + x];
+    let rgba = pixel.to_array();
+    Ok(PixelSample {
+        position: relative_position,
+        physical: [x, y],
+        rgba,
+        hex: format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            rgba[0], rgba[1], rgba[2], rgba[3]
+        ),
+    })
+}
+
+pub(super) fn ensure_valid_pixels_per_point(pixels_per_point: f32) -> Result<(), ToolError> {
+    if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
+        return Ok(());
+    }
+    Err(ToolError::new(
+        ErrorCode::Internal,
+        "Invalid pixels_per_point for pixel sampling",
+    ))
+}
+
+pub(super) fn widget_visible_rect(
+    widget: &WidgetRegistryEntry,
+    image: &egui::ColorImage,
+    pixels_per_point: f32,
+) -> Option<Rect> {
+    if !widget.visible {
+        return None;
+    }
+    let mut rect = widget.rect;
+    if let Some(layout) = &widget.layout {
+        rect = rect_intersection(rect, layout.clip_rect)?;
+    }
+    rect_intersection(rect, image_logical_rect(image, pixels_per_point))
+}
+
+pub(super) fn image_logical_rect(image: &egui::ColorImage, pixels_per_point: f32) -> Rect {
+    Rect {
+        min: Pos2 { x: 0.0, y: 0.0 },
+        max: Pos2 {
+            x: image.size[0] as f32 / pixels_per_point,
+            y: image.size[1] as f32 / pixels_per_point,
+        },
+    }
+}
+
+pub(super) fn point_in_rect_exclusive(position: Pos2, rect: Rect) -> bool {
+    position.x >= rect.min.x
+        && position.y >= rect.min.y
+        && position.x < rect.max.x
+        && position.y < rect.max.y
+}
+
+pub(super) fn inset_sampling_rect(rect: Rect) -> Option<Rect> {
+    let width = rect.max.x - rect.min.x;
+    let height = rect.max.y - rect.min.y;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let inset_x = WIDGET_SAMPLE_GRID_INSET.min(width * 0.25);
+    let inset_y = WIDGET_SAMPLE_GRID_INSET.min(height * 0.25);
+    let rect = Rect {
+        min: Pos2 {
+            x: rect.min.x + inset_x,
+            y: rect.min.y + inset_y,
+        },
+        max: Pos2 {
+            x: rect.max.x - inset_x,
+            y: rect.max.y - inset_y,
+        },
+    };
+    rect_is_positive(rect).then_some(rect)
+}
+
+pub(super) fn rect_is_positive(rect: Rect) -> bool {
+    (rect.max.x - rect.min.x) > 0.0 && (rect.max.y - rect.min.y) > 0.0
+}
+
+pub(super) fn grid_axis(min: f32, max: f32, count: usize) -> Vec<f32> {
+    if count == 1 {
+        return vec![(min + max) * 0.5];
+    }
+    let step = (max - min) / (count - 1) as f32;
+    (0..count).map(|index| min + step * index as f32).collect()
+}
+
+pub(super) fn widget_sample_error(
+    code: ErrorCode,
+    message: &'static str,
+    widget: &WidgetRegistryEntry,
+    visible_rect: Option<Rect>,
+    viewport_name: Option<&str>,
+    pixels_per_point: f32,
+    extra: Value,
+) -> ToolError {
+    let mut details = json!({
+        "widget_id": widget.id,
+        "viewport_id": widget.viewport_id,
+        "viewport_name": viewport_name,
+        "rect": widget.rect,
+        "visible_rect": visible_rect,
+        "pixels_per_point": pixels_per_point,
+    });
+    if let (Some(details), Value::Object(extra)) = (details.as_object_mut(), extra) {
+        for (key, value) in extra {
+            details.insert(key, value);
+        }
+    }
+    ToolError::new(code, message).with_details(details)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{future::poll_fn, sync::Arc, task::Poll};

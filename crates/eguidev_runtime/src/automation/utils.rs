@@ -847,6 +847,59 @@ pub fn apply_overlay_debug_options(
     Ok(())
 }
 
+pub(super) fn resolve_viewport_id(
+    inner: &Inner,
+    viewport_id: Option<String>,
+) -> Result<egui::ViewportId, ToolError> {
+    inner
+        .viewports
+        .resolve_viewport_id(viewport_id)
+        .map_err(Into::into)
+}
+
+pub(super) fn resolve_widget(
+    inner: &Inner,
+    viewport_id: Option<&str>,
+    target: &WidgetRef,
+) -> Result<WidgetRegistryEntry, ToolError> {
+    inner
+        .widgets
+        .resolve_widget(&inner.viewports, viewport_id, target)
+        .map_err(Into::into)
+}
+
+pub(super) fn resolve_wait_widget(
+    inner: &Inner,
+    viewport_id: Option<&str>,
+    target: &WidgetRef,
+) -> Result<WidgetRegistryEntry, ToolError> {
+    match viewport_id {
+        Some(viewport_id) => resolve_widget(inner, Some(viewport_id), target),
+        None => inner
+            .widgets
+            .resolve_widget_global(&inner.viewports, target)
+            .map_err(Into::into),
+    }
+}
+
+pub(super) fn merge_missing_widget_search(details: &mut Value, error: &ToolError) {
+    if error.code() != ErrorCode::NotFound {
+        return;
+    }
+    let Some(error_details) = error.details() else {
+        return;
+    };
+    let Some(map) = details.as_object_mut() else {
+        return;
+    };
+    if let Some(selectors) = error_details.get("selectors").cloned() {
+        map.insert("selectors".to_string(), selectors);
+    }
+    if let Some(search) = error_details.get("search").cloned() {
+        map.insert("search".to_string(), search);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
