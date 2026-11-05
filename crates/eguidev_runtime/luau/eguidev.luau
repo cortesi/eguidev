@@ -255,7 +255,7 @@ local function deepEquals(left: any, right: any): boolean
     return true
 end
 
--- RFC 6901. Keep aligned with `is_valid_json_pointer` in crates/eguidev/src/types.rs.
+-- RFC 6901. Keep aligned with `is_valid_json_pointer` in crates/eguidev/src/types/conditions.rs.
 local function jsonPointer(value: any, pointer: string): (boolean, any)
     if pointer == "" then
         return true, value
@@ -282,7 +282,7 @@ local function jsonPointer(value: any, pointer: string): (boolean, any)
     return true, current
 end
 
--- Keep aligned with `is_valid_json_pointer` in crates/eguidev/src/types.rs.
+-- Keep aligned with `is_valid_json_pointer` in crates/eguidev/src/types/conditions.rs.
 local function isValidJsonPointer(pointer: string): boolean
     if pointer == "" then
         return true
