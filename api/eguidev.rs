@@ -4,7 +4,7 @@
 // Publish: crates.io
 // Workspace dependencies: none
 // Workspace dependents: edev, eguidev_demo, eguidev_runtime
-// Unnameable: crate::diagnostics::DiagnosticReceiver, crate::fixtures::FixtureManager, crate::fixtures::UiFixtureReceiver, crate::types::DataCondition, crate::types::ScrollAtCondition, crate::viewports::CaptureSnapshot
+// Unnameable: crate::viewports::CaptureSnapshot
 
 //! Cross-target instrumentation for AI-assisted egui development.
 //!
@@ -172,8 +172,8 @@ use std::{
 };
 
 use egui::{
-    Color32, Context, CursorIcon, Event, Galley, ImageSource, InnerResponse, Key, RawInput,
-    Response, Role, ScrollArea, Ui, ViewportCommand, ViewportId, WidgetText,
+    Color32, Context, CursorIcon, Event, Galley, ImageSource, InnerResponse, Key, LayerId,
+    RawInput, Response, Role, ScrollArea, Ui, ViewportCommand, ViewportId, WidgetText,
     containers::collapsing_header::CollapsingResponse, data::output::FullOutput,
     scroll_area::ScrollAreaOutput,
 };
@@ -407,9 +407,14 @@ pub struct ActionOptions {
 
 impl JsonSchema for ActionOptions {}
 
+/// The options that apply while a runtime automates the app.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AutomationOptions {
+    /// Whether the runtime requests a repaint after each frame, so that waits
+    /// see fresh frames. Defaults to true.
     pub keep_alive: bool,
+    /// Whether egui animations run. Defaults to false, so that frames are
+    /// deterministic.
     pub animations: bool,
 }
 
@@ -428,9 +433,21 @@ pub struct CheckboxOptions {
 }
 
 /// RAII guard that pops a container scope when dropped.
+#[must_use = "dropping the guard ends the container scope"]
 pub struct ContainerGuard {/* private fields */}
 
 impl Drop for ContainerGuard {}
+
+/// A JSON value required by a [`WidgetCondition`].
+#[derive(Clone, Debug, Deserialize<'de>, PartialEq, Serialize)]
+pub struct DataCondition {
+    /// RFC 6901 pointer into the widget's `data` value. Empty selects all.
+    pub pointer: String,
+    /// Value the pointer must resolve to.
+    pub equals: Value,
+}
+
+impl JsonSchema for DataCondition {}
 
 /// DevMCP handle stored in app state.
 ///
@@ -441,12 +458,15 @@ pub struct DevMcp {/* private fields */}
 
 impl DevMcp {
     #[doc(hidden)]
+    #[must_use]
     pub fn activate_runtime(self, inner: Arc<Inner>, hooks: Arc<dyn RuntimeHooks>) -> Self;
 
     /// Enable or disable egui animations while automation is attached.
+    #[must_use]
     pub fn animations(self, animations: bool) -> Self;
 
     /// Configure runtime-owned automation behavior.
+    #[must_use]
     pub fn automation_options(self, options: AutomationOptions) -> Self;
 
     /// Clear script-visible widgets for a viewport that the app has hidden.
@@ -472,7 +492,13 @@ impl DevMcp {
         F: 'static + FnMut(&Context) -> DiagnosticResult + Send;
 
     /// Register fixture metadata for discovery and validation.
-    pub fn fixtures(self, fixtures: impl IntoIterator<Item = FixtureSpec>) -> Self;
+    ///
+    /// Returns an `invalid_fixture` configuration error, and registers
+    /// nothing, when a spec is not valid.
+    pub fn fixtures(
+        self,
+        fixtures: impl IntoIterator<Item = FixtureSpec>,
+    ) -> Result<Self, DevMcpConfigError>;
 
     #[doc(hidden)]
     pub fn inner_arc(&self) -> Option<Arc<Inner>>;
@@ -482,6 +508,7 @@ impl DevMcp {
 
     /// Enable or disable runtime repaint keep-alive while automation is
     /// attached.
+    #[must_use]
     pub fn keep_alive(self, keep_alive: bool) -> Self;
 
     /// Create a new inert DevMCP handle.
@@ -524,6 +551,7 @@ impl DevMcp {
     /// shutdown. The handler must publish its request to the application's
     /// lifecycle owner and return immediately. If no handler is registered,
     /// Eguidev closes the root viewport.
+    #[must_use]
     pub fn on_shutdown<F>(self, handler: F) -> Self
     where
         F: 'static + Fn() + Send + Sync;
@@ -532,6 +560,7 @@ impl DevMcp {
     pub fn runtime_hooks(&self) -> Option<Arc<dyn RuntimeHooks>>;
 
     /// Enable or disable verbose internal logging for DevMCP operations.
+    #[must_use]
     pub fn verbose_logging(self, verbose_logging: bool) -> Self;
 }
 
@@ -582,6 +611,7 @@ impl DiagnosticError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self;
 
     /// Attach structured error details.
+    #[must_use]
     pub fn with_details(self, details: Value) -> Self;
 }
 
@@ -637,6 +667,7 @@ pub struct FixtureError {
 
 impl FixtureError {
     /// Attach structured error details.
+    #[must_use]
     pub fn details<T: Serialize>(self, details: T) -> Self;
 
     /// Create a fixture error.
@@ -674,12 +705,14 @@ impl FixtureParam {
     pub fn bool(name: impl Into<String>, description: impl Into<String>) -> Self;
 
     /// Restrict this parameter to exact choices.
+    #[must_use]
     pub fn choices<I, V>(self, values: I) -> Self
     where
         I: IntoIterator<Item = V>,
         V: Into<WidgetValue>;
 
     /// Set this parameter's default value.
+    #[must_use]
     pub fn default(self, value: impl Into<WidgetValue>) -> Self;
 
     /// Create a floating-point fixture parameter.
@@ -689,6 +722,7 @@ impl FixtureParam {
     pub fn int(name: impl Into<String>, description: impl Into<String>) -> Self;
 
     /// Set an inclusive numeric range.
+    #[must_use]
     pub fn range(self, min: f64, max: f64) -> Self;
 
     /// Create a text fixture parameter.
@@ -742,9 +776,11 @@ impl FixtureResponse {
     pub fn new() -> Self;
 
     /// Add a handler-returned dynamic ready.
+    #[must_use]
     pub fn ready(self, ready: FixtureTargetSpec) -> Self;
 
     /// Add a handler-returned value.
+    #[must_use]
     pub fn value(self, name: impl Into<String>, value: impl Into<WidgetValue>) -> Self;
 }
 
@@ -786,12 +822,15 @@ impl FixtureSpec {
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self;
 
     /// Add a typed fixture parameter.
+    #[must_use]
     pub fn param(self, param: FixtureParam) -> Self;
 
     /// Add a visible-widget precondition checked before fixture application.
+    #[must_use]
     pub fn precondition(self, widget_id: impl Into<String>) -> Self;
 
     /// Add a visible-widget precondition scoped to a viewport.
+    #[must_use]
     pub fn precondition_in(
         self,
         widget_id: impl Into<String>,
@@ -799,9 +838,11 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add an exact-value precondition checked before fixture application.
+    #[must_use]
     pub fn precondition_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self;
 
     /// Add an exact-value precondition scoped to a viewport.
+    #[must_use]
     pub fn precondition_value_in(
         self,
         widget_id: impl Into<String>,
@@ -810,9 +851,11 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a visible-widget ready condition.
+    #[must_use]
     pub fn ready(self, widget_id: impl Into<String>) -> Self;
 
     /// Add a widget-data ready condition.
+    #[must_use]
     pub fn ready_data(
         self,
         widget_id: impl Into<String>,
@@ -821,6 +864,7 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a widget-data ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_data_in(
         self,
         widget_id: impl Into<String>,
@@ -830,12 +874,15 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a visible-widget ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_in(self, widget_id: impl Into<String>, viewport: impl Into<ViewportSel>) -> Self;
 
     /// Add an exact-label ready condition.
+    #[must_use]
     pub fn ready_label(self, widget_id: impl Into<String>, text: impl Into<String>) -> Self;
 
     /// Add an exact-label ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_label_in(
         self,
         widget_id: impl Into<String>,
@@ -844,9 +891,11 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a scroll-readiness condition.
+    #[must_use]
     pub fn ready_scroll(self, widget_id: impl Into<String>) -> Self;
 
     /// Add a scroll-position ready condition.
+    #[must_use]
     pub fn ready_scroll_at(
         self,
         widget_id: impl Into<String>,
@@ -855,6 +904,7 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a scroll-position ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_scroll_at_in(
         self,
         widget_id: impl Into<String>,
@@ -864,6 +914,7 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a scroll-readiness condition scoped to a viewport.
+    #[must_use]
     pub fn ready_scroll_in(
         self,
         widget_id: impl Into<String>,
@@ -871,9 +922,11 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add an exact-value ready condition.
+    #[must_use]
     pub fn ready_value(self, widget_id: impl Into<String>, value: WidgetValue) -> Self;
 
     /// Add an exact-value ready condition scoped to a viewport.
+    #[must_use]
     pub fn ready_value_in(
         self,
         widget_id: impl Into<String>,
@@ -882,6 +935,7 @@ impl FixtureSpec {
     ) -> Self;
 
     /// Add a fixture tag used by CLI/docs output.
+    #[must_use]
     pub fn tag(self, tag: impl Into<String>) -> Self;
 
     /// Validate fixture metadata and readiness conditions.
@@ -920,6 +974,7 @@ impl FixtureTargetSpec {
     pub fn describe(&self) -> String;
 
     /// Scope this ready to a viewport selector.
+    #[must_use]
     pub fn in_viewport(self, viewport: impl Into<ViewportSel>) -> Self;
 
     /// Create an exact-label ready.
@@ -957,6 +1012,29 @@ impl<'a> FrameGuard<'a> {
 }
 
 impl Drop for FrameGuard<'_> {}
+
+/// Keyboard modifier state.
+#[derive(Clone, Copy, Debug, Default, Deserialize<'de>, Serialize)]
+pub struct Modifiers {
+    /// Ctrl key pressed.
+    #[serde(default)]
+    pub ctrl: bool,
+    /// Shift key pressed.
+    #[serde(default)]
+    pub shift: bool,
+    /// Alt key pressed.
+    #[serde(default)]
+    pub alt: bool,
+    /// Command key pressed.
+    #[serde(default)]
+    pub command: bool,
+}
+
+impl From<Modifiers> for egui::Modifiers {}
+
+impl From<egui::Modifiers> for Modifiers {}
+
+impl JsonSchema for Modifiers {}
 
 /// Supported scalar kinds for fixture parameters.
 #[derive(Clone, Copy, Debug, Deserialize<'de>, Eq, PartialEq, Serialize)]
@@ -1259,6 +1337,18 @@ impl ScrollAreaState {
     ) -> ScrollAreaOutput<R>;
 }
 
+/// A scroll position required by a [`WidgetCondition`].
+#[derive(Clone, Copy, Debug, Deserialize<'de>, PartialEq, Serialize)]
+pub struct ScrollAtCondition {
+    /// Target logical scroll offset.
+    pub offset: Vec2,
+    /// Allowed absolute error per axis.
+    #[serde(default = "default_scroll_tolerance")]
+    pub tolerance: f32,
+}
+
+impl JsonSchema for ScrollAtCondition {}
+
 /// Options for text-edit widgets.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TextEditOptions {
@@ -1462,10 +1552,10 @@ pub struct WidgetCondition {
     pub scroll_ready: Option<bool>,
     /// Required stable scroll position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scroll_at: Option<crate::types::ScrollAtCondition>,
+    pub scroll_at: Option<ScrollAtCondition>,
     /// Required value inside widget data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<crate::types::DataCondition>,
+    pub data: Option<DataCondition>,
 }
 
 impl WidgetCondition {
@@ -1565,6 +1655,7 @@ pub struct WidgetMeta {
 
 impl WidgetMeta {
     /// Attach structured app-domain data from any serializable value.
+    #[must_use]
     pub fn with_data<T: Serialize>(self, data: T) -> Self;
 }
 
@@ -1607,6 +1698,72 @@ pub struct WidgetRef {
 }
 
 impl JsonSchema for WidgetRef {}
+
+/// Widget registry entry captured per frame.
+#[derive(Clone, Debug, Deserialize<'de>, Serialize)]
+pub struct WidgetRegistryEntry {
+    /// Canonical widget id.
+    pub id: String,
+    /// Whether the id was explicitly provided by instrumentation.
+    #[serde(skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    pub explicit_id: bool,
+    /// Raw egui widget id used for low-level engine interactions.
+    #[serde(skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    pub native_id: u64,
+    /// Viewport id string.
+    pub viewport_id: String,
+    /// Layer of the widget (internal use only, e.g. the debug overlay and
+    /// dumps, which format it).
+    #[serde(skip, default = "background_layer")]
+    #[schemars(skip)]
+    pub layer_id: LayerId,
+    /// Paint order of the widget's layer, where a larger value paints later
+    /// (internal use only).
+    #[serde(skip_serializing, skip_deserializing)]
+    #[schemars(skip)]
+    pub layer_order: u8,
+    /// Widget rect.
+    pub rect: Rect,
+    /// Widget interaction rect.
+    pub interact_rect: Rect,
+    /// Role taxonomy entry.
+    pub role: WidgetRole,
+    /// Optional label.
+    pub label: Option<String>,
+    /// Optional widget value for stateful controls.
+    pub value: Option<WidgetValue>,
+    /// Structured app-domain metadata attached to this widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    /// Optional layout metadata.
+    pub layout: Option<WidgetLayout>,
+    /// Optional role-specific metadata encoded as a nested enum.
+    #[serde(default)]
+    pub role_state: Option<RoleState>,
+    /// Optional parent id for container scoping.
+    pub parent_id: Option<String>,
+    /// Whether the widget is enabled.
+    pub enabled: bool,
+    /// Whether the widget is visible.
+    pub visible: bool,
+    /// Whether the widget reported egui focus in the captured frame (may lag
+    /// keyboard focus).
+    pub focused: bool,
+    /// Whether another egui layer covers the widget's action point (the
+    /// center of `interact_rect`), so a pointer action here would route to
+    /// that layer instead. `false` when no layer, or only the widget's own
+    /// layer, sits at that point.
+    pub covered: bool,
+}
+
+impl WidgetRegistryEntry {
+    /// Selected-on projection used by widget state, dumps, and list filters.
+    pub fn selected(&self) -> Option<bool>;
+}
+
+impl JsonSchema for WidgetRegistryEntry {}
 
 /// Widget role taxonomy for automation and scripting filters.
 #[derive(Clone, Debug, Default, Deserialize<'de>, Eq, PartialEq, Serialize)]
@@ -2074,9 +2231,13 @@ pub mod internal {
     pub mod devmcp {
         pub use crate::AutomationOptions;
 
+        /// The callbacks through which an attached runtime observes each frame of the
+        /// app. The instrumentation calls them on the UI thread.
         pub trait RuntimeHooks: Send + Sync {
+            /// Return the runtime, so that its owner can downcast it.
             fn as_any(&self) -> &(dyn Any + Send + Sync);
 
+            /// Observe the egui output of a completed frame of a viewport.
             fn on_egui_output(
                 &self,
                 _inner: &Inner,
@@ -2085,8 +2246,10 @@ pub mod internal {
             ) {
             }
 
+            /// Observe the end of a frame of a viewport.
             fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
 
+            /// Observe the raw input events of a frame before egui handles them.
             fn on_raw_input(&self, _inner: &Inner, _events: &[Event]) {}
         }
     }
@@ -2097,10 +2260,29 @@ pub mod internal {
             /// The provider completed immediately.
             Ready(DiagnosticResult),
             /// The provider must be awaited after the UI thread drains the request.
-            Queued(crate::diagnostics::DiagnosticReceiver),
+            Queued(DiagnosticReceiver),
         }
 
         impl !Sync for DiagnosticExecution {}
+
+        /// Pending UI-thread diagnostic result.
+        ///
+        /// Dropping the receiver cancels a request that is still queued.
+        pub struct DiagnosticReceiver {/* private fields */}
+
+        impl DiagnosticReceiver {
+            /// Wait until the UI-thread provider returns or the caller's timeout
+            /// expires.
+            pub fn recv_timeout(self, timeout: Duration) -> DiagnosticResult;
+
+            /// Return the result without blocking, or `None` while the request is
+            /// pending.
+            pub fn try_recv(&self) -> Option<DiagnosticResult>;
+        }
+
+        impl Drop for DiagnosticReceiver {}
+
+        impl !Sync for DiagnosticReceiver {}
 
         /// Registry of named app diagnostic providers.
         #[derive(Clone, Debug, Default)]
@@ -2123,36 +2305,58 @@ pub mod internal {
     }
 
     pub mod error {
+        /// The stable code of a failure, as the declared `ErrorCode` names it.
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub enum ErrorCode {
+            /// An argument or an option is not valid.
             InvalidArgument,
+            /// The target widget, viewport, or fixture does not exist.
             NotFound,
+            /// The target cannot take the action now, for example because it is
+            /// hidden, covered, or disabled.
             NotActionable,
+            /// The instrumentation of the app is faulty, for example with a
+            /// duplicate explicit ID.
             InstrumentationFault,
+            /// A wait or an operation did not finish within its timeout.
             Timeout,
+            /// The platform or the configuration does not support the operation.
             Unsupported,
+            /// A fixture handler or a fixture readiness wait failed.
             FixtureFailed,
+            /// A diagnostic provider failed.
             DiagnosticFailed,
+            /// An expectation of a script did not match.
             ExpectationFailed,
+            /// An internal failure of the runtime.
             Internal,
         }
 
         impl ErrorCode {
+            /// Return the stable wire string of the code.
             pub fn as_str(self) -> &'static str;
         }
 
+        /// A failure of an automation operation: a stable code, a message, and
+        /// optional machine-readable details.
         #[derive(Clone, Debug, Display, Error)]
         pub struct ToolError {/* private fields */}
 
         impl ToolError {
+            /// Return the stable code of the failure.
             pub fn code(&self) -> ErrorCode;
 
+            /// Return the machine-readable details, when the failure has them.
             pub fn details(&self) -> Option<&Value>;
 
+            /// Return the human-readable message.
             pub fn message(&self) -> &str;
 
+            /// Build an error with a code and a message, and no details.
             pub fn new(code: ErrorCode, message: impl Into<String>) -> Self;
 
+            /// Attach machine-readable details, in place of any earlier ones.
+            #[must_use]
             pub fn with_details(self, details: Value) -> Self;
         }
     }
@@ -2164,7 +2368,7 @@ pub mod internal {
             Ready(FixtureResult),
             /// The fixture handler must be awaited after the UI thread drains the
             /// request.
-            Queued(crate::fixtures::UiFixtureReceiver),
+            Queued(UiFixtureReceiver),
         }
 
         impl !Sync for FixtureExecution {}
@@ -2177,6 +2381,61 @@ pub mod internal {
             /// UI-thread handler.
             Ui(Arc<Mutex<Box<dyn FnMut(&Context, &FixtureCall) -> FixtureResult + Send>>>),
         }
+
+        /// Manages fixture metadata and dispatches fixture application through a
+        /// registered handler.
+        #[derive(Default)]
+        pub struct FixtureManager {/* private fields */}
+
+        impl FixtureManager {
+            /// Run one queued UI-thread fixture handler against the current root
+            /// context.
+            pub fn drain_ui(&self, ctx: &Context);
+
+            /// Return a registered fixture by name.
+            pub fn fixture(&self, name: &str) -> Option<FixtureSpec>;
+
+            /// Return a snapshot of the current fixture catalog.
+            pub fn fixtures(&self) -> Vec<FixtureSpec>;
+
+            /// Return the fixture catalog sorted by name.
+            pub fn fixtures_sorted(&self) -> Vec<FixtureSpec>;
+
+            /// Check whether a fixture with the given name is registered.
+            pub fn has_fixture(&self, name: &str) -> bool;
+
+            /// Create a new fixture manager with no fixtures or handler.
+            pub fn new() -> Self;
+
+            /// Replace the registered fixture catalog. `DevMcp::fixtures` validates
+            /// each spec before it reaches the catalog.
+            pub fn set_fixtures(&self, fixtures: Vec<FixtureSpec>);
+
+            /// Register the configured fixture handler.
+            pub fn set_handler(&self, handler: FixtureHandler) -> Result<(), DevMcpConfigError>;
+
+            /// Start applying a validated fixture call.
+            pub fn start_fixture(&self, call: FixtureCall) -> FixtureExecution;
+        }
+
+        /// Pending UI-thread fixture result.
+        ///
+        /// Dropping the receiver cancels a request that is still queued.
+        pub struct UiFixtureReceiver {/* private fields */}
+
+        impl UiFixtureReceiver {
+            /// Wait until the UI-thread fixture returns or the caller's timeout
+            /// expires.
+            pub fn recv_timeout(self, timeout: Duration) -> FixtureResult;
+
+            /// Return the result without blocking, or `None` while the request is
+            /// pending.
+            pub fn try_recv(&self) -> Option<FixtureResult>;
+        }
+
+        impl Drop for UiFixtureReceiver {}
+
+        impl !Sync for UiFixtureReceiver {}
     }
 
     pub mod idle {
@@ -2338,7 +2597,7 @@ pub mod internal {
             pub widgets: WidgetRegistry,
             pub overlays: OverlayManager,
             pub last_action_frame: AtomicU64,
-            pub fixtures: crate::fixtures::FixtureManager,
+            pub fixtures: FixtureManager,
             pub diagnostics: DiagnosticRegistry,
             pub idle: IdleRegistry,
             /* private fields */
@@ -2406,6 +2665,8 @@ pub mod internal {
 
             pub fn has_scroll_override(&self, viewport_id: ViewportId, widget_id: u64) -> bool;
 
+            /// Record that the custom widget `id` consumes value overrides. A known
+            /// consumer costs a lookup and no allocation.
             pub fn mark_widget_value_consumer(&self, viewport_id: ViewportId, id: &str);
 
             pub fn new() -> Self;
@@ -2486,6 +2747,8 @@ pub mod internal {
                 widget_id: u64,
             ) -> Option<egui::Vec2>;
 
+            /// Take the queued override of `id`. A frame with no queued override
+            /// returns at once.
             pub fn take_widget_value_update(
                 &self,
                 viewport_id: ViewportId,
@@ -2511,102 +2774,13 @@ pub mod internal {
     pub mod types {
         pub use crate::{
             ActionOptions, DragOptions, FixtureCall, FixtureError, FixtureParam, FixtureParams,
-            FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, ParamKind,
+            FixtureResponse, FixtureResult, FixtureSpec, FixtureTargetSpec, Modifiers, ParamKind,
             PointerButton, Pos2, RawInputAction, RawInputEvent, Rect, ResizeOptions, RoleState,
             ScrollAlign, ScrollAreaMeta, Vec2, ViewportCondition, ViewportNameError, ViewportSel,
             ViewportSelParseError, WaitOptions, WidgetCondition, WidgetFont, WidgetLayout,
-            WidgetRange, WidgetRef, WidgetRole, WidgetRoleMeta, WidgetState, WidgetTextLayout,
-            WidgetTextLine, WidgetValue,
+            WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta, WidgetState,
+            WidgetTextLayout, WidgetTextLine, WidgetValue,
         };
-
-        /// Keyboard modifier state.
-#[derive(Clone, Copy, Debug, Default, Deserialize<'de>, Serialize)]
-        pub struct Modifiers {
-            /// Ctrl key pressed.
-            #[serde(default)]
-            pub ctrl: bool,
-            /// Shift key pressed.
-            #[serde(default)]
-            pub shift: bool,
-            /// Alt key pressed.
-            #[serde(default)]
-            pub alt: bool,
-            /// Command key pressed.
-            #[serde(default)]
-            pub command: bool,
-        }
-
-        impl From<Modifiers> for egui::Modifiers {}
-
-        impl From<egui::Modifiers> for Modifiers {}
-
-        impl JsonSchema for Modifiers {}
-
-        /// Widget registry entry captured per frame.
-#[derive(Clone, Debug, Deserialize<'de>, Serialize)]
-        pub struct WidgetRegistryEntry {
-            /// Canonical widget id.
-            pub id: String,
-            /// Whether the id was explicitly provided by instrumentation.
-            #[serde(skip_serializing, skip_deserializing)]
-            #[schemars(skip)]
-            pub explicit_id: bool,
-            /// Raw egui widget id used for low-level engine interactions.
-            #[serde(skip_serializing, skip_deserializing)]
-            #[schemars(skip)]
-            pub native_id: u64,
-            /// Viewport id string.
-            pub viewport_id: String,
-            /// Layer id rendered as a stable string (internal use only, e.g. debug
-            /// overlay).
-            #[serde(skip_serializing, skip_deserializing)]
-            #[schemars(skip)]
-            pub layer_id: String,
-            /// Paint order of the widget's layer, where a larger value paints later
-            /// (internal use only).
-            #[serde(skip_serializing, skip_deserializing)]
-            #[schemars(skip)]
-            pub layer_order: u8,
-            /// Widget rect.
-            pub rect: Rect,
-            /// Widget interaction rect.
-            pub interact_rect: Rect,
-            /// Role taxonomy entry.
-            pub role: WidgetRole,
-            /// Optional label.
-            pub label: Option<String>,
-            /// Optional widget value for stateful controls.
-            pub value: Option<WidgetValue>,
-            /// Structured app-domain metadata attached to this widget.
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub data: Option<Value>,
-            /// Optional layout metadata.
-            pub layout: Option<WidgetLayout>,
-            /// Optional role-specific metadata encoded as a nested enum.
-            #[serde(default)]
-            pub role_state: Option<RoleState>,
-            /// Optional parent id for container scoping.
-            pub parent_id: Option<String>,
-            /// Whether the widget is enabled.
-            pub enabled: bool,
-            /// Whether the widget is visible.
-            pub visible: bool,
-            /// Whether the widget reported egui focus in the captured frame (may lag
-            /// keyboard focus).
-            pub focused: bool,
-            /// Whether another egui layer covers the widget's action point (the
-            /// center of `interact_rect`), so a pointer action here would route to
-            /// that layer instead. `false` when no layer, or only the widget's own
-            /// layer, sits at that point.
-            pub covered: bool,
-        }
-
-        impl WidgetRegistryEntry {
-            /// Selected-on projection used by widget state, dumps, and list filters.
-            pub fn selected(&self) -> Option<bool>;
-        }
-
-        impl JsonSchema for WidgetRegistryEntry {}
     }
 
     pub mod ui_ext {
@@ -2772,7 +2946,9 @@ pub mod internal {
 
             pub fn new() -> Self;
 
-            pub fn pop_container(&self, viewport_id: ViewportId);
+            /// Pop the container scope `id`. A guard that drops out of order then
+            /// still removes its own scope, and leaves the scopes of other guards.
+            pub fn pop_container(&self, viewport_id: ViewportId, id: &str);
 
             pub fn push_container(&self, viewport_id: ViewportId, id: String);
 

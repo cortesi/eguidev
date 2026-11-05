@@ -12,8 +12,8 @@ Cross-target instrumentation for AI-assisted egui development.
 - Publish: crates.io
 - Workspace dependencies: none
 - Workspace dependents: edev, eguidev_demo, eguidev_runtime
-- Unnameable: crate::diagnostics::DiagnosticReceiver, crate::fixtures::FixtureManager, crate::fixtures::UiFixtureReceiver, crate::types::DataCondition, crate::types::ScrollAtCondition, crate::viewports::CaptureSnapshot
-- Items: 374
+- Unnameable: crate::viewports::CaptureSnapshot
+- Items: 392
 - Exposes: egui, schemars, serde, serde_core, serde_json
 
 ## eguidev_runtime

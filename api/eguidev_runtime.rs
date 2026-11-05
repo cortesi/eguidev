@@ -37,7 +37,8 @@ use serde_core::{de::Deserialize, ser::Serialize};
 use serde_json::Value;
 use tmcp::schema::CallToolResult;
 use tokio::runtime::Handle;
-/// Optional loopback address used for a directly connectable app MCP server.
+/// The path of the Unix domain socket at which the app serves its MCP server.
+/// Edev names a new path for each launch.
 #[doc(hidden)]
 pub const MCP_ADDR_ENV: &str = "EGUIDEV_MCP_ADDR";
 
