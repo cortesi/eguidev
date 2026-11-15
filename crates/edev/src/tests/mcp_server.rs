@@ -3,31 +3,12 @@
 use super::*;
 
 #[test]
-fn tools_list_is_static_across_lifecycle_states() {
-    let tempdir = test_tempdir();
-    let state = make_state(&tempdir);
-    let stopped_names = state
-        .tools_list()
-        .iter()
-        .map(|tool| tool.name.clone())
+fn the_launcher_lists_the_four_lifecycle_tools() {
+    let names = lifecycle_tools()
+        .into_iter()
+        .map(|tool| tool.name)
         .collect::<Vec<_>>();
-    let mut running_state = make_state(&tempdir);
-    running_state.status = AppStatus::Running;
-    let running_names = running_state
-        .tools_list()
-        .iter()
-        .map(|tool| tool.name.clone())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        stopped_names,
-        vec![
-            "start".to_string(),
-            "stop".to_string(),
-            "restart".to_string(),
-            "status".to_string(),
-        ]
-    );
-    assert_eq!(stopped_names, running_names);
+    assert_eq!(names, ["start", "stop", "restart", "status"]);
 }
 
 #[test]

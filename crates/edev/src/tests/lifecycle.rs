@@ -190,8 +190,8 @@ async fn stop_is_idempotent() {
     state.status = AppStatus::Running;
     state.app = Some(app);
 
-    let stopped = state.stop_app().await.expect("stop");
-    let already_stopped = state.stop_app().await.expect("stop");
+    let stopped = state.stop_app().await;
+    let already_stopped = state.stop_app().await;
 
     assert!(matches!(stopped, StopStatus::Stopped(_)));
     assert!(matches!(already_stopped, StopStatus::AlreadyStopped));

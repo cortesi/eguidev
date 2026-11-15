@@ -95,24 +95,23 @@ impl State {
 
     /// Stop the managed app process and reset launcher state without
     /// unregistering the launcher.
-    pub async fn stop_app(&mut self) -> Result<StopStatus, EdevError> {
+    pub async fn stop_app(&mut self) -> StopStatus {
+        let failed_startup = matches!(self.status, AppStatus::StartupFailed { .. });
+        self.status = AppStatus::NotRunning;
         if let Some(app) = self.app.take() {
             let shutdown = app.shutdown().await;
             self.last_shutdown = Some(shutdown.clone());
-            self.status = AppStatus::NotRunning;
-            return Ok(StopStatus::Stopped(Some(shutdown)));
+            StopStatus::Stopped(Some(shutdown))
+        } else if failed_startup {
+            StopStatus::Stopped(None)
+        } else {
+            StopStatus::AlreadyStopped
         }
-        if matches!(self.status, AppStatus::StartupFailed { .. }) {
-            self.status = AppStatus::NotRunning;
-            return Ok(StopStatus::Stopped(None));
-        }
-        self.status = AppStatus::NotRunning;
-        Ok(StopStatus::AlreadyStopped)
     }
 
     /// Stop the app process and unregister the launcher.
     pub async fn shutdown(&mut self) -> Result<(), EdevError> {
-        let stopped = self.stop_app().await?;
+        let stopped = self.stop_app().await;
         self.instance_registry.unregister()?;
         stopped.ensure_graceful()
     }
@@ -291,9 +290,11 @@ impl State {
         }
     }
 
-    /// Build the static host-side tool list.
-    pub fn tools_list(&self) -> Vec<Tool> {
-        vec![start_tool(), stop_tool(), restart_tool(), status_tool()]
+    /// Describe the endpoint of the running app, if there is one.
+    pub fn connection(&self) -> Option<AppConnectionDescriptor> {
+        self.app
+            .as_ref()
+            .and_then(AppProcess::connection_descriptor)
     }
 
     /// Build a structured status snapshot of the managed app lifecycle.
@@ -325,10 +326,7 @@ impl State {
             process_group_id,
             supervisor_pid,
             launch_id,
-            connection: self
-                .app
-                .as_ref()
-                .and_then(AppProcess::connection_descriptor),
+            connection: self.connection(),
             registry_entry_path,
             startup_output,
             mcp_client_attached: self.mcp_client_attached,

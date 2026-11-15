@@ -181,9 +181,7 @@ impl ServerHandler for EdevServer {
         _context: &ServerCtx,
         _cursor: Option<Cursor>,
     ) -> tmcp::Result<ListToolsResult> {
-        let state = Arc::clone(&self.state);
-        let state = state.lock().await;
-        Ok(ListToolsResult::new().with_tools(state.tools_list()))
+        Ok(ListToolsResult::new().with_tools(lifecycle_tools()))
     }
 
     async fn call_tool(
@@ -203,26 +201,12 @@ impl ServerHandler for EdevServer {
                 let start = Instant::now();
                 match start_app_unlocked(&state).await {
                     Ok(StartStatus::Started) => {
-                        let state = state.lock().await;
-                        lifecycle_success(
-                            "started",
-                            start.elapsed(),
-                            state
-                                .app
-                                .as_ref()
-                                .and_then(AppProcess::connection_descriptor),
-                        )
+                        let connection = state.lock().await.connection();
+                        lifecycle_success("started", start.elapsed(), connection)
                     }
                     Ok(StartStatus::AlreadyRunning) => {
-                        let state = state.lock().await;
-                        lifecycle_success(
-                            "already_running",
-                            start.elapsed(),
-                            state
-                                .app
-                                .as_ref()
-                                .and_then(AppProcess::connection_descriptor),
-                        )
+                        let connection = state.lock().await.connection();
+                        lifecycle_success("already_running", start.elapsed(), connection)
                     }
                     Ok(StartStatus::AppStarting) => tool_error(
                         ErrorKind::AppStarting,
@@ -254,17 +238,12 @@ impl ServerHandler for EdevServer {
                 let mut state = state.lock().await;
                 let start = Instant::now();
                 match state.stop_app().await {
-                    Ok(StopStatus::Stopped(shutdown)) => {
+                    StopStatus::Stopped(shutdown) => {
                         lifecycle_stop_success("stopped", start.elapsed(), shutdown)
                     }
-                    Ok(StopStatus::AlreadyStopped) => {
+                    StopStatus::AlreadyStopped => {
                         lifecycle_stop_success("already_stopped", start.elapsed(), None)
                     }
-                    Err(error) => lifecycle_failed(
-                        ErrorKind::StopFailed,
-                        format!("Stop failed: {error}"),
-                        start.elapsed(),
-                    ),
                 }
             }
             "restart" => {
@@ -275,15 +254,8 @@ impl ServerHandler for EdevServer {
                         "App is starting. Try again shortly.",
                     ),
                     UnlockedRestart::Done(Ok(LifecycleStartStatus::Running)) => {
-                        let state = state.lock().await;
-                        lifecycle_success(
-                            "completed",
-                            start.elapsed(),
-                            state
-                                .app
-                                .as_ref()
-                                .and_then(AppProcess::connection_descriptor),
-                        )
+                        let connection = state.lock().await.connection();
+                        lifecycle_success("completed", start.elapsed(), connection)
                     }
                     UnlockedRestart::Done(Ok(LifecycleStartStatus::StartupFailed(output))) => {
                         lifecycle_startup_failed(
@@ -374,6 +346,11 @@ pub async fn probe_script_eval_ready(
     } else {
         Err(ProbeFailure::Failed(message))
     }
+}
+
+/// The tools of the launcher. The list does not depend on the app state.
+pub fn lifecycle_tools() -> Vec<Tool> {
+    vec![start_tool(), stop_tool(), restart_tool(), status_tool()]
 }
 
 /// Tool definition for starting the app process.
@@ -523,8 +500,6 @@ pub enum ErrorKind {
     RestartRequired,
     /// Start failed for a non-startup reason.
     StartFailed,
-    /// Stop failed.
-    StopFailed,
     /// Restart failed for a non-startup reason.
     RestartFailed,
     /// Startup failed before the app became ready.
@@ -576,7 +551,6 @@ impl ErrorKind {
             Self::AppStarting => "app_starting",
             Self::RestartRequired => "restart_required",
             Self::StartFailed => "start_failed",
-            Self::StopFailed => "stop_failed",
             Self::RestartFailed => "restart_failed",
             Self::StartupFailed => "startup_failed",
             Self::StartTimeout => "start_timeout",
