@@ -31,7 +31,7 @@ fn script_instruction_limit_stops_runaway_work() {
         inner,
         runtime,
         "local total = 0\nfor index = 1, 100000 do total += index end\nreturn total".to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         ScriptEvalOptions {
             source_name: Some("instruction-limit.luau".to_string()),
             max_instructions: Some(1_000),
@@ -54,7 +54,10 @@ use super::{
 };
 use crate::{
     DevMcp,
-    automation::script::types::{ScriptArgValue, ScriptArgs, ScriptEvalOptions},
+    automation::{
+        TEST_SCRIPT_DEADLINE_MS,
+        script::types::{ScriptArgValue, ScriptArgs, ScriptEvalOptions},
+    },
     fixtures::FixtureHandler,
     registry::{Inner, viewport_id_to_string},
     runtime::{self, Runtime},
@@ -72,7 +75,7 @@ fn native_kernel_surface_matches_the_seven_private_capabilities_exactly() {
         inner,
         runtime,
         "kernel-surface.luau".to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
     ));
     let (_, surface) = EguidevModule {
         args: serde_json::Value::Object(serde_json::Map::new()),
@@ -197,7 +200,7 @@ fn initial_ruau_slice_runs_value_and_log_script() {
         r#"eguidev.log("hello")
 return 1 + 1"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "probe.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -217,7 +220,7 @@ fn typecheck_failure_prevents_tenant_execution() {
 local state: WidgetState = eguidev.widget("missing"):state()
 return state"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "typecheck_side_effect.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -257,7 +260,7 @@ fn initial_ruau_slice_runs_diagnostics_and_wait_until() {
 return eguidev.diagnostic("ready").ready
 end)
 return eguidev.diagnostics()"#,
-        Some(1_000),
+        Some(TEST_SCRIPT_DEADLINE_MS),
         crate::ScriptEvalOptions {
             source_name: Some("diagnostics.luau".to_string()),
             args: ScriptArgs::default(),
@@ -298,7 +301,7 @@ eguidev.wait(function()
 return false
 end)
 "#,
-        Some(1_000),
+        Some(TEST_SCRIPT_DEADLINE_MS),
         crate::ScriptEvalOptions {
             source_name: Some("wait-until-timeout.luau".to_string()),
             args: ScriptArgs::default(),
@@ -339,7 +342,7 @@ fn initial_ruau_slice_collects_diagnostic_errors() {
     let outcome = runtime.block_on(runtime::eval_script(
         &devmcp,
         r#"return eguidev.diagnostics()"#,
-        Some(1_000),
+        Some(TEST_SCRIPT_DEADLINE_MS),
         crate::ScriptEvalOptions {
             source_name: Some("diagnostics.luau".to_string()),
             args: ScriptArgs::default(),
@@ -382,7 +385,7 @@ fn initial_ruau_slice_records_assertion_failures() {
 { timeout_ms = 10, poll_interval_ms = 1 }
 )"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "probe.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -417,7 +420,7 @@ fn timed_out_click_names_its_widget() {
         runtime,
         r#"eguidev.widget("covered.button"):click({ timeout_ms = 20, poll_interval_ms = 1 })"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "click.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -448,7 +451,7 @@ fn focus_waits_until_the_widget_is_actionable() {
         runtime,
         r#"eguidev.widget("covered.button"):focus({ timeout_ms = 20, poll_interval_ms = 1 })"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "focus.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -481,7 +484,7 @@ details = type(failure.details),
 elapsed = type(failure.details.elapsed_ms),
 }"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "click-pcall.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -515,7 +518,7 @@ fn initial_ruau_slice_runs_assert_widget_exists() {
         r#"local state = eguidev.widget("status"):expect({ present = true })
 return state ~= nil"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "assert-widget.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -544,7 +547,7 @@ return false
 end)
 return { seen_nil = seen_nil, state_nil = state == nil }"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "absent-predicate.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -567,7 +570,7 @@ fn script_eval_expect_text_fits_on_absent_widget_records_failure() {
 { timeout_ms = 20, poll_interval_ms = 1 }
 )"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "expect-absent-text-fits.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -609,7 +612,7 @@ data = { pointer = "/palette/rgba/1", equals = 34 },
 })
 return { table_match = table_match ~= nil, zero = zero ~= nil, one = one ~= nil }"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "data-table-pointer.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -656,7 +659,7 @@ fn initial_ruau_slice_runs_configure_fixture_and_fixtures() {
 	eguidev.log(catalog[1].name)
 	return { first = catalog[1].name, count = #catalog, frame = frame, params = catalog[2].params[1].name }"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "fixtures.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -690,7 +693,7 @@ fn configure_animations_does_not_leak_across_evaluations() {
         r#"eguidev.configure({ animations = true })
 return true"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "configure-animations-first.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -703,7 +706,7 @@ return true"#
         r#"eguidev.configure({ animations = true })
 return true"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "configure-animations-second.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -733,7 +736,7 @@ local state = widgets[1]:state()
 assert(state ~= nil)
 return { count = #widgets, id = widgets[1].id, viewport = state.viewport_id }"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "root-widget-list.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -783,7 +786,7 @@ hit_count = #hits,
 top_hit = hits[1].id,
 }"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "widget-reads.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -839,7 +842,7 @@ local viewport = button:viewport()
 assert(viewport ~= nil)
 return { viewport = viewport.id }"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "widget-actions.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -878,7 +881,7 @@ viewport:input({ type = "scroll", delta = { x = 0, y = -10 } })
 viewport:resize({ inner_size = { x = 320, y = 240 }, resizable = true })
 return true"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "viewport-actions.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -917,7 +920,7 @@ viewport:show_debug_overlay({ mode = "bounds" })
 viewport:clear_debug_overlay()
 return { widget_issues = #widget_issues, viewport_issues = #viewport_issues }"##
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "visual-methods.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -949,7 +952,7 @@ fn run_overlay_script(script: &str) -> (Arc<Inner>, ViewportId) {
             "local secondary_id = \"{}\"\n{script}",
             viewport_id_to_string(secondary)
         ),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "highlight-viewports.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1235,7 +1238,7 @@ frame_count = viewport_state.frame_count,
 viewport_id = viewport_state.id,
 }"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "predicate-methods.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1279,7 +1282,7 @@ end)
 assert(matched ~= nil)
 return matched.value"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "widget-state-numbers.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1297,7 +1300,7 @@ fn initial_ruau_slice_keeps_integer_args_comparable_to_luau_numbers() {
         r#"assert(eguidev.args.count == 4)
 return eguidev.args.count"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "args.luau".to_string(),
         ScriptArgs::from([("count".to_string(), ScriptArgValue::Int(4))]),
     );
@@ -1320,7 +1323,7 @@ for _, count in { -1, 1.5 } do
 end
 return messages"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "wait-frames-count.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1346,7 +1349,7 @@ return false
 end)
 "#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "configure-reject.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1386,7 +1389,7 @@ return true
             "local viewport = eguidev.viewport(\"{}\")\n{script}",
             viewport_id_to_string(absent)
         ),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "absent-viewport-wait.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1427,7 +1430,7 @@ change_count = #diff.changes,
 }
 "#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "capture-freeze.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1514,7 +1517,7 @@ viewport = viewport,
 }
 "#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "wait-validate.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1602,7 +1605,7 @@ local card = eguidev.widget("card.approve"):state()
 assert(background ~= nil and card ~= nil)
 return { background_covered = background.covered, card_covered = card.covered }"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "covered-state.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1631,7 +1634,7 @@ fn covered_widget_click_times_out_instead_of_reaching_the_card() {
         runtime,
         r#"eguidev.widget("background.approve"):click({ timeout_ms = 60, poll_interval_ms = 5 })"#
             .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "covered-click.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1654,7 +1657,7 @@ fn covered_widget_fails_the_actionable_wait() {
 { timeout_ms = 60, poll_interval_ms = 5 }
 )"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "covered-actionable-wait.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1678,7 +1681,7 @@ fn uncovered_widget_inside_the_card_clicks_normally() {
         inner,
         runtime,
         r#"eguidev.widget("card.approve"):click({ settle = false })"#.to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "card-click.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1704,7 +1707,7 @@ uncovered_count = #uncovered,
 uncovered_first = uncovered[1].id,
 }"#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "covered-filter.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1772,7 +1775,7 @@ local selected = eguidev.root:widgets({ selected = true })
 return { focused = focused[1].id, focused_count = #focused, selected_count = #selected }
 "#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "widget-filter.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1810,7 +1813,7 @@ assert(state ~= nil)
 return { selected = selected[1].id, selected_count = #selected, state_selected = state.selected }
 "#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "widget-selected-toggle.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1849,7 +1852,7 @@ viewport:key("a", {{ target = viewport:widget("field"), settle = false }})
 return true
 "#
         ),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "key-target.luau".to_string(),
         ScriptArgs::default(),
     );
@@ -1923,7 +1926,7 @@ local widget = ready.widget :: any
 return { id = ready.widget.id, viewport = widget.__viewport_id }
 "#
         .to_string(),
-        1_000,
+        TEST_SCRIPT_DEADLINE_MS,
         "fixture-catalog.luau".to_string(),
         ScriptArgs::default(),
     );

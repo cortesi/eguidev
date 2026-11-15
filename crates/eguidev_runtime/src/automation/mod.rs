@@ -155,6 +155,12 @@ impl DevMcpServer {
     }
 }
 
+/// Script deadline for tests that do not test the deadline. It covers Luau
+/// compilation, which is slow and highly variable under parallel test load,
+/// so it must stay far above the inner timeout that a test exercises.
+#[cfg(test)]
+const TEST_SCRIPT_DEADLINE_MS: u64 = 10_000;
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests;

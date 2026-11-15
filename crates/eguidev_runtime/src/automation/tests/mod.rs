@@ -40,12 +40,6 @@ mod query;
 mod script;
 mod wait;
 
-/// Script deadline for tests that assert an inner wait, fixture, or
-/// completion. The deadline covers Luau compilation, which is slow and
-/// highly variable under parallel test load, so it must stay far above the
-/// inner timeout that the test actually exercises.
-const TEST_SCRIPT_DEADLINE_MS: u64 = 10_000;
-
 fn discard_output(output: egui::FullOutput) {
     output.drop_without_applying_deltas();
 }
