@@ -368,7 +368,6 @@ pub(super) fn settle_report(
     let observed_new_capture = capture_frame.is_some_and(|frame| frame > start_capture);
     let target_viewport_closed =
         viewport_id != egui::ViewportId::ROOT && !inner.viewports.is_live_viewport(viewport_id);
-    let observed_settle_frame = observed_new_capture;
     let pending_actions = inner.actions.pending_action_count(viewport_id);
     let pending_commands = inner.actions.pending_command_count(viewport_id);
     let last_action_frame = inner.last_action_frame.load(Ordering::Relaxed);
@@ -425,7 +424,7 @@ pub(super) fn settle_report(
         },
         SettlePhaseStatus {
             phase: SettlePhase::FreshFrame,
-            complete: observed_settle_frame || target_viewport_closed,
+            complete: observed_new_capture || target_viewport_closed,
             detail: if target_viewport_closed {
                 "target viewport closed during wait".to_string()
             } else {

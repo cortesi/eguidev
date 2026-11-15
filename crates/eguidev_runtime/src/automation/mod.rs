@@ -96,8 +96,6 @@ use wait::{SettlePhase, settle_report};
 
 pub use crate::error::*;
 
-pub const DEFAULT_SCRIPT_EVAL_TIMEOUT_MS: u64 = script::DEFAULT_SCRIPT_TIMEOUT_MS;
-
 fn scroll_state(widget: &WidgetRegistryEntry) -> Option<crate::ScrollAreaMeta> {
     widget.role_state.as_ref().and_then(RoleState::scroll_state)
 }

@@ -21,9 +21,8 @@ use crate::macos::{
 };
 use crate::{
     DevMcp, McpEndpoint, ScriptErrorInfo, ScriptEvalOptions, ScriptEvalOutcome,
-    automation::{
-        DEFAULT_SCRIPT_EVAL_TIMEOUT_MS,
-        script::{run_script_eval_with_modules, warm_checker_baseline},
+    automation::script::{
+        DEFAULT_SCRIPT_TIMEOUT_MS, run_script_eval_with_modules, warm_checker_baseline,
     },
     egui_diagnostics::EguiDiagnosticJournal,
     mcp_endpoint_from,
@@ -58,22 +57,21 @@ impl Runtime {
 
     #[cfg(test)]
     pub(crate) fn ensure_for_inner(inner: &Arc<Inner>) -> Arc<Self> {
-        if let Some(runtime) = Self::from_inner(inner) {
-            return runtime;
-        }
-        let runtime = Arc::new(Self::new(false));
-        inner.set_runtime_hooks(Arc::new(RuntimeHooksImpl {
-            runtime: Arc::clone(&runtime),
-        }));
-        runtime
+        Self::ensure(inner, false)
     }
 
     #[cfg(test)]
     pub(crate) fn ensure_for_inner_with_diagnostic_barriers(inner: &Arc<Inner>) -> Arc<Self> {
+        Self::ensure(inner, true)
+    }
+
+    /// Return the runtime of `inner`, or attach a new one.
+    #[cfg(test)]
+    fn ensure(inner: &Arc<Inner>, diagnostic_barriers_enabled: bool) -> Arc<Self> {
         if let Some(runtime) = Self::from_inner(inner) {
             return runtime;
         }
-        let runtime = Arc::new(Self::new(true));
+        let runtime = Arc::new(Self::new(diagnostic_barriers_enabled));
         inner.set_runtime_hooks(Arc::new(RuntimeHooksImpl {
             runtime: Arc::clone(&runtime),
         }));
@@ -333,7 +331,7 @@ pub async fn eval_script(
         });
     };
     let runtime = Runtime::for_devmcp(devmcp).expect("runtime attached");
-    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_SCRIPT_EVAL_TIMEOUT_MS);
+    let timeout_ms = timeout_ms.unwrap_or(DEFAULT_SCRIPT_TIMEOUT_MS);
     run_script_eval_with_modules(
         inner,
         runtime,
