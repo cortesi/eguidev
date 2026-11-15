@@ -40,9 +40,6 @@ pub trait RuntimeHooks: Send + Sync {
     /// Return the runtime, so that its owner can downcast it.
     fn as_any(&self) -> &(dyn Any + Send + Sync);
 
-    /// Observe the raw input events of a frame before egui handles them.
-    fn on_raw_input(&self, _inner: &Inner, _events: &[egui::Event]) {}
-
     /// Observe the end of a frame of a viewport.
     fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
 
@@ -511,10 +508,6 @@ impl DevMcp {
                 inner.fixtures.drain_ui(ctx);
                 inner.diagnostics.drain_ui(ctx);
             }
-            if let Some(hooks) = inner.runtime_hooks() {
-                let events = ctx.input(|input| input.events.clone());
-                hooks.on_raw_input(inner, &events);
-            }
             if outermost {
                 inner.widgets.clear_registry(viewport_id);
                 ACTIVE.with(|active| {
@@ -742,8 +735,6 @@ mod inactive_tests {
 
     #[derive(Default)]
     struct CountingRuntimeHooks {
-        raw_input_calls: AtomicUsize,
-        raw_input_events: AtomicUsize,
         frame_end_calls: AtomicUsize,
         output_calls: AtomicUsize,
         output_viewports: Mutex<Vec<egui::ViewportId>>,
@@ -752,12 +743,6 @@ mod inactive_tests {
     impl RuntimeHooks for CountingRuntimeHooks {
         fn as_any(&self) -> &(dyn Any + Send + Sync) {
             self
-        }
-
-        fn on_raw_input(&self, _inner: &Inner, events: &[egui::Event]) {
-            self.raw_input_calls.fetch_add(1, AtomicOrdering::Relaxed);
-            self.raw_input_events
-                .fetch_add(events.len(), AtomicOrdering::Relaxed);
         }
 
         fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {
@@ -1046,40 +1031,6 @@ mod inactive_tests {
             assert!(render(secondary, Vec::new()).0.is_empty());
             assert!(render(root, Vec::new()).0.is_empty());
         }
-    }
-
-    #[test]
-    fn frame_guard_forwards_input_events_to_runtime_hooks() {
-        let inner = Arc::new(Inner::new());
-        let hooks = Arc::new(CountingRuntimeHooks::default());
-        let runtime_hooks: Arc<dyn RuntimeHooks> = hooks.clone();
-        let devmcp = DevMcp::new().activate_runtime(inner, runtime_hooks);
-        let ctx = Context::default();
-        let raw_input = egui::RawInput {
-            events: vec![egui::Event::Text("event".to_string())],
-            ..Default::default()
-        };
-
-        ctx.run_ui(raw_input, |ui| {
-            let _guard = FrameGuard::new(&devmcp, ui.ctx());
-        })
-        .drop_without_applying_deltas();
-
-        assert_eq!(
-            hooks.raw_input_calls.load(AtomicOrdering::Relaxed),
-            1,
-            "frame guard should notify runtime hooks about input events"
-        );
-        assert_eq!(
-            hooks.raw_input_events.load(AtomicOrdering::Relaxed),
-            1,
-            "frame guard should forward input events"
-        );
-        assert_eq!(
-            hooks.output_calls.load(AtomicOrdering::Relaxed),
-            1,
-            "automation plugin should forward completed output"
-        );
     }
 
     #[test]

@@ -172,8 +172,8 @@ use std::{
 };
 
 use egui::{
-    Color32, Context, CursorIcon, Event, Galley, ImageSource, InnerResponse, Key, LayerId,
-    RawInput, Response, Role, ScrollArea, Ui, ViewportCommand, ViewportId, WidgetText,
+    Color32, Context, CursorIcon, Galley, ImageSource, InnerResponse, Key, LayerId, RawInput,
+    Response, Role, ScrollArea, Ui, ViewportCommand, ViewportId, WidgetText,
     containers::collapsing_header::CollapsingResponse, data::output::FullOutput,
     scroll_area::ScrollAreaOutput,
 };
@@ -2250,9 +2250,6 @@ pub mod internal {
 
             /// Observe the end of a frame of a viewport.
             fn on_frame_end(&self, _inner: &Inner, _ctx: &Context) {}
-
-            /// Observe the raw input events of a frame before egui handles them.
-            fn on_raw_input(&self, _inner: &Inner, _events: &[Event]) {}
         }
     }
 
