@@ -224,6 +224,14 @@ fn parse_fixture_list_defaults_omitted_empty_collections() {
 }
 
 #[test]
+fn parse_fixture_list_accepts_the_empty_table_of_an_app_without_fixtures() {
+    let fixtures = parse_fixture_list(successful_outcome(&serde_json::json!({})))
+        .expect("an empty Luau table is an empty fixture list");
+
+    assert!(fixtures.is_empty());
+}
+
+#[test]
 fn parse_fixture_list_rejects_missing_payload() {
     let outcome = successful_outcome(&serde_json::Value::Null);
 
