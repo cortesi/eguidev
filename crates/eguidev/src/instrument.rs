@@ -474,7 +474,7 @@ pub fn record_scroll_area<R>(ui: &egui::Ui, id: impl Into<String>, output: &Scro
         ui.ctx()
             .data_mut(|data| data.insert_temp(scroll_area_key(&id), output.id));
         if inner.has_scroll_override(viewport_id, widget_id) {
-            inner.request_repaint();
+            inner.request_repaint_of(viewport_id);
         }
         record_widget(
             &inner.widgets,
