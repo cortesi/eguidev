@@ -500,19 +500,19 @@ local function freezeState(value: any?): any?
     return freezeOwned(value)
 end
 
-local function waitLoop(predicate: () -> boolean, options: WaitOptions?, viewportId: string?)
+local function waitLoop(predicate: () -> boolean, options: WaitOptions?)
     local resolved = waitOptions(options)
-    local deadline = os.clock() * 1000 + resolved.timeout_ms
+    local timeoutMs = resolved.timeout_ms
+    local deadline = os.clock() * 1000 + timeoutMs
     while true do
         if predicate() then return end
         local remaining = math.max(0, math.ceil(deadline - os.clock() * 1000))
         if remaining == 0 then
             fail("timeout", "condition did not match before its deadline", "wait", nil, {
-                timeout_ms = resolved.timeout_ms,
+                timeout_ms = timeoutMs,
             })
         end
         resolved.timeout_ms = remaining
-        resolved.viewport_id = viewportId
         kernel.wait.capture(resolved)
     end
 end
@@ -1050,7 +1050,7 @@ local function waitViewport(filter: ViewportFilter, options: WaitOptions?): View
         waitLoop(function(): boolean
             matches = viewports(filter)
             return #matches == 1
-        end, options, nil)
+        end, options)
     end)
     if ok then return matches[1] end
 
@@ -1200,7 +1200,7 @@ local public: Eguidev = {
     root = viewport("root"),
     log = function(value: any) kernel.record.log(value) end,
     configure = configure,
-    wait = function(predicate: () -> boolean, options: WaitOptions?) waitLoop(predicate, options, nil) end,
+    wait = waitLoop,
     wait_frames = function(count: number?, options: WaitOptions?): number
         return kernel.wait.frames(count or 1, waitOptions(options))
     end,
