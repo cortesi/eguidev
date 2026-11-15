@@ -211,8 +211,8 @@ impl ScriptResult {
         }
     }
 
-    fn fail(round: u32, path: String, elapsed_ms: u64, message: String, logs: Vec<String>) -> Self {
-        Self::fail_with_details(round, path, elapsed_ms, message, logs, None)
+    fn fail(round: u32, path: String, elapsed_ms: u64, message: String) -> Self {
+        Self::fail_with_details(round, path, elapsed_ms, message, Vec::new(), None)
     }
 
     fn fail_with_details(
@@ -244,7 +244,6 @@ impl ScriptResult {
         outcome: ScriptEvalOutcome,
         details: Option<String>,
     ) -> Self {
-        let egui_diagnostics = outcome.egui_diagnostics.clone();
         Self {
             round,
             path,
@@ -253,7 +252,7 @@ impl ScriptResult {
             message: Some(message),
             logs: outcome.logs,
             fixtures: outcome.fixtures,
-            egui_diagnostics,
+            egui_diagnostics: outcome.egui_diagnostics,
             details,
         }
     }
@@ -510,83 +509,10 @@ where
                 break;
             }
 
-            let relative_display = script.display_path.clone();
-            let source_path = &script.source_path;
-            let script_start = Instant::now();
-            let source = match fs::read_to_string(source_path) {
-                Ok(source) => source,
-                Err(error) => {
-                    let elapsed_ms = script_start.elapsed().as_millis() as u64;
-                    let message = format!("failed to read script: {error}");
-                    results.push(ScriptResult::fail(
-                        round,
-                        relative_display,
-                        elapsed_ms,
-                        message,
-                        Vec::new(),
-                    ));
-                    if let Some(reason) = config.stop_after_failure_reason() {
-                        append_skipped(&mut results, round, &scripts[index + 1..], reason);
-                        stop_suite = true;
-                        break;
-                    }
-                    continue;
-                }
-            };
-
-            let outcome = execute(ScriptRunRequest {
-                path: relative_display.clone(),
-                round,
-                source,
-                timeout_ms: script_timeout_ms(config.script_timeout, suite_deadline),
-                max_instructions: config.max_instructions,
-                args: config.args.clone(),
-            });
-            let elapsed_ms = script_start.elapsed().as_millis() as u64;
-
-            let mut outcome = match outcome {
-                Ok(outcome) => outcome,
-                Err(message) => {
-                    results.push(ScriptResult::fail(
-                        round,
-                        relative_display,
-                        elapsed_ms,
-                        message,
-                        Vec::new(),
-                    ));
-                    if let Some(reason) = config.stop_after_failure_reason() {
-                        append_skipped(&mut results, round, &scripts[index + 1..], reason);
-                        stop_suite = true;
-                        break;
-                    }
-                    continue;
-                }
-            };
-            config.apply_egui_diagnostic_policy(&mut outcome);
-
-            if outcome.success {
-                results.push(ScriptResult::pass_with_fixtures(
-                    round,
-                    relative_display,
-                    elapsed_ms,
-                    outcome.logs,
-                    outcome.fixtures,
-                    outcome.egui_diagnostics,
-                ));
-                continue;
-            }
-
-            let message = script_failure_summary(&outcome);
-            let details = script_failure_details(&outcome);
-            results.push(ScriptResult::fail_with_outcome(
-                round,
-                relative_display,
-                elapsed_ms,
-                message,
-                outcome,
-                details,
-            ));
-            if let Some(reason) = config.stop_after_failure_reason() {
+            let result = run_script(round, script, config, suite_deadline, &mut execute);
+            let failed = result.status == ScriptStatus::Fail;
+            results.push(result);
+            if failed && let Some(reason) = config.stop_after_failure_reason() {
                 append_skipped(&mut results, round, &scripts[index + 1..], reason);
                 stop_suite = true;
                 break;
@@ -609,6 +535,60 @@ where
     }
 }
 
+/// Run one script of a suite and build its result.
+fn run_script<F>(
+    round: u32,
+    script: &SuiteScript,
+    config: &SuiteConfig,
+    suite_deadline: Option<Instant>,
+    execute: &mut F,
+) -> ScriptResult
+where
+    F: FnMut(ScriptRunRequest) -> Result<ScriptEvalOutcome, String>,
+{
+    let path = script.display_path.clone();
+    let start = Instant::now();
+    let source = match fs::read_to_string(&script.source_path) {
+        Ok(source) => source,
+        Err(error) => {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            return ScriptResult::fail(
+                round,
+                path,
+                elapsed_ms,
+                format!("failed to read script: {error}"),
+            );
+        }
+    };
+    let outcome = execute(ScriptRunRequest {
+        path: path.clone(),
+        round,
+        source,
+        timeout_ms: script_timeout_ms(config.script_timeout, suite_deadline),
+        max_instructions: config.max_instructions,
+        args: config.args.clone(),
+    });
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let mut outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(message) => return ScriptResult::fail(round, path, elapsed_ms, message),
+    };
+    config.apply_egui_diagnostic_policy(&mut outcome);
+    if outcome.success {
+        return ScriptResult::pass_with_fixtures(
+            round,
+            path,
+            elapsed_ms,
+            outcome.logs,
+            outcome.fixtures,
+            outcome.egui_diagnostics,
+        );
+    }
+    let message = script_failure_summary(&outcome);
+    let details = script_failure_details(&outcome);
+    ScriptResult::fail_with_outcome(round, path, elapsed_ms, message, outcome, details)
+}
+
 fn suite_failure_result(elapsed_ms: u64, message: String, requested_rounds: u32) -> SuiteResult {
     SuiteResult {
         results: vec![ScriptResult::fail(
@@ -616,7 +596,6 @@ fn suite_failure_result(elapsed_ms: u64, message: String, requested_rounds: u32)
             SUITE_RESULT_PATH.to_string(),
             elapsed_ms,
             message,
-            Vec::new(),
         )],
         rounds: Vec::new(),
         requested_rounds,
