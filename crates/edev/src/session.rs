@@ -4,8 +4,6 @@ use super::*;
 
 /// One launched app, its direct MCP connection, and its lifecycle registration.
 pub struct AppSession {
-    /// App launch settings used for bundle metadata.
-    launch: LaunchConfig,
     /// Mutable app lifecycle state.
     state: State,
     /// Connected app MCP client.
@@ -14,18 +12,16 @@ pub struct AppSession {
 
 impl AppSession {
     /// Register, launch, and connect one app session.
-    pub(super) async fn start(
-        launch: LaunchConfig,
-        unavailable_message: &str,
-    ) -> Result<Self, EdevError> {
+    pub(super) async fn start(launch: LaunchConfig) -> Result<Self, EdevError> {
         let instance_registry = InstanceRegistry::register(&launch)?;
-        let mut state = State::new(launch.clone(), instance_registry);
-        let client = start_app_client(&mut state, unavailable_message).await?;
-        Ok(Self {
-            launch,
-            state,
-            client,
-        })
+        let mut state = State::new(launch, instance_registry);
+        if let LifecycleStartStatus::StartupFailed(output) = state.restart().await? {
+            state.shutdown().await?;
+            return Err(EdevError::AppStart(output));
+        }
+        let app = state.app.as_ref().expect("a running app has a process");
+        let client = Arc::clone(&app.client);
+        Ok(Self { state, client })
     }
 
     /// Build failure-bundle context while the app process is still alive.
@@ -33,7 +29,7 @@ impl AppSession {
         config.bundle_dir.as_ref().and_then(|dir| {
             self.state.app.as_ref().map(|app| BundleContext {
                 dir: dir.clone(),
-                launch: self.launch.clone(),
+                launch: self.state.config.clone(),
                 stderr_buffer: Arc::clone(&app.stderr_buffer),
                 stdout_buffer: Arc::clone(&app.stdout_buffer),
                 collection_timeout_ms: config

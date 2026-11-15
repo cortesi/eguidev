@@ -71,9 +71,7 @@ mod smoke_run;
 mod spawn;
 
 pub use command::run;
-use command::{
-    call_script_eval_result, decode_tool_result, script_eval_error_message, start_app_client,
-};
+use command::{call_script_eval_result, decode_tool_result, script_eval_error_message};
 
 #[cfg(all(feature = "test-app", target_os = "macos"))]
 #[doc(hidden)]

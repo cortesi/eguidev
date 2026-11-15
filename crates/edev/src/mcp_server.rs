@@ -519,8 +519,6 @@ pub fn lifecycle_failed(kind: ErrorKind, message: String, elapsed: Duration) -> 
 pub enum ErrorKind {
     /// App is starting and cannot accept tool calls.
     AppStarting,
-    /// App process is not running.
-    AppNotRunning,
     /// Restart is required to recover.
     RestartRequired,
     /// Start failed for a non-startup reason.
@@ -576,7 +574,6 @@ impl ErrorKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AppStarting => "app_starting",
-            Self::AppNotRunning => "app_not_running",
             Self::RestartRequired => "restart_required",
             Self::StartFailed => "start_failed",
             Self::StopFailed => "stop_failed",

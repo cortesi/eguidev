@@ -65,8 +65,7 @@ async fn run_record(config: RecordConfig) -> Result<(), EdevError> {
     recording::ensure_supported()?;
     prepare_record_outfile(&config.outfile)?;
 
-    let session =
-        start_smoke_session(&config.smoke, "record command could not reach the app").await?;
+    let session = start_smoke_session(&config.smoke).await?;
     let title = match config.window_title {
         Some(title) if !title.trim().is_empty() => {
             wait_for_initial_capture_refresh(&session.client, config.smoke.suite.script_timeout)
@@ -136,7 +135,7 @@ async fn run_smoke(config: SmokeConfig) -> Result<(), EdevError> {
         return print_smoke_list(&config);
     }
 
-    let session = start_smoke_session(&config, "smoke runner could not reach the app").await?;
+    let session = start_smoke_session(&config).await?;
     let bundle_context = session.bundle_context(&config);
     let result = run_smoke_suite(Arc::clone(&session.client), &config, bundle_context).await;
     let shutdown_result = session.shutdown().await;
@@ -224,12 +223,8 @@ fn finish_record_run(
 }
 
 /// Start an app-backed smoke session and connect to the app MCP server.
-async fn start_smoke_session(
-    config: &SmokeConfig,
-    unavailable_message: &str,
-) -> Result<AppSession, EdevError> {
-    let launch = required_smoke_launch(config)?;
-    AppSession::start(launch, unavailable_message).await
+async fn start_smoke_session(config: &SmokeConfig) -> Result<AppSession, EdevError> {
+    AppSession::start(required_smoke_launch(config)?).await
 }
 
 /// Return the launch config required for app-backed smoke execution.
@@ -372,22 +367,14 @@ fn print_smoke_list(config: &SmokeConfig) -> Result<(), EdevError> {
 /// images.
 async fn run_eval(config: EvalConfig) -> Result<(), EdevError> {
     let source = fs::read_to_string(&config.script)?;
-    let session = AppSession::start(
-        config.launch.clone(),
-        "eval command could not reach the app",
-    )
-    .await?;
+    let session = AppSession::start(config.launch.clone()).await?;
     let result = run_eval_script(Arc::clone(&session.client), &config, source).await;
     session.finish(result).await
 }
 
 /// Launch the app, optionally apply a fixture, print a dump, and exit.
 async fn run_dump(config: DumpConfig) -> Result<(), EdevError> {
-    let session = AppSession::start(
-        config.launch.clone(),
-        "dump command could not reach the app",
-    )
-    .await?;
+    let session = AppSession::start(config.launch.clone()).await?;
     let result = run_dump_script(Arc::clone(&session.client), &config).await;
     session.finish(result).await
 }
@@ -515,11 +502,7 @@ pub async fn run_eval_script(
 
 /// Start the app, list or apply a fixture, then either exit or wait for ctrl-c.
 async fn run_fixture(config: FixtureConfig) -> Result<(), EdevError> {
-    let session = AppSession::start(
-        config.launch.clone(),
-        "fixture command could not reach the app",
-    )
-    .await?;
+    let session = AppSession::start(config.launch.clone()).await?;
     let result = run_fixture_session(&session.client, &config).await;
     session.finish(result).await
 }
@@ -758,30 +741,6 @@ fn format_widget_value(value: &WidgetValue) -> String {
     match value {
         WidgetValue::Text(value) => format!("{value:?}"),
         WidgetValue::Bool(_) | WidgetValue::Float(_) | WidgetValue::Int(_) => value.to_text(),
-    }
-}
-
-/// Start the app and resolve its direct client, shutting down on startup
-/// failures.
-pub async fn start_app_client(
-    state: &mut State,
-    unavailable_message: &str,
-) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, EdevError> {
-    match state.restart().await? {
-        LifecycleStartStatus::Running => {}
-        LifecycleStartStatus::StartupFailed(output) => {
-            state.shutdown().await?;
-            return Err(EdevError::AppStart(output));
-        }
-    }
-
-    match state.app_client() {
-        Ok(client) => Ok(client),
-        Err(error) => {
-            let message = error.text().unwrap_or(unavailable_message).to_string();
-            state.shutdown().await?;
-            Err(EdevError::AppStart(message))
-        }
     }
 }
 

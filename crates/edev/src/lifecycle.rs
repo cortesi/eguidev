@@ -177,42 +177,6 @@ impl State {
         }
     }
 
-    /// Resolve the current direct app client, or return a lifecycle-specific
-    /// tool error.
-    pub fn app_client(&self) -> Result<Arc<AsyncMutex<tmcp::Client<()>>>, CallToolResult> {
-        match &self.status {
-            AppStatus::Running => {
-                let Some(app) = &self.app else {
-                    self.log_edev("app client unavailable: app not running");
-                    return Err(tool_error(
-                        ErrorKind::AppNotRunning,
-                        "App process not running. Call start.",
-                    ));
-                };
-                Ok(Arc::clone(&app.client))
-            }
-            AppStatus::Starting => {
-                self.log_edev("app client unavailable: app starting");
-                Err(tool_error(
-                    ErrorKind::AppStarting,
-                    "App is starting. Try again shortly.",
-                ))
-            }
-            AppStatus::StartupFailed { output } => Err(tool_error_with_data(
-                ErrorKind::RestartRequired,
-                "App startup failed. Fix the issue and call restart.",
-                &serde_json::json!({ "startup_output": output }),
-            )),
-            AppStatus::NotRunning => {
-                self.log_edev("app client unavailable: app not running");
-                Err(tool_error(
-                    ErrorKind::AppNotRunning,
-                    "App is not running. Call start.",
-                ))
-            }
-        }
-    }
-
     /// Start the app process using a caller-provided spawn routine.
     #[cfg(test)]
     pub async fn start_with<F>(&mut self, spawn: F) -> Result<StartStatus, EdevError>
