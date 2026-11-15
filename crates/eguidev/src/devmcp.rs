@@ -1214,6 +1214,7 @@ mod inactive_tests {
             let ctx = ui.ctx().clone();
             let _guard = FrameGuard::new(&devmcp, &ctx);
             let _response = ui.dev_button("inactive.button", "Inactive");
+            instrument::track_widget(ui, "inactive.custom", |ui| ui.label("Custom"));
         })
         .drop_without_applying_deltas();
 

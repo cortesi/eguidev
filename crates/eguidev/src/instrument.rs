@@ -67,18 +67,7 @@ pub fn track_widget(
     id: impl Into<String>,
     add: impl FnOnce(&mut egui::Ui) -> egui::Response,
 ) -> egui::Response {
-    let response = add(ui);
-    let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
-    track_response(
-        id,
-        &response,
-        WidgetMeta {
-            visible,
-            layout: Some(capture_layout(ui, &response)),
-            ..Default::default()
-        },
-    );
-    response
+    track_widget_with_meta(ui, id, WidgetRoleMeta::default(), None, None, add)
 }
 
 /// Draw a custom widget and record it with explicit role metadata.
@@ -97,14 +86,27 @@ pub fn track_widget_with_meta(
     let Some(inner) = active_inner() else {
         return response;
     };
+    record_widget_with_layout(&inner, ui, id.into(), &response, role, label, value);
+    response
+}
+
+/// Record a widget with its layout and its visibility in `ui`.
+pub fn record_widget_with_layout(
+    inner: &Inner,
+    ui: &egui::Ui,
+    id: String,
+    response: &egui::Response,
+    role: WidgetRoleMeta,
+    label: Option<String>,
+    value: Option<WidgetValue>,
+) {
     let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
-    let layout = Some(capture_layout(ui, &response));
-    let id = id.into();
-    swallow_panic("track_widget_with_meta", || {
+    let layout = Some(capture_layout(ui, response));
+    swallow_panic("record_widget_with_layout", || {
         record_widget(
             &inner.widgets,
             id,
-            &response,
+            response,
             WidgetMeta {
                 role,
                 label,
@@ -115,7 +117,6 @@ pub fn track_widget_with_meta(
             },
         );
     });
-    response
 }
 
 /// Record an already-created widget response with explicit metadata.

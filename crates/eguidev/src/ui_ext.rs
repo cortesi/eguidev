@@ -5,11 +5,10 @@ use std::ops::RangeInclusive;
 use egui::{collapsing_header::CollapsingResponse, scroll_area::ScrollAreaOutput};
 
 use crate::{
-    instrument::{active_inner, capture_layout, container, swallow_panic},
+    instrument::{active_inner, container, record_widget_with_layout},
     overlay::parse_css_hex,
     registry::Inner,
     types::{WidgetRange, WidgetRole, WidgetRoleMeta, WidgetValue},
-    widget_registry::{WidgetMeta, record_widget},
 };
 
 /// Options for selected-aware buttons.
@@ -1136,36 +1135,6 @@ where
         Some(WidgetValue::Bool(selected)),
     );
     response
-}
-
-/// Record a standard widget with consistent metadata, visibility, and active
-/// context lookup.
-fn record_widget_with_layout(
-    inner: &Inner,
-    ui: &egui::Ui,
-    id: String,
-    response: &egui::Response,
-    role: WidgetRoleMeta,
-    label: Option<String>,
-    value: Option<WidgetValue>,
-) {
-    let visible = ui.is_visible() && ui.is_rect_visible(response.rect);
-    let layout = Some(capture_layout(ui, response));
-    swallow_panic("record_widget_with_layout", || {
-        record_widget(
-            &inner.widgets,
-            id,
-            response,
-            WidgetMeta {
-                role,
-                label,
-                value,
-                layout,
-                visible,
-                ..Default::default()
-            },
-        );
-    });
 }
 
 fn widget_range_from_f32(range: &RangeInclusive<f32>) -> WidgetRange {
