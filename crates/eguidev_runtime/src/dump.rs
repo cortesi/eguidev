@@ -145,10 +145,7 @@ fn build_viewport_dump(
     if !options.include_invisible {
         widgets.retain(|widget| widget.visible);
     }
-    let widgets = match &options.root {
-        Some(root) => build_root_subtrees(&widgets, root, options.fields),
-        None => build_widget_tree(&widgets, options.fields),
-    };
+    let widgets = build_widget_tree(&widgets, options.root.as_deref(), options.fields);
     let frame_count = inner.viewports.recorded_frame_count(viewport_id);
     Ok(ViewportDump {
         id: snapshot.viewport_id,
@@ -163,36 +160,43 @@ fn build_viewport_dump(
     })
 }
 
-fn build_root_subtrees(
+/// Build the subtrees of the widgets that have the id `root`, or the whole
+/// tree when no root is given.
+fn build_widget_tree(
     widgets: &[WidgetRegistryEntry],
-    root: &str,
+    root: Option<&str>,
     fields: DumpFields,
 ) -> Vec<WidgetDump> {
     let indexed = index_widgets(widgets);
     let children = children_map(&indexed);
     indexed
         .iter()
-        .filter(|entry| entry.widget.id == root)
-        .map(|entry| build_widget_dump(entry, &children, fields))
+        .filter(|entry| match root {
+            Some(root) => entry.widget.id == root,
+            None => entry.parent_key.is_none(),
+        })
+        .map(|entry| build_widget_dump(entry, &children, fields, &mut Vec::new()))
         .collect()
 }
 
-fn build_widget_tree(widgets: &[WidgetRegistryEntry], fields: DumpFields) -> Vec<WidgetDump> {
-    let indexed = index_widgets(widgets);
-    let children = children_map(&indexed);
-    indexed
-        .iter()
-        .filter(|entry| entry.parent_key.is_none())
-        .map(|entry| build_widget_dump(entry, &children, fields))
-        .collect()
-}
-
-fn build_widget_dump(
-    entry: &IndexedWidget,
-    children: &HashMap<Option<String>, Vec<IndexedWidget>>,
+/// Build the dump of one widget and its descendants. `path` holds the keys of
+/// the ancestors of the widget in this dump.
+fn build_widget_dump<'a>(
+    entry: &'a IndexedWidget,
+    children: &'a HashMap<Option<String>, Vec<IndexedWidget>>,
     fields: DumpFields,
+    path: &mut Vec<&'a str>,
 ) -> WidgetDump {
     let widget = &entry.widget;
+    path.push(&entry.key);
+    let mut child_dumps = Vec::new();
+    for child in children.get(&Some(entry.key.clone())).into_iter().flatten() {
+        // Parent ids come from instrumentation and can describe a cycle.
+        if !path.contains(&child.key.as_str()) {
+            child_dumps.push(build_widget_dump(child, children, fields, path));
+        }
+    }
+    path.pop();
     let value_text = widget
         .value
         .as_ref()
@@ -225,12 +229,7 @@ fn build_widget_dump(
         scroll,
         range,
         layer: (fields == DumpFields::Full).then(|| format!("{:?}", widget.layer_id)),
-        children: children
-            .get(&Some(entry.key.clone()))
-            .into_iter()
-            .flatten()
-            .map(|child| build_widget_dump(child, children, fields))
-            .collect(),
+        children: child_dumps,
     }
 }
 
@@ -476,6 +475,44 @@ mod tests {
             layer: None,
             children: Vec::new(),
         }
+    }
+
+    fn entry(id: &str, parent_id: &str) -> WidgetRegistryEntry {
+        let rect = rect(0.0, 0.0, 10.0, 10.0);
+        WidgetRegistryEntry {
+            id: id.to_string(),
+            explicit_id: true,
+            native_id: 0,
+            viewport_id: "root".to_string(),
+            layer_id: egui::LayerId::background(),
+            layer_order: 0,
+            rect,
+            interact_rect: rect,
+            role: WidgetRole::Label,
+            label: None,
+            value: None,
+            data: None,
+            layout: None,
+            role_state: None,
+            parent_id: Some(parent_id.to_string()),
+            enabled: true,
+            visible: true,
+            focused: false,
+            covered: false,
+        }
+    }
+
+    #[test]
+    fn rooted_dump_terminates_on_a_parent_cycle() {
+        let registry = [entry("first", "second"), entry("second", "first")];
+
+        let tree = build_widget_tree(&registry, Some("first"), DumpFields::default());
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].id, "first");
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].id, "second");
+        assert!(tree[0].children[0].children.is_empty());
     }
 
     #[test]
