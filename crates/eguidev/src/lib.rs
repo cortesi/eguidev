@@ -151,7 +151,7 @@
 //!
 //! The canonical Luau API, direct script evaluation helpers, and the smoketest
 //! runner all live in `eguidev_runtime`. The app serves the checked-in
-//! definitions through `script_api`; `edev docs` prints the same bytes.
+//! definitions by query through `script_api`; `edev docs` prints them in full.
 
 #![allow(clippy::missing_docs_in_private_items)]
 

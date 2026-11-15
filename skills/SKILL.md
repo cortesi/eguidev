@@ -7,7 +7,7 @@ description: MCP workflow for driving instrumented egui apps with strict Luau sc
 
 Eguidev drives an instrumented egui app through self-contained strict Luau scripts. This skill is
 workflow guidance. Always read `script_api` before writing a script; when only the CLI is
-available, `edev docs` returns the same canonical declaration bytes.
+available, `edev docs` prints the canonical declaration that `script_api` serves by query.
 
 ## MCP boundaries
 
@@ -66,7 +66,8 @@ return { status = status.value_text }
 ```
 
 Use `eguidev.log(...)` for intermediate evidence and return a compact structured summary. The
-sandbox has no filesystem, network, or module-import access.
+sandbox has no filesystem or network access, and `require` loads only the named modules that the
+caller supplies.
 
 ## References and state
 

@@ -29,15 +29,16 @@ error taking precedence over cleanup errors.
 
 ## Script installation and evaluation
 
-The canonical declaration is `crates/eguidev_runtime/luau/eguidev.d.luau`. `script_api` and
-`edev docs` return its exact bytes. Every submitted source is parsed and checked in strict mode
-before runtime construction or app side effects.
+The canonical declaration is `crates/eguidev_runtime/luau/eguidev.d.luau`. `edev docs` returns
+its exact bytes, and `script_api` answers discovery queries over it: an overview, a path list, or
+one source or symbol. Every submitted source is parsed and checked in strict mode before runtime
+construction or app side effects.
 
 The trusted private library in `eguidev.luau` receives seven hidden native capability tables in a
 fixed order: query, action, wait, capture, fixture, diagnostic, and record. It freezes its local
 kernel, constructs the public `eguidev` namespace, and returns that namespace as the one declared
-source value. Tenant scripts cannot resolve the hidden registry names and have no filesystem,
-network, or module-import access.
+source value. Tenant scripts cannot resolve the hidden registry names and have no filesystem or
+network access. `require` resolves only the named modules that the caller supplies.
 
 Parsing, checking, compilation, execution, and async host calls share one script deadline. A
 script failure becomes a structured `ScriptEvalOutcome`, not an MCP protocol failure. Reachable

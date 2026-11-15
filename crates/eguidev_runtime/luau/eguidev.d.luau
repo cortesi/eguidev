@@ -10,8 +10,9 @@
 -- are present in the same outcome. A failure returns `success = false` with its
 -- source location and does not become an MCP protocol error.
 --
--- This file is the complete scripting reference. `script_api` and `edev docs`
--- return these bytes without a fence, header, prelude, or generated text.
+-- This file is the complete scripting reference. `edev docs` prints these bytes
+-- without a fence, header, prelude, or generated text. `script_api` serves the
+-- same declaration by query: an overview, a path list, or one source or symbol.
 --
 -- Model expectations:
 -- - Write strict Luau. Inline `script_eval` scripts are strict even when the
