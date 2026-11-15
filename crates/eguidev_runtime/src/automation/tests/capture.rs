@@ -45,7 +45,7 @@ fn root_screenshot_timeout_message_does_not_claim_child_fallback() {
     let message = screenshot_timeout_message(egui::ViewportId::ROOT, "fallback unavailable");
 
     assert!(message.contains("Native screenshot fallback is only available"));
-    assert!(!message.contains("attempted for this child viewport"));
+    assert!(!message.contains("for this child viewport"));
 }
 
 #[test]

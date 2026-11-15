@@ -104,7 +104,7 @@ async fn script_fixture_waits_for_preconditions_before_handler() {
         .script_eval(
             "return eguidev.fixture(\"delayed\", nil, { timeout_ms = 2000, poll_interval_ms = 1 })"
                 .to_string(),
-            Some(3_000),
+            Some(TEST_SCRIPT_DEADLINE_MS),
             None,
         )
         .await

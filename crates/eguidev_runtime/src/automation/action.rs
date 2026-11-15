@@ -730,7 +730,6 @@ impl DevMcpServer {
         Ok(target_offset)
     }
 
-    /// Scroll ancestor scroll areas so the target widget becomes visible.
     /// Scroll every enclosing scroll area so that the target is revealed.
     ///
     /// Returns each scroll area that received an override with the offset it
