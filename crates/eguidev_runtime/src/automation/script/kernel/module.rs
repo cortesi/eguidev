@@ -574,13 +574,13 @@ impl EguidevModule {
             "widget_drag_relative",
             "eguidev.action",
             &self.runtime,
-            |runtime, pos, args: WidgetDragRelativeArgs| async move {
+            |runtime, pos, args: WidgetValueOptionsArgs| async move {
                 let options = args.options_with_viewport();
                 runtime
                     .action_drag_relative(
                         pos,
                         &args.receiver.value,
-                        &args.relative,
+                        &args.value,
                         options.as_ref().and_then(Value::as_object),
                     )
                     .await

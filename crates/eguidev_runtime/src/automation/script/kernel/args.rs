@@ -493,56 +493,6 @@ impl<'s> FromLuaMulti<'s> for WidgetValueOptionsArgs {
     }
 }
 
-pub(super) struct WidgetDragRelativeArgs {
-    pub(super) receiver: WidgetReceiver,
-    pub(super) relative: Value,
-    pub(super) options: Option<Value>,
-}
-
-impl WidgetDragRelativeArgs {
-    pub(super) fn options_with_viewport(&self) -> Option<Value> {
-        self.receiver.options_with_viewport(self.options.clone())
-    }
-}
-
-impl<'s> FromLuaMulti<'s> for WidgetDragRelativeArgs {
-    fn from_lua_multi(values: MultiValue<'s>, scope: &Scope<'s>) -> Result<Self, RuntimeError> {
-        let mut values = values.into_vec();
-        if !(2..=4).contains(&values.len()) {
-            return Err(RuntimeError::runtime(format!(
-                "drag_relative expected self, relative, optional from, and optional options, got {} arguments",
-                values.len()
-            )));
-        }
-        let receiver = WidgetReceiver::from_lua(values.remove(0), scope)?;
-        let relative = JsonArg::from_lua(values.remove(0), scope)?.0;
-        let third = if values.is_empty() {
-            None
-        } else {
-            Some(values.remove(0))
-        };
-        let has_fourth = !values.is_empty();
-        let mut options = optional_json_value(scope, values.pop())?;
-        if let Some(third) = third {
-            let value = JsonArg::from_lua(third, scope)?.0;
-            // An explicit `nil` in the `from` position reads the same as
-            // omitting it, so `drag_relative(delta, nil, options)` works.
-            if value.is_null() {
-                // Nothing to record.
-            } else if has_fourth || is_vec2_value(&value) {
-                insert_option(&mut options, "from", value)?;
-            } else {
-                options = Some(value);
-            }
-        }
-        Ok(Self {
-            receiver,
-            relative,
-            options,
-        })
-    }
-}
-
 pub(super) struct WidgetDragToArgs {
     pub(super) receiver: WidgetReceiver,
     pub(super) target: WidgetReceiver,
@@ -645,32 +595,6 @@ pub(super) fn predicate_bool_result(values: &[OwnedValue]) -> ScriptResult<bool>
             owned_values_shape(values)
         ))),
     }
-}
-
-pub(super) fn insert_option(
-    options: &mut Option<Value>,
-    key: &str,
-    value: Value,
-) -> Result<(), RuntimeError> {
-    let Some(map) = options
-        .get_or_insert_with(|| Value::Object(serde_json::Map::new()))
-        .as_object_mut()
-    else {
-        return Err(RuntimeError::runtime(
-            "options must be a table when adding script binding options",
-        ));
-    };
-    map.insert(key.to_string(), value);
-    Ok(())
-}
-
-pub(super) fn is_vec2_value(value: &Value) -> bool {
-    let Some(map) = value.as_object() else {
-        return false;
-    };
-    map.len() == 2
-        && map.get("x").and_then(Value::as_f64).is_some()
-        && map.get("y").and_then(Value::as_f64).is_some()
 }
 
 pub(super) fn no_args(name: &str, args: &MultiValue<'_>) -> Result<(), RuntimeError> {

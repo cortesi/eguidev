@@ -79,7 +79,7 @@ async fn script_eval_scroll_area_accepts_action_options() {
 }
 
 #[tokio::test]
-async fn script_eval_drag_relative_accepts_positional_from() {
+async fn script_eval_drag_relative_starts_at_the_from_option() {
     let inner = Arc::new(Inner::new());
     let server = DevMcpServer::new(Arc::clone(&inner));
     let viewport_id = egui::ViewportId::ROOT;
