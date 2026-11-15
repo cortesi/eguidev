@@ -76,7 +76,9 @@ impl ScriptRuntime {
                     return Err(self.script_timeout_error(pos));
                 }
                 if matched {
-                    self.to_json(pos, widget.as_ref().map(WidgetState::from))
+                    widget.as_ref().map_or(Ok(Value::Null), |widget| {
+                        self.widget_state_json(pos, widget)
+                    })
                 } else {
                     let viewport = widget
                         .as_ref()

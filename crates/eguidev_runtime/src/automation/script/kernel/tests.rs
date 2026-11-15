@@ -772,6 +772,8 @@ local parent_state = parent:state()
 assert(state.parent_id == "panel")
 assert(#state.child_ids == 0)
 assert(parent_state ~= nil and parent_state.child_ids[1] == "status")
+local waited = parent:wait({ present = true })
+assert(waited ~= nil and waited.child_ids[1] == "status", "a wait returns the children")
 return {
 role = state.role,
 label = state.label,
