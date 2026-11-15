@@ -239,8 +239,8 @@ Run `edev` with no arguments to see the full command list.
 - Luau scripting: the API reference is
   [`eguidev.d.luau`](./crates/eguidev_runtime/luau/eguidev.d.luau), which
   `edev docs` prints without change. The `script_api` MCP tool serves the same
-  declaration by query: an overview, a path list, or one symbol. For the
-  language itself, see [luau.org](https://luau.org/).
+  declaration by query: an overview, a path list, or one source or symbol. For
+  the language itself, see [luau.org](https://luau.org/).
 - Worked example: the `eguidev_demo` app and its suite in
   [`smoketest/`](./smoketest). See
   [`docs/examples/README.md`](./docs/examples/README.md).

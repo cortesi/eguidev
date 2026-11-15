@@ -593,7 +593,6 @@ fn single_match(
     registry: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
     viewports: &ViewportState,
 ) -> Result<WidgetRegistryEntry, ToolError> {
-    let selectors = selectors(target, tool_viewport, Some(resolved_viewport));
     let error = |message: &str, details: serde_json::Value| {
         ToolError::new(
             ErrorCode::NotFound,
@@ -608,7 +607,7 @@ fn single_match(
         0 => Err(error(
             "Widget not found for id",
             json!({
-                "selectors": selectors,
+                "selectors": selectors(target, tool_viewport, Some(resolved_viewport)),
                 "search": missing_widget_search(target, resolved_viewport, registry, viewports),
             }),
         )),
@@ -619,7 +618,7 @@ fn single_match(
                 "Widget reference is ambiguous",
                 json!({
                     "reason": "ambiguous",
-                    "selectors": selectors,
+                    "selectors": selectors(target, tool_viewport, Some(resolved_viewport)),
                     "candidates": summaries,
                     "candidates_truncated": truncated,
                 }),
@@ -916,6 +915,47 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{WidgetMeta, WidgetRegistry, normalize_widget_data};
+    use crate::{
+        error::ErrorCode,
+        registry::viewport_id_to_string,
+        types::{Pos2, Rect, WidgetRef, WidgetRegistryEntry, WidgetRole},
+        viewports::ViewportState,
+    };
+
+    fn entry(id: &str, parent_id: Option<&str>) -> WidgetRegistryEntry {
+        let rect = Rect {
+            min: Pos2 { x: 0.0, y: 0.0 },
+            max: Pos2 { x: 1.0, y: 1.0 },
+        };
+        WidgetRegistryEntry {
+            id: id.to_string(),
+            explicit_id: true,
+            native_id: 1,
+            viewport_id: "root".to_string(),
+            layer_id: egui::LayerId::background(),
+            layer_order: 0,
+            rect,
+            interact_rect: rect,
+            role: WidgetRole::Label,
+            label: None,
+            value: None,
+            data: None,
+            layout: None,
+            role_state: None,
+            parent_id: parent_id.map(str::to_string),
+            enabled: true,
+            visible: true,
+            focused: false,
+            covered: false,
+        }
+    }
+
+    fn widget_ref(id: &str, viewport_id: Option<&str>) -> WidgetRef {
+        WidgetRef {
+            id: id.to_string(),
+            viewport_id: viewport_id.map(str::to_string),
+        }
+    }
 
     struct FailingData;
 
@@ -979,40 +1019,6 @@ mod tests {
 
     #[test]
     fn duplicate_explicit_id_error_stays_finite_when_parent_ids_cycle() {
-        use crate::{
-            error::ErrorCode,
-            types::{Pos2, Rect, WidgetRef, WidgetRegistryEntry, WidgetRole},
-            viewports::ViewportState,
-        };
-
-        fn entry(id: &str, parent_id: Option<&str>) -> WidgetRegistryEntry {
-            let rect = Rect {
-                min: Pos2 { x: 0.0, y: 0.0 },
-                max: Pos2 { x: 1.0, y: 1.0 },
-            };
-            WidgetRegistryEntry {
-                id: id.to_string(),
-                explicit_id: true,
-                native_id: 1,
-                viewport_id: "root".to_string(),
-                layer_id: egui::LayerId::background(),
-                layer_order: 0,
-                rect,
-                interact_rect: rect,
-                role: WidgetRole::Label,
-                label: None,
-                value: None,
-                data: None,
-                layout: None,
-                role_state: None,
-                parent_id: parent_id.map(str::to_string),
-                enabled: true,
-                visible: true,
-                focused: false,
-                covered: false,
-            }
-        }
-
         let registry = WidgetRegistry::new();
         registry.record_widget(egui::ViewportId::ROOT, entry("dup", None));
         registry.record_widget(egui::ViewportId::ROOT, entry("dup", Some("dup")));
@@ -1027,17 +1033,121 @@ mod tests {
                 .as_array()
                 .expect("parent_chain");
         assert!(!chain.is_empty());
-        let resolved = registry.resolve_widget(
-            &viewports,
-            None,
-            &WidgetRef {
-                id: "dup".to_string(),
-                viewport_id: None,
-            },
-        );
+        let resolved = registry.resolve_widget(&viewports, None, &widget_ref("dup", None));
         assert_eq!(
             resolved.expect_err("duplicate id").code(),
             ErrorCode::InstrumentationFault
+        );
+    }
+
+    #[test]
+    fn resolve_errors_report_the_selectors_and_the_resolved_viewport() {
+        let secondary = egui::ViewportId::from_hash_of("secondary");
+        let secondary_id = viewport_id_to_string(secondary);
+        let viewports = ViewportState::new();
+        viewports.remember_viewport_id(secondary);
+        let registry = WidgetRegistry::new();
+        for _ in 0..2 {
+            registry.record_widget(
+                egui::ViewportId::ROOT,
+                WidgetRegistryEntry {
+                    explicit_id: false,
+                    ..entry("twin", None)
+                },
+            );
+        }
+        registry.finalize_registry(egui::ViewportId::ROOT);
+
+        let absent = registry
+            .resolve_widget(&viewports, None, &widget_ref("absent", None))
+            .expect_err("no widget has the id");
+        assert_eq!(absent.code(), ErrorCode::NotFound);
+        assert_eq!(
+            absent.message(),
+            "Widget not found for id (id=\"absent\", viewport=root)"
+        );
+        let details = absent.details().expect("details");
+        assert_eq!(
+            details["selectors"],
+            json!({
+                "id": "absent",
+                "viewport_id": null,
+                "tool_viewport_id": null,
+                "resolved_viewport_id": "root",
+            })
+        );
+        assert!(details["search"].is_object());
+
+        let scoped = registry
+            .resolve_widget(
+                &viewports,
+                Some(&secondary_id),
+                &widget_ref("twin", Some(&secondary_id)),
+            )
+            .expect_err("the secondary viewport has no widget");
+        assert_eq!(
+            scoped.message(),
+            format!("Widget not found for id (id=\"twin\", viewport={secondary_id})")
+        );
+        assert_eq!(
+            scoped.details().expect("details")["selectors"],
+            json!({
+                "id": "twin",
+                "viewport_id": secondary_id,
+                "tool_viewport_id": secondary_id,
+                "resolved_viewport_id": secondary_id,
+            })
+        );
+
+        let ambiguous = registry
+            .resolve_widget_global(&viewports, &widget_ref("twin", None))
+            .expect_err("two widgets have the id");
+        assert_eq!(ambiguous.code(), ErrorCode::NotFound);
+        assert_eq!(
+            ambiguous.message(),
+            "Widget reference is ambiguous (id=\"twin\", viewport=all)"
+        );
+        let candidate = json!({ "id": "twin", "viewport_id": "root", "role": "label" });
+        assert_eq!(
+            ambiguous.details().expect("details"),
+            &json!({
+                "reason": "ambiguous",
+                "selectors": {
+                    "id": "twin",
+                    "viewport_id": null,
+                    "tool_viewport_id": null,
+                    "resolved_viewport_id": "all",
+                },
+                "candidates": [candidate.clone(), candidate],
+                "candidates_truncated": false,
+            })
+        );
+
+        let conflict = registry
+            .resolve_widget(
+                &viewports,
+                Some("root"),
+                &widget_ref("twin", Some(&secondary_id)),
+            )
+            .expect_err("the selectors name two viewports");
+        assert_eq!(conflict.code(), ErrorCode::NotFound);
+        assert_eq!(
+            conflict.message(),
+            format!(
+                "Conflicting viewport selectors (tool=Some(\"root\"), target=Some({secondary_id:?}))"
+            )
+        );
+        assert_eq!(
+            conflict.details().expect("details"),
+            &json!({
+                "reason": "conflict",
+                "selectors": {
+                    "id": "twin",
+                    "viewport_id": secondary_id,
+                    "tool_viewport_id": "root",
+                    "resolved_viewport_id": null,
+                },
+            })
         );
     }
 
