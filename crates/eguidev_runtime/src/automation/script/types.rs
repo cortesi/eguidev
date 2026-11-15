@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
@@ -371,24 +371,6 @@ pub(super) struct ImageCapture {
     pub(super) viewport_id: String,
     pub(super) target: Option<WidgetRef>,
     pub(super) rect: Option<Rect>,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct ImageReferenceCollector {
-    pub(super) used: Vec<String>,
-    seen: HashSet<String>,
-}
-
-impl ImageReferenceCollector {
-    pub(super) fn record(&mut self, id: &str) {
-        if self.seen.insert(id.to_string()) {
-            self.used.push(id.to_string());
-        }
-    }
-
-    pub(super) fn contains(&self, id: &str) -> bool {
-        self.seen.contains(id)
-    }
 }
 
 #[cfg(test)]

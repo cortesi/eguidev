@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+
 use serde_json::Value;
 use tmcp::schema::ContentBlock;
 
 use super::{
     runtime::ScriptRuntime,
-    types::{ImageReferenceCollector, ScriptArgValue, ScriptArgs, ScriptImageInfo, ScriptValue},
+    types::{ScriptArgValue, ScriptArgs, ScriptImageInfo, ScriptValue},
 };
 
 /// Convert script arguments into the JSON table shape exposed as global `args`.
@@ -26,12 +28,13 @@ pub(super) fn script_args_to_json(args: &ScriptArgs) -> Value {
     Value::Object(values)
 }
 
-/// Record image references nested anywhere inside a script return value.
-pub(super) fn collect_image_refs(value: &Value, collector: &mut ImageReferenceCollector) {
+/// Record the ids of the image references nested anywhere inside a script
+/// return value.
+fn collect_image_refs(value: &Value, ids: &mut HashSet<String>) {
     match value {
         Value::Array(values) => {
             for value in values {
-                collect_image_refs(value, collector);
+                collect_image_refs(value, ids);
             }
         }
         Value::Object(map) => {
@@ -40,10 +43,10 @@ pub(super) fn collect_image_refs(value: &Value, collector: &mut ImageReferenceCo
                 .and_then(Value::as_str)
                 .is_some_and(|kind| kind == "image_ref");
             if is_image_ref && let Some(id) = map.get("id").and_then(Value::as_str) {
-                collector.record(id);
+                ids.insert(id.to_string());
             }
             for value in map.values() {
-                collect_image_refs(value, collector);
+                collect_image_refs(value, ids);
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
@@ -62,9 +65,9 @@ pub(super) fn script_return_value_from_json_values(values: Vec<Value>) -> Option
 /// Build the public script value payload and MCP image blocks from a JSON
 /// return value.
 pub(super) fn script_value_from_json(runtime: &ScriptRuntime, value: Value) -> ScriptValue {
-    let mut collector = ImageReferenceCollector::default();
-    collect_image_refs(&value, &mut collector);
-    let images = build_image_blocks(runtime, &collector);
+    let mut ids = HashSet::new();
+    collect_image_refs(&value, &mut ids);
+    let images = build_image_blocks(runtime, &ids);
     let image_infos = if images.infos.is_empty() {
         None
     } else {
@@ -82,11 +85,11 @@ struct ImageBlocks {
     blocks: Vec<ContentBlock>,
 }
 
-fn build_image_blocks(runtime: &ScriptRuntime, collector: &ImageReferenceCollector) -> ImageBlocks {
+fn build_image_blocks(runtime: &ScriptRuntime, ids: &HashSet<String>) -> ImageBlocks {
     let mut infos = Vec::new();
     let mut blocks = Vec::new();
     for image in runtime.images() {
-        if !collector.contains(&image.id) {
+        if !ids.contains(&image.id) {
             continue;
         }
         let content_index = infos.len() + 1;
