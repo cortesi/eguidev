@@ -1,7 +1,6 @@
 //! App-level idle hooks used by settle waits.
 
 use std::{
-    any::Any,
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
@@ -9,7 +8,10 @@ use std::{
 
 use egui::Context;
 
-use crate::{diagnostics::DevMcpConfigError, registry::lock};
+use crate::{
+    diagnostics::{DevMcpConfigError, panic_message},
+    registry::lock,
+};
 
 type RuntimeIdleProvider = Arc<dyn Fn() -> bool + Send + Sync>;
 type UiIdleProvider = Arc<Mutex<Box<dyn FnMut(&Context) -> bool + Send>>>;
@@ -162,16 +164,6 @@ fn run_ui_provider(provider: &UiIdleProvider, ctx: &Context, frame: u64) -> Idle
             frame: Some(frame),
         },
     }
-}
-
-fn panic_message(panic: &(dyn Any + Send)) -> String {
-    if let Some(message) = panic.downcast_ref::<&str>() {
-        return (*message).to_string();
-    }
-    if let Some(message) = panic.downcast_ref::<String>() {
-        return message.clone();
-    }
-    "non-string panic payload".to_string()
 }
 
 #[cfg(test)]

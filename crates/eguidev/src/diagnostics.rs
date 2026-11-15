@@ -330,7 +330,8 @@ fn run_ui_provider(name: &str, provider: &UiDiagnosticProvider, ctx: &Context) -
     .unwrap_or_else(|panic| Err(DiagnosticError::provider_panic(name, panic.as_ref())))
 }
 
-fn panic_message(panic: &(dyn Any + Send)) -> String {
+/// The message of a panic payload, for the error that reports the panic.
+pub fn panic_message(panic: &(dyn Any + Send)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         return (*message).to_string();
     }

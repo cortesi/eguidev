@@ -8,6 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::diagnostics::panic_message;
 
 /// Fixture metadata advertised by an app.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -789,16 +790,6 @@ impl FixtureError {
                 panic_message(panic)
             ),
         )
-    }
-}
-
-fn panic_message(panic: &(dyn Any + Send)) -> String {
-    if let Some(message) = panic.downcast_ref::<&'static str>() {
-        (*message).to_string()
-    } else if let Some(message) = panic.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "unknown panic payload".to_string()
     }
 }
 
