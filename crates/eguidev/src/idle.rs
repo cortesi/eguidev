@@ -88,11 +88,6 @@ impl IdleRegistry {
         Ok(())
     }
 
-    /// Return whether an idle provider has been configured.
-    pub fn is_configured(&self) -> bool {
-        lock(&self.provider, "idle provider lock").is_some()
-    }
-
     /// Evaluate the currently configured idle provider for settle reporting.
     pub fn status(&self) -> Option<IdleStatus> {
         match lock(&self.provider, "idle provider lock").clone()? {

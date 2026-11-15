@@ -2400,9 +2400,6 @@ pub mod internal {
             /// Return the fixture catalog sorted by name.
             pub fn fixtures_sorted(&self) -> Vec<FixtureSpec>;
 
-            /// Check whether a fixture with the given name is registered.
-            pub fn has_fixture(&self, name: &str) -> bool;
-
             /// Create a new fixture manager with no fixtures or handler.
             pub fn new() -> Self;
 
@@ -2443,9 +2440,6 @@ pub mod internal {
         pub struct IdleRegistry {/* private fields */}
 
         impl IdleRegistry {
-            /// Return whether an idle provider has been configured.
-            pub fn is_configured(&self) -> bool;
-
             /// Create an empty idle registry.
             pub fn new() -> Self;
 
@@ -2619,8 +2613,6 @@ pub mod internal {
             pub fn clear_all(&self);
 
             pub fn clear_overlay_debug_config(&self, viewport_id: ViewportId);
-
-            pub fn clear_overlays(&self);
 
             pub fn clear_viewport_overlays(&self, viewport_id: ViewportId);
 
@@ -2797,8 +2789,6 @@ pub mod internal {
 
         impl FrameHealth {
             pub fn age(&self) -> Duration;
-
-            pub fn frames_observed_since(&self, start_frame: u64) -> u64;
         }
 
         #[derive(Clone, Debug)]
@@ -2860,14 +2850,6 @@ pub mod internal {
             ) -> Option<crate::viewports::CaptureSnapshot>;
 
             pub fn frame_health(&self, viewport_id: ViewportId) -> Option<FrameHealth>;
-
-            pub fn frame_health_snapshot(&self) -> Vec<FrameHealth>;
-
-            pub fn frames_observed_since(
-                &self,
-                viewport_id: ViewportId,
-                start_frame: u64,
-            ) -> Option<u64>;
 
             pub fn has_viewport_snapshot(&self, viewport_id: ViewportId) -> bool;
 

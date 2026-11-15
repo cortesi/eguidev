@@ -55,10 +55,6 @@ impl FrameHealth {
             Duration::ZERO
         }
     }
-
-    pub fn frames_observed_since(&self, start_frame: u64) -> u64 {
-        self.frame_count.saturating_sub(start_frame)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -375,24 +371,6 @@ impl ViewportState {
             .copied()
     }
 
-    pub fn frame_health_snapshot(&self) -> Vec<FrameHealth> {
-        let mut health = lock(&self.frame_health, "frame health lock")
-            .values()
-            .copied()
-            .collect::<Vec<_>>();
-        health.sort_by_key(|entry| viewport_id_to_string(entry.viewport_id));
-        health
-    }
-
-    pub fn frames_observed_since(
-        &self,
-        viewport_id: egui::ViewportId,
-        start_frame: u64,
-    ) -> Option<u64> {
-        self.frame_health(viewport_id)
-            .map(|health| health.frames_observed_since(start_frame))
-    }
-
     pub fn resolve_viewport_id(
         &self,
         viewport_id: Option<String>,
@@ -687,8 +665,6 @@ mod tests {
         let health = state.frame_health(viewport_id).expect("frame health");
         assert_eq!(health.viewport_id, viewport_id);
         assert_eq!(health.frame_count, 7);
-        assert_eq!(health.frames_observed_since(4), 3);
-        assert_eq!(state.frames_observed_since(viewport_id, 8), Some(0));
         assert!(health.age() < Duration::from_secs(1));
     }
 

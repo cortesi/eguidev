@@ -140,11 +140,6 @@ impl FixtureManager {
         fixtures
     }
 
-    /// Check whether a fixture with the given name is registered.
-    pub fn has_fixture(&self, name: &str) -> bool {
-        self.fixture(name).is_some()
-    }
-
     /// Return a registered fixture by name.
     pub fn fixture(&self, name: &str) -> Option<FixtureSpec> {
         lock(&self.fixtures, "fixtures lock")

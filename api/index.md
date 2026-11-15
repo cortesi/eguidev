@@ -13,7 +13,7 @@ Cross-target instrumentation for AI-assisted egui development.
 - Workspace dependencies: none
 - Workspace dependents: edev, eguidev_demo, eguidev_runtime
 - Unnameable: crate::viewports::CaptureSnapshot
-- Items: 391
+- Items: 385
 - Exposes: egui, schemars, serde, serde_core, serde_json
 
 ## eguidev_runtime

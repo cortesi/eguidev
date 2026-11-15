@@ -528,11 +528,6 @@ impl Inner {
         self.request_repaint_of(viewport_id);
     }
 
-    pub fn clear_overlays(&self) {
-        self.overlays.clear_overlays();
-        self.request_repaint_all();
-    }
-
     pub fn paint_overlays(&self, ctx: &Context) {
         self.overlays
             .paint_overlays(ctx, &self.widgets, &self.viewports);
@@ -758,35 +753,30 @@ mod tests {
     }
 
     #[test]
-    fn global_overlay_resets_repaint_all_viewports() {
+    fn a_global_dismissal_repaints_all_viewports() {
         let secondary = egui::ViewportId::from_hash_of("secondary");
-        let operations: [fn(&Inner); 2] = [Inner::clear_overlays, |inner| {
-            inner.dismiss_transient_ui(None)
-        }];
-        for operation in operations {
-            let inner = new_test_inner();
-            let (sender, receiver) = mpsc::channel();
-            for viewport_id in [egui::ViewportId::ROOT, secondary] {
-                let ctx = Context::default();
-                inner.capture_context(viewport_id, &ctx);
-                let sender = sender.clone();
-                ctx.set_request_repaint_callback(move |info| {
-                    sender
-                        .send(info.viewport_id)
-                        .expect("notify repaint callback");
-                });
-            }
-            operation(&inner);
-            let first = receiver
-                .recv_timeout(Duration::from_secs(1))
-                .expect("first repaint");
-            let second = receiver
-                .recv_timeout(Duration::from_secs(1))
-                .expect("second repaint");
-            assert_ne!(first, second);
-            assert!([first, second].contains(&egui::ViewportId::ROOT));
-            assert!([first, second].contains(&secondary));
+        let inner = new_test_inner();
+        let (sender, receiver) = mpsc::channel();
+        for viewport_id in [egui::ViewportId::ROOT, secondary] {
+            let ctx = Context::default();
+            inner.capture_context(viewport_id, &ctx);
+            let sender = sender.clone();
+            ctx.set_request_repaint_callback(move |info| {
+                sender
+                    .send(info.viewport_id)
+                    .expect("notify repaint callback");
+            });
         }
+        inner.dismiss_transient_ui(None);
+        let first = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first repaint");
+        let second = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second repaint");
+        assert_ne!(first, second);
+        assert!([first, second].contains(&egui::ViewportId::ROOT));
+        assert!([first, second].contains(&secondary));
     }
 
     #[test]
