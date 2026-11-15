@@ -841,12 +841,10 @@ impl EguidevModule {
             "eguidev.wait",
             &self.runtime,
             |runtime, pos, args: FrameCountOptionsArgs| async move {
-                let count = optional_luau_number_to_json(args.count)
-                    .map_err(|error| ruau_runtime_error_info(&error))?;
                 runtime
                     .wait_for_frames(
                         pos,
-                        &count,
+                        args.count,
                         args.options.as_ref().and_then(Value::as_object),
                     )
                     .await

@@ -220,11 +220,18 @@ impl ScriptRuntime {
     pub(in super::super) async fn wait_for_frames(
         &self,
         pos: ScriptPosition,
-        count: &Value,
+        count: Option<f64>,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
-        let count =
-            parse_optional_u64_val(count).map_err(|error| self.type_error(pos, error.message))?;
+        let count = match count {
+            None => None,
+            Some(count) if count.fract() == 0.0 && (0.0..=u64::MAX as f64).contains(&count) => {
+                Some(count as u64)
+            }
+            Some(_) => {
+                return Err(self.type_error(pos, "frame count must be a non-negative integer"));
+            }
+        };
         // Frame counting is app-wide, so only the timeout applies here.
         let (_viewport_id, timeout_ms, _poll_interval_ms) =
             self.parse_wait_options(pos, options)?;

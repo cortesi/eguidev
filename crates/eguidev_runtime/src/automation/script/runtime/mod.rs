@@ -32,7 +32,7 @@ use super::{
     },
     parse::{
         map_value, parse_modifiers, parse_optional_bool, parse_optional_f32, parse_optional_string,
-        parse_optional_u8, parse_optional_u32, parse_optional_u64, parse_optional_u64_val,
+        parse_optional_u8, parse_optional_u32, parse_optional_u64,
         parse_optional_vec2, parse_overlay_mode, parse_pointer_button, parse_pos2,
         parse_scroll_align, parse_vec2, parse_widget_ref, parse_widget_role,
         widget_value_from_dynamic,

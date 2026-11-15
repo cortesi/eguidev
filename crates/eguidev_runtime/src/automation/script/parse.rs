@@ -119,19 +119,6 @@ pub(super) fn parse_optional_bool(
     }
 }
 
-pub(super) fn parse_optional_u64_val(value: &Value) -> Result<Option<u64>, ScriptErrorInfo> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    let Some(val) = value.as_i64() else {
-        return Err(type_error("value must be an integer"));
-    };
-    if val < 0 {
-        return Err(type_error("value must be non-negative"));
-    }
-    Ok(Some(val as u64))
-}
-
 pub(super) fn parse_optional_u64(
     map: Option<&Map<String, Value>>,
     key: &str,

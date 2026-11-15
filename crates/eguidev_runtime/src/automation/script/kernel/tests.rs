@@ -1306,6 +1306,30 @@ return eguidev.args.count"#
 }
 
 #[test]
+fn wait_frames_names_the_fault_of_a_bad_count() {
+    let inner = Arc::new(Inner::new());
+    let runtime = Runtime::ensure_for_inner(&inner);
+    let outcome = run_script_eval_blocking(
+        inner,
+        runtime,
+        r#"local messages = {}
+for _, count in { -1, 1.5 } do
+    local ok, cause = pcall(function() eguidev.wait_frames(count) end)
+    assert(not ok, "a bad count must fail")
+    table.insert(messages, (cause :: Error).message)
+end
+return messages"#
+            .to_string(),
+        1_000,
+        "wait-frames-count.luau".to_string(),
+        ScriptArgs::default(),
+    );
+    assert!(outcome.success, "{outcome:?}");
+    let message = "frame count must be a non-negative integer";
+    assert_eq!(outcome.value, Some(json!([message, message])));
+}
+
+#[test]
 fn rejected_configure_does_not_poison_luau_defaults() {
     let inner = Arc::new(Inner::new());
     let runtime = Runtime::ensure_for_inner(&inner);

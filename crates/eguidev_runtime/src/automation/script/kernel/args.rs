@@ -848,14 +848,3 @@ pub(super) fn inject_viewport_id(viewport_id: String, options: &mut Option<Value
             .or_insert(Value::String(viewport_id));
     }
 }
-
-pub(super) fn optional_luau_number_to_json(value: Option<f64>) -> Result<Value, RuntimeError> {
-    value.map_or(Ok(Value::Null), |value| {
-        if value.fract() == 0.0 && value >= 0.0 && value <= u64::MAX as f64 {
-            return Ok(Value::Number((value as u64).into()));
-        }
-        serde_json::Number::from_f64(value)
-            .map(Value::Number)
-            .ok_or_else(|| RuntimeError::runtime("number argument must be finite"))
-    })
-}
