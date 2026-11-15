@@ -246,45 +246,24 @@ impl WidgetRegistry {
         if let Some(error) = self.duplicate_explicit_id_error(viewports) {
             return Err(error);
         }
-        let tool_viewport = viewport_id;
         let registry = lock(&self.registry_snapshot, "registry snapshot lock");
-
-        let (matches, resolved_viewport) =
-            match resolve_viewport_selector(viewports, tool_viewport, target) {
-                Ok((viewport_id, resolved_viewport)) => {
-                    let matches = registry
-                        .get(&viewport_id)
-                        .into_iter()
-                        .flatten()
-                        .filter(|entry| entry.id == target.id)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    (matches, resolved_viewport)
-                }
-                Err(error) => return Err(error),
-            };
-
-        if matches.is_empty() {
-            return Err(not_found_error(
-                "Widget not found for id",
-                target,
-                tool_viewport,
-                &resolved_viewport,
-                &registry,
-                viewports,
-            ));
-        }
-        if matches.len() > 1 {
-            return Err(ambiguous_error(
-                "ambiguous",
-                "Widget reference is ambiguous",
-                target,
-                tool_viewport,
-                &resolved_viewport,
-                &matches,
-            ));
-        }
-        Ok(matches.into_iter().next().expect("single id match"))
+        let resolved = resolve_viewport_selector(viewports, viewport_id, target)?;
+        let resolved_viewport = viewport_id_to_string(resolved);
+        let matches = registry
+            .get(&resolved)
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.id == target.id)
+            .cloned()
+            .collect();
+        single_match(
+            matches,
+            target,
+            viewport_id,
+            &resolved_viewport,
+            &registry,
+            viewports,
+        )
     }
 
     pub fn resolve_widget_global(
@@ -305,29 +284,8 @@ impl WidgetRegistry {
             .flatten()
             .filter(|entry| entry.id == target.id)
             .cloned()
-            .collect::<Vec<_>>();
-
-        if matches.is_empty() {
-            return Err(not_found_error(
-                "Widget not found for id",
-                target,
-                None,
-                "all",
-                &registry,
-                viewports,
-            ));
-        }
-        if matches.len() > 1 {
-            return Err(ambiguous_error(
-                "ambiguous",
-                "Widget reference is ambiguous",
-                target,
-                None,
-                "all",
-                &matches,
-            ));
-        }
-        Ok(matches.into_iter().next().expect("single id match"))
+            .collect();
+        single_match(matches, target, None, "all", &registry, viewports)
     }
 }
 
@@ -591,88 +549,83 @@ fn resolve_viewport_selector(
     viewports: &ViewportState,
     tool_viewport: Option<&str>,
     target: &WidgetRef,
-) -> Result<(egui::ViewportId, String), ToolError> {
+) -> Result<egui::ViewportId, ToolError> {
     let tool_resolved = resolve_viewport_id(viewports, tool_viewport)?;
     let target_resolved = resolve_viewport_id(viewports, target.viewport_id.as_deref())?;
 
     match (tool_resolved, target_resolved) {
-        (Some(tool_id), Some(target_id)) => {
-            if tool_id != target_id {
-                let details = selector_details(target, tool_viewport, None);
-                return Err(ToolError::new(
-                    ErrorCode::NotFound,
-                    format!(
-                        "Conflicting viewport selectors (tool={tool_viewport:?}, target={:?})",
-                        target.viewport_id.as_deref()
-                    ),
-                )
-                .with_details(json!({
-                    "reason": "conflict",
-                    "selectors": selectors_value(&details),
-                })));
-            }
-            Ok((tool_id, viewport_id_to_string(tool_id)))
-        }
-        (Some(tool_id), None) => Ok((tool_id, viewport_id_to_string(tool_id))),
-        (None, Some(target_id)) => Ok((target_id, viewport_id_to_string(target_id))),
-        (None, None) => Ok((egui::ViewportId::ROOT, "root".to_string())),
+        (Some(tool_id), Some(target_id)) if tool_id != target_id => Err(ToolError::new(
+            ErrorCode::NotFound,
+            format!(
+                "Conflicting viewport selectors (tool={tool_viewport:?}, target={:?})",
+                target.viewport_id.as_deref()
+            ),
+        )
+        .with_details(json!({
+            "reason": "conflict",
+            "selectors": selectors(target, tool_viewport, None),
+        }))),
+        (Some(viewport_id), _) | (None, Some(viewport_id)) => Ok(viewport_id),
+        (None, None) => Ok(egui::ViewportId::ROOT),
     }
 }
 
-fn selector_details(
+fn selectors(
     target: &WidgetRef,
     tool_viewport: Option<&str>,
     resolved_viewport: Option<&str>,
 ) -> serde_json::Value {
     json!({
-        "selectors": {
-            "id": target.id,
-            "viewport_id": target.viewport_id.as_deref(),
-            "tool_viewport_id": tool_viewport,
-            "resolved_viewport_id": resolved_viewport,
-        }
+        "id": target.id,
+        "viewport_id": target.viewport_id.as_deref(),
+        "tool_viewport_id": tool_viewport,
+        "resolved_viewport_id": resolved_viewport,
     })
 }
 
-fn ambiguous_error(
-    reason: &str,
-    message: &str,
-    target: &WidgetRef,
-    tool_viewport: Option<&str>,
-    resolved_viewport: &str,
-    candidates: &[WidgetRegistryEntry],
-) -> ToolError {
-    let (summaries, truncated) = summarize_candidates(candidates);
-    let details = selector_details(target, tool_viewport, Some(resolved_viewport));
-    let message = format!(
-        "{message} (id={:?}, viewport={resolved_viewport})",
-        target.id
-    );
-    ToolError::new(ErrorCode::NotFound, message).with_details(json!({
-        "reason": reason,
-        "selectors": selectors_value(&details),
-        "candidates": summaries,
-        "candidates_truncated": truncated,
-    }))
-}
-
-fn not_found_error(
-    message: &str,
+/// Return the one widget that matches `target`, or the error that explains
+/// why there is no match or more than one.
+fn single_match(
+    mut matches: Vec<WidgetRegistryEntry>,
     target: &WidgetRef,
     tool_viewport: Option<&str>,
     resolved_viewport: &str,
     registry: &HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>,
     viewports: &ViewportState,
-) -> ToolError {
-    let message = format!(
-        "{message} (id={:?}, viewport={resolved_viewport})",
-        target.id
-    );
-    let details = selector_details(target, tool_viewport, Some(resolved_viewport));
-    ToolError::new(ErrorCode::NotFound, message).with_details(json!({
-        "selectors": selectors_value(&details),
-        "search": missing_widget_search(target, resolved_viewport, registry, viewports),
-    }))
+) -> Result<WidgetRegistryEntry, ToolError> {
+    let selectors = selectors(target, tool_viewport, Some(resolved_viewport));
+    let error = |message: &str, details: serde_json::Value| {
+        ToolError::new(
+            ErrorCode::NotFound,
+            format!(
+                "{message} (id={:?}, viewport={resolved_viewport})",
+                target.id
+            ),
+        )
+        .with_details(details)
+    };
+    match matches.len() {
+        0 => Err(error(
+            "Widget not found for id",
+            json!({
+                "selectors": selectors,
+                "search": missing_widget_search(target, resolved_viewport, registry, viewports),
+            }),
+        )),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let (summaries, truncated) = summarize_candidates(&matches);
+            Err(error(
+                "Widget reference is ambiguous",
+                json!({
+                    "reason": "ambiguous",
+                    "selectors": selectors,
+                    "candidates": summaries,
+                    "candidates_truncated": truncated,
+                }),
+            ))
+        }
+    }
 }
 
 fn summarize_candidates(candidates: &[WidgetRegistryEntry]) -> (Vec<serde_json::Value>, bool) {
@@ -952,13 +905,6 @@ fn resolve_viewport_id(
     selector
         .map(|value| viewports.resolve_viewport_id(Some(value.to_string())))
         .transpose()
-}
-
-fn selectors_value(details: &serde_json::Value) -> serde_json::Value {
-    details
-        .get("selectors")
-        .cloned()
-        .unwrap_or_else(|| json!({}))
 }
 
 #[cfg(test)]
