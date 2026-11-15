@@ -91,7 +91,7 @@
 //!
 //! ```rust,ignore
 //! let id = "settings.mode";
-//! if let Some(crate::WidgetValue::Int(index)) = take_widget_value_override(ui, id) {
+//! if let Some(WidgetValue::Int(index)) = take_widget_value_override(ui, id) {
 //!     *selected = index as usize;
 //! }
 //!

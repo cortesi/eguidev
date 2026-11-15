@@ -31,7 +31,7 @@ pub type DiagnosticResult = Result<Value, DiagnosticError>;
 /// - `timeout`: a UI-thread provider did not answer before the deadline.
 /// - `panic`: the provider panicked, and `message` carries the payload.
 /// - `internal`: the provider was dropped without returning a result.
-/// - `pending_ui`: the provider needs a UI frame that has not run yet.
+/// - `not_found`: no provider has the requested name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiagnosticError {
     /// Stable machine-readable error code.
@@ -92,6 +92,8 @@ impl DiagnosticError {
 /// - `duplicate_idle_provider`: an idle provider is already registered.
 /// - `duplicate_diagnostic`: that diagnostic name is already registered.
 /// - `empty_diagnostic_name`: the diagnostic name was blank.
+/// - `invalid_fixture`: a fixture spec is not valid, and `message` gives the
+///   reason.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Error)]
 #[error("{message}")]
 pub struct DevMcpConfigError {

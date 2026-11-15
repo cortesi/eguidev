@@ -24,7 +24,7 @@ pub struct WidgetRef {
     /// Otherwise eguidev generates an opaque hex id that is best-effort stable
     /// within the current app session.
     pub id: String,
-    /// Optional viewport selector (`root` or `vp:...`).
+    /// Optional viewport selector (`root`, semantic name, or `vp:...`).
     #[serde(default)]
     pub viewport_id: Option<String>,
 }
@@ -819,7 +819,7 @@ pub struct WidgetState {
     /// keyboard focus).
     pub focused: bool,
     /// Whether another egui layer covers the widget's action point. See
-    /// [`WidgetState::covered`].
+    /// [`WidgetRegistryEntry::covered`].
     pub covered: bool,
 }
 

@@ -99,7 +99,7 @@
 //!
 //! ```rust,ignore
 //! let id = "settings.mode";
-//! if let Some(crate::WidgetValue::Int(index)) = take_widget_value_override(ui, id) {
+//! if let Some(WidgetValue::Int(index)) = take_widget_value_override(ui, id) {
 //!     *selected = index as usize;
 //! }
 //!
@@ -574,6 +574,8 @@ impl DevMcp {
 /// - `duplicate_idle_provider`: an idle provider is already registered.
 /// - `duplicate_diagnostic`: that diagnostic name is already registered.
 /// - `empty_diagnostic_name`: the diagnostic name was blank.
+/// - `invalid_fixture`: a fixture spec is not valid, and `message` gives the
+///   reason.
 #[derive(Clone, Debug, Deserialize<'de>, Display, Error, PartialEq, Serialize)]
 #[error("{message}")]
 pub struct DevMcpConfigError {
@@ -594,7 +596,7 @@ pub struct DevMcpConfigError {
 /// - `timeout`: a UI-thread provider did not answer before the deadline.
 /// - `panic`: the provider panicked, and `message` carries the payload.
 /// - `internal`: the provider was dropped without returning a result.
-/// - `pending_ui`: the provider needs a UI frame that has not run yet.
+/// - `not_found`: no provider has the requested name.
 #[derive(Clone, Debug, Deserialize<'de>, PartialEq, Serialize)]
 pub struct DiagnosticError {
     /// Stable machine-readable error code.
@@ -1692,7 +1694,7 @@ pub struct WidgetRef {
     /// Otherwise eguidev generates an opaque hex id that is best-effort stable
     /// within the current app session.
     pub id: String,
-    /// Optional viewport selector (`root` or `vp:...`).
+    /// Optional viewport selector (`root`, semantic name, or `vp:...`).
     #[serde(default)]
     pub viewport_id: Option<String>,
 }
@@ -1942,7 +1944,7 @@ pub struct WidgetState {
     /// keyboard focus).
     pub focused: bool,
     /// Whether another egui layer covers the widget's action point. See
-    /// [`WidgetState::covered`].
+    /// [`WidgetRegistryEntry::covered`].
     pub covered: bool,
 }
 
