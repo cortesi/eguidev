@@ -121,7 +121,7 @@ pub(super) fn widget_viewport_host<'s>(
     let receiver = widget_receiver(scope, "viewport", args)?;
     let viewport_id = receiver.viewport_id.as_deref().unwrap_or("root");
     let value = runtime
-        .viewport_handle(pos, viewport_id)
+        .viewport_handle_json(pos, viewport_id)
         .map_err(|info| scoped_host_error(scope, info))?;
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
@@ -206,7 +206,7 @@ pub(super) fn assert_host<'s>(
             "assertion failed".to_string()
         }
     });
-    runtime.record_assertion_outcome(pos, condition, message);
+    runtime.record_assertion(pos, condition, message);
     Ok(MultiValue::new())
 }
 

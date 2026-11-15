@@ -17,9 +17,8 @@ impl ScriptRuntime {
                 parse_pointer_button(value).map_err(|error| self.type_error(pos, error.message))?,
             ),
         };
-        let modifiers = self
-            .modifiers_from_options(options)
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let modifiers =
+            parse_modifiers(options).map_err(|error| self.type_error(pos, error.message))?;
         let click_count = parse_optional_u8(options, "click_count")
             .map_err(|error| self.type_error(pos, error.message))?;
         self.await_tool(
@@ -33,7 +32,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), Some(&target))
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -66,7 +65,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -95,7 +94,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), Some(&target))
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -137,7 +136,7 @@ impl ScriptRuntime {
                 .action_focus(Some(action_viewport_id.clone()), target),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -152,9 +151,8 @@ impl ScriptRuntime {
         let to = parse_pos2(to).map_err(|error| self.type_error(pos, error.message))?;
         let from = parse_optional_vec2(options, "from")
             .map_err(|error| self.type_error(pos, error.message))?;
-        let modifiers = self
-            .modifiers_from_options(options)
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let modifiers =
+            parse_modifiers(options).map_err(|error| self.type_error(pos, error.message))?;
         self.await_tool(
             pos,
             self.server.action_drag(
@@ -166,7 +164,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -181,9 +179,8 @@ impl ScriptRuntime {
         let to = parse_vec2(to).map_err(|error| self.type_error(pos, error.message))?;
         let from = parse_optional_vec2(options, "from")
             .map_err(|error| self.type_error(pos, error.message))?;
-        let modifiers = self
-            .modifiers_from_options(options)
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let modifiers =
+            parse_modifiers(options).map_err(|error| self.type_error(pos, error.message))?;
         self.await_tool(
             pos,
             self.server.action_drag_relative(
@@ -195,7 +192,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -210,9 +207,8 @@ impl ScriptRuntime {
         let to = parse_widget_ref(to).map_err(|error| self.type_error(pos, error.message))?;
         let start = parse_optional_vec2(options, "from")
             .map_err(|error| self.type_error(pos, error.message))?;
-        let modifiers = self
-            .modifiers_from_options(options)
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let modifiers =
+            parse_modifiers(options).map_err(|error| self.type_error(pos, error.message))?;
         self.await_tool(
             pos,
             self.server.action_drag_to_widget(
@@ -224,7 +220,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -237,16 +233,15 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let (target, action_viewport_id) = self.parse_action_target(pos, target, options)?;
         let delta = parse_vec2(delta).map_err(|error| self.type_error(pos, error.message))?;
-        let modifiers = self
-            .modifiers_from_options(options)
-            .map_err(|error| self.type_error(pos, error.message))?;
+        let modifiers =
+            parse_modifiers(options).map_err(|error| self.type_error(pos, error.message))?;
         self.await_tool(
             pos,
             self.server
                 .action_scroll(Some(action_viewport_id.clone()), target, delta, modifiers),
         )
         .await?;
-        self.finish_action(pos, options, Some(action_viewport_id), (), None)
+        self.finish_action(pos, options, Some(action_viewport_id))
             .await
     }
 
@@ -432,8 +427,7 @@ impl ScriptRuntime {
             ),
         )
         .await?;
-        self.finish_action(pos, options, action_viewport_id, (), target.as_ref())
-            .await
+        self.finish_action(pos, options, action_viewport_id).await
     }
 
     pub(in super::super) async fn action_paste(
@@ -446,8 +440,7 @@ impl ScriptRuntime {
             .map_err(|error| self.type_error(pos, error.message))?;
         self.await_tool(pos, self.server.action_paste(viewport_id.clone(), text))
             .await?;
-        self.finish_action(pos, options, viewport_id, (), None)
-            .await
+        self.finish_action(pos, options, viewport_id).await
     }
 
     pub(in super::super) async fn viewport_input(
@@ -491,7 +484,7 @@ impl ScriptRuntime {
                 .viewport_resize(Some(viewport_id.clone()), resize),
         )
         .await?;
-        self.finish_action(pos, options.as_object(), Some(viewport_id), (), None)
+        self.finish_action(pos, options.as_object(), Some(viewport_id))
             .await
     }
 
@@ -503,8 +496,7 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         self.await_tool(pos, self.server.focus_window(viewport.clone()))
             .await?;
-        self.finish_action(pos, options, Some(viewport), (), None)
-            .await
+        self.finish_action(pos, options, Some(viewport)).await
     }
 
     pub(in super::super) async fn viewport_dismiss_popups(
@@ -518,8 +510,7 @@ impl ScriptRuntime {
             self.server.viewport_dismiss_popups(viewport_id.clone()),
         )
         .await?;
-        self.finish_action(pos, options, viewport_id, (), None)
-            .await
+        self.finish_action(pos, options, viewport_id).await
     }
 
     pub(in super::super) async fn widget_set_value(

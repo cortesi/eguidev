@@ -32,10 +32,9 @@ use super::{
     },
     parse::{
         map_value, parse_modifiers, parse_optional_bool, parse_optional_f32, parse_optional_string,
-        parse_optional_u8, parse_optional_u32, parse_optional_u64,
-        parse_optional_vec2, parse_overlay_mode, parse_pointer_button, parse_pos2,
-        parse_scroll_align, parse_vec2, parse_widget_ref, parse_widget_role,
-        widget_value_from_dynamic,
+        parse_optional_u8, parse_optional_u32, parse_optional_u64, parse_optional_vec2,
+        parse_overlay_mode, parse_pointer_button, parse_pos2, parse_scroll_align, parse_vec2,
+        parse_widget_ref, parse_widget_role, widget_value_from_dynamic,
     },
     types::{
         FixtureApplication, ImageCapture, ScriptAssertion, ScriptErrorInfo, ScriptImageKind,
@@ -50,7 +49,7 @@ use crate::{
     runtime::Runtime,
     screenshots::ScreenshotKind,
     types::{
-        ActionOptions, Modifiers, RawInputEvent, Rect, ResizeOptions, RoleState, Vec2, WidgetRef,
+        ActionOptions, RawInputEvent, Rect, ResizeOptions, RoleState, Vec2, WidgetRef,
         WidgetRegistryEntry, WidgetState, WidgetValue,
     },
     viewports::ViewportSnapshot,
@@ -500,7 +499,7 @@ impl ScriptRuntime {
         fixtures.push(FixtureApplication { name, params });
     }
 
-    fn record_assertion(&self, passed: bool, message: String, pos: ScriptPosition) {
+    pub(super) fn record_assertion(&self, pos: ScriptPosition, passed: bool, message: String) {
         let location = self.format_location(pos);
         let assertion = ScriptAssertion {
             passed,
@@ -717,7 +716,11 @@ impl ScriptRuntime {
         )
     }
 
-    fn viewport_handle_json(&self, pos: ScriptPosition, viewport_id: &str) -> ScriptResult<Value> {
+    pub(super) fn viewport_handle_json(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: &str,
+    ) -> ScriptResult<Value> {
         self.record_targeted_viewport(viewport_id.to_string());
         self.to_json(
             pos,
@@ -783,13 +786,6 @@ impl ScriptRuntime {
                 .map(|snapshot| serde_json::json!({ "id": snapshot.viewport_id }))
                 .collect::<Vec<_>>(),
         )
-    }
-
-    fn modifiers_from_options(
-        &self,
-        options: Option<&Map<String, Value>>,
-    ) -> Result<Option<Modifiers>, ScriptErrorInfo> {
-        parse_modifiers(options)
     }
 
     pub(super) fn parse_wait_options(
@@ -941,25 +937,14 @@ impl ScriptRuntime {
         Ok((target, action_viewport_id))
     }
 
-    async fn finish_action<T: Serialize>(
+    async fn finish_action(
         &self,
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
         viewport_id: Option<String>,
-        result: T,
-        _target: Option<&WidgetRef>,
     ) -> ScriptResult<Value> {
         self.settle_after_action(pos, options, viewport_id).await?;
-        self.to_json(pos, result)
-    }
-
-    pub(super) fn record_assertion_outcome(
-        &self,
-        pos: ScriptPosition,
-        passed: bool,
-        message: String,
-    ) {
-        self.record_assertion(passed, message, pos);
+        self.to_json(pos, ())
     }
 }
 

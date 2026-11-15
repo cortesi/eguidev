@@ -84,11 +84,8 @@ fn ancestor_ids(widgets: &[WidgetRegistryEntry], target_id: &str) -> HashSet<Str
 }
 
 impl DevMcpServer {
-    pub(super) async fn viewports_list(
-        &self,
-        viewport_id: Option<String>,
-    ) -> ToolResult<Vec<ViewportSnapshot>> {
-        filter_viewport_snapshots(&self.inner, viewport_id).map_err(Into::into)
+    pub(super) async fn viewports_list(&self) -> ToolResult<Vec<ViewportSnapshot>> {
+        filter_viewport_snapshots(&self.inner, None).map_err(Into::into)
     }
 }
 

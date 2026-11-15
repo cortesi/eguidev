@@ -83,35 +83,11 @@ impl ScriptRuntime {
         self.to_json(pos, result)
     }
 
-    pub(super) fn parse_optional_viewport_id_arg(
-        &self,
-        pos: ScriptPosition,
-        arg: Option<&Value>,
-    ) -> ScriptResult<Option<String>> {
-        match arg {
-            None => Ok(None),
-            Some(Value::String(value)) => Ok(Some(value.clone())),
-            Some(_) => Err(self.type_error(pos, "viewport_id must be a string")),
-        }
-    }
-
-    pub(in super::super) fn viewport_handle(
-        &self,
-        pos: ScriptPosition,
-        viewport_id: &str,
-    ) -> ScriptResult<Value> {
-        self.viewport_handle_json(pos, viewport_id)
-    }
-
     pub(in super::super) async fn viewports_list(
         &self,
         pos: ScriptPosition,
-        arg: Option<&Value>,
     ) -> ScriptResult<Value> {
-        let viewport_id = self.parse_optional_viewport_id_arg(pos, arg)?;
-        let result = self
-            .await_tool(pos, self.server.viewports_list(viewport_id))
-            .await?;
+        let result = self.await_tool(pos, self.server.viewports_list()).await?;
         self.viewport_handle_list_json(pos, &result)
     }
 

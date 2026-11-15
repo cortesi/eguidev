@@ -212,7 +212,7 @@ impl EguidevModule {
             "viewport_list",
             "eguidev.query",
             &self.runtime,
-            |runtime, pos, (): ()| async move { runtime.viewports_list(pos, None).await },
+            |runtime, pos, (): ()| async move { runtime.viewports_list(pos).await },
         );
     }
 
