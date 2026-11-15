@@ -639,11 +639,8 @@ pub fn reassert_background_policy() -> Option<PolicyConflict> {
     }
     let first_conflict = session.report_conflict(observed_policy, ACTIVATION_POLICY_ACCESSORY);
     drop(session);
-    let mut restored = true;
-    if observed_policy != Some(ACTIVATION_POLICY_ACCESSORY) {
-        restored = set_activation_policy(ACTIVATION_POLICY_ACCESSORY);
-        deactivate_application();
-    }
+    let restored = set_activation_policy(ACTIVATION_POLICY_ACCESSORY);
+    deactivate_application();
     first_conflict.then_some(PolicyConflict {
         observed_activation_policy: observed_policy.map(activation_policy_name),
         requested_presentation: Presentation::Background,

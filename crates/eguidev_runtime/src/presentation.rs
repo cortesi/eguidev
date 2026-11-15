@@ -132,9 +132,7 @@ impl PresentationSession {
         observed_activation_policy: Option<i64>,
         accessory_policy: i64,
     ) -> bool {
-        let conflicting = self.is_active()
-            && self.requested() == Presentation::Background
-            && observed_activation_policy != Some(accessory_policy);
+        let conflicting = self.should_reassert(observed_activation_policy, accessory_policy);
         if !conflicting || self.conflict_reported {
             return false;
         }
