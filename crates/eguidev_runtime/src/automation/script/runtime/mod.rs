@@ -371,7 +371,13 @@ impl ScriptRuntime {
             .await?;
         let selection = self.diagnostic_selection(Some(&viewport_id));
         self.dismiss_diagnostic_sequences(selection.sequences);
-        self.to_json(pos, selection.batch)
+        let mut batch = selection.batch;
+        batch.warnings_enabled = self
+            .server
+            .inner
+            .context_for(resolved)
+            .map(|ctx| ctx.options(|options| options.warn_on_id_clash));
+        self.to_json(pos, batch)
     }
 
     pub(super) async fn clear_egui_diagnostics(

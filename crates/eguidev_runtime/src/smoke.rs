@@ -983,6 +983,7 @@ mod tests {
                 }),
             }],
             dropped,
+            warnings_enabled: Some(true),
         }
     }
 

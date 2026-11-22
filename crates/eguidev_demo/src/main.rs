@@ -284,6 +284,9 @@ struct DemoState {
     intensity: f32,
     /// Combo-box choice.
     choice_index: usize,
+    /// Choice of the second combo box, which carries the label of the first.
+    /// Two boxes of one label must keep their own list and their own choice.
+    second_choice_index: usize,
     /// Ranged float drag value.
     drag_float: f32,
     /// Ranged integer drag value.
@@ -392,6 +395,7 @@ impl DemoState {
             enabled: true,
             intensity: 42.0,
             choice_index: 1,
+            second_choice_index: 0,
             drag_float: 1.5,
             drag_int: 7,
             toolbar_selected: true,
@@ -445,6 +449,7 @@ impl DemoState {
         self.enabled = true;
         self.intensity = 42.0;
         self.choice_index = 1;
+        self.second_choice_index = 0;
         self.drag_float = 1.5;
         self.drag_int = 7;
         self.toolbar_selected = true;
@@ -499,6 +504,7 @@ impl DemoState {
                 self.enabled = false;
                 self.intensity = 0.0;
                 self.choice_index = 0;
+                self.second_choice_index = 2;
                 self.drag_float = -2.5;
                 self.drag_int = -1;
                 self.toolbar_selected = false;
@@ -1155,6 +1161,15 @@ impl DemoApp {
                 "basic.choice",
                 "Choice",
                 &mut s.choice_index,
+                &["Alpha", "Beta", "Gamma"],
+            );
+            // A second box of the same label in the same `Ui`. egui salts a
+            // box built from its label with that text, so a box must take
+            // the ID of the widget instead to keep a list of its own.
+            ui.dev_combo_box(
+                "basic.choice.second",
+                "Choice",
+                &mut s.second_choice_index,
                 &["Alpha", "Beta", "Gamma"],
             );
             ui.horizontal(|ui| {

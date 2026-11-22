@@ -165,6 +165,44 @@ impl<'a> LayoutAnalysis<'a> {
             .collect()
     }
 
+    /// Report widgets that share one egui ID, so that egui cannot tell them
+    /// apart.
+    ///
+    /// Instrumentation gives each widget an ID of its own, but egui gives a
+    /// widget a second ID, from the ID of its `Ui` and a salt. A widget that
+    /// takes its salt from the text it shows, such as `ComboBox::from_label`,
+    /// collides with another widget of the same `Ui` and the same text. The
+    /// two then share everything egui keeps under that ID: which one has
+    /// focus, how far a list scrolls, and whether a popup is open. The
+    /// widgets still draw, so the defect shows only as a control that does
+    /// nothing.
+    ///
+    /// egui warns about an ID of its own only for a widget that takes input,
+    /// and the warning is off in a release build, so this check reads the
+    /// IDs directly and holds in every build.
+    pub fn shared_ids(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
+        let mut groups: HashMap<u64, Vec<&WidgetRegistryEntry>> = HashMap::new();
+        for widget in scope {
+            groups.entry(widget.native_id).or_default().push(widget);
+        }
+        let mut issues: Vec<LayoutIssue> = groups
+            .into_values()
+            .filter_map(|group| {
+                let mut ids: Vec<String> = group.iter().map(|widget| widget.id.clone()).collect();
+                ids.sort();
+                ids.dedup();
+                (ids.len() > 1).then(|| LayoutIssue {
+                    kind: LayoutIssueKind::SharedId,
+                    widgets: ids,
+                    message: "Widgets share one egui ID".to_string(),
+                    rect: group.first().map(|widget| widget.rect),
+                })
+            })
+            .collect();
+        issues.sort_by(|first, second| first.widgets.cmp(&second.widgets));
+        issues
+    }
+
     /// Report unrelated widget pairs in scope whose visible rects intersect.
     pub fn overlaps(&self, scope: &[WidgetRegistryEntry]) -> Vec<LayoutIssue> {
         let mut issues = Vec::new();
@@ -444,6 +482,7 @@ impl DevMcpServer {
         issues.extend(analysis.overlaps(&scope));
         issues.extend(analysis.offscreen(&scope));
         issues.extend(analysis.text_truncation(&scope));
+        issues.extend(analysis.shared_ids(&scope));
         Ok(issues)
     }
 
@@ -579,6 +618,41 @@ mod tests {
             },
         });
         scroll
+    }
+
+    /// A widget carries the egui ID of its response, so two widgets under one
+    /// egui ID are a collision. A widget recorded twice under its own ID is
+    /// one widget, and widgets of their own IDs are apart.
+    #[test]
+    fn shared_ids_report_one_egui_id_under_two_widgets() {
+        let place = rect(0.0, 0.0, 10.0, 10.0);
+        let mut country = entry("atlas.country", WidgetRole::ComboBox, place, true);
+        let mut sort = entry("atlas.sort", WidgetRole::ComboBox, place, true);
+        let mut filter = entry("atlas.filter", WidgetRole::TextEdit, place, true);
+        country.native_id = 77;
+        sort.native_id = 77;
+        filter.native_id = 78;
+        let registry = vec![country, sort, filter];
+        let analysis = LayoutAnalysis::new(&registry, None);
+
+        let issues = analysis.shared_ids(&registry);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].kind, LayoutIssueKind::SharedId);
+        assert_eq!(issues[0].widgets, ["atlas.country", "atlas.sort"]);
+    }
+
+    /// One widget that two passes of a frame record twice is not a collision.
+    #[test]
+    fn shared_ids_pass_one_widget_recorded_twice() {
+        let place = rect(0.0, 0.0, 10.0, 10.0);
+        let mut first = entry("atlas.sort", WidgetRole::ComboBox, place, true);
+        let mut second = entry("atlas.sort", WidgetRole::ComboBox, place, true);
+        first.native_id = 77;
+        second.native_id = 77;
+        let registry = vec![first, second];
+        let analysis = LayoutAnalysis::new(&registry, None);
+
+        assert!(analysis.shared_ids(&registry).is_empty());
     }
 
     #[test]

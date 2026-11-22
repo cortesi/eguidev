@@ -125,6 +125,19 @@ intermittent identity bug cannot pass unnoticed. To keep the warnings without a
 failure, set `[smoke] fail_on_egui_diagnostics = false`. A script that causes a
 warning on purpose can consume it with `Viewport:egui_diagnostics()`.
 
+egui paints these warnings only when `Options::warn_on_id_clash` is on, and it
+defaults to the debug build. Eguidev turns the option on with the automation
+plugin, so a release build reports the warnings too. Each batch carries
+`warnings_enabled`, so a script can tell a viewport with no warning from a
+viewport that paints none.
+
+egui warns about an ID of its own only for a widget that takes input. A widget
+can share an ID without taking input. Two combo boxes of one `Ui` that salt
+their IDs with one label take one ID, and with it one open list. Neither list
+then appears. `layout_issues()` reports such a pair as a `shared_id` issue. It
+compares the egui IDs of the instrumented widgets directly, so it holds in
+every build and needs no painted warning.
+
 `edev` exits with 0 when a command succeeds. Each failure has its own exit
 code, so that a caller can tell a failed script from a failed run:
 

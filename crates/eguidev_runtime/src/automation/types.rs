@@ -12,6 +12,7 @@ pub enum LayoutIssueKind {
     ZeroSize,
     TextTruncation,
     Offscreen,
+    SharedId,
 }
 
 #[derive(

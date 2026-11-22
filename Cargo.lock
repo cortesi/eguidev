@@ -2872,6 +2872,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stacker",
+ "strsim",
 ]
 
 [[package]]

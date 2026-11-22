@@ -578,16 +578,16 @@ impl DevUiExt for egui::Ui {
         selected: &mut usize,
         options: &[T],
     ) -> egui::Response {
-        let Some(inner) = active_inner() else {
-            return show_combo_box(self, &label.into(), selected, options);
-        };
         let id = id.into();
+        let label_text = label.into();
+        let Some(inner) = active_inner() else {
+            return show_combo_box(self, &id, &label_text, selected, options);
+        };
         if let Some(updated) = take_usize_override(&inner, self, &id) {
             *selected = updated;
         }
-        let label_text = label.into();
         let option_labels = options.iter().map(ToString::to_string).collect::<Vec<_>>();
-        let response = show_combo_box(self, &label_text, selected, options);
+        let response = show_combo_box(self, &id, &label_text, selected, options);
         record_widget_with_layout(
             &inner,
             self,
@@ -1026,8 +1026,18 @@ fn take_override(inner: &Inner, ui: &egui::Ui, id: &str) -> Option<WidgetValue> 
 }
 
 /// Show a combo box, and keep `selected` within the options.
+///
+/// The ID of the widget salts the box. `egui::ComboBox::from_label` would
+/// salt it with the text of the label instead, and the ID of a `Ui` covers
+/// every widget of a row or a panel, so two boxes of one `Ui` with one label
+/// would take one ID. They would then share the state that egui keeps under
+/// it, the open list among it: a click would open the list of one box and
+/// close the list of the other in the same pass, and neither list would
+/// appear. The ID of a widget is unique, so a box cannot collide with
+/// another.
 fn show_combo_box<T: ToString>(
     ui: &mut egui::Ui,
+    id_salt: &str,
     label: &str,
     selected: &mut usize,
     options: &[T],
@@ -1036,17 +1046,21 @@ fn show_combo_box<T: ToString>(
     if len == 0 || *selected >= len {
         *selected = 0;
     }
+    // A box without a label draws the button alone, with no empty label atom
+    // beside it to widen it.
+    let combo = if label.is_empty() {
+        egui::ComboBox::from_id_salt(id_salt)
+    } else {
+        egui::ComboBox::new(id_salt, label)
+    };
     if len == 0 {
-        return egui::ComboBox::from_label(label)
-            .selected_text("")
-            .show_ui(ui, |_| {})
-            .response;
+        return combo.selected_text("").show_ui(ui, |_| {}).response;
     }
     let selected_text = options
         .get(*selected)
         .map(ToString::to_string)
         .unwrap_or_default();
-    egui::ComboBox::from_label(label)
+    combo
         .selected_text(selected_text)
         .show_index(ui, selected, len, |index| options[index].to_string())
 }

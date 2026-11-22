@@ -497,6 +497,12 @@ impl DevMcp {
                 devmcp: self.clone(),
                 output_viewport_id: Some(ctx.viewport_id()),
             });
+            // egui paints its identity warnings only when this option is on,
+            // and it defaults to the debug build. The diagnostics of eguidev
+            // read those paintings, so without this an app under automation
+            // reports no identity warning at all in a release build, which
+            // reads as an app with none.
+            ctx.options_mut(|options| options.warn_on_id_clash = true);
         }
         let viewport_id = ctx.viewport_id();
         let outermost = inner.enter_viewport_frame(viewport_id);

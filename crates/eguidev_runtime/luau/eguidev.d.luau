@@ -88,6 +88,11 @@ export type EguiDiagnosticBatch = {
     entries: { EguiDiagnostic },
     --- Undismissed journal entries that were overwritten before this read.
     dropped: number,
+    --- Whether egui paints the identity warnings that these entries read.
+    --- Without it, no entry means either an app with no identity warning or
+    --- an app that paints none. Absent when the state is unknown, as in the
+    --- batch of a finished evaluation.
+    warnings_enabled: boolean?,
 }
 
 export type Modifiers = {
@@ -654,6 +659,12 @@ export type LayoutIssueKind =
     | "zero_size"
     | "text_truncation"
     | "offscreen"
+    -- Two widgets of one `Ui` resolved to one egui ID, so egui cannot tell
+    -- them apart and they share the focus, scroll, and popup state it keeps
+    -- under that ID. A widget that salts its ID with the text it shows, such
+    -- as a combo box built from its label, collides with another of the same
+    -- text.
+    | "shared_id"
 
 -- Selects what the persistent debug overlay visualizes:
 --
