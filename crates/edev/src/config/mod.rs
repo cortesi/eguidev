@@ -65,16 +65,7 @@ impl LaunchConfig {
     /// Build the app command from the resolved argv and process settings.
     #[cfg(not(target_os = "macos"))]
     pub(crate) fn app_command(&self) -> Command {
-        let mut command = if Path::new(&self.command[0]).file_stem().is_some_and(|name| {
-            matches!(
-                name.to_str(),
-                Some("cargo" | "ncode" | "edev" | "canopyctl")
-            )
-        }) {
-            Command::from(cargo_env::command(&self.command[0]))
-        } else {
-            Command::new(&self.command[0])
-        };
+        let mut command = Command::from(cargo_env::app_command(&self.command[0]));
         command.args(&self.command[1..]);
         command.current_dir(&self.cwd);
         command.envs(&self.env);

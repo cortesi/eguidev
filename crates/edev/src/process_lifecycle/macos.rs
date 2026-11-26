@@ -239,16 +239,7 @@ pub(super) async fn spawn_managed_app(config: &SupervisorConfig) -> Result<Manag
         .command
         .first()
         .ok_or_else(|| "app command is empty".to_string())?;
-    let mut command = if Path::new(executable).file_stem().is_some_and(|name| {
-        matches!(
-            name.to_str(),
-            Some("cargo" | "ncode" | "edev" | "canopyctl")
-        )
-    }) {
-        Command::from(cargo_env::command(executable))
-    } else {
-        Command::new(executable)
-    };
+    let mut command = Command::from(cargo_env::app_command(executable));
     command
         .args(&config.command[1..])
         .current_dir(&config.working_dir)
