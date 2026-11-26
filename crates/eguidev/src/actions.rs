@@ -222,7 +222,7 @@ impl ActionQueue {
         }
         drop(queue);
         self.record_drain(viewport_id, current.len(), frame);
-        self.record_pointer_actions(viewport_id, frame, "consumed", &current);
+        self.record_pointer_actions(viewport_id, frame, &current);
         current
     }
 
@@ -267,7 +267,7 @@ impl ActionQueue {
     }
 
     pub fn has_pending_commands(&self, viewport_id: egui::ViewportId) -> bool {
-        has_pending(&self.commands, "commands lock", viewport_id)
+        self.pending_command_count(viewport_id) > 0
     }
 
     pub fn pending_command_count(&self, viewport_id: egui::ViewportId) -> usize {
@@ -347,7 +347,6 @@ impl ActionQueue {
         &self,
         viewport_id: egui::ViewportId,
         frame: u64,
-        phase: &'static str,
         actions: &[InputAction],
     ) {
         let positions = actions
@@ -361,7 +360,7 @@ impl ActionQueue {
         state.positions.insert(viewport_id, last);
         state.consumed_frames.insert(viewport_id, frame);
         for pos in positions {
-            push_pointer_trace(&mut state.trace, viewport_id, phase, frame, pos);
+            push_pointer_trace(&mut state.trace, viewport_id, "consumed", frame, pos);
         }
     }
 }
@@ -393,14 +392,6 @@ fn queue_to_map<T>(
 ) {
     let mut queue = lock(queue, label);
     queue.entry(viewport_id).or_default().push(value);
-}
-
-fn has_pending<T>(
-    queue: &Mutex<HashMap<egui::ViewportId, Vec<T>>>,
-    label: &'static str,
-    viewport_id: egui::ViewportId,
-) -> bool {
-    pending_count(queue, label, viewport_id) > 0
 }
 
 fn pending_count<T>(
