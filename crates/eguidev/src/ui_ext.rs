@@ -554,7 +554,7 @@ impl DevUiExt for egui::Ui {
             return self.add(egui::Slider::new(value, range));
         };
         let id = id.into();
-        let range_meta = widget_range_from_f32(&range);
+        let range_meta = widget_range(&range);
         if let Some(updated) = take_float_override(&inner, self, &id) {
             *value = updated;
         }
@@ -633,7 +633,7 @@ impl DevUiExt for egui::Ui {
             return self.add(egui::DragValue::new(value).range(range));
         };
         let id = id.into();
-        let range_meta = widget_range_from_f32(&range);
+        let range_meta = widget_range(&range);
         if let Some(updated) = take_float_override(&inner, self, &id) {
             *value = updated;
         }
@@ -683,7 +683,7 @@ impl DevUiExt for egui::Ui {
             return self.add(egui::DragValue::new(value).range(range));
         };
         let id = id.into();
-        let range_meta = widget_range_from_i32(&range);
+        let range_meta = widget_range(&range);
         if let Some(updated) = take_i32_override(&inner, self, &id) {
             *value = updated;
         }
@@ -1151,17 +1151,10 @@ where
     response
 }
 
-fn widget_range_from_f32(range: &RangeInclusive<f32>) -> WidgetRange {
+fn widget_range<T: Copy + Into<f64>>(range: &RangeInclusive<T>) -> WidgetRange {
     WidgetRange {
-        min: f64::from(*range.start()),
-        max: f64::from(*range.end()),
-    }
-}
-
-fn widget_range_from_i32(range: &RangeInclusive<i32>) -> WidgetRange {
-    WidgetRange {
-        min: f64::from(*range.start()),
-        max: f64::from(*range.end()),
+        min: (*range.start()).into(),
+        max: (*range.end()).into(),
     }
 }
 
