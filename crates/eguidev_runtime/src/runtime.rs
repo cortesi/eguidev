@@ -150,12 +150,8 @@ impl Runtime {
         {
             let mut frame_complete = pin!(self.frame_notify.notified());
             frame_complete.as_mut().enable();
-            let needs_frame = timeout(
-                PRESENTATION_HANDSHAKE_TIMEOUT,
-                configure_session(session_id, presentation),
-            )
-            .await
-            .map_err(|_| "timed out waiting for macOS presentation handshake".to_string())??;
+            // The main-thread work of the session bounds its own wait.
+            let needs_frame = configure_session(session_id, presentation).await?;
             if needs_frame {
                 inner.request_repaint_of(egui::ViewportId::ROOT);
                 self.await_frame_notification(frame_complete, PRESENTATION_HANDSHAKE_TIMEOUT)

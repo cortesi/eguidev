@@ -66,6 +66,8 @@ const OCCLUSION_STATE_VISIBLE: usize = 1 << 1;
 const WINDOW_TITLE_VISIBLE: isize = 0;
 const CG_IMAGE_ALPHA_INFO_MASK: u32 = 0x1f;
 const CG_IMAGE_BYTE_ORDER_MASK: u32 = 0x7000;
+/// The longest wait for work queued on the macOS main thread.
+const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(15);
 
 type OcclusionStateFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> usize;
 
@@ -742,7 +744,7 @@ where
     DispatchQueue::main().exec_async(move || {
         drop(sender.send(operation()));
     });
-    timeout(Duration::from_secs(15), receiver)
+    timeout(MAIN_THREAD_TIMEOUT, receiver)
         .await
         .map_err(|_| "timed out waiting for macOS main-thread presentation work".to_string())?
         .map_err(|_| "macOS main-thread operation was cancelled".to_string())
