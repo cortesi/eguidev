@@ -80,6 +80,7 @@ struct CandidateScore {
     length_delta: usize,
 }
 
+#[derive(Default)]
 pub struct WidgetRegistry {
     registry_current: Mutex<HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>>,
     registry_snapshot: Mutex<HashMap<egui::ViewportId, Vec<WidgetRegistryEntry>>>,
@@ -90,23 +91,7 @@ pub struct WidgetRegistry {
     accessibility_pending: Mutex<HashMap<egui::ViewportId, Vec<(usize, egui::Id)>>>,
 }
 
-impl Default for WidgetRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl WidgetRegistry {
-    pub fn new() -> Self {
-        Self {
-            registry_current: Mutex::new(HashMap::new()),
-            registry_snapshot: Mutex::new(HashMap::new()),
-            duplicate_explicit_id_fault: Mutex::new(None),
-            container_stack: Mutex::new(HashMap::new()),
-            accessibility_pending: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub fn clear_registry(&self, viewport_id: egui::ViewportId) {
         let mut registry = lock(&self.registry_current, "registry lock");
         registry.insert(viewport_id, Vec::new());
@@ -1019,11 +1004,11 @@ mod tests {
 
     #[test]
     fn duplicate_explicit_id_error_stays_finite_when_parent_ids_cycle() {
-        let registry = WidgetRegistry::new();
+        let registry = WidgetRegistry::default();
         registry.record_widget(egui::ViewportId::ROOT, entry("dup", None));
         registry.record_widget(egui::ViewportId::ROOT, entry("dup", Some("dup")));
         registry.finalize_registry(egui::ViewportId::ROOT);
-        let viewports = ViewportState::new();
+        let viewports = ViewportState::default();
         let error = registry
             .duplicate_explicit_id_error(&viewports)
             .expect("duplicate id fault");
@@ -1044,9 +1029,9 @@ mod tests {
     fn resolve_errors_report_the_selectors_and_the_resolved_viewport() {
         let secondary = egui::ViewportId::from_hash_of("secondary");
         let secondary_id = viewport_id_to_string(secondary);
-        let viewports = ViewportState::new();
+        let viewports = ViewportState::default();
         viewports.remember_viewport_id(secondary);
-        let registry = WidgetRegistry::new();
+        let registry = WidgetRegistry::default();
         for _ in 0..2 {
             registry.record_widget(
                 egui::ViewportId::ROOT,

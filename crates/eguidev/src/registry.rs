@@ -121,10 +121,10 @@ impl Inner {
 
     pub fn new() -> Self {
         Self {
-            actions: ActionQueue::new(),
-            viewports: ViewportState::new(),
-            widgets: WidgetRegistry::new(),
-            overlays: OverlayManager::new(),
+            actions: ActionQueue::default(),
+            viewports: ViewportState::default(),
+            widgets: WidgetRegistry::default(),
+            overlays: OverlayManager::default(),
             contexts: Mutex::new(HashMap::new()),
             animation_baselines: Mutex::new(HashMap::new()),
             widget_value_updates: Mutex::new(HashMap::new()),
@@ -138,7 +138,7 @@ impl Inner {
             fixture_epoch: AtomicU64::new(0),
             last_action_frame: AtomicU64::new(0),
             verbose_logging: AtomicBool::new(false),
-            fixtures: FixtureManager::new(),
+            fixtures: FixtureManager::default(),
             diagnostics: DiagnosticRegistry::new(),
             idle: IdleRegistry::new(),
             runtime_hooks: Mutex::new(None),

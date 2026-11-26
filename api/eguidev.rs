@@ -2153,8 +2153,6 @@ pub mod internal {
 
             pub fn has_pending_commands(&self, viewport_id: ViewportId) -> bool;
 
-            pub fn new() -> Self;
-
             pub fn pending_action_count(&self, viewport_id: ViewportId) -> usize;
 
             pub fn pending_command_count(&self, viewport_id: ViewportId) -> usize;
@@ -2400,9 +2398,6 @@ pub mod internal {
             /// Return the fixture catalog sorted by name.
             pub fn fixtures_sorted(&self) -> Vec<FixtureSpec>;
 
-            /// Create a new fixture manager with no fixtures or handler.
-            pub fn new() -> Self;
-
             /// Replace the registered fixture catalog. `DevMcp::fixtures` validates
             /// each spec before it reaches the catalog.
             pub fn set_fixtures(&self, fixtures: Vec<FixtureSpec>);
@@ -2510,8 +2505,6 @@ pub mod internal {
             pub fn clear_transient_state(&self);
 
             pub fn clear_viewport_overlays(&self, viewport_id: ViewportId);
-
-            pub fn new() -> Self;
 
             pub fn overlay_debug_config(&self, viewport_id: ViewportId) -> OverlayDebugConfig;
 
@@ -2863,8 +2856,6 @@ pub mod internal {
 
             pub fn name_viewport(&self, viewport_id: ViewportId, name: String);
 
-            pub fn new() -> Self;
-
             pub fn output_snapshot(&self, viewport_id: ViewportId) -> Option<OutputSnapshot>;
 
             pub fn record_input_snapshot(
@@ -2924,8 +2915,6 @@ pub mod internal {
             ) -> Option<ToolError>;
 
             pub fn finalize_registry(&self, viewport_id: ViewportId);
-
-            pub fn new() -> Self;
 
             /// Pop the container scope `id`. A guard that drops out of order then
             /// still removes its own scope, and leaves the scopes of other guards.

@@ -99,28 +99,14 @@ pub enum FixtureExecution {
 
 /// Manages fixture metadata and dispatches fixture application through a
 /// registered handler.
+#[derive(Default)]
 pub struct FixtureManager {
     fixtures: Mutex<Vec<FixtureSpec>>,
     handler: Mutex<Option<FixtureHandler>>,
     pending_ui: Mutex<VecDeque<UiFixtureRequest>>,
 }
 
-impl Default for FixtureManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl FixtureManager {
-    /// Create a new fixture manager with no fixtures or handler.
-    pub fn new() -> Self {
-        Self {
-            fixtures: Mutex::new(Vec::new()),
-            handler: Mutex::new(None),
-            pending_ui: Mutex::new(VecDeque::new()),
-        }
-    }
-
     /// Replace the registered fixture catalog. `DevMcp::fixtures` validates
     /// each spec before it reaches the catalog.
     pub fn set_fixtures(&self, fixtures: Vec<FixtureSpec>) {
@@ -251,7 +237,7 @@ mod tests {
 
     #[test]
     fn ui_fixture_drains_queued_call() {
-        let manager = FixtureManager::new();
+        let manager = FixtureManager::default();
         let called = Arc::new(Mutex::new(None));
         let called_clone = Arc::clone(&called);
         manager
@@ -288,7 +274,7 @@ mod tests {
 
     #[test]
     fn timed_out_ui_fixture_is_not_applied_later() {
-        let manager = FixtureManager::new();
+        let manager = FixtureManager::default();
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_clone = Arc::clone(&calls);
         manager
@@ -316,7 +302,7 @@ mod tests {
 
     #[test]
     fn dropped_ui_fixture_does_not_delay_the_next_request() {
-        let manager = FixtureManager::new();
+        let manager = FixtureManager::default();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&calls);
         manager

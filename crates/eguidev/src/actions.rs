@@ -140,6 +140,7 @@ struct QueuedAction {
     last_frame: Option<u64>,
 }
 
+#[derive(Default)]
 pub struct ActionQueue {
     actions: Mutex<HashMap<egui::ViewportId, Vec<QueuedAction>>>,
     commands: Mutex<HashMap<egui::ViewportId, Vec<egui::ViewportCommand>>>,
@@ -175,22 +176,7 @@ struct PointerTraceEvent {
 /// Maximum recent pointer transitions kept for a failure bundle.
 const POINTER_TRACE_LIMIT: usize = 256;
 
-impl Default for ActionQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ActionQueue {
-    pub fn new() -> Self {
-        Self {
-            actions: Mutex::new(HashMap::new()),
-            commands: Mutex::new(HashMap::new()),
-            stats: Mutex::new(HashMap::new()),
-            pointer_state: Mutex::new(PointerState::default()),
-        }
-    }
-
     pub fn queue_action_with_timing(
         &self,
         viewport_id: egui::ViewportId,
@@ -438,7 +424,7 @@ mod tests {
 
     #[test]
     fn drain_actions_promotes_staged_actions_one_frame_at_a_time() {
-        let queue = ActionQueue::new();
+        let queue = ActionQueue::default();
         let viewport_id = egui::ViewportId::ROOT;
         // An active app has already drained input before a script queues work.
         assert!(queue.drain_actions(viewport_id, 9).is_empty());
@@ -492,7 +478,7 @@ mod tests {
 
     #[test]
     fn newly_staged_actions_do_not_inherit_an_older_actions_delay() {
-        let queue = ActionQueue::new();
+        let queue = ActionQueue::default();
         let viewport_id = egui::ViewportId::ROOT;
         queue.queue_action_with_timing(
             viewport_id,
@@ -522,7 +508,7 @@ mod tests {
 
     #[test]
     fn empty_drains_do_not_update_last_drain_frame() {
-        let queue = ActionQueue::new();
+        let queue = ActionQueue::default();
         let viewport_id = egui::ViewportId::ROOT;
 
         assert!(queue.drain_actions(viewport_id, 10).is_empty());
@@ -544,7 +530,7 @@ mod tests {
 
     #[test]
     fn drain_actions_promotes_once_per_frame_number() {
-        let queue = ActionQueue::new();
+        let queue = ActionQueue::default();
         let viewport_id = egui::ViewportId::ROOT;
         queue.queue_action_with_timing(
             viewport_id,

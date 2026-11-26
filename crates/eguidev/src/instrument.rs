@@ -282,19 +282,10 @@ pub fn container<R>(
 }
 
 /// Scroll area state tracker with one-shot offset jumps.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScrollAreaState {
     offset: egui::Vec2,
     pending_offset: Option<egui::Vec2>,
-}
-
-impl Default for ScrollAreaState {
-    fn default() -> Self {
-        Self {
-            offset: egui::Vec2::ZERO,
-            pending_offset: None,
-        }
-    }
 }
 
 impl ScrollAreaState {

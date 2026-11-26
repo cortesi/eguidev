@@ -96,25 +96,13 @@ pub fn parse_css_hex(value: &str, require_hash: bool) -> Option<Color32> {
     Some(Color32::from_rgba_unmultiplied(r, g, b, a))
 }
 
+#[derive(Default)]
 pub struct OverlayManager {
     overlays: Mutex<HashMap<(ViewportId, String), OverlayEntry>>,
     overlay_debug: Mutex<HashMap<ViewportId, OverlayDebugConfig>>,
 }
 
-impl Default for OverlayManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl OverlayManager {
-    pub fn new() -> Self {
-        Self {
-            overlays: Mutex::new(HashMap::new()),
-            overlay_debug: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub fn overlay_debug_config(&self, viewport_id: ViewportId) -> OverlayDebugConfig {
         lock(&self.overlay_debug, "overlay debug lock")
             .get(&viewport_id)

@@ -86,6 +86,7 @@ pub struct PlatformViewportState {
     pub os_title_visible: Option<bool>,
 }
 
+#[derive(Default)]
 pub struct ViewportState {
     viewports_snapshot: Mutex<Vec<ViewportSnapshot>>,
     viewport_lookup: Mutex<HashMap<String, egui::ViewportId>>,
@@ -98,27 +99,7 @@ pub struct ViewportState {
     frame_health: Mutex<HashMap<egui::ViewportId, FrameHealth>>,
 }
 
-impl Default for ViewportState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ViewportState {
-    pub fn new() -> Self {
-        Self {
-            viewports_snapshot: Mutex::new(Vec::new()),
-            viewport_lookup: Mutex::new(HashMap::new()),
-            viewport_names: Mutex::new(HashMap::new()),
-            viewport_name_errors: Mutex::new(HashMap::new()),
-            live_viewports: Mutex::new(None),
-            input_snapshot: Mutex::new(HashMap::new()),
-            output_snapshot: Mutex::new(HashMap::new()),
-            capture_snapshot: Mutex::new(HashMap::new()),
-            frame_health: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub fn update_viewports(&self, ctx: &Context) {
         let (viewports, pixels_per_point, focused) =
             ctx.input(|i| (i.raw.viewports.clone(), i.pixels_per_point(), i.focused));
@@ -528,7 +509,7 @@ mod tests {
 
     #[test]
     fn update_viewports_retains_secondary_ids_but_prunes_closed_snapshots() {
-        let state = ViewportState::new();
+        let state = ViewportState::default();
         let ctx = Context::default();
         let secondary = egui::ViewportId::from_hash_of("secondary");
 
@@ -619,7 +600,7 @@ mod tests {
 
     #[test]
     fn update_viewports_records_outer_pos_from_outer_rect() {
-        let state = ViewportState::new();
+        let state = ViewportState::default();
         let ctx = Context::default();
         let mut raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -650,7 +631,7 @@ mod tests {
 
     #[test]
     fn record_input_snapshot_updates_frame_health() {
-        let state = ViewportState::new();
+        let state = ViewportState::default();
         let viewport_id = egui::ViewportId::ROOT;
         state.record_input_snapshot(
             viewport_id,
@@ -670,7 +651,7 @@ mod tests {
 
     #[test]
     fn record_output_snapshot_keeps_the_latest_cursor() {
-        let state = ViewportState::new();
+        let state = ViewportState::default();
         let viewport_id = egui::ViewportId::ROOT;
         state.record_output_snapshot(
             viewport_id,
@@ -690,7 +671,7 @@ mod tests {
 
     #[test]
     fn merge_platform_state_matches_viewport_titles() {
-        let state = ViewportState::new();
+        let state = ViewportState::default();
         let ctx = Context::default();
         let mut raw_input = egui::RawInput {
             viewport_id: egui::ViewportId::ROOT,
@@ -726,7 +707,7 @@ mod tests {
 
     #[test]
     fn merge_platform_state_does_not_apply_single_state_to_many_viewports() {
-        let state = ViewportState::new();
+        let state = ViewportState::default();
         let ctx = Context::default();
         let child = egui::ViewportId::from_hash_of("child");
         let mut raw_input = egui::RawInput {
