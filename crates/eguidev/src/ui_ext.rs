@@ -930,17 +930,15 @@ impl DevUiExt for egui::Ui {
         if let Some(updated) = take_bool_override(&inner, self, &id) {
             *open = updated;
         }
-        let mut open_state = *open;
         let body_tag = format!("{id}.body");
         let (heading, label) = widget_text_parts(heading);
         let output = egui::CollapsingHeader::new(heading)
             .id_salt(id.as_str())
-            .open(Some(open_state))
+            .open(Some(*open))
             .show(self, |ui| container(ui, body_tag, add_contents));
         if output.header_response.clicked() {
-            open_state = !open_state;
+            *open = !*open;
         }
-        *open = open_state;
         record_widget_with_layout(
             &inner,
             self,
