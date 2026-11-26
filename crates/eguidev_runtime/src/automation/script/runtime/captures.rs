@@ -9,7 +9,7 @@ impl ScriptRuntime {
     pub(in super::super) fn capture(&self, _pos: ScriptPosition) -> ScriptResult<Value> {
         let snapshot = self.capture_snapshot();
         let frame = snapshot.frame;
-        let mut captures = self.captures.lock().unwrap_or_else(|p| p.into_inner());
+        let mut captures = lock(&self.captures, "script captures lock");
         let id = captures.last_key_value().map_or(1, |(id, _)| id + 1);
         captures.insert(id, snapshot);
         Ok(serde_json::json!({ "frame": frame, "__capture_id": id }))
@@ -29,7 +29,7 @@ impl ScriptRuntime {
             .ok_or_else(|| self.type_error(pos, "Capture:diff expected a capture table"))?;
         let options = self.diff_options(pos, options)?;
         let after = self.capture_snapshot();
-        let captures = self.captures.lock().unwrap_or_else(|p| p.into_inner());
+        let captures = lock(&self.captures, "script captures lock");
         let before = captures.get(&id).ok_or_else(|| {
             self.type_error(pos, "Capture:diff expected a capture of this evaluation")
         })?;
@@ -38,10 +38,7 @@ impl ScriptRuntime {
 
     /// Drop the snapshots of the evaluation.
     pub(in super::super) fn drop_captures(&self) {
-        self.captures
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        lock(&self.captures, "script captures lock").clear();
     }
 
     /// Read the optional screenshot encoding options.

@@ -33,7 +33,7 @@ use crate::{
         OverlayDebugConfig, OverlayDebugMode, OverlayDebugOptions, OverlayEntry, parse_color,
         rect_intersection,
     },
-    registry::{Inner, viewport_id_to_string},
+    registry::{Inner, lock, viewport_id_to_string},
     runtime::Runtime,
     screenshots::{ScreenshotKind, ScreenshotState},
     tree::collect_subtree,

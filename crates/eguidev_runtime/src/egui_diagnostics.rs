@@ -9,7 +9,7 @@ use egui::{Color32, FullOutput, Shape, StrokeKind};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
-use crate::Rect;
+use crate::{Rect, registry::lock};
 
 const JOURNAL_CAPACITY: usize = 1_024;
 const RECT_CHANGED_MESSAGE: &str = "Widget rectangle changed identity between completed passes";
@@ -143,10 +143,7 @@ impl EguiDiagnosticJournal {
 
     pub fn record_output(&self, viewport_id: String, frame: u64, output: &FullOutput) {
         let diagnostics = collect_output_diagnostics(&viewport_id, frame, output);
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = lock(&self.state, "egui diagnostics lock");
         for diagnostic in diagnostics {
             let sequence = state.next_entry_sequence;
             state.next_entry_sequence += 1;
@@ -168,16 +165,11 @@ impl EguiDiagnosticJournal {
     }
 
     pub fn tail_sequence(&self) -> u64 {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .next_entry_sequence
+        lock(&self.state, "egui diagnostics lock").next_entry_sequence
     }
 
     pub fn output_completion(&self, viewport_id: &str) -> Option<OutputCompletion> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lock(&self.state, "egui diagnostics lock")
             .completions
             .get(viewport_id)
             .copied()
@@ -193,10 +185,7 @@ impl EguiDiagnosticJournal {
         dismissed: &BTreeSet<u64>,
         viewport_id: Option<&str>,
     ) -> DiagnosticSelection {
-        let state = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = lock(&self.state, "egui diagnostics lock");
         let retained_start = state
             .entries
             .front()

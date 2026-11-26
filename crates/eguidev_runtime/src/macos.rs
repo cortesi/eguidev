@@ -56,6 +56,7 @@ use tokio::{sync::oneshot, time::timeout};
 
 use crate::{
     presentation::{PresentationSession, PresentationTransition},
+    registry::lock,
     viewports::PlatformViewportState,
 };
 
@@ -100,9 +101,7 @@ pub fn platform_window_states() -> Vec<PlatformViewportState> {
     let Some(states) = WINDOW_STATES.get() else {
         return Vec::new();
     };
-    states
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock(states, "window states lock")
         .values()
         .cloned()
         .collect()
@@ -123,9 +122,7 @@ fn recorded_window_number_for_title(title: &str) -> Result<u32, String> {
         return Err("no macOS window state has been recorded yet".to_string());
     };
     let live_window_numbers = current_process_window_numbers();
-    let mut states = states
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut states = lock(states, "window states lock");
     if let Ok(live_window_numbers) = &live_window_numbers {
         states.retain(|_, state| {
             state
@@ -289,10 +286,7 @@ fn record_window_state(window: *mut AnyObject, real_state: usize) {
         os_title_visible: Some(unsafe { window_title_is_visible(window) }),
     };
     let states = WINDOW_STATES.get_or_init(|| Mutex::new(HashMap::new()));
-    states
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(window as usize, state);
+    lock(states, "window states lock").insert(window as usize, state);
 }
 
 unsafe fn window_is_minimized(window: *mut AnyObject) -> bool {
@@ -351,9 +345,7 @@ pub async fn configure_session(
     run_on_main(move || {
         let observed_policy = activation_policy();
         let (previous, transition) = {
-            let mut sessions = presentation_session()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut sessions = lock(presentation_session(), "presentation session lock");
             let previous = sessions.clone();
             let transition = sessions.configure(
                 session_id,
@@ -364,9 +356,7 @@ pub async fn configure_session(
             (previous, transition)
         };
         if let Err(error) = apply_transition(transition) {
-            *presentation_session()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous;
+            *lock(presentation_session(), "presentation session lock") = previous;
             return Err(error);
         }
         SPOOF_OCCLUSION.store(true, Ordering::Release);
@@ -381,15 +371,10 @@ pub async fn disconnect_session(session_id: u64) -> Result<(), String> {
     run_on_main(move || {
         let observed_policy = activation_policy();
         let transition = {
-            let mut sessions = presentation_session()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut sessions = lock(presentation_session(), "presentation session lock");
             sessions.disconnect(session_id, observed_policy, ACTIVATION_POLICY_ACCESSORY)
         };
-        let active = presentation_session()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_active();
+        let active = lock(presentation_session(), "presentation session lock").is_active();
         SPOOF_OCCLUSION.store(active, Ordering::Release);
         let apply_error = transition.and_then(|transition| apply_transition(transition).err());
         reevaluate_live_windows();
@@ -422,10 +407,7 @@ pub fn enable_background_launch_guard() {
 /// Return whether the activation guard currently applies.
 fn activation_guard_enabled() -> bool {
     BACKGROUND_LAUNCH.load(Ordering::Acquire)
-        && presentation_session()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .requested()
+        && lock(presentation_session(), "presentation session lock").requested()
             == Presentation::Background
 }
 
@@ -631,9 +613,7 @@ pub fn reassert_background_policy() -> Option<PolicyConflict> {
         hand_back_activation();
     }
     let observed_policy = activation_policy();
-    let mut session = presentation_session()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut session = lock(presentation_session(), "presentation session lock");
     if !session.should_reassert(observed_policy, ACTIVATION_POLICY_ACCESSORY) {
         return None;
     }

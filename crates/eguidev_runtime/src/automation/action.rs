@@ -1,7 +1,7 @@
 //! Typed action request validation and translation.
 
 use std::sync::{
-    Mutex, PoisonError,
+    Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -435,7 +435,7 @@ impl DevMcpServer {
                 self.inner.request_repaint_all();
                 let fresh = resolve_widget(&self.inner, viewport_name, target)?;
                 let pos = hover_position(&fresh, position)?;
-                *last_pos.lock().unwrap_or_else(PoisonError::into_inner) = pos;
+                *lock(&last_pos, "hover position lock") = pos;
                 let coverer =
                     super::query::covering_widget_id(&self.inner, viewport_id, pos, &target_id);
                 let pointer_inside = self
@@ -446,7 +446,7 @@ impl DevMcpServer {
                     .is_some_and(|pointer| point_in_rect(pointer, fresh.interact_rect));
                 let arrived = coverer.is_none() && pointer_inside;
                 if !arrived {
-                    let mut issued = issued_pos.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut issued = lock(&issued_pos, "hover issued position lock");
                     let moved = (issued.x - pos.x).abs() > f32::EPSILON
                         || (issued.y - pos.y).abs() > f32::EPSILON;
                     if moved || !reissued.swap(true, Ordering::Relaxed) {
@@ -460,7 +460,7 @@ impl DevMcpServer {
         )
         .await?;
         if !arrived {
-            let pos = *last_pos.lock().unwrap_or_else(PoisonError::into_inner);
+            let pos = *lock(&last_pos, "hover position lock");
             log_pointer_cover(&self.inner, viewport_id, pos, &target_id);
             let detail =
                 coverer.map_or_else(String::new, |coverer| format!(" and {coverer:?} covers it"));

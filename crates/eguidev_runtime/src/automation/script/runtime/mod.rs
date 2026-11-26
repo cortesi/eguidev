@@ -45,7 +45,7 @@ use crate::{
     diagnostics::DiagnosticExecution,
     dump::{DumpOptions, build_tree_dump, dump_text},
     egui_diagnostics::{DiagnosticSelection, EguiDiagnosticBatch},
-    registry::{Inner, viewport_id_to_string},
+    registry::{Inner, lock, viewport_id_to_string},
     runtime::Runtime,
     screenshots::ScreenshotKind,
     types::{
@@ -209,10 +209,7 @@ impl ScriptRuntime {
     }
 
     pub(super) fn record_targeted_viewport(&self, viewport_id: impl Into<String>) {
-        self.targeted_viewports
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(viewport_id.into());
+        lock(&self.targeted_viewports, "targeted viewports lock").insert(viewport_id.into());
     }
 
     fn record_viewport_selector(&self, selector: Option<String>) {
@@ -230,17 +227,14 @@ impl ScriptRuntime {
     }
 
     fn targeted_viewports(&self) -> BTreeSet<String> {
-        self.targeted_viewports
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        lock(&self.targeted_viewports, "targeted viewports lock").clone()
     }
 
     fn diagnostic_selection(&self, viewport_id: Option<&str>) -> DiagnosticSelection {
-        let dismissed = self
-            .dismissed_egui_diagnostics
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dismissed = lock(
+            &self.dismissed_egui_diagnostics,
+            "dismissed diagnostics lock",
+        );
         self.server.runtime.egui_diagnostics().select(
             self.egui_diagnostic_start,
             &dismissed,
@@ -249,10 +243,11 @@ impl ScriptRuntime {
     }
 
     fn dismiss_diagnostic_sequences(&self, sequences: impl IntoIterator<Item = u64>) {
-        self.dismissed_egui_diagnostics
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(sequences);
+        lock(
+            &self.dismissed_egui_diagnostics,
+            "dismissed diagnostics lock",
+        )
+        .extend(sequences);
     }
 
     fn diagnostic_barrier_error(&self, pending: &[String]) -> ScriptErrorInfo {
@@ -419,23 +414,18 @@ impl ScriptRuntime {
         if let Some(timeout_ms) = parse_optional_u64(options, "timeout_ms")
             .map_err(|error| self.type_error(pos, error.message))?
         {
-            *self
-                .config_timeout_ms
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = Some(timeout_ms);
+            *lock(&self.config_timeout_ms, "script timeout lock") = Some(timeout_ms);
         }
         if let Some(poll_interval_ms) = parse_optional_u64(options, "poll_interval_ms")
             .map_err(|error| self.type_error(pos, error.message))?
         {
-            *self
-                .config_poll_interval_ms
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = Some(poll_interval_ms);
+            *lock(&self.config_poll_interval_ms, "script poll interval lock") =
+                Some(poll_interval_ms);
         }
         if let Some(settle) = parse_optional_bool(options, "settle")
             .map_err(|error| self.type_error(pos, error.message))?
         {
-            *self.config_settle.lock().unwrap_or_else(|p| p.into_inner()) = Some(settle);
+            *lock(&self.config_settle, "script settle lock") = Some(settle);
         }
         if let Some(animations) = parse_optional_bool(options, "animations")
             .map_err(|error| self.type_error(pos, error.message))?
@@ -448,60 +438,36 @@ impl ScriptRuntime {
     }
 
     fn configured_timeout_ms(&self) -> Option<u64> {
-        *self
-            .config_timeout_ms
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        *lock(&self.config_timeout_ms, "script timeout lock")
     }
 
     fn configured_poll_interval_ms(&self) -> Option<u64> {
-        *self
-            .config_poll_interval_ms
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        *lock(&self.config_poll_interval_ms, "script poll interval lock")
     }
 
     fn configured_settle(&self) -> bool {
-        self.config_settle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .unwrap_or(true)
+        lock(&self.config_settle, "script settle lock").unwrap_or(true)
     }
 
     pub(super) fn log(&self, line: impl Into<String>) {
-        let mut logs = self
-            .logs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut logs = lock(&self.logs, "script logs lock");
         logs.push(line.into());
     }
 
     pub(super) fn logs(&self) -> Vec<String> {
-        self.logs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        lock(&self.logs, "script logs lock").clone()
     }
 
     pub(super) fn assertions(&self) -> Vec<ScriptAssertion> {
-        self.assertions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        lock(&self.assertions, "script assertions lock").clone()
     }
 
     pub(super) fn fixture_applications(&self) -> Vec<FixtureApplication> {
-        self.fixtures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        lock(&self.fixtures, "script fixtures lock").clone()
     }
 
     fn record_fixture(&self, name: String, params: BTreeMap<String, WidgetValue>) {
-        let mut fixtures = self
-            .fixtures
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut fixtures = lock(&self.fixtures, "script fixtures lock");
         fixtures.push(FixtureApplication { name, params });
     }
 
@@ -512,18 +478,12 @@ impl ScriptRuntime {
             message,
             location,
         };
-        let mut assertions = self
-            .assertions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut assertions = lock(&self.assertions, "script assertions lock");
         assertions.push(assertion);
     }
 
     pub(super) fn images(&self) -> Vec<ImageCapture> {
-        self.images
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+        lock(&self.images, "script images lock").clone()
     }
 
     fn next_image_id(&self) -> String {
@@ -532,10 +492,7 @@ impl ScriptRuntime {
     }
 
     fn store_image(&self, image: ImageCapture) {
-        let mut images = self
-            .images
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut images = lock(&self.images, "script images lock");
         images.push(image);
     }
 
