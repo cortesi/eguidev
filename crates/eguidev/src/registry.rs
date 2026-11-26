@@ -204,10 +204,7 @@ impl Inner {
             }
             return;
         }
-        self.actions.clear_all();
-        self.clear_widget_value_updates();
-        lock(&self.widget_value_consumers, "widget value consumers lock").clear();
-        lock(&self.scroll_overrides, "scroll overrides lock").clear();
+        self.clear_all();
         self.overlays.clear_transient_state();
         let contexts = {
             let contexts = lock(&self.contexts, "contexts lock");

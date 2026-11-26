@@ -45,7 +45,6 @@ impl DevMcpServer {
             params,
         };
 
-        self.inner.clear_all();
         self.inner.dismiss_transient_ui(None);
         let result = match self.inner.start_fixture(call) {
             FixtureExecution::Ready(result) => result,
