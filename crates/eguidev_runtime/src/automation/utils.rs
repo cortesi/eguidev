@@ -569,39 +569,20 @@ where
     let runtime =
         Runtime::from_inner(inner).expect("runtime wait helpers require an attached runtime");
     let observation_start = WaitObservationStart::new(inner, target_viewport_id);
+    let past_deadline = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
 
-    loop {
-        if let Some(dl) = deadline
-            && Instant::now() >= dl
-        {
+    'wait: loop {
+        if past_deadline() {
+            break;
+        }
+        let (matched, state) = condition().await?;
+        if matched {
             let elapsed_ms = start.elapsed().as_millis() as u64;
-            return Ok((
-                false,
-                last_state,
-                elapsed_ms,
-                observation_start.finish(inner),
-            ));
+            return Ok((true, state, elapsed_ms, observation_start.finish(inner)));
         }
-
-        match condition().await {
-            Ok((true, state)) => {
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-                return Ok((true, state, elapsed_ms, observation_start.finish(inner)));
-            }
-            Ok((false, state)) => {
-                last_state = state;
-            }
-            Err(e) => return Err(e),
-        }
-
-        let elapsed_ms = start.elapsed().as_millis() as u64;
-        if elapsed_ms >= timeout_ms {
-            return Ok((
-                false,
-                last_state,
-                elapsed_ms,
-                observation_start.finish(inner),
-            ));
+        last_state = state;
+        if start.elapsed().as_millis() as u64 >= timeout_ms {
+            break;
         }
 
         // Keep requesting repaints while also allowing plain state changes to
@@ -611,23 +592,8 @@ where
             .unwrap_or_else(Instant::now);
         while Instant::now() < poll_deadline {
             let elapsed_ms = start.elapsed().as_millis() as u64;
-            if elapsed_ms >= timeout_ms {
-                return Ok((
-                    false,
-                    last_state,
-                    elapsed_ms,
-                    observation_start.finish(inner),
-                ));
-            }
-            if let Some(dl) = deadline
-                && Instant::now() >= dl
-            {
-                return Ok((
-                    false,
-                    last_state,
-                    elapsed_ms,
-                    observation_start.finish(inner),
-                ));
+            if elapsed_ms >= timeout_ms || past_deadline() {
+                break 'wait;
             }
 
             let mut notified = pin!(runtime.frame_notify().notified());
@@ -646,6 +612,13 @@ where
             }
         }
     }
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    Ok((
+        false,
+        last_state,
+        elapsed_ms,
+        observation_start.finish(inner),
+    ))
 }
 
 pub fn validate_widget_value(
