@@ -495,11 +495,6 @@ viewportMethods.__index = viewportMethods
 viewportMethods.__eq = function(left: Viewport, right: Viewport): boolean return left.id == right.id end
 viewportMethods.__tostring = function(value: Viewport): string return `Viewport({value.id})` end
 
-local function freezeState(value: any?): any?
-    if value == nil then return nil end
-    return freezeOwned(value)
-end
-
 local function waitLoop(predicate: () -> boolean, options: WaitOptions?)
     local resolved = waitOptions(options)
     local timeoutMs = resolved.timeout_ms
@@ -518,7 +513,7 @@ local function waitLoop(predicate: () -> boolean, options: WaitOptions?)
 end
 
 function widgetMethods.state(self: Widget): WidgetState?
-    return freezeState(kernel.query.widget_state(self)) :: WidgetState?
+    return freezeOwned(kernel.query.widget_state(self)) :: WidgetState?
 end
 
 local function scopedWidgetTarget(self: Widget): any
@@ -569,7 +564,7 @@ function widgetMethods.wait(
         then "to match the predicate"
         else widgetConditionDescription(condition :: WidgetCondition)
     local state = kernel.wait.widget_wait(scopedWidgetTarget(self), function(rawState: any?): boolean
-        local currentState = freezeState(rawState) :: WidgetState?
+        local currentState = freezeOwned(rawState) :: WidgetState?
         if type(condition) == "function" then
             return (condition :: WidgetPredicate)(currentState)
         end
@@ -591,11 +586,7 @@ function widgetMethods.wait(
         end
         return true
     end, waitOptions(options), description)
-    return freezeState(state) :: WidgetState?
-end
-
-local function recordExpectation(passed: boolean, message: string)
-    kernel.record.assertion(passed, message)
+    return freezeOwned(state) :: WidgetState?
 end
 
 function widgetMethods.expect(
@@ -615,7 +606,7 @@ function widgetMethods.expect(
             { kind = "widget", id = self.id },
             { cause = stateOrError, expected = wanted }
         )
-        recordExpectation(false, `Widget({self.id}) expectation failed`)
+        kernel.record.assertion(false, `Widget({self.id}) expectation failed`)
         error(failure, 0)
     end
     local state = stateOrError :: WidgetState?
@@ -682,7 +673,7 @@ function widgetMethods.expect(
             passed = count >= minimumColors
         end
     end
-    recordExpectation(
+    kernel.record.assertion(
         passed,
         if passed then `Widget({self.id}) expectation` else `Widget({self.id}) expectation failed`
     )
@@ -830,7 +821,7 @@ function widgetMethods.clear_debug_overlay(self: Widget)
 end
 
 function viewportMethods.state(self: Viewport): ViewportState?
-    return freezeState(kernel.query.viewport_state(self)) :: ViewportState?
+    return freezeOwned(kernel.query.viewport_state(self)) :: ViewportState?
 end
 
 function viewportMethods.wait(
@@ -842,13 +833,13 @@ function viewportMethods.wait(
         validateViewportCondition(condition :: ViewportCondition)
     end
     local state = kernel.wait.viewport_wait(self, function(rawState: any?): boolean
-        local currentState = freezeState(rawState) :: ViewportState?
+        local currentState = freezeOwned(rawState) :: ViewportState?
         if type(condition) == "function" then
             return (condition :: ViewportPredicate)(currentState)
         end
         return viewportConditionMatches(currentState, condition :: ViewportCondition)
     end, waitOptions(options))
-    return freezeState(state) :: ViewportState?
+    return freezeOwned(state) :: ViewportState?
 end
 
 function viewportMethods.expect(
@@ -869,7 +860,7 @@ function viewportMethods.expect(
             { cause = stateOrError, expected = wanted }
         )
         else nil
-    recordExpectation(
+    kernel.record.assertion(
         ok,
         if ok then `Viewport({self.id}) expectation` else `Viewport({self.id}) expectation failed`
     )
