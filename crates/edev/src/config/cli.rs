@@ -467,9 +467,9 @@ pub(super) fn split_cli_args_and_app_argv<S: AsRef<OsStr>>(
 }
 
 pub(super) fn parse_script_arg_cli(raw: &str) -> Result<(String, ScriptArgValue), String> {
-    parse_script_arg_flag(raw).map_err(|error| error.to_string())
+    parse_typed_key_value_flag(raw, "--arg")
 }
 
 pub(super) fn parse_fixture_param_cli(raw: &str) -> Result<(String, ScriptArgValue), String> {
-    parse_fixture_param_flag(raw).map_err(|error| error.to_string())
+    parse_typed_key_value_flag(raw, "--param")
 }

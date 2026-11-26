@@ -363,27 +363,17 @@ pub(super) fn absolutize_path(path: &Path, base_dir: &Path) -> PathBuf {
     }
 }
 
-pub(super) fn parse_script_arg_flag(raw: &str) -> Result<(String, ScriptArgValue), EdevError> {
-    parse_typed_key_value_flag(raw, "--arg")
-}
-
-pub(super) fn parse_fixture_param_flag(raw: &str) -> Result<(String, ScriptArgValue), EdevError> {
-    parse_typed_key_value_flag(raw, "--param")
-}
-
+/// Parse a `KEY=VALUE` flag. The error is a bare message: clap wraps it, and
+/// `EdevError::InvalidArgs` then adds its prefix once.
 pub(super) fn parse_typed_key_value_flag(
     raw: &str,
     flag_name: &'static str,
-) -> Result<(String, ScriptArgValue), EdevError> {
+) -> Result<(String, ScriptArgValue), String> {
     let Some((key, raw_value)) = raw.split_once('=') else {
-        return Err(EdevError::InvalidArgs(format!(
-            "{flag_name} requires KEY=VALUE"
-        )));
+        return Err(format!("{flag_name} requires KEY=VALUE"));
     };
     if key.is_empty() {
-        return Err(EdevError::InvalidArgs(format!(
-            "{flag_name} requires a non-empty key"
-        )));
+        return Err(format!("{flag_name} requires a non-empty key"));
     }
     Ok((key.to_string(), parse_script_arg_value(raw_value)))
 }

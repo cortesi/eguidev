@@ -215,6 +215,16 @@ fn parse_smoke_command_parses_typed_args() {
 }
 
 #[test]
+fn malformed_arg_names_its_flag_under_one_prefix() {
+    let current_dir = env::current_dir().unwrap();
+    let error = EdevCommand::parse_args_in_dir(&os_args(&["smoke", "--arg", "mode"]), &current_dir)
+        .expect_err("an arg without a value should fail");
+    let message = error.to_string();
+    assert!(message.contains("--arg requires KEY=VALUE"), "{message}");
+    assert_eq!(message.matches("invalid arguments").count(), 1, "{message}");
+}
+
+#[test]
 fn parse_smoke_command_accepts_authoring_flags() {
     let args = os_args(&[
         "smoke", "--list", "--json", "--only", "*layout*", "--only", "nested/*", "--repeat", "3",
