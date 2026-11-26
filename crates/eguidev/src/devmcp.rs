@@ -486,7 +486,12 @@ impl DevMcp {
         let outermost = inner.enter_viewport_frame(viewport_id);
         let pushed = AtomicBool::new(false);
         swallow_panic("begin_frame", || {
-            inner.begin_frame(viewport_id);
+            // A nested guard must not stamp the frame again: a fixture epoch
+            // that began after the outer begin would let this frame prove
+            // readiness for state that it partly rendered before.
+            if outermost {
+                inner.begin_frame(viewport_id);
+            }
             inner.capture_context(viewport_id, ctx);
             if outermost && viewport_id == egui::ViewportId::ROOT {
                 inner.fixtures.drain_ui(ctx);
@@ -1238,6 +1243,33 @@ mod inactive_tests {
         assert!(
             ctx.plugin_opt::<AutomationPlugin>().is_some(),
             "second frame on the same context should reuse the installed plugin"
+        );
+    }
+
+    #[test]
+    fn nested_frame_guard_keeps_the_fixture_epoch_of_the_outer_frame() {
+        let inner = Arc::new(Inner::new());
+        let hooks: Arc<dyn RuntimeHooks> = Arc::new(CountingRuntimeHooks::default());
+        let devmcp = DevMcp::new().activate_runtime(Arc::clone(&inner), hooks);
+        let ctx = Context::default();
+        let epoch_at_begin = inner.fixture_epoch();
+
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            let _outer = FrameGuard::new(&devmcp, &ctx);
+            // A fixture handler returns while this frame is already running.
+            inner.begin_fixture_epoch();
+            let _inner = FrameGuard::new(&devmcp, &ctx);
+        })
+        .drop_without_applying_deltas();
+
+        let capture = inner
+            .viewports
+            .capture_snapshot(egui::ViewportId::ROOT)
+            .expect("frame capture");
+        assert_eq!(
+            capture.fixture_epoch, epoch_at_begin,
+            "a frame that began before the handler returned cannot prove readiness"
         );
     }
 
