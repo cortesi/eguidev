@@ -854,6 +854,7 @@ mod tests {
     use crate::{
         DevMcp, EguiDiagnostic, EguiDiagnosticBatch, EguiDiagnosticKind, EguiDiagnosticSeverity,
         ScriptArgValue, ScriptArgs, ScriptEvalOutcome,
+        egui_diagnostics::id_clash_output,
         runtime::{self, Runtime},
         types::{Pos2, Rect},
     };
@@ -932,30 +933,6 @@ mod tests {
         }
     }
 
-    fn real_id_clash_output() -> egui::FullOutput {
-        let ctx = egui::Context::default();
-        ctx.options_mut(|options| options.warn_on_id_clash = true);
-        // egui only carries rectangle-identity warnings in debug builds, so
-        // this isolation is both unavailable and unnecessary in release.
-        #[cfg(debug_assertions)]
-        ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let id = egui::Id::unique("smoke duplicate");
-            ui.ctx().check_for_id_clash(
-                id,
-                egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)),
-                "smoke widget",
-            );
-            ui.ctx().check_for_id_clash(
-                id,
-                egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
-                "smoke widget",
-            );
-        });
-        output.textures_delta.clear();
-        output
-    }
-
     fn diagnostic_fixture_devmcp() -> DevMcp {
         let devmcp = runtime::attach_for_tests(DevMcp::new());
         let runtime = Runtime::for_devmcp(&devmcp).expect("attached runtime");
@@ -970,7 +947,7 @@ mod tests {
                 runtime.egui_diagnostics().record_output(
                     "root".to_string(),
                     frame.fetch_add(1, Ordering::Relaxed),
-                    &real_id_clash_output(),
+                    &id_clash_output(),
                 );
                 Ok(FixtureResponse::new())
             })

@@ -273,33 +273,35 @@ fn diagnostic_from_shape(viewport_id: &str, frame: u64, shape: &Shape) -> Option
     }
 }
 
+/// The output of one egui pass in which two widgets claim one ID.
+#[cfg(test)]
+pub fn id_clash_output() -> FullOutput {
+    let ctx = egui::Context::default();
+    ctx.options_mut(|options| options.warn_on_id_clash = true);
+    // egui only carries rectangle-identity warnings in debug builds, so
+    // this isolation is both unavailable and unnecessary in release.
+    #[cfg(debug_assertions)]
+    ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let id = egui::Id::unique("duplicate");
+        ui.ctx().check_for_id_clash(
+            id,
+            egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)),
+            "test widget",
+        );
+        ui.ctx().check_for_id_clash(
+            id,
+            egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
+            "test widget",
+        );
+    });
+    output.textures_delta.clear();
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn id_clash_output() -> FullOutput {
-        let ctx = egui::Context::default();
-        ctx.options_mut(|options| options.warn_on_id_clash = true);
-        // egui only carries rectangle-identity warnings in debug builds, so
-        // this isolation is both unavailable and unnecessary in release.
-        #[cfg(debug_assertions)]
-        ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let id = egui::Id::unique("duplicate");
-            ui.ctx().check_for_id_clash(
-                id,
-                egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(20.0, 20.0)),
-                "test widget",
-            );
-            ui.ctx().check_for_id_clash(
-                id,
-                egui::Rect::from_min_size(egui::pos2(60.0, 10.0), egui::vec2(20.0, 20.0)),
-                "test widget",
-            );
-        });
-        output.textures_delta.clear();
-        output
-    }
 
     /// Rectangle-identity warnings exist only in debug builds of egui, so this
     /// output cannot be produced at all in a release build.
