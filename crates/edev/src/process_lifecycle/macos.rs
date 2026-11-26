@@ -201,7 +201,7 @@ pub(super) async fn monitor_supervisor_exit(
     record_path: PathBuf,
 ) -> io::Result<ExitStatus> {
     let status = child.wait().await?;
-    let Some(record) = read_app_record_for_path(&record_path)? else {
+    let Some(record) = read_app_record(&record_path)? else {
         return Ok(status);
     };
     recover_after_supervisor_exit(&record_path, &record).await?;

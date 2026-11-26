@@ -31,7 +31,7 @@ use tokio::{
 use super::{LaunchConfig, LogState, instance_registry::AppLaunch};
 #[cfg(target_os = "macos")]
 use super::{
-    instance_registry::{self, AppRecord, app_launch_for, read_app_record_for_path},
+    instance_registry::{self, AppRecord, app_launch_for, read_app_record},
     recording,
 };
 #[cfg(target_os = "macos")]

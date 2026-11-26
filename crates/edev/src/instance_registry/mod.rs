@@ -238,17 +238,15 @@ pub fn remove_launcher_record_if_matches(
     path: &Path,
     expected: &AppRecord,
 ) -> Result<bool, io::Error> {
-    let Some(actual) = read_json::<LauncherMetadata>(path)? else {
-        return Ok(false);
-    };
-    if actual.launcher_pid != expected.launcher_pid
-        || actual.launcher_token != expected.launcher_token
-        || actual.working_dir != expected.working_dir
-    {
-        return Ok(false);
-    }
-    remove_file_if_exists(path)?;
-    Ok(true)
+    remove_launcher_metadata_if_matches(
+        path,
+        &LauncherMetadata {
+            launcher_pid: expected.launcher_pid,
+            launcher_start_time: expected.launcher_start_time,
+            launcher_token: expected.launcher_token.clone(),
+            working_dir: expected.working_dir.clone(),
+        },
+    )
 }
 
 /// Remove a launcher record only when its exact owner is no longer alive.
@@ -350,13 +348,8 @@ fn cleanup_stale_app(path: &Path) -> Result<(), EdevError> {
 }
 
 /// Read one app record, tolerating a concurrent removal.
-fn read_app_record(path: &Path) -> Result<Option<AppRecord>, io::Error> {
+pub fn read_app_record(path: &Path) -> Result<Option<AppRecord>, io::Error> {
     read_json(path)
-}
-
-/// Read an exact app record for outer status and recovery handling.
-pub fn read_app_record_for_path(path: &Path) -> Result<Option<AppRecord>, io::Error> {
-    read_app_record(path)
 }
 
 /// Read one JSON record, tolerating a concurrent removal.

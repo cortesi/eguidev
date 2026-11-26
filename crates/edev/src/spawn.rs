@@ -8,7 +8,7 @@ use super::*;
 pub async fn await_app_record(path: &Path) -> Result<Option<AppRecord>, std_io::Error> {
     let deadline = Instant::now() + APP_RECORD_TIMEOUT;
     loop {
-        if let Some(record) = read_app_record_for_path(path)? {
+        if let Some(record) = read_app_record(path)? {
             return Ok(Some(record));
         }
         if Instant::now() >= deadline {

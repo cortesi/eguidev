@@ -33,7 +33,7 @@ use eguidev_runtime::{
     smoke::{ScriptRunRequest, SuiteResult, discover_suite_scripts, run_suite_with},
 };
 use instance_registry::{
-    AppLaunch, AppRecord, InstanceRegistry, read_app_record_for_path, remove_app_record_if_matches,
+    AppLaunch, AppRecord, InstanceRegistry, read_app_record, remove_app_record_if_matches,
 };
 use serde::{
     Deserialize, Serialize,
