@@ -217,43 +217,30 @@ impl DevMcp {
     /// Configure runtime-owned automation behavior.
     #[must_use]
     pub fn automation_options(self, options: AutomationOptions) -> Self {
-        *lock(
-            &self.shared.automation_options,
-            "devmcp automation options lock",
-        ) = options;
-        if let Some(inner) = self.inner() {
-            inner.set_automation_options(options);
-        }
-        self
+        self.update_automation_options(|current| *current = options)
     }
 
     /// Enable or disable runtime repaint keep-alive while automation is
     /// attached.
     #[must_use]
     pub fn keep_alive(self, keep_alive: bool) -> Self {
-        let options = {
-            let mut options = lock(
-                &self.shared.automation_options,
-                "devmcp automation options lock",
-            );
-            options.keep_alive = keep_alive;
-            *options
-        };
-        if let Some(inner) = self.inner() {
-            inner.set_automation_options(options);
-        }
-        self
+        self.update_automation_options(|options| options.keep_alive = keep_alive)
     }
 
     /// Enable or disable egui animations while automation is attached.
     #[must_use]
     pub fn animations(self, animations: bool) -> Self {
+        self.update_automation_options(|options| options.animations = animations)
+    }
+
+    /// Change the automation options, and pass them to the attached runtime.
+    fn update_automation_options(self, change: impl FnOnce(&mut AutomationOptions)) -> Self {
         let options = {
             let mut options = lock(
                 &self.shared.automation_options,
                 "devmcp automation options lock",
             );
-            options.animations = animations;
+            change(&mut options);
             *options
         };
         if let Some(inner) = self.inner() {
@@ -317,14 +304,8 @@ impl DevMcp {
     where
         F: Fn(&FixtureCall) -> FixtureResult + Send + Sync + 'static,
     {
-        self.ensure_no_fixture_handler()?;
         let handler: RuntimeFixtureHandler = Arc::new(handler);
-        let handler = FixtureHandler::Runtime(handler);
-        if let Some(inner) = self.inner() {
-            inner.fixtures.set_handler(handler.clone())?;
-        }
-        *lock(&self.shared.fixture_handler, "devmcp fixture handler lock") = Some(handler);
-        Ok(self)
+        self.set_fixture_handler(FixtureHandler::Runtime(handler))
     }
 
     /// Register the fixture handler, to run on the egui UI thread.
@@ -337,14 +318,8 @@ impl DevMcp {
     where
         F: FnMut(&Context, &FixtureCall) -> FixtureResult + Send + 'static,
     {
-        self.ensure_no_fixture_handler()?;
         let handler: UiFixtureHandler = Arc::new(Mutex::new(Box::new(handler)));
-        let handler = FixtureHandler::Ui(handler);
-        if let Some(inner) = self.inner() {
-            inner.fixtures.set_handler(handler.clone())?;
-        }
-        *lock(&self.shared.fixture_handler, "devmcp fixture handler lock") = Some(handler);
-        Ok(self)
+        self.set_fixture_handler(FixtureHandler::Ui(handler))
     }
 
     /// Register a named diagnostic provider that runs on the automation runtime
@@ -428,14 +403,17 @@ impl DevMcp {
         )
     }
 
-    fn ensure_no_fixture_handler(&self) -> Result<(), DevMcpConfigError> {
+    /// Register the one fixture handler of the app, on the attached runtime
+    /// too when there is one.
+    fn set_fixture_handler(self, handler: FixtureHandler) -> Result<Self, DevMcpConfigError> {
         if lock(&self.shared.fixture_handler, "devmcp fixture handler lock").is_some() {
-            return Err(DevMcpConfigError::new(
-                "duplicate_fixture_handler",
-                "fixture handler is already registered",
-            ));
+            return Err(DevMcpConfigError::duplicate_fixture_handler());
         }
-        Ok(())
+        if let Some(inner) = self.inner() {
+            inner.fixtures.set_handler(handler.clone())?;
+        }
+        *lock(&self.shared.fixture_handler, "devmcp fixture handler lock") = Some(handler);
+        Ok(self)
     }
 
     #[cfg(test)]

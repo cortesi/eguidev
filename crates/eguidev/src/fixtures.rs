@@ -138,10 +138,7 @@ impl FixtureManager {
     pub fn set_handler(&self, handler: FixtureHandler) -> Result<(), DevMcpConfigError> {
         let mut stored = lock(&self.handler, "fixture handler lock");
         if stored.is_some() {
-            return Err(DevMcpConfigError::new(
-                "duplicate_fixture_handler",
-                "fixture handler is already registered",
-            ));
+            return Err(DevMcpConfigError::duplicate_fixture_handler());
         }
         *stored = Some(handler);
         Ok(())

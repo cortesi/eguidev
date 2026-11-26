@@ -122,6 +122,13 @@ impl DevMcpConfigError {
         )
     }
 
+    pub(crate) fn duplicate_fixture_handler() -> Self {
+        Self::new(
+            "duplicate_fixture_handler",
+            "fixture handler is already registered",
+        )
+    }
+
     pub(crate) fn empty_diagnostic_name() -> Self {
         Self::new(
             "empty_diagnostic_name",
