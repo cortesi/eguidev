@@ -358,15 +358,7 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         viewport_id: String,
     ) -> ScriptResult<Value> {
-        let resolved = resolve_viewport_id(&self.server.inner, Some(viewport_id))
-            .map_err(|error| self.tool_error(pos, error.into()))?;
-        let viewport_id = viewport_id_to_string(resolved);
-        self.record_targeted_viewport(viewport_id.clone());
-        self.await_diagnostic_outputs(&BTreeSet::from([viewport_id.clone()]))
-            .await?;
-        let selection = self.diagnostic_selection(Some(&viewport_id));
-        self.dismiss_diagnostic_sequences(selection.sequences);
-        let mut batch = selection.batch;
+        let (resolved, mut batch) = self.take_egui_diagnostics(pos, viewport_id).await?;
         batch.warnings_enabled = self
             .server
             .inner
@@ -380,6 +372,17 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         viewport_id: String,
     ) -> ScriptResult<()> {
+        self.take_egui_diagnostics(pos, viewport_id).await?;
+        Ok(())
+    }
+
+    /// Wait for the diagnostics of one viewport, dismiss them, and return the
+    /// resolved viewport with its batch.
+    async fn take_egui_diagnostics(
+        &self,
+        pos: ScriptPosition,
+        viewport_id: String,
+    ) -> ScriptResult<(egui::ViewportId, EguiDiagnosticBatch)> {
         let resolved = resolve_viewport_id(&self.server.inner, Some(viewport_id))
             .map_err(|error| self.tool_error(pos, error.into()))?;
         let viewport_id = viewport_id_to_string(resolved);
@@ -388,7 +391,7 @@ impl ScriptRuntime {
             .await?;
         let selection = self.diagnostic_selection(Some(&viewport_id));
         self.dismiss_diagnostic_sequences(selection.sequences);
-        Ok(())
+        Ok((resolved, selection.batch))
     }
 
     pub(super) async fn finish_egui_diagnostics(
