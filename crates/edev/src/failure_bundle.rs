@@ -341,27 +341,18 @@ pub async fn write_failure_bundle(
     }
     fs::write(
         bundle_dir.join("diagnostics.json"),
-        pretty_json(&collect_bundle_diagnostics(client, context, script_path).await?)?,
+        pretty_json(&collect_bundle_diagnostics(client, context, script_path).await)?,
     )?;
     Ok(())
 }
 
 /// Collect diagnostics for a bundle without coupling them to tree/screenshot
-/// capture.
+/// capture. A failure of the collection is reported in the diagnostics.
 async fn collect_bundle_diagnostics(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     context: &BundleContext,
     script_path: &str,
-) -> Result<serde_json::Value, EdevError> {
-    let fallback = serde_json::json!({
-        "values": {},
-        "errors": {
-            "_collection": {
-                "code": "collection_failed",
-                "message": "bundle diagnostics collection failed",
-            },
-        },
-    });
+) -> serde_json::Value {
     let result = match call_script_eval_result(
         client,
         ScriptEvalRequest {
@@ -378,43 +369,37 @@ async fn collect_bundle_diagnostics(
     {
         Ok(result) => result,
         Err(message) => {
-            return Ok(serde_json::json!({
-                "values": {},
-                "errors": {
-                    "_collection": {
-                        "code": "collection_failed",
-                        "message": format!("bundle diagnostics failed: {message}"),
-                    },
-                },
-            }));
+            return collection_failure(&format!("bundle diagnostics failed: {message}"));
         }
     };
     let outcome = match parse_script_eval_outcome(&result) {
         Ok(outcome) => outcome,
         Err(error) => {
-            return Ok(serde_json::json!({
-                "values": {},
-                "errors": {
-                    "_collection": {
-                        "code": "collection_failed",
-                        "message": format!("failed to decode bundle diagnostics: {error}"),
-                    },
-                },
-            }));
+            return collection_failure(&format!("failed to decode bundle diagnostics: {error}"));
         }
     };
     if !outcome.success {
-        return Ok(serde_json::json!({
-            "values": {},
-            "errors": {
-                "_collection": {
-                    "code": "collection_failed",
-                    "message": script_eval_error_message(outcome.error.as_ref(), "bundle diagnostics failed"),
-                },
-            },
-        }));
+        return collection_failure(&script_eval_error_message(
+            outcome.error.as_ref(),
+            "bundle diagnostics failed",
+        ));
     }
-    Ok(outcome.value.unwrap_or(fallback))
+    outcome
+        .value
+        .unwrap_or_else(|| collection_failure("bundle diagnostics collection failed"))
+}
+
+/// The bundle diagnostics of a collection that failed with `message`.
+fn collection_failure(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "values": {},
+        "errors": {
+            "_collection": {
+                "code": "collection_failed",
+                "message": message,
+            },
+        },
+    })
 }
 
 /// Append one collection warning to `collection-error.txt`.
