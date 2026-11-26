@@ -124,37 +124,29 @@ pub async fn spawn_app(
     log_state.record_line("edev: app MCP connected");
 
     let app_record = match process.app_launch.as_ref() {
-        Some(launch) => match await_app_record(&launch.entry_path).await {
-            Ok(Some(record)) => Some(record),
-            Ok(None) => {
-                drop(client);
-                return Err(fail_startup_handshake(
-                    process,
-                    stderr_task,
-                    stdout_task,
-                    &stderr_buffer,
-                    "record",
-                    &McpError::InternalError("supervisor app record is missing".to_string()),
-                    &log_state,
-                )
-                .await);
+        Some(launch) => {
+            let record = match await_app_record(&launch.entry_path).await {
+                Ok(Some(record)) => Ok(record),
+                Ok(None) => Err("supervisor app record is missing".to_string()),
+                Err(error) => Err(format!("failed to read supervisor app record: {error}")),
+            };
+            match record {
+                Ok(record) => Some(record),
+                Err(message) => {
+                    drop(client);
+                    return Err(fail_startup_handshake(
+                        process,
+                        stderr_task,
+                        stdout_task,
+                        &stderr_buffer,
+                        "record",
+                        &McpError::InternalError(message),
+                        &log_state,
+                    )
+                    .await);
+                }
             }
-            Err(error) => {
-                drop(client);
-                return Err(fail_startup_handshake(
-                    process,
-                    stderr_task,
-                    stdout_task,
-                    &stderr_buffer,
-                    "record",
-                    &McpError::InternalError(format!(
-                        "failed to read supervisor app record: {error}"
-                    )),
-                    &log_state,
-                )
-                .await);
-            }
-        },
+        }
         None => None,
     };
     let process_group_id = app_record
