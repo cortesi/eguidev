@@ -41,11 +41,7 @@ pub(super) fn resolve_dump_config(
         ));
     }
     let wait_for_initial_capture = cli.fixture.is_none();
-    let timeout = Some(Duration::from_secs(
-        cli.script_timeout_secs
-            .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
-            .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
-    ));
+    let timeout = Some(script_timeout(cli.script_timeout_secs, file_smoke));
     Ok(DumpConfig {
         launch: launch.with_script_timeout(timeout),
         fixture: cli.fixture,
@@ -83,11 +79,7 @@ pub(super) fn resolve_eval_config(
         .map(|smoke| smoke.args.clone())
         .unwrap_or_default();
     args.extend(cli.args);
-    let timeout = Some(Duration::from_secs(
-        cli.script_timeout_secs
-            .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
-            .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
-    ));
+    let timeout = Some(script_timeout(cli.script_timeout_secs, file_smoke));
     Ok(EvalConfig {
         launch: launch.with_script_timeout(timeout),
         script,
@@ -165,7 +157,7 @@ pub(super) fn resolve_smoke_config(
         current_dir,
         suite_base_dir,
         Path::new(DEFAULT_SUITE_DIR),
-    )?;
+    );
     let mut args = file_smoke
         .map(|smoke| smoke.args.clone())
         .unwrap_or_default();
@@ -177,7 +169,7 @@ pub(super) fn resolve_smoke_config(
             current_dir,
             suite_base_dir,
             Path::new(DEFAULT_BUNDLE_DIR),
-        )?)
+        ))
     } else {
         None
     };
@@ -196,11 +188,7 @@ pub(super) fn resolve_smoke_config(
                 .or_else(|| file_smoke.and_then(|smoke| smoke.suite_timeout_secs))
                 .unwrap_or(DEFAULT_SUITE_TIMEOUT_SECS),
         ),
-        script_timeout: Some(Duration::from_secs(
-            cli.script_timeout_secs
-                .or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
-                .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
-        )),
+        script_timeout: Some(script_timeout(cli.script_timeout_secs, file_smoke)),
         max_instructions: cli
             .script_max_instructions
             .or_else(|| file_smoke.and_then(|smoke| smoke.script_max_instructions)),
@@ -284,7 +272,7 @@ pub(super) fn resolve_launch_config(
         current_dir,
         file_base_dir,
         current_dir,
-    )?;
+    );
     if !cwd.is_dir() {
         return Err(EdevError::InvalidArgs(format!(
             "cwd is not an existing directory: {}",
@@ -332,7 +320,7 @@ pub(super) fn resolve_path(
     current_dir: &Path,
     file_base_dir: &Path,
     default: &Path,
-) -> Result<PathBuf, EdevError> {
+) -> PathBuf {
     let path = if let Some(path) = cli {
         absolutize_path(path, current_dir)
     } else if let Some(path) = file {
@@ -340,7 +328,16 @@ pub(super) fn resolve_path(
     } else {
         absolutize_path(default, current_dir)
     };
-    Ok(path.canonicalize().unwrap_or(path))
+    path.canonicalize().unwrap_or(path)
+}
+
+/// The timeout of one script: the flag, else `[smoke].script_timeout_secs`,
+/// else the default.
+fn script_timeout(cli: Option<u64>, file_smoke: Option<&FileSmokeConfig>) -> Duration {
+    Duration::from_secs(
+        cli.or_else(|| file_smoke.and_then(|smoke| smoke.script_timeout_secs))
+            .unwrap_or(DEFAULT_SCRIPT_TIMEOUT_SECS),
+    )
 }
 
 pub(super) fn resolve_optional_path(
