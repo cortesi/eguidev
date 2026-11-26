@@ -10,7 +10,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{EdevError, LaunchConfig};
+use super::{EdevError, LaunchConfig, process_lifecycle};
 
 mod identity;
 
@@ -337,7 +337,9 @@ fn cleanup_stale_app(path: &Path) -> Result<(), EdevError> {
         && !recorded_process_is_alive(metadata.supervisor_pid, metadata.supervisor_start_time)
     {
         if recorded_app_group_is_current(&metadata) {
-            terminate_process_group(Some(metadata.app_process_group_id));
+            process_lifecycle::terminate_process_group_without_logging(Some(
+                metadata.app_process_group_id,
+            ));
         }
         if let Some(socket) = &metadata.mcp_socket {
             remove_file_if_exists(socket).map_err(EdevError::Io)?;
@@ -397,18 +399,6 @@ fn remove_file_if_exists(path: &Path) -> Result<(), io::Error> {
         Err(error) => Err(error),
     }
 }
-
-#[cfg(unix)]
-/// Terminate a process group, ignoring missing-group races.
-fn terminate_process_group(process_group_id: Option<i32>) {
-    if let Some(pgid) = process_group_id {
-        let _result = super::process_lifecycle::kill_process_group(pgid);
-    }
-}
-
-#[cfg(not(unix))]
-/// No-op process group termination on non-unix platforms.
-fn terminate_process_group(_process_group_id: Option<i32>) {}
 
 #[cfg(test)]
 mod tests {

@@ -704,13 +704,6 @@ pub(super) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-/// Terminate an app process group without requiring a launcher log state.
-pub(super) fn terminate_process_group_without_logging(process_group_id: Option<i32>) {
-    if let Some(pgid) = process_group_id {
-        let _result = kill_process_group(pgid);
-    }
-}
-
 /// Observe process exits using kqueue rather than polling.
 pub struct ProcessGroupObserver {
     /// Tokio-registered kqueue descriptor.

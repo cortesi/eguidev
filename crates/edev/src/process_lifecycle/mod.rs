@@ -162,6 +162,18 @@ pub fn terminate_process_group(process_group_id: Option<i32>, log_state: &LogSta
     }
 }
 
+/// Terminate an app process group without requiring a launcher log state.
+pub fn terminate_process_group_without_logging(process_group_id: Option<i32>) {
+    #[cfg(unix)]
+    if let Some(pgid) = process_group_id {
+        let _result = kill_process_group(pgid);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process_group_id;
+    }
+}
+
 /// Send SIGKILL to one process group, tolerating an already-empty group.
 #[cfg(unix)]
 pub fn kill_process_group(process_group_id: i32) -> io::Result<()> {
