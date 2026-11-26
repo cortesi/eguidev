@@ -1,5 +1,4 @@
 eguidev.fixture("basic.default")
-local vp = eguidev.root
 
 eguidev.widget("basic.submit"):click()
 eguidev.widget("basic.status"):wait( function(widget)

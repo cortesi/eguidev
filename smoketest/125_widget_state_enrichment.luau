@@ -1,5 +1,4 @@
 eguidev.fixture("basic.default")
-local vp = eguidev.root
 
 local choice = eguidev.widget("basic.choice"):state()
 

@@ -1,5 +1,4 @@
 eguidev.fixture("basic.default")
-local vp = eguidev.root
 
 eguidev.widget("basic.menu.actions"):click()
 eguidev.widget("basic.menu.actions.mark_ready"):expect({ present = true })

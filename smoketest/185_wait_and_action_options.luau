@@ -25,11 +25,6 @@ eguidev.widget("basic.advanced"):click({ settle = true })
 summary:wait({ present = false }, WAIT)
 
 -- Viewport waits.
-eguidev.widget("basic.submit"):wait({ actionable = true }, WAIT)
-eguidev.widget("basic.submit"):wait( function(current)
-    return current ~= nil and current.visible
-end, WAIT)
-eguidev.widget("basic.advanced.summary"):wait({ present = false }, WAIT)
 vp:wait(function(state)
     return state ~= nil and state.frame_count > 0
 end, WAIT)
@@ -37,7 +32,6 @@ vp:settle(WAIT)
 vp:wait_capture(WAIT)
 
 -- Global waits.
-vp:wait_capture(WAIT)
 eguidev.wait_frames(1, WAIT)
 eguidev.wait(function()
     return (assert(eguidev.widget("basic.submit"):state())).visible

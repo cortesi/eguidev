@@ -3,8 +3,6 @@
 -- that fails for the same reason.
 eguidev.fixture("basic.default")
 
-local vp = eguidev.root
-
 -- The row starts scrolled out of the inner list.
 local row = eguidev.widget("basic.scroll.row.40")
 local initial = row:state()

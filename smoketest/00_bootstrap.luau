@@ -24,7 +24,7 @@ while current ~= nil do
     ancestor_count += 1
     current = current:parent()
 end
-assert(ancestor_count >= 1, "ancestor walk should include the submit button")
+assert(ancestor_count > 1, "the submit button should sit inside a container")
 
 local hit_point: Pos = {
     x = submit_state.interact_rect.min.x + 2,

@@ -8,7 +8,7 @@ local function find_fixture(name: string): Fixture
 end
 
 local function scroll_offset(viewport: Viewport, widget_id: string): number
-    local state = eguidev.widget(widget_id):state()
+    local state = viewport:widget(widget_id):state()
     assert(state ~= nil)
     local scroll = state.scroll_state
     assert(scroll ~= nil, widget_id .. " should expose scroll_state")
