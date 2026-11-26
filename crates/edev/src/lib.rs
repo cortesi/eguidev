@@ -186,8 +186,6 @@ impl EdevError {
 
 #[cfg(test)]
 fn test_tempdir() -> tempfile::TempDir {
-    use std::fs;
-
     fs::create_dir_all("tmp").expect("create tmp");
     tempfile::Builder::new()
         .prefix("edev-test-")
