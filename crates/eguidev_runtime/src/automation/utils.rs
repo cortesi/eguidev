@@ -27,6 +27,9 @@ use crate::{
 const FRAME_DURATION_MS: u64 = 16;
 const STALLED_FRAME_AGE_MS: u64 = 500;
 const NO_TARGET_FRAMES_DIAGNOSIS: &str = "No target viewport frames were observed while waiting.";
+/// What a timeout message advises when the target viewport rendered no frame.
+const NO_TARGET_FRAMES_HINT: &str = "Ensure the app wraps rendered frames in FrameGuard, leaves \
+     runtime keep-alive enabled, and uses Renderer::Glow when backend idle stalls matter.";
 
 #[derive(Debug, Clone)]
 pub struct WaitObservationStart {
@@ -161,24 +164,14 @@ fn action_diagnosis(
     ))
 }
 
-pub fn repaint_diagnosis_prefix(observation: &WaitObservation) -> Option<&'static str> {
-    if observation.frames_observed == Some(0) {
-        return Some(
-            "No target viewport frames were observed while waiting. Ensure the app wraps rendered \
-             frames in FrameGuard, leaves runtime keep-alive enabled, and uses Renderer::Glow \
-             when backend idle stalls matter.",
-        );
-    }
-    None
-}
-
 pub fn wait_timeout_message(message: impl AsRef<str>, observation: &WaitObservation) -> String {
-    match repaint_diagnosis_prefix(observation) {
-        Some(prefix) => format!("{prefix} {}", message.as_ref()),
-        None if let Some(diagnosis) = observation.diagnosis.as_deref() => {
-            format!("{} Diagnosis: {diagnosis}", message.as_ref())
-        }
-        None => message.as_ref().to_string(),
+    let message = message.as_ref();
+    if observation.frames_observed == Some(0) {
+        format!("{NO_TARGET_FRAMES_DIAGNOSIS} {NO_TARGET_FRAMES_HINT} {message}")
+    } else if let Some(diagnosis) = observation.diagnosis.as_deref() {
+        format!("{message} Diagnosis: {diagnosis}")
+    } else {
+        message.to_string()
     }
 }
 
