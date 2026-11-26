@@ -192,6 +192,43 @@ async fn script_eval_wait_for_widget_visible_matches_existing_widget() {
 }
 
 #[tokio::test]
+async fn script_eval_wait_reports_its_whole_timeout() {
+    let inner = Arc::new(Inner::new());
+    let server = DevMcpServer::new(Arc::clone(&inner));
+    let ctx = egui::Context::default();
+    discard_output(ctx.run_ui(egui::RawInput::default(), |_| {}));
+    capture_test_frame(&inner, &ctx);
+    // Frames keep arriving, so the wait loop runs many slices, each with a
+    // shorter remaining time, before its deadline passes.
+    let inner_for_frames = Arc::clone(&inner);
+    let frames = tokio::spawn(async move {
+        loop {
+            yield_now().await;
+            capture_test_frame(&inner_for_frames, &ctx);
+        }
+    });
+
+    let result = server
+        .script_eval(
+            "eguidev.wait(function() return false end, { timeout_ms = 60, poll_interval_ms = 1 })"
+                .to_string(),
+            Some(TEST_SCRIPT_DEADLINE_MS),
+            None,
+        )
+        .await
+        .expect("script eval");
+    frames.abort();
+    let json = parse_script_eval_json(&result);
+    assert_eq!(json["success"], false, "{json:?}");
+    assert_eq!(json["error"]["code"], "timeout", "{json:?}");
+    assert_eq!(json["error"]["details"]["operation"], "wait", "{json:?}");
+    assert_eq!(
+        json["error"]["details"]["details"]["timeout_ms"], 60,
+        "the error names the timeout of the wait, not its last slice: {json:?}"
+    );
+}
+
+#[tokio::test]
 async fn script_eval_wait_for_widget_visible_waits_for_widget_to_appear() {
     let inner = Arc::new(Inner::new());
     let server = DevMcpServer::new(Arc::clone(&inner));
