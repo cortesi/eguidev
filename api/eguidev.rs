@@ -1052,6 +1052,11 @@ pub enum ParamKind {
     Text,
 }
 
+impl ParamKind {
+    /// The name of this kind, as a fixture catalog spells it.
+    pub fn as_str(self) -> &'static str;
+}
+
 impl JsonSchema for ParamKind {}
 
 /// Pointer button used by clicks and raw pointer events.

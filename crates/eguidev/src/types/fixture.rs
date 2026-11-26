@@ -602,20 +602,20 @@ impl FixtureParam {
     }
 
     fn validate_value(&self, value: &WidgetValue) -> Result<(), FixtureError> {
-        if !self.kind.matches(value) {
+        if value.kind() != self.kind {
             return Err(FixtureError::new(
                 "invalid_param_type",
                 format!(
                     "param {:?} expected {}, got {}",
                     self.name,
                     self.kind.as_str(),
-                    value.kind_name()
+                    value.kind().as_str()
                 ),
             )
             .details(serde_json::json!({
                 "param": self.name,
                 "expected": self.kind.as_str(),
-                "actual": value.kind_name(),
+                "actual": value.kind().as_str(),
             })));
         }
         if !self.choices.is_empty() && !self.choices.iter().any(|choice| choice == value) {
@@ -671,23 +671,14 @@ impl FixtureParam {
 }
 
 impl ParamKind {
-    fn as_str(self) -> &'static str {
+    /// The name of this kind, as a fixture catalog spells it.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Bool => "bool",
             Self::Int => "int",
             Self::Float => "float",
             Self::Text => "text",
         }
-    }
-
-    fn matches(self, value: &WidgetValue) -> bool {
-        matches!(
-            (self, value),
-            (Self::Bool, WidgetValue::Bool(_))
-                | (Self::Int, WidgetValue::Int(_))
-                | (Self::Float, WidgetValue::Float(_))
-                | (Self::Text, WidgetValue::Text(_))
-        )
     }
 }
 

@@ -153,12 +153,12 @@ impl WidgetValue {
         }
     }
 
-    pub(super) fn kind_name(&self) -> &'static str {
+    pub(super) fn kind(&self) -> ParamKind {
         match self {
-            Self::Bool(_) => "bool",
-            Self::Float(_) => "float",
-            Self::Int(_) => "int",
-            Self::Text(_) => "text",
+            Self::Bool(_) => ParamKind::Bool,
+            Self::Float(_) => ParamKind::Float,
+            Self::Int(_) => ParamKind::Int,
+            Self::Text(_) => ParamKind::Text,
         }
     }
 

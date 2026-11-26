@@ -24,7 +24,7 @@ use async_trait::async_trait;
 #[cfg(target_os = "macos")]
 use eguidev::internal::presentation::PresentationStatus;
 use eguidev::{
-    FixtureParam, FixtureSpec, ParamKind, WidgetValue,
+    FixtureParam, FixtureSpec, WidgetValue,
     internal::presentation::{EXPERIMENTAL_PRESENTATION_CAPABILITY, Presentation},
 };
 use eguidev_runtime::{

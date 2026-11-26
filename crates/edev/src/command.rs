@@ -695,7 +695,7 @@ fn fixture_params_summary(params: &[FixtureParam]) -> String {
 
 /// Summarize one declared fixture param for table output.
 fn fixture_param_summary(param: &FixtureParam) -> String {
-    let mut parts = vec![format!("{}: {}", param.name, param_kind_name(param.kind))];
+    let mut parts = vec![format!("{}: {}", param.name, param.kind.as_str())];
     if let Some(default) = &param.default {
         parts.push(format!("default {}", format_widget_value(default)));
     }
@@ -724,16 +724,6 @@ fn fixture_param_summary(param: &FixtureParam) -> String {
         ));
     }
     parts.join(" ")
-}
-
-/// Return the CLI display name for a fixture param kind.
-fn param_kind_name(kind: ParamKind) -> &'static str {
-    match kind {
-        ParamKind::Bool => "bool",
-        ParamKind::Int => "int",
-        ParamKind::Float => "float",
-        ParamKind::Text => "text",
-    }
 }
 
 /// Format a fixture value for human-readable CLI output.
