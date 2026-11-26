@@ -1,5 +1,7 @@
 //! Tests of the MCP server of the launcher.
 
+use tokio::time;
+
 use super::*;
 
 #[test]
@@ -94,7 +96,7 @@ fn status_report_covers_mcp_idle_state() {
     assert_eq!(report.idle_shutdown.remaining_secs, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn idle_shutdown_waits_for_inactivity() {
     let tempdir = test_tempdir();
     let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
@@ -120,13 +122,13 @@ async fn idle_shutdown_waits_for_inactivity() {
     assert!(waiter.is_finished());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn idle_shutdown_stays_pending_while_client_attached() {
     let tempdir = test_tempdir();
     let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
     {
         let mut state_guard = state.lock().await;
-        state_guard.last_activity = Instant::now() - Duration::from_millis(250);
+        state_guard.last_activity = time::Instant::now() - Duration::from_millis(250);
         state_guard.mark_client_attached();
     }
 
@@ -141,13 +143,13 @@ async fn idle_shutdown_stays_pending_while_client_attached() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn list_tools_does_not_delay_idle_shutdown() {
     let tempdir = test_tempdir();
     let state = Arc::new(AsyncMutex::new(make_state(&tempdir)));
     {
         let mut state_guard = state.lock().await;
-        state_guard.last_activity = Instant::now() - Duration::from_millis(250);
+        state_guard.last_activity = time::Instant::now() - Duration::from_millis(250);
     }
 
     let server = EdevServer {

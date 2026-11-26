@@ -1,5 +1,7 @@
 //! The lifecycle state of the launcher and of its managed app.
 
+use tokio::time;
+
 use super::*;
 
 #[derive(Clone, Debug, Default)]
@@ -38,8 +40,9 @@ pub struct State {
     pub app: Option<AppProcess>,
     /// Current lifecycle status.
     pub status: AppStatus,
-    /// Timestamp of the last MCP interaction handled by this launcher.
-    pub last_activity: Instant,
+    /// Timestamp of the last MCP interaction handled by this launcher, on the
+    /// Tokio clock that the idle wait sleeps on.
+    pub last_activity: time::Instant,
     /// Configured idle guard for the launcher, if this is an MCP session.
     pub idle_shutdown_after: Option<Duration>,
     /// Whether the stdio MCP client completed initialization.
@@ -63,7 +66,7 @@ impl State {
             instance_registry,
             app: None,
             status: AppStatus::NotRunning,
-            last_activity: Instant::now(),
+            last_activity: time::Instant::now(),
             idle_shutdown_after: None,
             mcp_client_attached: false,
             last_shutdown: None,
@@ -84,7 +87,7 @@ impl State {
 
     /// Mark launcher activity from user-visible tool execution.
     pub fn mark_activity(&mut self) {
-        self.last_activity = Instant::now();
+        self.last_activity = time::Instant::now();
     }
 
     /// Mark the stdio MCP client as initialized and attached.
