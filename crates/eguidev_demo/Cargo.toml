@@ -16,6 +16,6 @@ workspace = true
 
 [dependencies]
 eframe.workspace = true
-eguidev = { path = "../eguidev" }
-eguidev_runtime = { path = "../eguidev_runtime" }
+eguidev.workspace = true
+eguidev_runtime.workspace = true
 serde_json.workspace = true
