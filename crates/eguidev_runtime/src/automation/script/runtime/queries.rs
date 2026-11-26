@@ -163,12 +163,9 @@ impl ScriptRuntime {
         };
         let viewport_id = resolve_viewport_id(inner, Some(widget.viewport_id.clone()))
             .map_err(|error| self.tool_error(pos, error.into()))?;
-        let parent = self
-            .server
-            .inner
-            .widgets
-            .widget_list(viewport_id)
-            .into_iter()
+        let candidates = inner.widgets.widget_list(viewport_id);
+        let parent = candidates
+            .iter()
             .find(|candidate| {
                 candidate.id == parent_id
                     && candidate.rect.min.x <= widget.rect.min.x
@@ -177,16 +174,13 @@ impl ScriptRuntime {
                     && candidate.rect.max.y >= widget.rect.max.y
             })
             .or_else(|| {
-                self.server
-                    .inner
-                    .widgets
-                    .widget_list(viewport_id)
-                    .into_iter()
+                candidates
+                    .iter()
                     .rev()
                     .find(|candidate| candidate.id == parent_id)
             });
         match parent {
-            Some(parent) => self.widget_handle_json(pos, &parent),
+            Some(parent) => self.widget_handle_json(pos, parent),
             None => Ok(Value::Null),
         }
     }
