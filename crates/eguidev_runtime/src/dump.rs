@@ -265,6 +265,7 @@ fn rect_contains(parent: Rect, child: Rect) -> bool {
         && parent.max.x >= child.max.x
         && parent.max.y >= child.max.y
 }
+
 fn render_viewport(viewport: &ViewportDump, out: &mut String) {
     let selector = viewport.name.as_deref().unwrap_or(&viewport.id);
     out.push_str("viewport ");
