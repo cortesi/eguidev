@@ -69,6 +69,13 @@ pub struct EguiDiagnosticBatch {
     pub entries: Vec<EguiDiagnostic>,
     /// Undismissed diagnostics overwritten before they could be returned.
     pub dropped: u64,
+    /// Whether egui paints the identity warnings that these diagnostics read.
+    ///
+    /// Without this, an empty batch means either an app with no identity
+    /// warning or an app that paints none. `None` says that the state of the
+    /// viewport is unknown, as in a batch of a finished evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings_enabled: Option<bool>,
 }
 
 impl EguiDiagnosticBatch {
