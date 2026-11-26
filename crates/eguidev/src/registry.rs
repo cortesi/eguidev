@@ -343,11 +343,7 @@ impl Inner {
         id: String,
         value: WidgetValue,
     ) {
-        let queued_frame = self
-            .viewports
-            .capture_snapshot(viewport_id)
-            .map(|snapshot| snapshot.frame_count)
-            .unwrap_or_else(|| self.frame_count());
+        let queued_frame = self.widget_value_frame(viewport_id);
         let consumer_seen = lock(&self.widget_value_consumers, "widget value consumers lock")
             .get(&viewport_id)
             .is_some_and(|ids| ids.contains(&id));
@@ -430,11 +426,7 @@ impl Inner {
         viewport_id: egui::ViewportId,
         widget_id: Option<&str>,
     ) -> Option<ToolError> {
-        let current_frame = self
-            .viewports
-            .capture_snapshot(viewport_id)
-            .map(|snapshot| snapshot.frame_count)
-            .unwrap_or_else(|| self.frame_count());
+        let current_frame = self.widget_value_frame(viewport_id);
         let expired = {
             let updates = lock(&self.widget_value_updates, "widget value update lock");
             updates
@@ -629,6 +621,15 @@ impl Inner {
 
     pub fn frame_count(&self) -> u64 {
         self.frame_count.load(Ordering::Relaxed)
+    }
+
+    /// The frame that ages a widget value update: the last captured frame of
+    /// `viewport_id`, or the global frame count before its first capture.
+    fn widget_value_frame(&self, viewport_id: egui::ViewportId) -> u64 {
+        self.viewports
+            .capture_snapshot(viewport_id)
+            .map(|snapshot| snapshot.frame_count)
+            .unwrap_or_else(|| self.frame_count())
     }
 
     /// Drop heavy per-viewport maps for non-root viewports that left the live
