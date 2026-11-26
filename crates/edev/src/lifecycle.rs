@@ -119,20 +119,6 @@ impl State {
         stopped.ensure_graceful()
     }
 
-    /// Start the app process unless it is already running.
-    #[cfg(test)]
-    pub async fn start(&mut self) -> Result<StartStatus, EdevError> {
-        match self.prepare_start() {
-            PrepareStart::AlreadyRunning => Ok(StartStatus::AlreadyRunning),
-            PrepareStart::AppStarting => Ok(StartStatus::AppStarting),
-            PrepareStart::RestartRequired(output) => Ok(StartStatus::RestartRequired(output)),
-            PrepareStart::Ready => {
-                self.start_with(|config, log_state| Box::pin(spawn_app(config, log_state)))
-                    .await
-            }
-        }
-    }
-
     /// Mark an idle app as starting, or report why a start cannot proceed.
     pub fn prepare_start(&mut self) -> PrepareStart {
         match &self.status {
@@ -179,50 +165,22 @@ impl State {
         }
     }
 
-    /// Start the app process using a caller-provided spawn routine.
-    #[cfg(test)]
-    pub async fn start_with<F>(&mut self, spawn: F) -> Result<StartStatus, EdevError>
-    where
-        F: for<'a> FnOnce(&'a LaunchConfig, LogState) -> SpawnFuture<'a>,
-    {
-        let status = self
-            .spawn_with(LifecycleAction::Start, false, spawn)
-            .await?;
-        Ok(match status {
-            LifecycleStartStatus::Running => StartStatus::Started,
-            LifecycleStartStatus::StartupFailed(output) => StartStatus::StartupFailed(output),
-        })
-    }
-
     /// Restart the app process using a caller-provided spawn routine.
     pub async fn restart_with<F>(&mut self, spawn: F) -> Result<LifecycleStartStatus, EdevError>
-    where
-        F: for<'a> FnOnce(&'a LaunchConfig, LogState) -> SpawnFuture<'a>,
-    {
-        self.spawn_with(LifecycleAction::Restart, true, spawn).await
-    }
-
-    /// Spawn and attach an app process for either a start or restart
-    /// transition.
-    pub async fn spawn_with<F>(
-        &mut self,
-        action: LifecycleAction,
-        replace_existing: bool,
-        spawn: F,
-    ) -> Result<LifecycleStartStatus, EdevError>
     where
         F: for<'a> FnOnce(&'a LaunchConfig, LogState) -> SpawnFuture<'a>,
     {
         if !matches!(self.status, AppStatus::Starting) {
             self.status = AppStatus::Starting;
             self.last_shutdown = None;
-            self.log_edev(format!("{} requested", action.as_str()));
+            self.log_edev("restart requested");
         }
-        if replace_existing && let Some(app) = self.app.take() {
+        if let Some(app) = self.app.take() {
             let _shutdown = app.shutdown().await;
         }
         let spawned = spawn(&self.config, self.log_state.clone()).await;
-        self.install_spawned(action, spawned).await
+        self.install_spawned(LifecycleAction::Restart, spawned)
+            .await
     }
 
     /// Install a completed spawn result unless another action cancelled it.

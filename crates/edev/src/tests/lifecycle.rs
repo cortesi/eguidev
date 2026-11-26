@@ -59,7 +59,9 @@ async fn start_is_idempotent_when_running() {
     state.status = AppStatus::Running;
     state.app = Some(app);
 
-    let status = state.start().await.expect("start");
+    let status = start_app_unlocked(&Arc::new(AsyncMutex::new(state)))
+        .await
+        .expect("start");
     assert!(matches!(status, StartStatus::AlreadyRunning));
 }
 
@@ -184,7 +186,9 @@ async fn start_reports_restart_required_after_prior_startup_failure() {
         output: "boom".to_string(),
     };
 
-    let status = state.start().await.expect("start");
+    let status = start_app_unlocked(&Arc::new(AsyncMutex::new(state)))
+        .await
+        .expect("start");
     assert!(matches!(status, StartStatus::RestartRequired(ref output) if output == "boom"));
 }
 
