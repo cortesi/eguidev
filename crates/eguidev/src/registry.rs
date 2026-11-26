@@ -22,7 +22,7 @@ use crate::{
     idle::IdleRegistry,
     overlay::{OverlayDebugConfig, OverlayEntry, OverlayManager},
     types::{FixtureCall, Modifiers, WidgetValue},
-    viewports::{FrameHealth, ViewportState},
+    viewports::{self, FrameHealth, ViewportState},
     widget_registry::WidgetRegistry,
 };
 
@@ -637,12 +637,10 @@ impl Inner {
         let Some(live) = self.viewports.live_viewport_ids() else {
             return;
         };
-        let is_live = |viewport_id: &egui::ViewportId| {
-            *viewport_id == egui::ViewportId::ROOT || live.contains(viewport_id)
-        };
-        lock(&self.contexts, "contexts lock").retain(|viewport_id, _| is_live(viewport_id));
+        lock(&self.contexts, "contexts lock")
+            .retain(|viewport_id, _| viewports::is_live(&live, *viewport_id));
         lock(&self.animation_baselines, "animation baselines lock")
-            .retain(|viewport_id, _| is_live(viewport_id));
+            .retain(|viewport_id, _| viewports::is_live(&live, *viewport_id));
     }
 
     pub fn frame_health(&self, viewport_id: egui::ViewportId) -> Option<FrameHealth> {

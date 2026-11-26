@@ -86,6 +86,11 @@ pub struct PlatformViewportState {
     pub os_title_visible: Option<bool>,
 }
 
+/// Whether `viewport_id` is in the live set. The root viewport is always live.
+pub fn is_live(live_viewports: &HashSet<egui::ViewportId>, viewport_id: egui::ViewportId) -> bool {
+    viewport_id == egui::ViewportId::ROOT || live_viewports.contains(&viewport_id)
+}
+
 #[derive(Default)]
 pub struct ViewportState {
     viewports_snapshot: Mutex<Vec<ViewportSnapshot>>,
@@ -162,9 +167,9 @@ impl ViewportState {
             );
         }
         snapshots.retain(|id, _| {
-            lookup.get(id).is_some_and(|viewport_id| {
-                *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
-            })
+            lookup
+                .get(id)
+                .is_some_and(|viewport_id| is_live(&live_viewports, *viewport_id))
         });
         let mut ordered = snapshots.into_values().collect::<Vec<_>>();
         ordered.sort_by(|left, right| left.viewport_id.cmp(&right.viewport_id));
@@ -174,16 +179,14 @@ impl ViewportState {
     }
 
     fn prune_dead_viewport_maps(&self, live_viewports: &HashSet<egui::ViewportId>) {
-        let is_live = |viewport_id: &egui::ViewportId| {
-            *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
-        };
         lock(&self.input_snapshot, "input snapshot lock")
-            .retain(|viewport_id, _| is_live(viewport_id));
+            .retain(|viewport_id, _| is_live(live_viewports, *viewport_id));
         lock(&self.output_snapshot, "output snapshot lock")
-            .retain(|viewport_id, _| is_live(viewport_id));
+            .retain(|viewport_id, _| is_live(live_viewports, *viewport_id));
         lock(&self.capture_snapshot, "capture snapshot lock")
-            .retain(|viewport_id, _| is_live(viewport_id));
-        lock(&self.frame_health, "frame health lock").retain(|viewport_id, _| is_live(viewport_id));
+            .retain(|viewport_id, _| is_live(live_viewports, *viewport_id));
+        lock(&self.frame_health, "frame health lock")
+            .retain(|viewport_id, _| is_live(live_viewports, *viewport_id));
     }
 
     pub fn merge_platform_state(&self, states: &[PlatformViewportState]) {
@@ -240,13 +243,10 @@ impl ViewportState {
     }
 
     fn retain_live_viewport_names(&self, live_viewports: &HashSet<egui::ViewportId>) {
-        let is_live = |viewport_id: &egui::ViewportId| {
-            *viewport_id == egui::ViewportId::ROOT || live_viewports.contains(viewport_id)
-        };
         lock(&self.viewport_names, "viewport names lock")
-            .retain(|viewport_id, _| is_live(viewport_id));
+            .retain(|viewport_id, _| is_live(live_viewports, *viewport_id));
         lock(&self.viewport_name_errors, "viewport name errors lock")
-            .retain(|viewport_id, _| is_live(viewport_id));
+            .retain(|viewport_id, _| is_live(live_viewports, *viewport_id));
     }
 
     pub fn capture_input_snapshot(&self, ctx: &Context, fixture_epoch: u64, frame_count: u64) {
