@@ -279,14 +279,11 @@ async fn wait_for_initial_capture_refresh(
         EdevError::RecordFailed,
     )
     .await?;
-    if outcome.success {
-        Ok(())
-    } else {
-        Err(EdevError::RecordFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "failed to wait for a fresh capture before recording",
-        )))
-    }
+    require_success(
+        &outcome,
+        "failed to wait for a fresh capture before recording",
+    )
+    .map_err(EdevError::RecordFailed)
 }
 
 /// Internal script used to get the root viewport title for native window
@@ -310,12 +307,8 @@ async fn root_viewport_title(
         EdevError::RecordFailed,
     )
     .await?;
-    if !outcome.success {
-        return Err(EdevError::RecordFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "failed to read root viewport title",
-        )));
-    }
+    require_success(&outcome, "failed to read root viewport title")
+        .map_err(EdevError::RecordFailed)?;
     let title = outcome
         .value
         .as_ref()
@@ -398,12 +391,7 @@ async fn run_dump_script(
     )
     .await?;
     let outcome = parse_script_eval_outcome(&result).map_err(EdevError::EvalFailed)?;
-    if !outcome.success {
-        return Err(EdevError::EvalFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "dump script failed",
-        )));
-    }
+    require_success(&outcome, "dump script failed").map_err(EdevError::EvalFailed)?;
     let value = outcome
         .value
         .ok_or_else(|| EdevError::EvalFailed("dump script returned no value".to_string()))?;
@@ -490,14 +478,7 @@ pub async fn run_eval_script(
         serde_json::to_string_pretty(&output)
             .map_err(|error| EdevError::EvalFailed(format!("failed to encode JSON: {error}")))?
     );
-    if outcome.success {
-        Ok(())
-    } else {
-        Err(EdevError::EvalFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "script evaluation failed",
-        )))
-    }
+    require_success(&outcome, "script evaluation failed").map_err(EdevError::EvalFailed)
 }
 
 /// Start the app, list or apply a fixture, then either exit or wait for ctrl-c.
@@ -587,14 +568,8 @@ async fn eval_fixture_apply(
     )
     .await?;
     let outcome = parse_script_eval_outcome(&result).map_err(EdevError::FixtureFailed)?;
-    if outcome.success {
-        Ok(outcome)
-    } else {
-        Err(EdevError::FixtureFailed(script_eval_error_message(
-            outcome.error.as_ref(),
-            "fixture application failed",
-        )))
-    }
+    require_success(&outcome, "fixture application failed").map_err(EdevError::FixtureFailed)?;
+    Ok(outcome)
 }
 
 /// Decodes structured content or the first JSON text block with stable domain
@@ -847,13 +822,19 @@ async fn eval_fixture_script(
     fallback_message: &str,
 ) -> Result<ScriptEvalOutcome, EdevError> {
     let outcome = call_script_eval(client, script, None, EdevError::FixtureFailed).await?;
+    require_success(&outcome, fallback_message).map_err(EdevError::FixtureFailed)?;
+    Ok(outcome)
+}
+
+/// Fail with the error message of `outcome` unless it succeeded.
+fn require_success(outcome: &ScriptEvalOutcome, fallback_message: &str) -> Result<(), String> {
     if outcome.success {
-        Ok(outcome)
+        Ok(())
     } else {
-        Err(EdevError::FixtureFailed(script_eval_error_message(
+        Err(script_eval_error_message(
             outcome.error.as_ref(),
             fallback_message,
-        )))
+        ))
     }
 }
 
