@@ -394,7 +394,7 @@ fn compact_value_json(value: &Option<WidgetValue>) -> String {
 }
 
 fn compact_json(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+    value.to_string()
 }
 
 fn quoted(value: &str, max_chars: usize) -> String {

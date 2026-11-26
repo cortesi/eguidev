@@ -778,9 +778,7 @@ fn script_failure_summary(outcome: &ScriptEvalOutcome) -> String {
 
 fn script_failure_details(outcome: &ScriptEvalOutcome) -> Option<String> {
     let details = outcome.error.as_ref()?.details.as_ref()?;
-    serde_json::to_string_pretty(details)
-        .ok()
-        .or_else(|| Some(details.to_string()))
+    Some(format!("{details:#}"))
 }
 
 fn error_has_egui_diagnostic_details(error: &ScriptErrorInfo) -> bool {
