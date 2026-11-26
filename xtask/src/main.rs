@@ -124,11 +124,7 @@ fn checks() -> Result<(), Box<dyn Error>> {
     if env::var("NANOCODE_MODE").as_deref() == Ok("fix") {
         sync_doc_snippets()?;
     } else {
-        run_command("snips", &["--check", "--commands", "deny"], "snips --check").map_err(
-            |error| -> Box<dyn Error> {
-                format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
-            },
-        )?;
+        run_snips(&["--check", "--commands", "deny"], "snips --check")?;
     }
     run_command(
         "cargo",
@@ -148,7 +144,12 @@ fn checks() -> Result<(), Box<dyn Error>> {
 
 /// Rewrite Markdown snippets that no longer match their source files.
 fn sync_doc_snippets() -> Result<(), Box<dyn Error>> {
-    run_command("snips", &["--commands", "deny"], "snips").map_err(|error| {
+    run_snips(&["--commands", "deny"], "snips")
+}
+
+/// Run the snippet tool, and say how to install it when it fails.
+fn run_snips(args: &[&str], label: &str) -> Result<(), Box<dyn Error>> {
+    run_command("snips", args, label).map_err(|error| {
         format!("{error}\ninstall the snippet tool with `cargo install snips`").into()
     })
 }
@@ -522,9 +523,8 @@ return {
     }
     .await;
 
-    if process.kill().await.is_err() {
-        // The child may have already exited after the smoke run completes.
-    }
+    // The child may have already exited after the smoke run completes.
+    drop(process.kill().await);
     let elapsed_ms = start.elapsed().as_millis() as u64;
     match &smoke_result {
         Ok(()) => println!("[PASS] edev_transport ({elapsed_ms}ms)"),
@@ -553,11 +553,6 @@ fn run_command(program: &str, args: &[&str], label: &str) -> Result<(), Box<dyn 
         Command::new(program)
     };
     command.args(args);
-    run_prepared_command(command, label)
-}
-
-/// Run a prepared command and surface failures.
-fn run_prepared_command(command: Command, label: &str) -> Result<(), Box<dyn Error>> {
     run_prepared_command_with_timeout(command, label, None)
 }
 
