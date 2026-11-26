@@ -908,34 +908,21 @@ pub(super) fn invisible_interaction_error(
     if interaction_ready(widget) {
         return None;
     }
-    let viewport = viewport_snapshot_for(inner, viewport_id);
-    let reason = if !widget.visible {
+    let cause = if !widget.visible {
         "widget is not visible"
     } else if !widget.enabled {
         "widget is not enabled"
     } else {
         "widget visible_fraction is 0"
     };
-    Some(
-        ToolError::new(
-            ErrorCode::NotActionable,
-            format!(
-                "Cannot interact with widget {:?}: {reason}; {INTERACTION_READY_HINT}",
-                widget.id
-            ),
-        )
-        .with_details(json!({
-            "reason": "invisible_interaction",
-            "hint": INTERACTION_READY_HINT,
-            "widget": WidgetState::from(widget),
-            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
-                json!({
-                    "id": viewport_id_to_string(viewport_id),
-                })
-            }),
-            "layout": widget.layout.clone(),
-        })),
-    )
+    Some(refused_interaction_error(
+        inner,
+        widget,
+        viewport_id,
+        "invisible_interaction",
+        cause,
+        INTERACTION_READY_HINT,
+    ))
 }
 
 /// Error returned when a pointer action targets a widget that
@@ -948,25 +935,43 @@ pub(super) fn covered_interaction_error(
     if !widget.covered {
         return None;
     }
+    Some(refused_interaction_error(
+        inner,
+        widget,
+        viewport_id,
+        "covered",
+        "another layer covers it",
+        COVERED_HINT,
+    ))
+}
+
+/// The error of an interaction that `widget` refuses for `cause`, with the
+/// state of the widget and of its viewport.
+fn refused_interaction_error(
+    inner: &Inner,
+    widget: &WidgetRegistryEntry,
+    viewport_id: egui::ViewportId,
+    reason: &str,
+    cause: &str,
+    hint: &str,
+) -> ToolError {
     let viewport = viewport_snapshot_for(inner, viewport_id);
-    Some(
-        ToolError::new(
-            ErrorCode::NotActionable,
-            format!(
-                "Cannot interact with widget {:?}: another layer covers it; {COVERED_HINT}",
-                widget.id
-            ),
-        )
-        .with_details(json!({
-            "reason": "covered",
-            "hint": COVERED_HINT,
-            "widget": WidgetState::from(widget),
-            "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
-                json!({
-                    "id": viewport_id_to_string(viewport_id),
-                })
-            }),
-            "layout": widget.layout.clone(),
-        })),
+    ToolError::new(
+        ErrorCode::NotActionable,
+        format!(
+            "Cannot interact with widget {:?}: {cause}; {hint}",
+            widget.id
+        ),
     )
+    .with_details(json!({
+        "reason": reason,
+        "hint": hint,
+        "widget": WidgetState::from(widget),
+        "viewport": viewport.as_ref().map(viewport_snapshot_json).unwrap_or_else(|| {
+            json!({
+                "id": viewport_id_to_string(viewport_id),
+            })
+        }),
+        "layout": widget.layout.clone(),
+    }))
 }
