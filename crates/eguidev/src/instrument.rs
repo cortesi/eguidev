@@ -160,7 +160,7 @@ pub fn publish_rect_meta(ui: &egui::Ui, id: impl Into<String>, rect: egui::Rect,
 ///
 /// This is the documented form for a painter-drawn hierarchy. Every rect that
 /// [`publish_rect_meta`] publishes while the returned guard lives becomes a
-/// child of `id`, so `check_layout` reads containment as intentional structure
+/// child of `id`, so `layout_issues` reads containment as intentional structure
 /// instead of one overlap per child, and the children inherit the parent's clip
 /// rect. The guard pops the scope on drop.
 ///

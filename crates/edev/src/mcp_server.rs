@@ -289,8 +289,8 @@ impl ServerHandler for EdevServer {
     }
 }
 
-/// Decode a proxied `script_eval` tool result back into the checked-in outcome
-/// shape.
+/// Decode the result of the `script_eval` tool of an app into a script
+/// outcome.
 pub fn parse_script_eval_outcome(result: &CallToolResult) -> Result<ScriptEvalOutcome, String> {
     decode_tool_result(result, "script_eval", "script_eval outcome")
 }

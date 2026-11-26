@@ -646,7 +646,8 @@ impl JsonSchema for FixtureCall {}
 
 /// Structured fixture handler failure.
 ///
-/// A handler chooses its own `code` values, such as `unknown_fixture`.
+/// A handler chooses its own `code` values. It never sees an unregistered
+/// fixture name, because the runtime rejects one before the handler runs.
 /// `eguidev` produces these itself before or around the handler:
 ///
 /// - `no_handler`: the app registered no fixture handler.
@@ -2066,7 +2067,7 @@ pub fn name_viewport(ctx: &Context, name: impl Into<String>);
 ///
 /// This is the documented form for a painter-drawn hierarchy. Every rect that
 /// [`publish_rect_meta`] publishes while the returned guard lives becomes a
-/// child of `id`, so `check_layout` reads containment as intentional structure
+/// child of `id`, so `layout_issues` reads containment as intentional structure
 /// instead of one overlap per child, and the children inherit the parent's clip
 /// rect. The guard pops the scope on drop.
 ///

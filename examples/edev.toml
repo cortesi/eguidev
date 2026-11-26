@@ -85,8 +85,8 @@ command = [
 # suite_timeout_secs = 600
 
 # Per-script timeout, in seconds.
-# `edev eval` uses this as its default script timeout unless `--script-timeout-secs`
-# is passed.
+# `edev smoke`, `edev eval`, and `edev dump` use this unless
+# `--script-timeout-secs` is passed.
 # script_timeout_secs = 60
 
 # Maximum Luau instructions per script. Increase this for intentional

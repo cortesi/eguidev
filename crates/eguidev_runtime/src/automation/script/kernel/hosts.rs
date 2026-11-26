@@ -275,7 +275,7 @@ pub(super) fn args_host<'s>(
     scope: &Scope<'s>,
     args: &MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
-    no_args("__eguidev_args", args)?;
+    no_args("args", args)?;
     let value = json_to_scoped_value(scope, script_args)?;
     let ScopedValue::Table(table) = value else {
         return Err(RuntimeError::runtime(

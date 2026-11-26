@@ -602,8 +602,8 @@ export type ScrollToOptions = {
 
 --- Encoding for one capture. Omitting the table keeps lossy JPEG at a 1600
 --- pixel long edge, which is small enough to return through a tool call.
---- Raise `max_dimension` to the captured pixel size to stop the reduction and
---- keep a large window as legible as a small one. Reduction averages the
+--- Set `max_dimension` to zero to keep the captured size, which stops the
+--- reduction and keeps a large window as legible as a small one. Reduction averages the
 --- source pixels, so a thumbnail keeps its text readable.
 --- Every returned image travels in one response, and the images of one result
 --- hold at most 48 MiB once encoded. A larger result fails the script with

@@ -76,7 +76,7 @@ impl State {
         self.idle_shutdown_after = Some(idle_after);
     }
 
-    /// Record an internal launcher log line into the shared log buffer.
+    /// Print an internal launcher log line when verbose logging is on.
     pub fn log_edev(&self, line: impl AsRef<str>) {
         let line = line.as_ref();
         self.log_state.record_line(&format!("edev: {line}"));
@@ -364,7 +364,7 @@ impl State {
 
 /// Running app process and its connected MCP client.
 pub struct AppProcess {
-    /// Child process handle for `cargo run`.
+    /// Direct app child on platforms without a supervisor.
     pub child: Option<Child>,
     /// Process group id for the running app process tree.
     pub process_group_id: Option<i32>,
@@ -391,7 +391,7 @@ pub struct AppProcess {
     pub stderr_task: Option<JoinHandle<()>>,
     /// Captured stderr output, primarily for startup errors.
     pub stderr_buffer: Arc<Mutex<Vec<u8>>>,
-    /// Captured stdout output when stdout is not consumed by the MCP transport.
+    /// Captured stdout output.
     pub stdout_buffer: Arc<Mutex<Vec<u8>>>,
     /// Logger for process lifecycle messages.
     pub log_state: LogState,

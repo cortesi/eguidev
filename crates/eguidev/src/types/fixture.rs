@@ -111,7 +111,8 @@ pub type FixtureResult = Result<FixtureResponse, FixtureError>;
 
 /// Structured fixture handler failure.
 ///
-/// A handler chooses its own `code` values, such as `unknown_fixture`.
+/// A handler chooses its own `code` values. It never sees an unregistered
+/// fixture name, because the runtime rejects one before the handler runs.
 /// `eguidev` produces these itself before or around the handler:
 ///
 /// - `no_handler`: the app registered no fixture handler.

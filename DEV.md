@@ -38,7 +38,7 @@ type-checks it, and `cargo xtask smoke` proves that it still passes.
 
 ## Tests
 
-Run the test lane from `xtask`:
+Run the test lane:
 
 ```sh
 ncode test
@@ -169,7 +169,7 @@ independently of the wall-clock timeout for intentional long-running stress scri
 
 ## Background automation (occluded windows)
 
-Stock eframe 0.36 stops running `App::ui` and painting when a window is minimized or
+Stock eframe 0.37 stops running `App::ui` and painting when a window is minimized or
 occluded (`ViewportInfo::visible()` gates `run_ui`), so automation would freeze as soon
 as the developer's windows fully cover an instrumented app, and no `request_repaint()`
 can revive it. On macOS, `eguidev_runtime::attach` installs the process-wide observation

@@ -1087,8 +1087,8 @@ impl DemoApp {
     }
 
     /// Publish two sibling rects that deliberately intersect on screen.
-    fn publish_gate_overlap(ui: &egui::Ui, ready: egui::Rect) {
-        let first = egui::Rect::from_min_size(ready.min, egui::vec2(40.0, 20.0));
+    fn publish_gate_overlap(ui: &egui::Ui, anchor: egui::Rect) {
+        let first = egui::Rect::from_min_size(anchor.min, egui::vec2(40.0, 20.0));
         let second = first.translate(egui::vec2(20.0, 0.0));
         for (id, rect, fill) in [
             ("gate.overlap.a", first, Color32::from_rgb(0xe5, 0x48, 0x4d)),
@@ -1117,9 +1117,9 @@ impl DemoApp {
     ///
     /// One sits past the end of the declared content extent; the other sits off
     /// the axis the scroll area does not scroll. Both must still report.
-    fn publish_gate_offenders(ui: &egui::Ui, ready: egui::Rect) {
+    fn publish_gate_offenders(ui: &egui::Ui, anchor: egui::Rect) {
         let beyond = egui::Rect::from_min_size(
-            ready.min + egui::vec2(0.0, 4_000.0),
+            anchor.min + egui::vec2(0.0, 4_000.0),
             egui::vec2(120.0, 20.0),
         );
         eguidev::publish_rect_meta(
@@ -1134,7 +1134,7 @@ impl DemoApp {
             },
         );
         let off_axis = egui::Rect::from_min_size(
-            ready.min + egui::vec2(4_000.0, 0.0),
+            anchor.min + egui::vec2(4_000.0, 0.0),
             egui::vec2(120.0, 20.0),
         );
         eguidev::publish_rect_meta(

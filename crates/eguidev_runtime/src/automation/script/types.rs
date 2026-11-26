@@ -58,7 +58,8 @@ impl<'de> Deserialize<'de> for ScriptArgValue {
     }
 }
 
-/// Deterministic map of script args exposed to Luau as the global `args` table.
+/// Deterministic map of script args exposed to Luau as the `eguidev.args`
+/// table.
 pub type ScriptArgs = BTreeMap<String, ScriptArgValue>;
 
 /// Named Luau module sources available through `require` during one evaluation.
@@ -77,7 +78,7 @@ pub struct ScriptEvalOptions {
     /// evaluation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_instructions: Option<u64>,
-    /// Optional JSON object exposed to the script as the global `args` table.
+    /// Optional JSON object exposed to the script as the `eguidev.args` table.
     #[serde(default)]
     pub args: ScriptArgs,
     /// Named Luau modules available to this script and its dependencies.
@@ -150,7 +151,8 @@ impl ScriptTiming {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScriptErrorInfo {
     #[serde(rename = "type")]
-    /// Broad error category such as `parse`, `runtime`, or `assertion`.
+    /// Broad error category such as `parse`, `typecheck`, `runtime`, or
+    /// `timeout`.
     pub error_type: String,
     /// Error message presented to the caller.
     pub message: String,

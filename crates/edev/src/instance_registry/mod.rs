@@ -69,7 +69,7 @@ pub struct AppRecord {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-/// Stable process-lifetime ready sourced from macOS process metadata.
+/// Stable process-lifetime anchor sourced from macOS process metadata.
 pub struct ProcessStartTime {
     /// Whole seconds in the process start timestamp.
     seconds: u64,

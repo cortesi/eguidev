@@ -372,7 +372,7 @@ async fn run_dump(config: DumpConfig) -> Result<(), EdevError> {
     session.finish(result).await
 }
 
-/// Execute the generated dump script and emit only the requested dump payload.
+/// Execute the checked-in dump script and emit only the requested dump payload.
 async fn run_dump_script(
     client: Arc<AsyncMutex<tmcp::Client<()>>>,
     config: &DumpConfig,
@@ -815,7 +815,8 @@ pub fn eval_output_value(
     Ok(value)
 }
 
-/// Information needed to write a failure bundle while the app is still running.
+/// Run one fixture script, and fail with its error, or with `fallback_message`
+/// when the error carries no message.
 async fn eval_fixture_script(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     script: &str,

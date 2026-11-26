@@ -8,7 +8,8 @@ use super::{
     types::{ScriptArgValue, ScriptArgs, ScriptImageInfo, ScriptValue},
 };
 
-/// Convert script arguments into the JSON table shape exposed as global `args`.
+/// Convert script arguments into the JSON table shape exposed as
+/// `eguidev.args`.
 pub(super) fn script_args_to_json(args: &ScriptArgs) -> Value {
     let values = args
         .iter()

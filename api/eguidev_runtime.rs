@@ -16,8 +16,9 @@
 //! - choose `eframe::Renderer::Glow` for automation runs when possible
 //! - register a fixture handler with [`eguidev::DevMcp::on_fixture_runtime`] or
 //!   [`eguidev::DevMcp::on_fixture_ui`]
-//! - wrap every frame in [`eguidev::FrameGuard`], which registers an egui
-//!   plugin on the first frame to inject input automatically
+//! - wrap each viewport pass in [`eguidev::frame_scope`], whose
+//!   [`eguidev::FrameGuard`] registers an egui plugin on the first frame to
+//!   inject input automatically
 //!
 //! The `wgpu` backend can exhibit idle-frame stalls in some `eframe`
 //! integrations, so the demo and examples prefer `Glow`.
@@ -135,7 +136,8 @@ pub enum ScriptArgValue {
 
 impl JsonSchema for ScriptArgValue {}
 
-/// Deterministic map of script args exposed to Luau as the global `args` table.
+/// Deterministic map of script args exposed to Luau as the `eguidev.args`
+/// table.
 pub type ScriptArgs = BTreeMap<String, ScriptArgValue>;
 
 /// Assertion outcome recorded during script execution.
@@ -156,7 +158,8 @@ pub struct ScriptCheckError {/* private fields */}
 /// Error details reported by the script runtime.
 #[derive(Clone, Debug, Deserialize<'de>, PartialEq, Serialize)]
 pub struct ScriptErrorInfo {
-    /// Broad error category such as `parse`, `runtime`, or `assertion`.
+    /// Broad error category such as `parse`, `typecheck`, `runtime`, or
+    /// `timeout`.
     #[serde(rename = "type")]
     pub error_type: String,
     /// Error message presented to the caller.
@@ -184,7 +187,7 @@ pub struct ScriptEvalOptions {
     /// evaluation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_instructions: Option<u64>,
-    /// Optional JSON object exposed to the script as the global `args` table.
+    /// Optional JSON object exposed to the script as the `eguidev.args` table.
     #[serde(default)]
     pub args: ScriptArgs,
     /// Named Luau modules available to this script and its dependencies.
