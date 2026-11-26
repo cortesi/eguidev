@@ -698,8 +698,8 @@ async fn fixture_rejects_unregistered_names() {
     assert!(result.is_err());
 }
 
-#[tokio::test]
-async fn fixtures_are_sorted_for_scripts() {
+#[test]
+fn fixtures_are_sorted_for_scripts() {
     let inner = Arc::new(Inner::new());
     inner.fixtures.set_fixtures(vec![
         FixtureSpec::new("zeta", "Last fixture.").ready("status"),

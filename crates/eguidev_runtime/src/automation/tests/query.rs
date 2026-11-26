@@ -88,8 +88,8 @@ async fn script_eval_widget_at_point_accepts_boolean_all_layers() {
     assert_eq!(json["value"]["first"], "top");
 }
 
-#[tokio::test]
-async fn widget_list_respects_visibility() {
+#[test]
+fn widget_list_respects_visibility() {
     let inner = Arc::new(Inner::new());
     let ctx = egui::Context::default();
     let raw_input = egui::RawInput::default();
@@ -143,8 +143,8 @@ async fn widget_list_respects_visibility() {
     assert!(tags.contains(&"hidden"));
 }
 
-#[tokio::test]
-async fn widget_lookup_missing_returns_search_details() {
+#[test]
+fn widget_lookup_missing_returns_search_details() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
     inner.widgets.clear_registry(viewport_id);
@@ -186,8 +186,8 @@ async fn widget_lookup_missing_returns_search_details() {
     );
 }
 
-#[tokio::test]
-async fn widget_lookup_missing_reports_exact_match_in_other_viewport() {
+#[test]
+fn widget_lookup_missing_reports_exact_match_in_other_viewport() {
     let inner = Arc::new(Inner::new());
     let root = egui::ViewportId::ROOT;
     let secondary = egui::ViewportId::from_hash_of("secondary");
@@ -244,8 +244,8 @@ async fn widget_lookup_missing_reports_exact_match_in_other_viewport() {
     );
 }
 
-#[tokio::test]
-async fn widget_lookup_round_trips_widget_list_id() {
+#[test]
+fn widget_lookup_round_trips_widget_list_id() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
     let big_id = (1_u64 << 63) + 5;
@@ -268,8 +268,8 @@ async fn widget_lookup_round_trips_widget_list_id() {
     assert_eq!(fetched.id, "big");
 }
 
-#[tokio::test]
-async fn widget_lookup_fails_on_duplicate_explicit_ids() {
+#[test]
+fn widget_lookup_fails_on_duplicate_explicit_ids() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
 
@@ -329,8 +329,8 @@ async fn widget_lookup_fails_on_duplicate_explicit_ids() {
     );
 }
 
-#[tokio::test]
-async fn widget_lookup_generated_duplicates_remain_ambiguous() {
+#[test]
+fn widget_lookup_generated_duplicates_remain_ambiguous() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
 
@@ -348,8 +348,8 @@ async fn widget_lookup_generated_duplicates_remain_ambiguous() {
     assert_ne!(result.code(), ErrorCode::InstrumentationFault);
 }
 
-#[tokio::test]
-async fn widget_lookup_accepts_generated_hex_id() {
+#[test]
+fn widget_lookup_accepts_generated_hex_id() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
 
@@ -370,8 +370,8 @@ async fn widget_lookup_accepts_generated_hex_id() {
     assert_eq!(fetched.id, entry.id);
 }
 
-#[tokio::test]
-async fn widget_list_filters_role_and_id_prefix() {
+#[test]
+fn widget_list_filters_role_and_id_prefix() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
 
@@ -401,8 +401,8 @@ async fn widget_list_filters_role_and_id_prefix() {
     assert_eq!(tags, vec!["filter.match"]);
 }
 
-#[tokio::test]
-async fn pointer_cover_ignores_an_enclosing_container() {
+#[test]
+fn pointer_cover_ignores_an_enclosing_container() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
     let full = Rect {
@@ -466,8 +466,8 @@ async fn pointer_cover_ignores_an_enclosing_container() {
     );
 }
 
-#[tokio::test]
-async fn pointer_cover_ranks_a_later_layer_above_registry_order() {
+#[test]
+fn pointer_cover_ranks_a_later_layer_above_registry_order() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
     let full = Rect {
@@ -502,8 +502,8 @@ async fn pointer_cover_ranks_a_later_layer_above_registry_order() {
     );
 }
 
-#[tokio::test]
-async fn widget_list_filters_label_and_label_contains() {
+#[test]
+fn widget_list_filters_label_and_label_contains() {
     let inner = Arc::new(Inner::new());
     let viewport_id = egui::ViewportId::ROOT;
 
@@ -685,8 +685,8 @@ fn collect_widget_list_filters_boolean_fields() {
     assert!(all_ids.contains(&"disabled"));
 }
 
-#[tokio::test]
-async fn widget_list_includes_values() {
+#[test]
+fn widget_list_includes_values() {
     let inner = Arc::new(Inner::new());
     let ctx = egui::Context::default();
     let raw_input = egui::RawInput::default();
@@ -751,8 +751,8 @@ async fn widget_list_includes_values() {
     ));
 }
 
-#[tokio::test]
-async fn widget_at_point_reports_topmost() {
+#[test]
+fn widget_at_point_reports_topmost() {
     let inner = Arc::new(Inner::new());
     let server = DevMcpServer::new(Arc::clone(&inner));
     let viewport_id = egui::ViewportId::ROOT;
