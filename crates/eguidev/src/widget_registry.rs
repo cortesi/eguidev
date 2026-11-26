@@ -19,7 +19,7 @@ use crate::{
         WidgetLayout, WidgetRange, WidgetRef, WidgetRegistryEntry, WidgetRole, WidgetRoleMeta,
         WidgetValue,
     },
-    viewports::{ViewportSnapshot, ViewportState},
+    viewports::ViewportState,
 };
 
 /// Metadata for a widget used during tracking and layout analysis.
@@ -864,22 +864,13 @@ fn parent_chain_for(
 }
 
 fn viewport_summary(viewports: &ViewportState, viewport_id: &str) -> serde_json::Value {
-    let snapshot = viewports
+    let (name, title) = viewports
         .viewports_snapshot()
         .into_iter()
-        .find(|snapshot| snapshot.viewport_id == viewport_id);
-    viewport_summary_value(viewport_id, snapshot.as_ref())
-}
-
-fn viewport_summary_value(
-    viewport_id: &str,
-    snapshot: Option<&ViewportSnapshot>,
-) -> serde_json::Value {
-    json!({
-        "id": viewport_id,
-        "name": snapshot.and_then(|snapshot| snapshot.name.clone()),
-        "title": snapshot.and_then(|snapshot| snapshot.title.clone()),
-    })
+        .find(|snapshot| snapshot.viewport_id == viewport_id)
+        .map(|snapshot| (snapshot.name, snapshot.title))
+        .unwrap_or_default();
+    json!({ "id": viewport_id, "name": name, "title": title })
 }
 
 fn resolve_viewport_id(
