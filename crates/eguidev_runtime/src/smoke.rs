@@ -832,7 +832,8 @@ mod tests {
     use std::{
         fs,
         hint::spin_loop,
-        path::PathBuf,
+        ops::Deref,
+        path::{Path, PathBuf},
         sync::{
             Arc,
             atomic::{AtomicU64, Ordering},
@@ -859,11 +860,37 @@ mod tests {
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn test_root(name: &str) -> PathBuf {
+    /// A fresh directory for one test, removed when the test ends, even when
+    /// it fails.
+    struct TestRoot(PathBuf);
+
+    impl Deref for TestRoot {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TestRoot {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            drop(fs::remove_dir_all(&self.0));
+        }
+    }
+
+    fn test_root(name: &str) -> TestRoot {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        PathBuf::from("tmp")
+        let root = PathBuf::from("tmp")
             .join("smoke_tests")
-            .join(format!("{name}_{id}"))
+            .join(format!("{name}_{id}"));
+        drop(fs::remove_dir_all(&root));
+        TestRoot(root)
     }
 
     fn suite_config(suite_dir: PathBuf) -> SuiteConfig {
@@ -1014,7 +1041,6 @@ mod tests {
     fn suite_results_retain_diagnostics_when_policy_is_disabled() {
         let root = test_root("suite_results_retain_diagnostics_when_policy_is_disabled");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite");
         fs::write(suite_dir.join("10_probe.luau"), "return true").expect("write script");
         let mut config = suite_config(suite_dir);
@@ -1034,13 +1060,11 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("EGUI: undismissed egui diagnostics:"))
         );
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn collect_suite_paths_sorts_recursively() {
         let root = test_root("collect_suite_paths_sorts_recursively");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(root.join("nested")).expect("create suite dir");
         fs::write(root.join("20_second.luau"), "return true").expect("write second");
         fs::write(root.join("nested").join("10_first.luau"), "return true").expect("write first");
@@ -1053,14 +1077,11 @@ mod tests {
                 PathBuf::from("nested/10_first.luau"),
             ]
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn collect_suite_paths_sorts_numerically() {
         let root = test_root("collect_suite_paths_sorts_numerically");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&root).expect("create suite dir");
         fs::write(root.join("100_later.luau"), "return true").expect("write 100");
         fs::write(root.join("10_early.luau"), "return true").expect("write 10");
@@ -1075,14 +1096,11 @@ mod tests {
                 PathBuf::from("100_later.luau"),
             ]
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn collect_suite_scripts_uses_explicit_paths_in_given_order() {
         let root = test_root("collect_suite_scripts_uses_explicit_paths_in_given_order");
-        drop(fs::remove_dir_all(&root));
         let suite_dir = root.join("suite");
         let external_dir = root.join("external");
         fs::create_dir_all(&suite_dir).expect("create suite dir");
@@ -1100,15 +1118,12 @@ mod tests {
         assert_eq!(scripts[0].source_path, external_script);
         assert_eq!(scripts[1].display_path, normalize_path(&suite_script));
         assert_eq!(scripts[1].source_path, suite_script);
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn discover_suite_scripts_lists_sizes_and_unions_only_filters() {
         let root = test_root("discover_suite_scripts_lists_sizes_and_unions_only_filters");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(suite_dir.join("nested")).expect("create suite dir");
         fs::write(suite_dir.join("10_bootstrap.luau"), "return true").expect("write first");
         fs::write(suite_dir.join("20_layout.luau"), "return 12345").expect("write second");
@@ -1133,15 +1148,12 @@ mod tests {
         config.only = vec!["*layout.luau".to_string()];
         let narrowed = discover_suite_scripts(&config).expect("discover scripts");
         assert_eq!(narrowed.len(), 2);
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn collect_suite_scripts_rejects_only_with_explicit_paths() {
         let root = test_root("collect_suite_scripts_rejects_only_with_explicit_paths");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         let script = suite_dir.join("10_bootstrap.luau");
         fs::write(&script, "return true").expect("write script");
@@ -1152,15 +1164,12 @@ mod tests {
         let error = collect_suite_scripts(&config).expect_err("conflict should fail");
 
         assert!(error.to_string().contains("cannot be combined"));
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_with_reports_empty_only_selection() {
         let root = test_root("run_suite_with_reports_empty_only_selection");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_bootstrap.luau"), "return true").expect("write script");
 
@@ -1181,15 +1190,12 @@ mod tests {
                 .expect("failure message")
                 .contains("matched --only \"*missing*\"")
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_propagates_args_and_fail_fast() {
         let root = test_root("run_suite_propagates_args_and_fail_fast");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(
             suite_dir.join("10_args.luau"),
@@ -1223,15 +1229,12 @@ mod tests {
         assert_eq!(result.results[0].status, ScriptStatus::Pass);
         assert_eq!(result.results[1].status, ScriptStatus::Fail);
         assert_eq!(result.results[2].status, ScriptStatus::Skip);
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn smoke_runner_handles_read_clear_failure_and_policy_opt_out() {
         let root = test_root("smoke_runner_handles_read_clear_failure_and_policy_opt_out");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(
             suite_dir.join("10_read.luau"),
@@ -1295,15 +1298,12 @@ return true
                 .iter()
                 .any(|line| line.contains("EGUI: undismissed egui diagnostics"))
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_with_callback_propagates_args_and_fail_fast() {
         let root = test_root("run_suite_with_callback_propagates_args_and_fail_fast");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_args.luau"), "return true").expect("write args script");
         fs::write(suite_dir.join("20_fail.luau"), "return true").expect("write fail");
@@ -1340,8 +1340,6 @@ return true
         assert_eq!(result.passed(), 1);
         assert_eq!(result.failed(), 1);
         assert_eq!(result.skipped(), 1);
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -1356,7 +1354,6 @@ return true
     fn suite_timeout_clamps_script_timeout() {
         let root = test_root("suite_timeout_clamps_script_timeout");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_long.luau"), "return true").expect("write script");
 
@@ -1377,14 +1374,12 @@ return true
         assert!(result.success());
         let timeout_ms = seen.expect("timeout");
         assert!(timeout_ms <= 3_000, "{timeout_ms}");
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn a_script_is_skipped_when_less_than_a_second_of_the_suite_is_left() {
         let root = test_root("a_script_is_skipped_when_less_than_a_second_of_the_suite_is_left");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_late.luau"), "return true").expect("write script");
 
@@ -1407,14 +1402,12 @@ return true
             result.results[0].message.as_deref(),
             Some("suite deadline exceeded before test started")
         );
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn overflowed_suite_timeout_runs_scripts() {
         let root = test_root("overflowed_suite_timeout_runs_scripts");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_run.luau"), "return true").expect("write script");
 
@@ -1433,14 +1426,12 @@ return true
 
         assert!(result.success());
         assert_eq!(result.passed(), 1);
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_with_measures_elapsed_after_execution() {
         let root = test_root("run_suite_with_measures_elapsed_after_execution");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_slow.luau"), "return true").expect("write script");
 
@@ -1461,15 +1452,12 @@ return true
 
         assert_eq!(result.passed(), 1);
         assert!(result.results[0].elapsed_ms >= 1);
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_with_repeats_selected_set() {
         let root = test_root("run_suite_with_repeats_selected_set");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_first.luau"), "return true").expect("write first");
         fs::write(suite_dir.join("20_second.luau"), "return true").expect("write second");
@@ -1506,15 +1494,12 @@ return true
                 .iter()
                 .any(|line| line.starts_with("[PASS] round 2 10_first.luau ("))
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_with_until_fail_stops_on_first_failure() {
         let root = test_root("run_suite_with_until_fail_stops_on_first_failure");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_first.luau"), "return true").expect("write first");
         fs::write(suite_dir.join("20_second.luau"), "return true").expect("write second");
@@ -1556,15 +1541,12 @@ return true
                 (2, "10_first.luau".to_string()),
             ]
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
     fn run_suite_with_until_fail_first_round_renders_round_prefix() {
         let root = test_root("run_suite_with_until_fail_first_round_renders_round_prefix");
         let suite_dir = root.join("suite");
-        drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&suite_dir).expect("create suite dir");
         fs::write(suite_dir.join("10_fail.luau"), "return true").expect("write script");
 
@@ -1584,8 +1566,6 @@ return true
                 .iter()
                 .any(|line| line.starts_with("[FAIL] round 1 10_fail.luau ("))
         );
-
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
