@@ -40,9 +40,9 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
   before the action returns.
 - Follow-up state checks are expressed as explicit waits after the action, which
   keeps action options data-shaped and timeout behavior consistent across the API.
-- Pointer actions fail fast with `invisible_interaction` when the target widget is hidden or fully
-  clipped. Scripts should wait for `{ actionable = true }` or call `scroll_into_view()` before
-  interacting with content that may be outside the viewport.
+- Pointer actions fail fast with `not_actionable` and reason `invisible_interaction` when the
+  target widget is hidden or fully clipped. Scripts should wait for `{ actionable = true }` or
+  call `scroll_into_view()` before interacting with content that may be outside the viewport.
 - Pointer actions also fail fast with `not_actionable` and reason `covered`. This happens when
   another egui layer sits over the target's action point, such as a floating card or a modal
   backdrop. `eguidev` computes `covered` from `ctx.layer_id_at` at record time and publishes it on
@@ -81,4 +81,5 @@ The design goal is deterministic scripting behavior with typed, diagnosable fail
 - Targeted key delivery fails fast instead of silently dropping delivery.
 - Actions auto-settle; callers must explicitly opt out when needed.
 - Custom settable widgets that publish values but never call `take_widget_value_override()` surface
-  `override_not_consumed` instead of silently ignoring script-driven `set_value()`.
+  an `instrumentation_fault` with reason `override_not_consumed` instead of silently ignoring
+  script-driven `set_value()`.

@@ -1,7 +1,7 @@
 # DevMCP demo app
 
 This folder documents the demo app used to exercise the DevMCP scripting surface and the
-matching `mcp.json` configurations under `docs/examples/mcp/`.
+matching MCP configuration under `docs/examples/mcp/`.
 
 ## Prerequisites
 

@@ -2,7 +2,8 @@
 #
 # edev discovers this file by walking from the current directory upward,
 # stopping at the nearest git root. Use --config <path> to override.
-# Every field below shows the default value; omit fields you don't need.
+# Every field below shows its default value, except `command`, `env`,
+# `module_dir`, and `args`, which show examples; omit fields you don't need.
 # CLI flags always take precedence over file values.
 
 
@@ -86,7 +87,8 @@ command = [
 
 # Per-script timeout, in seconds.
 # `edev smoke`, `edev eval`, and `edev dump` use this unless
-# `--script-timeout-secs` is passed.
+# `--script-timeout-secs` is passed. `edev fixture` and `edev fixtures` wait at
+# least this long for each request.
 # script_timeout_secs = 60
 
 # Maximum Luau instructions per script. Increase this for intentional
