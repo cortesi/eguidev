@@ -295,11 +295,6 @@ pub fn parse_script_eval_outcome(result: &CallToolResult) -> Result<ScriptEvalOu
     decode_tool_result(result, "script_eval", "script_eval outcome")
 }
 
-/// Serialize a `script_eval` request into an MCP arguments object.
-pub fn script_eval_request_value(request: ScriptEvalRequest) -> Arguments {
-    Arguments::from_struct(request).expect("script eval request should serialize")
-}
-
 /// Failure of the readiness probe of a started app.
 #[derive(Debug)]
 pub enum ProbeFailure {
@@ -316,21 +311,17 @@ pub async fn probe_script_eval_ready(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     timeout: Duration,
 ) -> Result<(), ProbeFailure> {
-    let request = script_eval_request_value(ScriptEvalRequest {
+    let request = ScriptEvalRequest {
         script: "return true".to_string(),
         timeout_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
         options: None,
-    });
-    let result = {
-        let client = client.lock().await;
-        client
-            .call_tool("script_eval".to_string(), request)
-            .await
-            .map_err(|error| match error {
-                McpError::Timeout { .. } => ProbeFailure::Timeout(error.to_string()),
-                error => ProbeFailure::Failed(error.to_string()),
-            })?
     };
+    let result = call_script_eval_result(client, request)
+        .await
+        .map_err(|error| match error {
+            McpError::Timeout { .. } => ProbeFailure::Timeout(error.to_string()),
+            error => ProbeFailure::Failed(error.to_string()),
+        })?;
     let outcome = parse_script_eval_outcome(&result).map_err(ProbeFailure::Failed)?;
     if outcome.success {
         return Ok(());

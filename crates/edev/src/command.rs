@@ -735,7 +735,7 @@ pub async fn call_script_eval_result(
     client: &Arc<AsyncMutex<tmcp::Client<()>>>,
     request: ScriptEvalRequest,
 ) -> Result<CallToolResult, McpError> {
-    let request = script_eval_request_value(request);
+    let request = Arguments::from_struct(request).expect("script eval request should serialize");
     let client = client.lock().await;
     client.call_tool("script_eval".to_string(), request).await
 }

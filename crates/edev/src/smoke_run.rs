@@ -21,7 +21,7 @@ pub async fn run_smoke_suite(
             let script_path = request.path.clone();
             let script_args = request.args.clone();
             let script_source = request.source.clone();
-            let payload = script_eval_request_value(ScriptEvalRequest {
+            let eval_request = ScriptEvalRequest {
                 script: request.source,
                 timeout_ms: request.timeout_ms,
                 options: Some(ScriptEvalOptions {
@@ -30,16 +30,11 @@ pub async fn run_smoke_suite(
                     args: request.args,
                     modules: modules.clone(),
                 }),
-            });
+            };
             let result = block_in_place(|| {
-                Handle::current().block_on(async {
-                    let client = client.lock().await;
-                    client
-                        .call_tool("script_eval".to_string(), payload)
-                        .await
-                        .map_err(|error| error.to_string())
-                })
-            })?;
+                Handle::current().block_on(call_script_eval_result(&client, eval_request))
+            })
+            .map_err(|error| error.to_string())?;
             let mut outcome = parse_script_eval_outcome(&result)?;
             config.suite.apply_egui_diagnostic_policy(&mut outcome);
             if !outcome.success
