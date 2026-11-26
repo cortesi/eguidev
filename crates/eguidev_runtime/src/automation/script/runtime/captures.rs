@@ -215,18 +215,23 @@ impl ScriptRuntime {
         Ok(image_ref_json(id))
     }
 
+    /// Parse the array of positions of a pixel sample.
+    fn sample_positions(&self, pos: ScriptPosition, positions: &Value) -> ScriptResult<Vec<Pos2>> {
+        positions
+            .as_array()
+            .ok_or_else(|| self.type_error(pos, "sample_pixels expects an array of positions"))?
+            .iter()
+            .map(|value| parse_pos2(value).map_err(|error| self.type_error(pos, error.message)))
+            .collect()
+    }
+
     pub(in super::super) async fn sample_pixels(
         &self,
         pos: ScriptPosition,
         positions: &Value,
         viewport_id: Option<String>,
     ) -> ScriptResult<Value> {
-        let positions = positions
-            .as_array()
-            .ok_or_else(|| self.type_error(pos, "sample_pixels expects an array of positions"))?
-            .iter()
-            .map(|value| parse_pos2(value).map_err(|error| self.type_error(pos, error.message)))
-            .collect::<Result<Vec<_>, _>>()?;
+        let positions = self.sample_positions(pos, positions)?;
         let samples = self
             .await_tool(
                 pos,
@@ -245,12 +250,7 @@ impl ScriptRuntime {
     ) -> ScriptResult<Value> {
         let target =
             parse_widget_ref(target).map_err(|error| self.type_error(pos, error.message))?;
-        let positions = positions
-            .as_array()
-            .ok_or_else(|| self.type_error(pos, "sample_pixels expects an array of positions"))?
-            .iter()
-            .map(|value| parse_pos2(value).map_err(|error| self.type_error(pos, error.message)))
-            .collect::<Result<Vec<_>, _>>()?;
+        let positions = self.sample_positions(pos, positions)?;
         let samples = self
             .await_tool(
                 pos,

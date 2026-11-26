@@ -49,7 +49,7 @@ use crate::{
     runtime::Runtime,
     screenshots::ScreenshotKind,
     types::{
-        ActionOptions, RawInputEvent, Rect, ResizeOptions, RoleState, Vec2, WidgetRef,
+        ActionOptions, Pos2, RawInputEvent, Rect, ResizeOptions, RoleState, Vec2, WidgetRef,
         WidgetRegistryEntry, WidgetState, WidgetValue,
     },
     viewports::ViewportSnapshot,
