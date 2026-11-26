@@ -6,13 +6,13 @@ use super::*;
 impl ScriptRuntime {
     /// Take a snapshot, keep it for the evaluation, and return its frame and
     /// its opaque ID.
-    pub(in super::super) fn capture(&self, _pos: ScriptPosition) -> ScriptResult<Value> {
+    pub(in super::super) fn capture(&self) -> Value {
         let snapshot = self.capture_snapshot();
         let frame = snapshot.frame;
         let mut captures = lock(&self.captures, "script captures lock");
         let id = captures.last_key_value().map_or(1, |(id, _)| id + 1);
         captures.insert(id, snapshot);
-        Ok(serde_json::json!({ "frame": frame, "__capture_id": id }))
+        serde_json::json!({ "frame": frame, "__capture_id": id })
     }
 
     /// Compare the snapshot of a capture of this evaluation with the current

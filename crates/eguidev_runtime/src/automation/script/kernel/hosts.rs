@@ -216,10 +216,7 @@ pub(super) fn capture_host<'s>(
     args: &MultiValue<'s>,
 ) -> Result<MultiValue<'s>, RuntimeError> {
     no_args("capture", args)?;
-    let pos = script_position_from_caller(scope);
-    let value = runtime
-        .capture(pos)
-        .map_err(|info| scoped_host_error(scope, info))?;
+    let value = runtime.capture();
     json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
         .into_lua_multi(scope)
 }

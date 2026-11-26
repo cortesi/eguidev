@@ -123,7 +123,7 @@ fn closed_viewport_is_removed_from_dumps_and_capture_diffs() {
         .drop_without_applying_deltas();
     inner.viewports.update_viewports(&ctx);
     let pos = ScriptPosition::default();
-    let before = script.capture(pos).expect("capture open viewport");
+    let before = script.capture();
 
     ctx.run_ui(egui::RawInput::default(), |_| {})
         .drop_without_applying_deltas();
@@ -134,7 +134,7 @@ fn closed_viewport_is_removed_from_dumps_and_capture_diffs() {
     let diff = script.capture_diff(pos, &before, None).expect("close diff");
     assert_eq!(diff["viewports_removed"], json!([secondary_id]));
 
-    let closed = script.capture(pos).expect("capture closed viewport");
+    let closed = script.capture();
     ctx.run_ui(open, |_| {}).drop_without_applying_deltas();
     inner.viewports.update_viewports(&ctx);
     let diff = script

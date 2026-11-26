@@ -216,8 +216,7 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
-        let options =
-            dump_options(pos, options).map_err(|message| self.type_error(pos, message))?;
+        let options = dump_options(options).map_err(|message| self.type_error(pos, message))?;
         let dump = build_tree_dump(&self.server.inner, &options)
             .map_err(|error| self.tool_error(pos, error.into()))?;
         self.to_json(pos, dump)
@@ -228,18 +227,14 @@ impl ScriptRuntime {
         pos: ScriptPosition,
         options: Option<&Map<String, Value>>,
     ) -> ScriptResult<Value> {
-        let options =
-            dump_options(pos, options).map_err(|message| self.type_error(pos, message))?;
+        let options = dump_options(options).map_err(|message| self.type_error(pos, message))?;
         let dump = build_tree_dump(&self.server.inner, &options)
             .map_err(|error| self.tool_error(pos, error.into()))?;
         self.to_json(pos, dump_text(&dump))
     }
 }
 
-pub(super) fn dump_options(
-    _pos: ScriptPosition,
-    options: Option<&Map<String, Value>>,
-) -> Result<DumpOptions, String> {
+pub(super) fn dump_options(options: Option<&Map<String, Value>>) -> Result<DumpOptions, String> {
     let Some(options) = options else {
         return Ok(DumpOptions::default());
     };
