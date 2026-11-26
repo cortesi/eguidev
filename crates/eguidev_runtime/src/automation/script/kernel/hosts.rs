@@ -22,11 +22,7 @@ pub(super) fn fixtures_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     no_args("fixtures", args)?;
     let pos = script_position_from_caller(scope);
-    let value = runtime
-        .fixtures(pos)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.fixtures(pos))
 }
 
 pub(super) fn dump_host<'s>(
@@ -41,11 +37,7 @@ pub(super) fn dump_host<'s>(
         Some(Value::Object(map)) => Some(map),
         Some(_) => return Err(RuntimeError::runtime("dump expected an options table")),
     };
-    let value = runtime
-        .dump(pos, options)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.dump(pos, options))
 }
 
 pub(super) fn dump_text_host<'s>(
@@ -60,11 +52,7 @@ pub(super) fn dump_text_host<'s>(
         Some(Value::Object(map)) => Some(map),
         Some(_) => return Err(RuntimeError::runtime("dump_text expected an options table")),
     };
-    let value = runtime
-        .dump_text(pos, options)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.dump_text(pos, options))
 }
 
 pub(super) fn viewport_widget_list_host<'s>(
@@ -75,11 +63,10 @@ pub(super) fn viewport_widget_list_host<'s>(
     let pos = script_position_from_caller(scope);
     let (viewport_id, mut options) = viewport_self_and_options(scope, "widget_list", args)?;
     inject_viewport_id(viewport_id, &mut options);
-    let value = runtime
-        .widget_list(pos, options.as_ref().and_then(Value::as_object))
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(
+        scope,
+        runtime.widget_list(pos, options.as_ref().and_then(Value::as_object)),
+    )
 }
 
 pub(super) fn viewport_state_host<'s>(
@@ -89,11 +76,7 @@ pub(super) fn viewport_state_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let pos = script_position_from_caller(scope);
     let viewport_id = viewport_self(scope, "state", args)?;
-    let value = runtime
-        .viewport_state(pos, viewport_id)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.viewport_state(pos, viewport_id))
 }
 
 pub(super) fn viewport_widget_at_point_host<'s>(
@@ -105,11 +88,10 @@ pub(super) fn viewport_widget_at_point_host<'s>(
     let (viewport_id, point, mut options) =
         viewport_self_point_and_options(scope, "widget_at_point", args)?;
     inject_viewport_id(viewport_id, &mut options);
-    let value = runtime
-        .widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object))
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(
+        scope,
+        runtime.widget_at_point(pos, &point, options.as_ref().and_then(Value::as_object)),
+    )
 }
 
 pub(super) fn widget_viewport_host<'s>(
@@ -120,11 +102,7 @@ pub(super) fn widget_viewport_host<'s>(
     let pos = script_position_from_caller(scope);
     let receiver = widget_receiver(scope, "viewport", args)?;
     let viewport_id = receiver.viewport_id.as_deref().unwrap_or("root");
-    let value = runtime
-        .viewport_handle_json(pos, viewport_id)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.viewport_handle_json(pos, viewport_id))
 }
 
 pub(super) fn widget_state_host<'s>(
@@ -134,11 +112,7 @@ pub(super) fn widget_state_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let pos = script_position_from_caller(scope);
     let target = widget_self(scope, "state", args)?;
-    let value = runtime
-        .widget_state(pos, &target)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.widget_state(pos, &target))
 }
 
 pub(super) fn widget_parent_host<'s>(
@@ -148,11 +122,7 @@ pub(super) fn widget_parent_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let pos = script_position_from_caller(scope);
     let target = widget_self(scope, "parent", args)?;
-    let value = runtime
-        .widget_parent(pos, &target)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.widget_parent(pos, &target))
 }
 
 pub(super) fn widget_children_host<'s>(
@@ -162,11 +132,7 @@ pub(super) fn widget_children_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let pos = script_position_from_caller(scope);
     let target = widget_self(scope, "children", args)?;
-    let value = runtime
-        .widget_children(pos, &target)
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(scope, runtime.widget_children(pos, &target))
 }
 
 pub(super) fn assert_host<'s>(
@@ -228,11 +194,10 @@ pub(super) fn capture_diff_host<'s>(
 ) -> Result<MultiValue<'s>, RuntimeError> {
     let pos = script_position_from_caller(scope);
     let (capture, options) = capture_self_and_options(scope, "diff", args)?;
-    let value = runtime
-        .capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object))
-        .map_err(|info| scoped_host_error(scope, info))?;
-    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
-        .into_lua_multi(scope)
+    json_host_result(
+        scope,
+        runtime.capture_diff(pos, &capture, options.as_ref().and_then(Value::as_object)),
+    )
 }
 
 pub(super) fn log_host<'s>(
@@ -284,6 +249,17 @@ pub(super) fn args_host<'s>(
     };
     table.freeze_deep(scope)?;
     Ok(MultiValue::from_values(vec![ScopedValue::Table(table)]))
+}
+
+/// Return the JSON value of one runtime call to the script, or raise its
+/// error in the calling scope.
+fn json_host_result<'s>(
+    scope: &Scope<'s>,
+    result: ScriptResult<Value>,
+) -> Result<MultiValue<'s>, RuntimeError> {
+    let value = result.map_err(|info| scoped_host_error(scope, info))?;
+    json_to_scoped_value_with_options(scope, &value, JsonDecodeOptions::typed())?
+        .into_lua_multi(scope)
 }
 
 pub(super) fn script_position_from_caller(scope: &Scope<'_>) -> ScriptPosition {
