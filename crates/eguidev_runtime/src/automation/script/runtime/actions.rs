@@ -352,9 +352,7 @@ impl ScriptRuntime {
                                 previous = None;
                                 return false;
                             };
-                            let reached = (current.x - requested.x).abs()
-                                <= SCROLL_STABILITY_TOLERANCE
-                                && (current.y - requested.y).abs() <= SCROLL_STABILITY_TOLERANCE;
+                            let reached = scroll_offsets_match(current, requested);
                             let stable = previous
                                 .is_some_and(|prior| prior.x == current.x && prior.y == current.y);
                             previous = Some(current);
