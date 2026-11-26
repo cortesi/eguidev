@@ -462,16 +462,19 @@ impl DevMcpServer {
         viewport_id: Option<String>,
         root: Option<WidgetRef>,
     ) -> ToolResult<Vec<LayoutIssue>> {
-        let viewport_id = self.resolve_scope_viewport(viewport_id, root.as_ref())?;
+        let (viewport_id, root) = match root {
+            Some(root) => {
+                let root = resolve_widget(&self.inner, viewport_id.as_deref(), &root)?;
+                let viewport_id = resolve_viewport_id(&self.inner, Some(root.viewport_id.clone()))?;
+                (viewport_id, Some(root))
+            }
+            None => (resolve_viewport_id(&self.inner, viewport_id)?, None),
+        };
         let registry = self.inner.widgets.widget_list(viewport_id);
-        let viewport_id_str = viewport_id_to_string(viewport_id);
         // The scope selects what the result reports; structure always resolves
         // against the complete viewport registry.
-        let scope = match root.as_ref() {
-            Some(root) => {
-                let root = resolve_widget(&self.inner, Some(viewport_id_str.as_str()), root)?;
-                collect_subtree(&registry, &root)
-            }
+        let scope = match &root {
+            Some(root) => collect_subtree(&registry, root),
             None => registry.clone(),
         };
 
@@ -507,18 +510,6 @@ impl DevMcpServer {
         let viewport_id = resolve_viewport_id(&self.inner, viewport_id.map(str::to_string))?;
         let hits = widgets_at_point(&self.inner, viewport_id, pos, all_layers.unwrap_or(false));
         Ok(WidgetAtPointResult { widgets: hits })
-    }
-
-    pub(super) fn resolve_scope_viewport(
-        &self,
-        viewport_id: Option<String>,
-        scope: Option<&WidgetRef>,
-    ) -> Result<egui::ViewportId, ToolError> {
-        if let Some(scope) = scope {
-            let widget = resolve_widget(&self.inner, viewport_id.as_deref(), scope)?;
-            return resolve_viewport_id(&self.inner, Some(widget.viewport_id));
-        }
-        resolve_viewport_id(&self.inner, viewport_id)
     }
 }
 
