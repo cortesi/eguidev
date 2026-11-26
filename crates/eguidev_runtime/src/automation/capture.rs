@@ -925,12 +925,7 @@ pub(super) fn sample_color_image(
     pixels_per_point: f32,
     positions: &[Pos2],
 ) -> Result<Vec<PixelSample>, ToolError> {
-    if !pixels_per_point.is_finite() || pixels_per_point <= 0.0 {
-        return Err(ToolError::new(
-            ErrorCode::Internal,
-            "Invalid pixels_per_point for pixel sampling",
-        ));
-    }
+    ensure_valid_pixels_per_point(pixels_per_point)?;
     positions
         .iter()
         .map(|position| sample_color_pixel(image, pixels_per_point, *position))
@@ -966,11 +961,19 @@ pub(super) fn sample_color_pixel(
             "pixels_per_point": pixels_per_point,
         })));
     }
-    let x = physical_x as usize;
-    let y = physical_y as usize;
-    let pixel = image.pixels[y * image.size[0] + x];
-    let rgba = pixel.to_array();
-    Ok(PixelSample {
+    Ok(pixel_sample(
+        image,
+        position,
+        physical_x as usize,
+        physical_y as usize,
+    ))
+}
+
+/// The sample of the image pixel at physical `x` and `y`, reported at
+/// `position`. The caller has checked that the pixel is inside the image.
+fn pixel_sample(image: &egui::ColorImage, position: Pos2, x: usize, y: usize) -> PixelSample {
+    let rgba = image.pixels[y * image.size[0] + x].to_array();
+    PixelSample {
         position,
         physical: [x, y],
         rgba,
@@ -978,7 +981,7 @@ pub(super) fn sample_color_pixel(
             "#{:02x}{:02x}{:02x}{:02x}",
             rgba[0], rgba[1], rgba[2], rgba[3]
         ),
-    })
+    }
 }
 
 pub(super) fn sample_widget_relative_pixels(
@@ -1116,19 +1119,12 @@ pub(super) fn sample_widget_absolute_pixel(
             }),
         ));
     }
-    let x = physical_x as usize;
-    let y = physical_y as usize;
-    let pixel = image.pixels[y * image.size[0] + x];
-    let rgba = pixel.to_array();
-    Ok(PixelSample {
-        position: relative_position,
-        physical: [x, y],
-        rgba,
-        hex: format!(
-            "#{:02x}{:02x}{:02x}{:02x}",
-            rgba[0], rgba[1], rgba[2], rgba[3]
-        ),
-    })
+    Ok(pixel_sample(
+        image,
+        relative_position,
+        physical_x as usize,
+        physical_y as usize,
+    ))
 }
 
 pub(super) fn ensure_valid_pixels_per_point(pixels_per_point: f32) -> Result<(), ToolError> {
