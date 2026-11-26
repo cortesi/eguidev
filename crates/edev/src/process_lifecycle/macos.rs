@@ -449,7 +449,14 @@ pub(super) fn relay_join_result(result: Result<io::Result<u64>, JoinError>) -> R
 pub(super) async fn wait_for_child(
     task: &mut JoinHandle<io::Result<ExitStatus>>,
 ) -> Result<ExitStatus, String> {
-    task.await
+    app_exit_status(task.await)
+}
+
+/// The exit status of the app from the result of its wait task.
+fn app_exit_status(
+    result: Result<io::Result<ExitStatus>, JoinError>,
+) -> Result<ExitStatus, String> {
+    result
         .map_err(|error| format!("app wait task failed: {error}"))?
         .map_err(|error| format!("app wait failed: {error}"))
 }
@@ -516,11 +523,7 @@ impl RelayTasks {
                     return SupervisorTrigger::Owner(owner_result);
                 }
                 child_result = &mut *child => {
-                    return SupervisorTrigger::App(child_result
-                        .map_err(|error| format!("app wait task failed: {error}"))
-                        .and_then(|result| {
-                            result.map_err(|error| format!("app wait failed: {error}"))
-                        }));
+                    return SupervisorTrigger::App(app_exit_status(child_result));
                 }
                 relay_result = &mut self.stdout, if self.stdout_active => {
                     self.stdout_active = false;
