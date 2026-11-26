@@ -21,8 +21,7 @@ use objc2_foundation::{
 };
 use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCRecordingOutput, SCRecordingOutputConfiguration,
-    SCRecordingOutputDelegate, SCRunningApplication, SCShareableContent, SCStream,
-    SCStreamConfiguration, SCWindow,
+    SCRecordingOutputDelegate, SCShareableContent, SCStream, SCStreamConfiguration, SCWindow,
 };
 
 use super::{RecordingRequest, RecordingSummary, WindowCandidate, select_window};
@@ -223,19 +222,11 @@ fn window_candidate(window: &SCWindow) -> WindowCandidate {
     WindowCandidate {
         window_id: unsafe { window.windowID() },
         title: unsafe { window.title() }.map(|title| title.to_string()),
-        owner_name: app.as_ref().map(application_name),
-        process_id: app.as_ref().and_then(application_process_id),
+        owner_name: app
+            .as_ref()
+            .map(|app| unsafe { app.applicationName() }.to_string()),
+        process_id: app.as_ref().map(|app| unsafe { app.processID() }),
     }
-}
-
-/// Return a running application's display name.
-fn application_name(app: &Retained<SCRunningApplication>) -> String {
-    unsafe { app.applicationName() }.to_string()
-}
-
-/// Return a running application's process id.
-fn application_process_id(app: &Retained<SCRunningApplication>) -> Option<i32> {
-    Some(unsafe { app.processID() })
 }
 
 /// Choose the display with the largest intersection with the target window.
