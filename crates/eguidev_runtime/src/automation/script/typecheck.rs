@@ -14,20 +14,21 @@ use ruau::{
     },
 };
 
-const PUBLIC_DECLARATION: &str = include_str!("../../../luau/eguidev.d.luau");
+use super::library::DECLARATION;
+
 #[cfg(test)]
 const PRIVATE_LIBRARY: &str = include_str!("../../../luau/eguidev.luau");
 
 static CHECKER_BASE: LazyLock<Result<Checker, CheckFailure>> = LazyLock::new(|| {
     checker_with_definitions(
-        &[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)],
+        &[DefinitionModule::from_static("eguidev", DECLARATION)],
         false,
     )
 });
 
 static GRAPH_CHECKER_BASE: LazyLock<Result<Checker, CheckFailure>> = LazyLock::new(|| {
     checker_with_definitions(
-        &[DefinitionModule::from_static("eguidev", PUBLIC_DECLARATION)],
+        &[DefinitionModule::from_static("eguidev", DECLARATION)],
         true,
     )
 });
@@ -226,8 +227,8 @@ mod tests {
     #[test]
     fn public_declaration_strict_checks_as_standalone_source() {
         let mut checker = Checker::new();
-        let checked = checker
-            .check_source_with_config(PUBLIC_DECLARATION, Config::with_source_mode(Mode::Strict));
+        let checked =
+            checker.check_source_with_config(DECLARATION, Config::with_source_mode(Mode::Strict));
         assert!(
             !checked.has_errors(),
             "{}",

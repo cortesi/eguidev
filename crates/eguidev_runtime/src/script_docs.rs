@@ -8,13 +8,14 @@ use ruau_script_api::{
 };
 use tmcp::{ToolError, ToolResult, schema::CallToolResult};
 
-const SCRIPT_DEFINITIONS: &str = include_str!("../luau/eguidev.d.luau");
+use crate::automation::script::library::DECLARATION;
+
 /// Catalog built from the exact declaration bytes used by the checker.
 static SCRIPT_CATALOG: OnceLock<ScriptApiCatalog> = OnceLock::new();
 
 /// Return the checked-in Luau definitions that describe the scripting API.
 pub fn script_definitions() -> &'static str {
-    SCRIPT_DEFINITIONS
+    DECLARATION
 }
 
 /// Return the shared discovery catalog.
@@ -45,7 +46,7 @@ pub fn script_api_catalog() -> &'static ScriptApiCatalog {
                     roots: vec!["eguidev".to_owned()],
                 },
                 availability: ScriptApiAvailability::Ready,
-                declaration: Some(SCRIPT_DEFINITIONS.to_owned()),
+                declaration: Some(DECLARATION.to_owned()),
                 example: Some("return eguidev.fixtures()".to_owned()),
             }],
         )
