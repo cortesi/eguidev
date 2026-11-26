@@ -175,99 +175,56 @@ pub struct ScriptResult {
 }
 
 impl ScriptResult {
-    #[cfg(test)]
-    fn pass(round: u32, path: String, elapsed_ms: u64, logs: Vec<String>) -> Self {
+    /// A result with no message, logs, or evidence.
+    fn new(round: u32, path: String, status: ScriptStatus, elapsed_ms: u64) -> Self {
         Self {
             round,
             path,
-            status: ScriptStatus::Pass,
+            status,
             elapsed_ms,
             message: None,
-            logs,
+            logs: Vec::new(),
             fixtures: Vec::new(),
             egui_diagnostics: EguiDiagnosticBatch::default(),
-            details: None,
-        }
-    }
-
-    fn pass_with_fixtures(
-        round: u32,
-        path: String,
-        elapsed_ms: u64,
-        logs: Vec<String>,
-        fixtures: Vec<FixtureApplication>,
-        egui_diagnostics: EguiDiagnosticBatch,
-    ) -> Self {
-        Self {
-            round,
-            path,
-            status: ScriptStatus::Pass,
-            elapsed_ms,
-            message: None,
-            logs,
-            fixtures,
-            egui_diagnostics,
             details: None,
         }
     }
 
     fn fail(round: u32, path: String, elapsed_ms: u64, message: String) -> Self {
-        Self::fail_with_details(round, path, elapsed_ms, message, Vec::new(), None)
-    }
-
-    fn fail_with_details(
-        round: u32,
-        path: String,
-        elapsed_ms: u64,
-        message: String,
-        logs: Vec<String>,
-        details: Option<String>,
-    ) -> Self {
         Self {
-            round,
-            path,
-            status: ScriptStatus::Fail,
-            elapsed_ms,
             message: Some(message),
-            logs,
-            fixtures: Vec::new(),
-            egui_diagnostics: EguiDiagnosticBatch::default(),
-            details,
-        }
-    }
-
-    fn fail_with_outcome(
-        round: u32,
-        path: String,
-        elapsed_ms: u64,
-        message: String,
-        outcome: ScriptEvalOutcome,
-        details: Option<String>,
-    ) -> Self {
-        Self {
-            round,
-            path,
-            status: ScriptStatus::Fail,
-            elapsed_ms,
-            message: Some(message),
-            logs: outcome.logs,
-            fixtures: outcome.fixtures,
-            egui_diagnostics: outcome.egui_diagnostics,
-            details,
+            ..Self::new(round, path, ScriptStatus::Fail, elapsed_ms)
         }
     }
 
     fn skip(round: u32, path: String, message: String) -> Self {
         Self {
+            message: Some(message),
+            ..Self::new(round, path, ScriptStatus::Skip, 0)
+        }
+    }
+
+    /// The result of a script that ran, with the evidence of its outcome.
+    fn from_outcome(round: u32, path: String, elapsed_ms: u64, outcome: ScriptEvalOutcome) -> Self {
+        let (status, message, details) = if outcome.success {
+            (ScriptStatus::Pass, None, None)
+        } else {
+            (
+                ScriptStatus::Fail,
+                Some(script_failure_summary(&outcome)),
+                script_failure_details(&outcome),
+            )
+        };
+        Self {
             round,
             path,
-            status: ScriptStatus::Skip,
-            elapsed_ms: 0,
-            message: Some(message),
-            logs: Vec::new(),
-            fixtures: Vec::new(),
-            egui_diagnostics: EguiDiagnosticBatch::default(),
-            details: None,
+            status,
+            elapsed_ms,
+            message,
+            logs: outcome.logs,
+            fixtures: outcome.fixtures,
+            egui_diagnostics: outcome.egui_diagnostics,
+            details,
         }
     }
 }
@@ -574,19 +531,7 @@ where
         Err(message) => return ScriptResult::fail(round, path, elapsed_ms, message),
     };
     config.apply_egui_diagnostic_policy(&mut outcome);
-    if outcome.success {
-        return ScriptResult::pass_with_fixtures(
-            round,
-            path,
-            elapsed_ms,
-            outcome.logs,
-            outcome.fixtures,
-            outcome.egui_diagnostics,
-        );
-    }
-    let message = script_failure_summary(&outcome);
-    let details = script_failure_details(&outcome);
-    ScriptResult::fail_with_outcome(round, path, elapsed_ms, message, outcome, details)
+    ScriptResult::from_outcome(round, path, elapsed_ms, outcome)
 }
 
 fn suite_failure_result(elapsed_ms: u64, message: String, requested_rounds: u32) -> SuiteResult {
@@ -1717,20 +1662,25 @@ return true
     fn render_lines_shows_the_evidence_of_a_failed_script_only() {
         let result = SuiteResult {
             results: vec![
-                super::ScriptResult::pass(
-                    1,
-                    "10_pass.luau".to_string(),
-                    12,
-                    vec!["passed log".to_string()],
-                ),
-                super::ScriptResult::fail_with_details(
-                    1,
-                    "20_fail.luau".to_string(),
-                    18,
-                    "boom".to_string(),
-                    vec!["failed log".to_string()],
-                    Some("{\n  \"kind\": \"widget\"\n}".to_string()),
-                ),
+                super::ScriptResult {
+                    logs: vec!["passed log".to_string()],
+                    ..super::ScriptResult::new(
+                        1,
+                        "10_pass.luau".to_string(),
+                        ScriptStatus::Pass,
+                        12,
+                    )
+                },
+                super::ScriptResult {
+                    logs: vec!["failed log".to_string()],
+                    details: Some("{\n  \"kind\": \"widget\"\n}".to_string()),
+                    ..super::ScriptResult::fail(
+                        1,
+                        "20_fail.luau".to_string(),
+                        18,
+                        "boom".to_string(),
+                    )
+                },
             ],
             rounds: Vec::new(),
             requested_rounds: 1,
@@ -1751,20 +1701,24 @@ return true
     fn render_lines_emits_summary_and_logs_in_verbose_mode() {
         let result = SuiteResult {
             results: vec![
-                super::ScriptResult::pass(
-                    1,
-                    "10_pass.luau".to_string(),
-                    12,
-                    vec!["hello".to_string()],
-                ),
-                super::ScriptResult::fail_with_details(
-                    1,
-                    "20_fail.luau".to_string(),
-                    18,
-                    "boom".to_string(),
-                    Vec::new(),
-                    Some("{\n  \"kind\": \"widget\"\n}".to_string()),
-                ),
+                super::ScriptResult {
+                    logs: vec!["hello".to_string()],
+                    ..super::ScriptResult::new(
+                        1,
+                        "10_pass.luau".to_string(),
+                        ScriptStatus::Pass,
+                        12,
+                    )
+                },
+                super::ScriptResult {
+                    details: Some("{\n  \"kind\": \"widget\"\n}".to_string()),
+                    ..super::ScriptResult::fail(
+                        1,
+                        "20_fail.luau".to_string(),
+                        18,
+                        "boom".to_string(),
+                    )
+                },
             ],
             rounds: Vec::new(),
             requested_rounds: 1,
