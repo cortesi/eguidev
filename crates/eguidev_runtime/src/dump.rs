@@ -1,6 +1,6 @@
 //! Canonical widget tree dumps for script, CLI, and failure artifacts.
 
-use std::{cmp::Ordering, collections::HashMap};
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -101,13 +101,6 @@ pub struct WidgetDump {
     pub(crate) children: Vec<Self>,
 }
 
-#[derive(Clone)]
-struct IndexedWidget {
-    key: String,
-    parent_key: Option<String>,
-    widget: WidgetRegistryEntry,
-}
-
 fn default_include_invisible() -> bool {
     true
 }
@@ -167,33 +160,40 @@ fn build_widget_tree(
     root: Option<&str>,
     fields: DumpFields,
 ) -> Vec<WidgetDump> {
-    let indexed = index_widgets(widgets);
-    let children = children_map(&indexed);
-    indexed
-        .iter()
-        .filter(|entry| match root {
-            Some(root) => entry.widget.id == root,
-            None => entry.parent_key.is_none(),
+    let parents = (0..widgets.len())
+        .map(|index| resolve_parent_index(widgets, index))
+        .collect::<Vec<_>>();
+    let mut children = vec![Vec::new(); widgets.len()];
+    for (index, parent) in parents.iter().enumerate() {
+        if let Some(parent) = parent {
+            children[*parent].push(index);
+        }
+    }
+    (0..widgets.len())
+        .filter(|&index| match root {
+            Some(root) => widgets[index].id == root,
+            None => parents[index].is_none(),
         })
-        .map(|entry| build_widget_dump(entry, &children, fields, &mut Vec::new()))
+        .map(|index| build_widget_dump(widgets, &children, index, fields, &mut Vec::new()))
         .collect()
 }
 
-/// Build the dump of one widget and its descendants. `path` holds the keys of
-/// the ancestors of the widget in this dump.
-fn build_widget_dump<'a>(
-    entry: &'a IndexedWidget,
-    children: &'a HashMap<Option<String>, Vec<IndexedWidget>>,
+/// Build the dump of the widget at `index` and its descendants. `path` holds
+/// the registry positions of the ancestors of the widget in this dump.
+fn build_widget_dump(
+    widgets: &[WidgetRegistryEntry],
+    children: &[Vec<usize>],
+    index: usize,
     fields: DumpFields,
-    path: &mut Vec<&'a str>,
+    path: &mut Vec<usize>,
 ) -> WidgetDump {
-    let widget = &entry.widget;
-    path.push(&entry.key);
+    let widget = &widgets[index];
+    path.push(index);
     let mut child_dumps = Vec::new();
-    for child in children.get(&Some(entry.key.clone())).into_iter().flatten() {
+    for &child in &children[index] {
         // Parent ids come from instrumentation and can describe a cycle.
-        if !path.contains(&child.key.as_str()) {
-            child_dumps.push(build_widget_dump(child, children, fields, path));
+        if !path.contains(&child) {
+            child_dumps.push(build_widget_dump(widgets, children, child, fields, path));
         }
     }
     path.pop();
@@ -233,63 +233,26 @@ fn build_widget_dump<'a>(
     }
 }
 
-fn index_widgets(widgets: &[WidgetRegistryEntry]) -> Vec<IndexedWidget> {
-    let mut indexed = widgets
-        .iter()
-        .enumerate()
-        .map(|(index, widget)| IndexedWidget {
-            key: format!("{index}:{}", widget.id),
-            parent_key: None,
-            widget: widget.clone(),
-        })
-        .collect::<Vec<_>>();
-    let parent_keys = indexed
-        .iter()
-        .enumerate()
-        .map(|(index, _)| resolve_parent_key(&indexed, index))
-        .collect::<Vec<_>>();
-    for (entry, parent_key) in indexed.iter_mut().zip(parent_keys) {
-        entry.parent_key = parent_key;
-    }
-    indexed
-}
-
-fn children_map(indexed: &[IndexedWidget]) -> HashMap<Option<String>, Vec<IndexedWidget>> {
-    let mut map: HashMap<Option<String>, Vec<IndexedWidget>> = HashMap::new();
-    for widget in indexed {
-        map.entry(widget.parent_key.clone())
-            .or_default()
-            .push(widget.clone());
-    }
-    map
-}
-
-fn resolve_parent_key(indexed: &[IndexedWidget], index: usize) -> Option<String> {
-    let widget = &indexed[index].widget;
+/// Resolve the parent of the widget at `index` to a registry position: the
+/// smallest containing widget of the parent id, else the last one.
+fn resolve_parent_index(widgets: &[WidgetRegistryEntry], index: usize) -> Option<usize> {
+    let widget = &widgets[index];
     let parent_id = widget.parent_id.as_deref()?;
-    indexed
-        .iter()
-        .enumerate()
-        .filter(|(candidate_index, candidate)| {
-            *candidate_index != index
-                && candidate.widget.id == parent_id
-                && rect_contains(candidate.widget.rect, widget.rect)
-        })
+    let candidates = || {
+        widgets
+            .iter()
+            .enumerate()
+            .filter(move |(candidate, entry)| *candidate != index && entry.id == parent_id)
+    };
+    candidates()
+        .filter(|(_, candidate)| rect_contains(candidate.rect, widget.rect))
         .min_by(|(_, left), (_, right)| {
-            rect_area(left.widget.rect)
-                .partial_cmp(&rect_area(right.widget.rect))
+            rect_area(left.rect)
+                .partial_cmp(&rect_area(right.rect))
                 .unwrap_or(Ordering::Equal)
         })
-        .or_else(|| {
-            indexed
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(candidate_index, candidate)| {
-                    *candidate_index != index && candidate.widget.id == parent_id
-                })
-        })
-        .map(|(_, candidate)| candidate.key.clone())
+        .or_else(|| candidates().next_back())
+        .map(|(candidate, _)| candidate)
 }
 
 fn rect_area(rect: Rect) -> f32 {
