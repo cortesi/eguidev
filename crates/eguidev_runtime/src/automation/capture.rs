@@ -299,7 +299,7 @@ async fn capture_screenshot_state(
 
 /// The frame count of the last frame of `viewport_id`, or zero before its
 /// first frame.
-fn viewport_frame(inner: &Inner, viewport_id: egui::ViewportId) -> u64 {
+pub(super) fn viewport_frame(inner: &Inner, viewport_id: egui::ViewportId) -> u64 {
     inner
         .viewports
         .capture_snapshot(viewport_id)
@@ -312,21 +312,13 @@ async fn ensure_event_loop_active(
     runtime: &Runtime,
     viewport_id: egui::ViewportId,
 ) -> Result<(), ToolError> {
-    let initial_frame = inner
-        .viewports
-        .capture_snapshot(viewport_id)
-        .map(|snapshot| snapshot.frame_count)
-        .unwrap_or(0);
+    let initial_frame = viewport_frame(inner, viewport_id);
 
     // Wait for at least one frame to process. Use a short poll interval with
     // periodic repaint requests so we recover when the event loop stalls.
     let frame_wait = async {
         loop {
-            let current_frame = inner
-                .viewports
-                .capture_snapshot(viewport_id)
-                .map(|snapshot| snapshot.frame_count)
-                .unwrap_or(0);
+            let current_frame = viewport_frame(inner, viewport_id);
             if current_frame > initial_frame {
                 return;
             }

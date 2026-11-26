@@ -68,7 +68,7 @@ use action::pointer_ready;
 use action::{HoverConfirm, interaction_ready};
 use capture::{
     ScreenshotFormat, ScreenshotOptions, capture_native_screenshot, capture_screenshot,
-    resolve_screenshot_viewport,
+    resolve_screenshot_viewport, viewport_frame,
 };
 #[cfg(test)]
 use capture::{

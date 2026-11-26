@@ -77,12 +77,7 @@ impl DevMcpServer {
     ) -> ToolResult<()> {
         let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let (timeout_ms, poll_interval_ms) = parameters(timeout_ms, poll_interval_ms);
-        let start_capture = self
-            .inner
-            .viewports
-            .capture_snapshot(viewport_id)
-            .map(|snapshot| snapshot.frame_count)
-            .unwrap_or(0);
+        let start_capture = viewport_frame(&self.inner, viewport_id);
 
         let (matched, _, elapsed_ms, observation) = wait_until_condition(
             &self.inner,
@@ -92,12 +87,7 @@ impl DevMcpServer {
             None,
             || async {
                 self.inner.request_repaint_of(viewport_id);
-                let current = self
-                    .inner
-                    .viewports
-                    .capture_snapshot(viewport_id)
-                    .map(|snapshot| snapshot.frame_count)
-                    .unwrap_or(0);
+                let current = viewport_frame(&self.inner, viewport_id);
                 Ok::<_, ToolError>((current > start_capture, None::<()>))
             },
         )
@@ -141,12 +131,7 @@ impl DevMcpServer {
     ) -> ToolResult<SettleReport> {
         let viewport_id = resolve_viewport_id(&self.inner, viewport_id)?;
         let (timeout_ms, poll_interval_ms) = parameters(timeout_ms, poll_interval_ms);
-        let start_capture = self
-            .inner
-            .viewports
-            .capture_snapshot(viewport_id)
-            .map(|snapshot| snapshot.frame_count)
-            .unwrap_or(0);
+        let start_capture = viewport_frame(&self.inner, viewport_id);
         let start_frame = self.inner.frame_count();
         let start = Instant::now();
 
