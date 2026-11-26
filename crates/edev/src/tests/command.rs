@@ -114,7 +114,13 @@ fn eval_output_value_adds_image_files() {
 #[tokio::test]
 async fn eval_script_calls_script_eval_with_timeout_and_args() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (app, _handle) = make_recording_eval_app(Arc::clone(&requests)).await;
+    let (app, _handle) = make_app({
+        let requests = Arc::clone(&requests);
+        move || RecordingEvalServer {
+            requests: Arc::clone(&requests),
+        }
+    })
+    .await;
     let tempdir = test_tempdir();
     let module_dir = tempdir.path().join("modules");
     fs::create_dir_all(module_dir.join("shared")).expect("create modules");

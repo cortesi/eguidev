@@ -132,7 +132,13 @@ fn snapshot_output_preserves_captured_output() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_smoke_suite_writes_deterministic_failure_bundle() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
+    let (app, _handle) = make_app({
+        let requests = Arc::clone(&requests);
+        move || BundleSmokeServer {
+            requests: Arc::clone(&requests),
+        }
+    })
+    .await;
     let tempdir = test_tempdir();
     let suite_dir = tempdir.path().join("suite");
     fs::create_dir_all(&suite_dir).expect("create suite");
@@ -255,7 +261,13 @@ async fn run_smoke_suite_writes_deterministic_failure_bundle() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_smoke_suite_writes_round_suffixed_failure_bundles() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
+    let (app, _handle) = make_app({
+        let requests = Arc::clone(&requests);
+        move || BundleSmokeServer {
+            requests: Arc::clone(&requests),
+        }
+    })
+    .await;
     let tempdir = test_tempdir();
     let suite_dir = tempdir.path().join("suite");
     fs::create_dir_all(&suite_dir).expect("create suite");
@@ -327,7 +339,13 @@ async fn run_smoke_suite_writes_round_suffixed_failure_bundles() {
 #[tokio::test(flavor = "multi_thread")]
 async fn run_smoke_suite_preserves_failure_when_bundle_write_fails() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (app, _handle) = make_bundle_smoke_app(Arc::clone(&requests)).await;
+    let (app, _handle) = make_app({
+        let requests = Arc::clone(&requests);
+        move || BundleSmokeServer {
+            requests: Arc::clone(&requests),
+        }
+    })
+    .await;
     let tempdir = test_tempdir();
     let suite_dir = tempdir.path().join("suite");
     fs::create_dir_all(&suite_dir).expect("create suite");

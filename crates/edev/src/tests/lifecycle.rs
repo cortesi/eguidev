@@ -4,7 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn restart_updates_state_on_success() {
-    let (app, _handle) = make_mock_app().await;
+    let (app, _handle) = make_app(|| MockServer).await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
 
@@ -53,7 +53,7 @@ async fn status_reports_starting_during_stalled_spawn() {
 
 #[tokio::test]
 async fn start_is_idempotent_when_running() {
-    let (app, _handle) = make_mock_app().await;
+    let (app, _handle) = make_app(|| MockServer).await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
     state.status = AppStatus::Running;
@@ -104,7 +104,7 @@ async fn restart_sets_not_running_on_spawn_error() {
 
 #[tokio::test]
 async fn shutdown_clears_running_app() {
-    let (app, _handle) = make_mock_app().await;
+    let (app, _handle) = make_app(|| MockServer).await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
     state.status = AppStatus::Running;
@@ -118,7 +118,7 @@ async fn shutdown_clears_running_app() {
 
 #[tokio::test]
 async fn restart_reports_startup_failure_when_readiness_probe_fails() {
-    let (app, _handle) = make_failing_app().await;
+    let (app, _handle) = make_app(|| FailingServer).await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
 
@@ -135,7 +135,13 @@ async fn restart_reports_startup_failure_when_readiness_probe_fails() {
 #[tokio::test]
 async fn readiness_probe_gets_the_request_timeout() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (app, _handle) = make_recording_eval_app(Arc::clone(&requests)).await;
+    let (app, _handle) = make_app({
+        let requests = Arc::clone(&requests);
+        move || RecordingEvalServer {
+            requests: Arc::clone(&requests),
+        }
+    })
+    .await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
 
@@ -154,7 +160,7 @@ async fn readiness_probe_gets_the_request_timeout() {
 
 #[tokio::test]
 async fn restart_reports_a_readiness_probe_timeout_as_a_timeout() {
-    let (app, _handle) = make_probe_timeout_app().await;
+    let (app, _handle) = make_app(|| ProbeTimeoutServer).await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
 
@@ -184,7 +190,7 @@ async fn start_reports_restart_required_after_prior_startup_failure() {
 
 #[tokio::test]
 async fn stop_is_idempotent() {
-    let (app, _handle) = make_mock_app().await;
+    let (app, _handle) = make_app(|| MockServer).await;
     let tempdir = test_tempdir();
     let mut state = make_state(&tempdir);
     state.status = AppStatus::Running;
@@ -201,7 +207,7 @@ async fn stop_is_idempotent() {
 
 #[tokio::test]
 async fn cancelled_exit_wait_retains_supervisor_task() {
-    let (mut app, _handle) = make_mock_app().await;
+    let (mut app, _handle) = make_app(|| MockServer).await;
     let (release, released) = oneshot::channel::<()>();
     app.supervisor_exit_task = Some(tokio::spawn(async move {
         released.await.expect("release supervisor exit");
@@ -230,7 +236,7 @@ async fn cancelled_exit_wait_retains_supervisor_task() {
 #[cfg(unix)]
 #[tokio::test]
 async fn cancelled_exit_wait_retains_direct_child() {
-    let (mut app, _handle) = make_mock_app().await;
+    let (mut app, _handle) = make_app(|| MockServer).await;
     let mut child = Command::new("/bin/cat")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

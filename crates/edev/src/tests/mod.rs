@@ -14,7 +14,7 @@ use tmcp::{
     Client, Server, ServerCtx, ServerHandle, ServerHandler,
     schema::{
         CallToolResponse, CallToolResult, ContentBlock, Cursor, ImageContent, InitializeResult,
-        ListToolsResult, TaskMetadata,
+        TaskMetadata,
     },
     testutils::{TestServerContext, make_duplex_pair},
 };
@@ -110,14 +110,6 @@ impl ServerHandler for MockServer {
         Ok(InitializeResult::new("mock"))
     }
 
-    async fn list_tools(
-        &self,
-        _context: &ServerCtx,
-        _cursor: Option<Cursor>,
-    ) -> tmcp::Result<ListToolsResult> {
-        Ok(ListToolsResult::new())
-    }
-
     async fn call_tool(
         &self,
         _context: &ServerCtx,
@@ -153,14 +145,6 @@ impl ServerHandler for RecordingEvalServer {
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {
         Ok(InitializeResult::new("recording"))
-    }
-
-    async fn list_tools(
-        &self,
-        _context: &ServerCtx,
-        _cursor: Option<Cursor>,
-    ) -> tmcp::Result<ListToolsResult> {
-        Ok(ListToolsResult::new())
     }
 
     async fn call_tool(
@@ -214,14 +198,6 @@ impl ServerHandler for BundleSmokeServer {
         _client_info: Implementation,
     ) -> tmcp::Result<InitializeResult> {
         Ok(InitializeResult::new("bundle-smoke"))
-    }
-
-    async fn list_tools(
-        &self,
-        _context: &ServerCtx,
-        _cursor: Option<Cursor>,
-    ) -> tmcp::Result<ListToolsResult> {
-        Ok(ListToolsResult::new())
     }
 
     async fn call_tool(
@@ -356,14 +332,6 @@ impl ServerHandler for FailingServer {
         Ok(InitializeResult::new("mock"))
     }
 
-    async fn list_tools(
-        &self,
-        _context: &ServerCtx,
-        _cursor: Option<Cursor>,
-    ) -> tmcp::Result<ListToolsResult> {
-        Ok(ListToolsResult::new())
-    }
-
     async fn call_tool(
         &self,
         _context: &ServerCtx,
@@ -381,53 +349,19 @@ impl ServerHandler for FailingServer {
     }
 }
 
-async fn make_mock_app() -> (AppProcess, ServerHandle) {
+/// Serve `factory` over an in-memory stream, and wrap a connected client as a
+/// managed app.
+async fn make_app<C, G>(factory: G) -> (AppProcess, ServerHandle)
+where
+    C: ServerHandler + 'static,
+    G: Fn() -> C + Send + Sync + 'static,
+{
     let ((server_reader, server_writer), (client_reader, client_writer)) = {
         let (sr, sw, cr, cw) = make_duplex_pair();
         ((sr, sw), (cr, cw))
     };
 
-    let server = Server::new(|| MockServer);
-    let handle = ServerHandle::from_stream(server, server_reader, server_writer)
-        .await
-        .expect("server handle");
-
-    let mut client = Client::new("test", "0.1.0");
-    client
-        .connect_stream_raw(client_reader, client_writer)
-        .await
-        .expect("connect");
-    client.init().await.expect("init");
-
-    let app = AppProcess {
-        child: None,
-        process_group_id: None,
-        supervisor_pid: None,
-        supervisor_exit_task: None,
-        app_launch: None,
-        app_record: None,
-        ownership_writer: None,
-        client: Arc::new(AsyncMutex::new(client)),
-        mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
-        mcp_socket: None,
-        stdout_task: None,
-        stderr_task: None,
-        stderr_buffer: Arc::new(Mutex::new(Vec::new())),
-        stdout_buffer: Arc::new(Mutex::new(Vec::new())),
-        log_state: LogState::new(false),
-        shutdown_grace: Duration::from_secs(30),
-    };
-
-    (app, handle)
-}
-
-async fn make_failing_app() -> (AppProcess, ServerHandle) {
-    let ((server_reader, server_writer), (client_reader, client_writer)) = {
-        let (sr, sw, cr, cw) = make_duplex_pair();
-        ((sr, sw), (cr, cw))
-    };
-
-    let server = Server::new(|| FailingServer);
+    let server = Server::new(factory);
     let handle = ServerHandle::from_stream(server, server_reader, server_writer)
         .await
         .expect("server handle");
@@ -476,14 +410,6 @@ impl ServerHandler for ProbeTimeoutServer {
         Ok(InitializeResult::new("probe-timeout"))
     }
 
-    async fn list_tools(
-        &self,
-        _context: &ServerCtx,
-        _cursor: Option<Cursor>,
-    ) -> tmcp::Result<ListToolsResult> {
-        Ok(ListToolsResult::new())
-    }
-
     async fn call_tool(
         &self,
         _context: &ServerCtx,
@@ -509,132 +435,4 @@ impl ServerHandler for ProbeTimeoutServer {
             .expect("timeout outcome")
             .into())
     }
-}
-
-async fn make_probe_timeout_app() -> (AppProcess, ServerHandle) {
-    let ((server_reader, server_writer), (client_reader, client_writer)) = {
-        let (sr, sw, cr, cw) = make_duplex_pair();
-        ((sr, sw), (cr, cw))
-    };
-
-    let server = Server::new(|| ProbeTimeoutServer);
-    let handle = ServerHandle::from_stream(server, server_reader, server_writer)
-        .await
-        .expect("server handle");
-
-    let mut client = Client::new("test", "0.1.0");
-    client
-        .connect_stream_raw(client_reader, client_writer)
-        .await
-        .expect("connect");
-    client.init().await.expect("init");
-
-    let app = AppProcess {
-        child: None,
-        process_group_id: None,
-        supervisor_pid: None,
-        supervisor_exit_task: None,
-        app_launch: None,
-        app_record: None,
-        ownership_writer: None,
-        client: Arc::new(AsyncMutex::new(client)),
-        mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
-        mcp_socket: None,
-        stdout_task: None,
-        stderr_task: None,
-        stderr_buffer: Arc::new(Mutex::new(Vec::new())),
-        stdout_buffer: Arc::new(Mutex::new(Vec::new())),
-        log_state: LogState::new(false),
-        shutdown_grace: Duration::from_secs(30),
-    };
-
-    (app, handle)
-}
-
-async fn make_recording_eval_app(
-    requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
-) -> (AppProcess, ServerHandle) {
-    let ((server_reader, server_writer), (client_reader, client_writer)) = {
-        let (sr, sw, cr, cw) = make_duplex_pair();
-        ((sr, sw), (cr, cw))
-    };
-
-    let server = Server::new(move || RecordingEvalServer {
-        requests: Arc::clone(&requests),
-    });
-    let handle = ServerHandle::from_stream(server, server_reader, server_writer)
-        .await
-        .expect("server handle");
-
-    let mut client = Client::new("test", "0.1.0");
-    client
-        .connect_stream_raw(client_reader, client_writer)
-        .await
-        .expect("connect");
-    client.init().await.expect("init");
-
-    let app = AppProcess {
-        child: None,
-        process_group_id: None,
-        supervisor_pid: None,
-        supervisor_exit_task: None,
-        app_launch: None,
-        app_record: None,
-        ownership_writer: None,
-        client: Arc::new(AsyncMutex::new(client)),
-        mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
-        mcp_socket: None,
-        stdout_task: None,
-        stderr_task: None,
-        stderr_buffer: Arc::new(Mutex::new(Vec::new())),
-        stdout_buffer: Arc::new(Mutex::new(Vec::new())),
-        log_state: LogState::new(false),
-        shutdown_grace: Duration::from_secs(30),
-    };
-
-    (app, handle)
-}
-
-async fn make_bundle_smoke_app(
-    requests: Arc<Mutex<Vec<ScriptEvalRequest>>>,
-) -> (AppProcess, ServerHandle) {
-    let ((server_reader, server_writer), (client_reader, client_writer)) = {
-        let (sr, sw, cr, cw) = make_duplex_pair();
-        ((sr, sw), (cr, cw))
-    };
-
-    let server = Server::new(move || BundleSmokeServer {
-        requests: Arc::clone(&requests),
-    });
-    let handle = ServerHandle::from_stream(server, server_reader, server_writer)
-        .await
-        .expect("server handle");
-
-    let mut client = Client::new("test", "0.1.0");
-    client
-        .connect_stream_raw(client_reader, client_writer)
-        .await
-        .expect("connect");
-    client.init().await.expect("init");
-
-    let app = AppProcess {
-        child: None,
-        process_group_id: None,
-        supervisor_pid: None,
-        supervisor_exit_task: None,
-        app_launch: None,
-        app_record: None,
-        ownership_writer: None,
-        client: Arc::new(AsyncMutex::new(client)),
-        mcp_endpoint: "/nonexistent/edev-test.sock".to_string(),
-        mcp_socket: None,
-        stdout_task: None,
-        stderr_task: None,
-        stderr_buffer: Arc::new(Mutex::new(Vec::new())),
-        stdout_buffer: Arc::new(Mutex::new(Vec::new())),
-        log_state: LogState::new(false),
-        shutdown_grace: Duration::from_secs(30),
-    };
-
-    (app, handle)
 }
