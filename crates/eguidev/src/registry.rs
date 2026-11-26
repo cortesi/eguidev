@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn request_repaint_targets_viewport_without_holding_contexts_lock() {
-        let inner = Arc::new(new_test_inner());
+        let inner = Arc::new(Inner::new());
         let ctx = Context::default();
         let viewport_id = egui::ViewportId::from_hash_of("secondary");
         inner.capture_context(viewport_id, &ctx);
@@ -728,7 +728,7 @@ mod tests {
             Inner::clear_overlay_debug_config,
         ];
         for operation in operations {
-            let inner = new_test_inner();
+            let inner = Inner::new();
             let ctx = Context::default();
             inner.capture_context(viewport_id, &ctx);
             let (sender, receiver) = mpsc::channel();
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn a_global_dismissal_repaints_all_viewports() {
         let secondary = egui::ViewportId::from_hash_of("secondary");
-        let inner = new_test_inner();
+        let inner = Inner::new();
         let (sender, receiver) = mpsc::channel();
         for viewport_id in [egui::ViewportId::ROOT, secondary] {
             let ctx = Context::default();
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn automation_options_apply_animation_policy_to_contexts() {
-        let inner = Arc::new(new_test_inner());
+        let inner = Arc::new(Inner::new());
         let ctx = Context::default();
         ctx.global_style_mut(|style| {
             style.animation_time = 0.25;
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn clear_all_resets_widget_value_consumer_cache() {
-        let inner = new_test_inner();
+        let inner = Inner::new();
         let viewport_id = egui::ViewportId::ROOT;
 
         inner.mark_widget_value_consumer(viewport_id, "custom.value");
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn dismiss_transient_ui_preserves_other_viewport_state() {
-        let inner = new_test_inner();
+        let inner = Inner::new();
         let root = egui::ViewportId::ROOT;
         let secondary = egui::ViewportId::from_hash_of("secondary");
         let pos = Pos2 { x: 5.0, y: 6.0 };
@@ -886,7 +886,7 @@ mod tests {
 
     #[test]
     fn dismiss_transient_ui_preserves_other_viewport_consumers() {
-        let inner = new_test_inner();
+        let inner = Inner::new();
         let root = egui::ViewportId::ROOT;
         let secondary = egui::ViewportId::from_hash_of("secondary");
         for viewport_id in [root, secondary] {
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn dismiss_transient_ui_resets_widget_value_consumer_cache() {
-        let inner = new_test_inner();
+        let inner = Inner::new();
         let viewport_id = egui::ViewportId::ROOT;
 
         inner.mark_widget_value_consumer(viewport_id, "custom.value");
@@ -932,9 +932,5 @@ mod tests {
             .expired_widget_value_update_error(viewport_id, Some("custom.value"))
             .expect("unwired widget should fault after popup dismissal");
         assert_eq!(error.code(), ErrorCode::InstrumentationFault);
-    }
-
-    fn new_test_inner() -> Inner {
-        Inner::new()
     }
 }
