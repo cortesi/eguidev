@@ -528,6 +528,14 @@ mod tests {
         DevMcp::new().activate_runtime(Arc::new(Inner::new()), Arc::new(NoopRuntimeHooks))
     }
 
+    fn root_widgets(devmcp: &DevMcp) -> Vec<WidgetRegistryEntry> {
+        devmcp
+            .inner()
+            .expect("attached inner")
+            .widgets
+            .widget_list(egui::ViewportId::ROOT)
+    }
+
     fn widget_by_id<'a>(widgets: &'a [WidgetRegistryEntry], id: &str) -> &'a WidgetRegistryEntry {
         widgets
             .iter()
@@ -658,11 +666,7 @@ mod tests {
             );
             devmcp.end_frame(ctx, true);
         });
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT)
+        let widgets = root_widgets(&devmcp)
             .into_iter()
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
@@ -680,11 +684,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
         assert!(test_layout_capture_count() >= 1);
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         assert!(widget_by_id(&widgets, "custom").layout.is_some());
     }
 
@@ -720,11 +720,7 @@ mod tests {
                 devmcp.end_frame(ctx, true);
             });
         }
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
 
         let button = widget_by_id(&widgets, "plain.button");
         assert_eq!(button.role, WidgetRole::Button);
@@ -791,11 +787,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         assert_link_widget(widget_by_id(&widgets, "docs"));
         assert_hyperlink_widget(widget_by_id(&widgets, "reference"));
         assert_image_widget(widget_by_id(&widgets, "preview"));
@@ -876,11 +868,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         let toolbar = WidgetState::from(widget_by_id(&widgets, "toolbar"));
         assert_eq!(toolbar.selected, Some(true));
 
@@ -948,11 +936,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         // Masking alone is presentation: the value stays in clear text.
         let masked = WidgetState::from(widget_by_id(&widgets, "masked"));
         assert_eq!(masked.value_text, SENTINEL);
@@ -1008,11 +992,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         let clipped = widgets
             .iter()
             .find(|entry| entry.id == "clipped")
@@ -1064,11 +1044,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         let scroll = widgets
             .iter()
             .find(|entry| entry.id == "scroll")
@@ -1105,11 +1081,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         let pos: egui::Pos2 = widget_by_id(&widgets, "child")
             .interact_rect
             .center()
@@ -1216,11 +1188,7 @@ mod tests {
         };
 
         render(&ctx, &mut state);
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         let scroll = widget_by_id(&widgets, "scroll_override");
         let widget_id = scroll.native_id;
 
@@ -1253,11 +1221,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         let leaf = widgets
             .iter()
             .find(|entry| entry.id == "leaf")
@@ -1293,11 +1257,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         assert_eq!(
             widget_by_id(&widgets, "board.square.a1")
                 .parent_id
@@ -1340,11 +1300,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         assert!(widget_by_id(&widgets, "square.default").enabled);
         assert!(!widget_by_id(&widgets, "square.disabled").enabled);
     }
@@ -1378,11 +1334,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
         assert_eq!(widget_by_id(&widgets, "sibling").parent_id, None);
     }
 
@@ -1407,11 +1359,7 @@ mod tests {
             devmcp.end_frame(ctx, true);
         });
 
-        let widgets = devmcp
-            .inner()
-            .expect("attached inner")
-            .widgets
-            .widget_list(egui::ViewportId::ROOT);
+        let widgets = root_widgets(&devmcp);
 
         let enabled_btn = widget_by_id(&widgets, "enabled_btn");
         assert!(enabled_btn.enabled, "enabled_btn should be enabled");
