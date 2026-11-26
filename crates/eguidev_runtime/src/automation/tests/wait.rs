@@ -515,7 +515,7 @@ async fn wait_for_widget_state_matches_when_widget_becomes_visible() {
 
     let inner_for_update = Arc::clone(&inner);
     tokio::spawn(async move {
-        sleep(Duration::from_millis(5)).await;
+        yield_now().await;
         inner_for_update.widgets.clear_registry(viewport_id);
         let mut entry = make_entry("status", 1, WidgetRole::Label);
         entry.visible = true;
@@ -548,7 +548,7 @@ async fn wait_for_widget_state_matches_when_widget_appears() {
 
     let inner_for_update = Arc::clone(&inner);
     tokio::spawn(async move {
-        sleep(Duration::from_millis(5)).await;
+        yield_now().await;
         inner_for_update.widgets.clear_registry(viewport_id);
         inner_for_update
             .widgets

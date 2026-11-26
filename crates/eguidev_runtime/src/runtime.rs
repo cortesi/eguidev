@@ -11,8 +11,6 @@ use eguidev::internal::{
     registry::{Inner, viewport_id_to_string},
     viewports::OutputSnapshot,
 };
-#[cfg(test)]
-use tokio::time::sleep;
 use tokio::{sync::Notify, time::timeout};
 
 #[cfg(target_os = "macos")]
@@ -388,8 +386,9 @@ mod tests {
         let mut notified = pin!(runtime.frame_notify.notified());
         notified.as_mut().enable();
         let runtime_for_notify = Arc::clone(&runtime);
+        // The spawned task runs once the wait below yields, and the waiter is
+        // already enabled, so the notification cannot be missed.
         tokio::spawn(async move {
-            sleep(Duration::from_millis(5)).await;
             runtime_for_notify.frame_notify.notify_waiters();
         });
         runtime
