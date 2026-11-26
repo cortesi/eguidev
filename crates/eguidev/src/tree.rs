@@ -1,115 +1,39 @@
 //! Widget tree helpers based on parent ids.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use crate::types::{Rect, WidgetRegistryEntry};
-
-#[derive(Clone)]
-struct IndexedWidget {
-    key: String,
-    parent_key: Option<String>,
-    widget: WidgetRegistryEntry,
-}
 
 /// Collect a widget and all descendant widgets from a flat registry snapshot.
 pub fn collect_subtree(
     widgets: &[WidgetRegistryEntry],
     root: &WidgetRegistryEntry,
 ) -> Vec<WidgetRegistryEntry> {
-    let indexed = index_widgets(widgets);
-    let children_map = build_children_map(&indexed);
-    let mut result = Vec::new();
-    let mut queue = VecDeque::new();
-    let Some(root) = find_indexed_widget(&indexed, root) else {
-        return result;
+    let Some(root) = widgets.iter().position(|widget| same_widget(widget, root)) else {
+        return Vec::new();
     };
-    let mut visited = HashSet::new();
-    visited.insert(root.key.clone());
-    result.push(root.widget.clone());
-    queue.push_back(root.key.clone());
-    while let Some(parent_key) = queue.pop_front() {
-        let children = children_map
-            .get(&Some(parent_key))
-            .cloned()
-            .unwrap_or_default();
-        for child in children {
+    // A container is recorded after the contents it wraps, so parents resolve
+    // against the whole snapshot rather than the entries seen so far.
+    let mut children = vec![Vec::new(); widgets.len()];
+    for (index, parent) in resolve_parent_indices(widgets).into_iter().enumerate() {
+        if let Some(parent) = parent {
+            children[parent].push(index);
+        }
+    }
+    let mut visited = HashSet::from([root]);
+    let mut queue = VecDeque::from([root]);
+    let mut result = vec![widgets[root].clone()];
+    while let Some(parent) = queue.pop_front() {
+        for &child in &children[parent] {
             // Parent ids come from instrumentation and can describe a cycle.
-            // Visiting each key once keeps the walk finite.
-            if !visited.insert(child.key.clone()) {
-                continue;
+            // Visiting each widget once keeps the walk finite.
+            if visited.insert(child) {
+                queue.push_back(child);
+                result.push(widgets[child].clone());
             }
-            queue.push_back(child.key.clone());
-            result.push(child.widget);
         }
     }
     result
-}
-
-fn build_children_map(indexed: &[IndexedWidget]) -> HashMap<Option<String>, Vec<IndexedWidget>> {
-    let mut map: HashMap<Option<String>, Vec<IndexedWidget>> = HashMap::new();
-    for widget in indexed {
-        map.entry(widget.parent_key.clone())
-            .or_default()
-            .push(widget.clone());
-    }
-    map
-}
-
-fn index_widgets(widgets: &[WidgetRegistryEntry]) -> Vec<IndexedWidget> {
-    // A container is recorded after the contents it wraps, so parents resolve
-    // against the whole snapshot rather than the entries seen so far.
-    let parent_indices = resolve_parent_indices(widgets);
-    let mut keys: Vec<Option<String>> = vec![None; widgets.len()];
-    let mut sibling_counts: HashMap<(Option<String>, String), usize> = HashMap::new();
-    for index in 0..widgets.len() {
-        assign_key(
-            index,
-            widgets,
-            &parent_indices,
-            &mut keys,
-            &mut sibling_counts,
-        );
-    }
-    widgets
-        .iter()
-        .enumerate()
-        .map(|(index, widget)| IndexedWidget {
-            key: keys[index].clone().unwrap_or_else(|| widget.id.clone()),
-            parent_key: parent_indices[index].and_then(|parent| keys[parent].clone()),
-            widget: widget.clone(),
-        })
-        .collect()
-}
-
-/// Assign scoped keys along the widget's parent chain, outermost first.
-fn assign_key(
-    index: usize,
-    widgets: &[WidgetRegistryEntry],
-    parent_indices: &[Option<usize>],
-    keys: &mut [Option<String>],
-    sibling_counts: &mut HashMap<(Option<String>, String), usize>,
-) {
-    let mut chain = Vec::new();
-    let mut current = Some(index);
-    while let Some(entry) = current {
-        if keys[entry].is_some() || chain.contains(&entry) {
-            break;
-        }
-        chain.push(entry);
-        current = parent_indices[entry];
-    }
-    for &entry in chain.iter().rev() {
-        let parent_key = parent_indices[entry].and_then(|parent| keys[parent].clone());
-        let ordinal = sibling_counts
-            .entry((parent_key.clone(), widgets[entry].id.clone()))
-            .or_default();
-        *ordinal += 1;
-        keys[entry] = Some(scoped_key(
-            parent_key.as_deref(),
-            &widgets[entry].id,
-            *ordinal,
-        ));
-    }
 }
 
 /// Resolve each widget's parent to a registry position.
@@ -135,22 +59,6 @@ fn resolve_parent_indices(widgets: &[WidgetRegistryEntry]) -> Vec<Option<usize>>
                 .map(|(candidate, _)| candidate)
         })
         .collect()
-}
-
-fn scoped_key(parent_key: Option<&str>, id: &str, ordinal: usize) -> String {
-    match parent_key {
-        Some(parent_key) => format!("{parent_key}/{id}#{ordinal}"),
-        None => format!("{id}#{ordinal}"),
-    }
-}
-
-fn find_indexed_widget<'a>(
-    indexed: &'a [IndexedWidget],
-    root: &WidgetRegistryEntry,
-) -> Option<&'a IndexedWidget> {
-    indexed
-        .iter()
-        .find(|entry| same_widget(&entry.widget, root))
 }
 
 fn same_widget(left: &WidgetRegistryEntry, right: &WidgetRegistryEntry) -> bool {
