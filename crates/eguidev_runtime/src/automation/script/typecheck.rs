@@ -174,17 +174,12 @@ pub fn warm_checker_baseline() {
 
 /// Clone a fresh checker from the prepared Eguidev declaration environment.
 fn fresh_checker() -> Result<Checker, CheckFailure> {
-    match &*CHECKER_BASE {
-        Ok(checker) => Ok(checker.clone()),
-        Err(error) => Err(error.clone()),
-    }
+    CHECKER_BASE.clone()
 }
 
+/// Clone a fresh checker that keeps the `require` global, for module graphs.
 fn fresh_graph_checker() -> Result<Checker, CheckFailure> {
-    match &*GRAPH_CHECKER_BASE {
-        Ok(checker) => Ok(checker.clone()),
-        Err(error) => Err(error.clone()),
-    }
+    GRAPH_CHECKER_BASE.clone()
 }
 
 fn checker_with_definitions(
