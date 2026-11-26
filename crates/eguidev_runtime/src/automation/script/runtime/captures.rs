@@ -120,54 +120,48 @@ impl ScriptRuntime {
         }
 
         let id = self.next_image_id();
-        if let Some(target) = widget_target {
-            let (widget, viewport_id_resolved) =
-                resolve_widget_and_viewport(&self.server.inner, viewport_id.as_deref(), &target)
-                    .map_err(|error| self.tool_error(pos, error.into()))?;
-            let pixels_per_point = self
-                .server
-                .inner
-                .viewports
-                .input_snapshot(viewport_id_resolved)
-                .map(|snapshot| snapshot.pixels_per_point)
-                .unwrap_or(1.0);
-            let encoded = self
-                .await_tool(pos, async {
-                    capture_screenshot(
-                        &self.server.inner,
-                        &self.server.runtime,
-                        viewport_id_resolved,
-                        ScreenshotKind::Widget {
-                            rect: widget.interact_rect,
-                            pixels_per_point,
-                        },
-                        options,
-                    )
-                    .await
-                    .map_err(tmcp::ToolError::from)
-                })
-                .await?;
-            self.store_image(ImageCapture {
-                id: id.clone(),
-                data: encoded.data,
-                media_type: encoded.media_type,
-                kind: ScriptImageKind::Widget,
-                viewport_id: viewport_id_to_string(viewport_id_resolved),
-                target: Some(target),
-                rect: Some(widget.interact_rect),
-            });
-            return Ok(image_ref_json(id));
-        }
-
-        let viewport_id_resolved = resolve_screenshot_viewport(&self.server.inner, viewport_id)
-            .map_err(|error| self.tool_error(pos, error.into()))?;
+        let (viewport_id_resolved, kind, image_kind, rect) = match widget_target.as_ref() {
+            Some(target) => {
+                let (widget, viewport_id_resolved) =
+                    resolve_widget_and_viewport(&self.server.inner, viewport_id.as_deref(), target)
+                        .map_err(|error| self.tool_error(pos, error.into()))?;
+                let pixels_per_point = self
+                    .server
+                    .inner
+                    .viewports
+                    .input_snapshot(viewport_id_resolved)
+                    .map(|snapshot| snapshot.pixels_per_point)
+                    .unwrap_or(1.0);
+                let kind = ScreenshotKind::Widget {
+                    rect: widget.interact_rect,
+                    pixels_per_point,
+                };
+                (
+                    viewport_id_resolved,
+                    kind,
+                    ScriptImageKind::Widget,
+                    Some(widget.interact_rect),
+                )
+            }
+            None => {
+                let viewport_id_resolved =
+                    resolve_screenshot_viewport(&self.server.inner, viewport_id)
+                        .map_err(|error| self.tool_error(pos, error.into()))?;
+                (
+                    viewport_id_resolved,
+                    ScreenshotKind::Viewport,
+                    ScriptImageKind::Viewport,
+                    None,
+                )
+            }
+        };
         let encoded = self
             .await_tool(pos, async {
                 capture_screenshot(
                     &self.server.inner,
                     &self.server.runtime,
                     viewport_id_resolved,
-                    ScreenshotKind::Viewport,
+                    kind,
                     options,
                 )
                 .await
@@ -178,10 +172,10 @@ impl ScriptRuntime {
             id: id.clone(),
             data: encoded.data,
             media_type: encoded.media_type,
-            kind: ScriptImageKind::Viewport,
+            kind: image_kind,
             viewport_id: viewport_id_to_string(viewport_id_resolved),
-            target: None,
-            rect: None,
+            target: widget_target,
+            rect,
         });
         Ok(image_ref_json(id))
     }
